@@ -23,7 +23,13 @@ defmodule NanoWeb.Layouts do
         <script>
           window.addEventListener("DOMContentLoaded", () => {
             const csrf = document.querySelector("meta[name='csrf-token']").content
-            window.liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {params: {_csrf_token: csrf}})
+            // When the server closes the socket (its endpoint restarting), LiveView reloads the page
+            // after a random 5-10 s, meant to spread out many clients; one operator needs only ~1 s.
+            window.liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
+              params: {_csrf_token: csrf},
+              reloadJitterMin: 500,
+              reloadJitterMax: 1500
+            })
             // LiveView logs debug output on localhost unless told not to. To see it in this tab:
             // liveSocket.enableDebug() in the console, then reload.
             if (sessionStorage.getItem("phx:live-socket:debug") === null) window.liveSocket.disableDebug()
