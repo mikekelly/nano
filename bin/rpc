@@ -1,5 +1,7 @@
 #!/bin/sh
 # Evaluate one expression on the node and print its value:  docker exec nano bin/rpc '1 + 1'
-# An expression that does its own IO (IO.inspect, IO.puts) is run as is, so nothing prints twice.
-case "$1" in *IO.*) expr="$1" ;; *) expr="IO.inspect(($1))" ;; esac
+# An expression that starts with IO.inspect or IO.puts prints for itself, so it is run as is.
+case "$1" in IO.inspect*|IO.puts*) expr="$1" ;; *) expr="IO.inspect((
+$1
+))" ;; esac
 exec elixir --name "rpc-$$@127.0.0.1" --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" --rpc-eval nano@127.0.0.1 "$expr"

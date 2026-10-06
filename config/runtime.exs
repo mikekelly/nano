@@ -33,8 +33,13 @@ config :nano,
 
 # NODE_COOKIE is not read here: it is consumed by `elixir --cookie` before the app starts.
 
+# No authentication, and /api/eval runs code: listen on loopback unless told otherwise.
+# The image sets LISTEN_IP=0.0.0.0, because a port Docker publishes must be reachable from
+# outside the container; compose then publishes it on the host's 127.0.0.1 only.
+{:ok, listen_ip} = "LISTEN_IP" |> env.("127.0.0.1") |> to_charlist() |> :inet.parse_address()
+
 config :nano, NanoWeb.Endpoint,
-  http: [ip: {0, 0, 0, 0}, port: if(test?, do: 4002, else: int.("PORT", "4000"))],
+  http: [ip: listen_ip, port: if(test?, do: 4002, else: int.("PORT", "4000"))],
   server: not test?,
   # No authentication, local use only: the secret only signs the session cookie that carries
   # the CSRF token, so a fresh one per boot is enough (open pages reload after a node restart).

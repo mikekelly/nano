@@ -2,5 +2,6 @@
 /deps/
 /tmp/
 /data/
+/.claude/worktrees/
 .env
 erl_crash.dump

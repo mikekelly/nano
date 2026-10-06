@@ -29,7 +29,7 @@ The image also carries its own committed copy of the source, so it runs without 
 
 ```bash
 docker build -t nano .
-docker run -d --name nano --restart unless-stopped -p 127.0.0.1:4000:4000 \
+docker run -d --init --name nano --restart unless-stopped -p 127.0.0.1:4000:4000 \
   -v nano-data:/data -e OPENROUTER_API_KEY -e DEFAULT_MODEL nano
 ```
 
@@ -45,12 +45,33 @@ curl localhost:4000/api                        # the HTTP API describes itself
 ```
 
 `bin/rpc` prints the value of the expression and exits non-zero if it raises. An expression
-that does its own `IO.` (for example `IO.inspect(...)`) is run as is, so nothing prints twice.
+that starts with `IO.inspect` or `IO.puts` is run as is, so its output appears once.
+
+An outside agent, such as Claude Code on the host, gets a stable identity on the node as a
+`Nano.User`, over rpc or HTTP:
+
+```bash
+docker exec nano bin/rpc 'Nano.User.start("claude_code")'
+docker exec nano bin/rpc 'Nano.User.say("claude_code", "alice", "hello, are you there?")'
+docker exec nano bin/rpc 'IO.inspect(Nano.User.inbox("claude_code"))'
+
+curl -X POST localhost:4000/api/users -H 'content-type: application/json' -d '{"name": "claude_code"}'
+curl -X POST localhost:4000/api/users/claude_code/send_raw -H 'content-type: application/json' \
+  -d '{"to": "alice", "term": "{:hello, Nano.User.pid(\"claude_code\"), \"are you there?\"}"}'
+curl 'localhost:4000/api/users/claude_code/inbox?clear=true'
+curl 'localhost:4000/api/agents/alice/log?since=0'
+```
+
+Over rpc, HTTP and the dashboard's send form, `self()` is a process that is gone a moment
+later. A raw term that wants an answer should carry a user's pid instead, as above; the
+dashboard's own user is `Nano.User.pid("dashboard")`.
 
 Distribution ports are not published; the shell and rpc go through `docker exec`, using the
 cookie generated at image build (or `NODE_COOKIE`). Port 4000 has no authentication and
 `/api/eval` runs arbitrary code in the container, which is why it is published on
-`127.0.0.1` only. Keep it that way.
+`127.0.0.1` only. Keep it that way. For the same reason the app itself listens on
+`127.0.0.1` unless `LISTEN_IP` says otherwise (`mix run --no-halt` on your own machine stays
+off the LAN); the image sets `LISTEN_IP=0.0.0.0` so that Docker can publish the port.
 
 Agent logs are JSONL files in `./data/logs`, and survive the container.
 
@@ -115,6 +136,7 @@ networks:
 The experiments are listed in [SPEC.md](SPEC.md#experiments). Start agents from the
 dashboard's form or from `bin/shell`, send messages from the shell, and watch the agent's
 page on the dashboard (or `Nano.Ops.tail("alice")` in the shell, or the JSONL file).
+`NanoAgent.start` needs the key and a model to be set.
 
 ```elixir
 NanoAgent.start(name: "alice")                           # model: defaults to DEFAULT_MODEL
@@ -131,3 +153,16 @@ NanoAgent.start(name: "other", model: "another/model-slug")                     
 
 For 7 (self-modification), ask an agent to add a capability to itself, or wait and see,
 then read the result with `git diff` in the checkout.
+
+Worth knowing while you run them:
+
+- **A reply address arrives as text.** An event shows a pid as `#PID<0.231.0>`, which is
+  not valid Elixir source, so to reply the agent has to rebuild it, for example with
+  `:erlang.list_to_pid(~c"<0.231.0>")`. Whether it works that out is part of experiment 1.
+- **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
+  every `to` in the API take the name.
+- **Halted agents.** An agent whose `halted` is `budget`, `node_budget` or `restart_brake`
+  still receives and logs messages but makes no model calls until an operator un-halts it:
+  the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
+  `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an
+  operator's Restart counts.

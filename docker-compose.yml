@@ -4,6 +4,7 @@ services:
     image: nano
     container_name: nano
     restart: unless-stopped # brings the node back after System.halt()
+    init: true # reaps orphaned OS processes (epmd's launcher, anything agents leave behind)
     ports:
       - "127.0.0.1:4000:4000" # no authentication and /api/eval runs code: localhost only
     volumes:

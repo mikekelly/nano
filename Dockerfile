@@ -1,13 +1,17 @@
 FROM elixir:1.20.2-otp-29
 
 # Deps and build output live outside /app, so a checkout mounted over /app hides nothing.
+# The app listens on loopback by default; a published port needs all interfaces.
 # NETWORK_POLICY is shown to agents in their system prompt: keep it true (see README).
 ENV MIX_ENV=prod \
     MIX_DEPS_PATH=/opt/nano/deps \
     MIX_BUILD_PATH=/opt/nano/_build \
+    LISTEN_IP=0.0.0.0 \
     NETWORK_POLICY="unrestricted outbound internet access"
 
-RUN useradd --create-home nano && install -d -o nano /app /opt/nano /data /data/logs
+# A checkout mounted over /app may be owned by another uid; git must still treat it as a repo.
+RUN useradd --create-home nano && install -d -o nano /app /opt/nano /data /data/logs \
+ && git config --system --add safe.directory /app
 USER nano
 WORKDIR /app
 
