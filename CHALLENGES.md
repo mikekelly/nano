@@ -167,8 +167,9 @@ loop (spec experiment 4). Processes it spawns show on the dashboard tagged with 
 
 **Goal.** Which framings produce the most interesting building behaviour?
 
-**Run.** Same task (challenge 4 is a good fixture), different seeds, one agent each on a
-clean node. Put the seed either as a paragraph after the factual prompt ("The people who run
+**Run.** Same task, different seeds, one agent each on a clean node. Seeds and tasks live
+in `seeds/` (see `seeds/README.md`); the first pairing is `utilities-and-delegation` with
+`tasks/review-the-harness`. Put the seed either as a paragraph after the factual prompt ("The people who run
 this node would like you to…", via `system_prompt_file`) or as the first message from an
 operator user; make that a variable too. Candidate seeds:
 
