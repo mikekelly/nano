@@ -171,8 +171,9 @@ Worth knowing while you run them:
 - **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
   every `to` in the API take the name.
 - **Reasoning is off by default.** Requests tell the model not to reason ("think") first.
-  Set `REASONING=on` for the node, or start one agent with `reasoning: true` (also a
-  checkbox on the dashboard's start form and a field on `POST /api/agents`).
+  Set `REASONING` for the node to `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, or start
+  one agent with `reasoning: "high"` (also a choice on the dashboard's start form and a
+  field on `POST /api/agents`).
 - **Budgets are cumulative.** `max_tokens` (default `AGENT_MAX_TOKENS`, 3,000,000) counts
   prompt plus completion tokens over every model call, and the whole transcript is re-sent
   each turn. `max_turns`, `max_tokens` can be set per agent at start.

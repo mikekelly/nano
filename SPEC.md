@@ -130,7 +130,9 @@ your turn.
 This node runs in a disposable Docker container. You run as {{os_user}}
 on {{os}}. Network access: {{network_policy}}. You have a budget of
 {{max_turns}} turns and {{max_tokens}} tokens; when it runs out I stop
-calling the model.
+calling the model. Each call to the model counts as one turn of that
+budget, and tokens are counted across all calls. With each delivery of
+events I tell you how much of the budget you have used.
 
 If your process dies, I restart it, restore your history and bindings,
 and tell you what happened. Your pid will change; your name will not.
@@ -285,7 +287,7 @@ One image, based on the official Elixir image, running the app from source with 
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | (required) | Model access |
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
-| `REASONING` | `off` | Whether new agents ask the model to reason ("think") before answering; `on` or `off`, and settable per agent at start |
+| `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |
 | `AGENT_MAX_TURNS` | 50 | Model calls per agent before halting |
 | `AGENT_MAX_TOKENS` | 3000000 | Total tokens per agent before halting (prompt + completion, summed over every model call) |
