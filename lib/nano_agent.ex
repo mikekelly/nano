@@ -157,13 +157,14 @@ defmodule NanoAgent do
   @doc "Casts a term to an agent (pid or name); it arrives as an event, like a plain `send/2`."
   def notify(agent, term), do: GenServer.cast(target(agent), {:notify, term})
 
-  @doc "Clears an agent's halt (budget, node budget or restart brake)."
+  @doc "Clears an agent's halt, whatever the reason; for `:start_failed` that retries the start."
   def unhalt(agent), do: GenServer.cast(target(agent), :unhalt)
 
   @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
-  while the agent is busy or suspended. `halted` is nil, `:budget`, `:node_budget` or
-  `:restart_brake`; `cache_hit_rate` is nil until the first response.
+  while the agent is busy or suspended. `halted` is nil, `:budget`, `:node_budget`,
+  `:restart_brake`, `:start_failed` or `:log_failed`; `cache_hit_rate` is nil until the first
+  response.
   """
   def info(name) do
     with %{} = s <- Nano.StateStore.get(name) do

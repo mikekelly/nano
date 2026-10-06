@@ -168,3 +168,15 @@ File ownership (no agent edits another's files; cross-boundary needs go through 
 - ops: `lib/nano/{ops,user}.ex`, `lib/nano_web/controllers/`, their tests
 - container: `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, `bin/`, `README.md`
 - dashboard: `lib/nano_web/live/`, `priv/static/app.css`, their tests
+
+## Outcome (2026-10-06)
+
+All stages ran. Stages 3b–5 looped three times: three review passes and two end-to-end
+passes each fed a fix round, and the last end-to-end pass (image built from `5e1f4b9`, plus
+`e59e985` hot-reloaded) passed with live runs on `deepseek/deepseek-v4.1-flash`.
+
+Added at the owner's request during delivery, beyond the original spec: IEx-style eval error
+formatting, the `REASONING` level, a budget-used line on each delivered message, and larger
+default token budgets. Known limitations are listed in the README under "Worth knowing while
+you run them". The closing simplicity review produced a costed menu of cuts that has not been
+applied; the choices in it are the owner's.
