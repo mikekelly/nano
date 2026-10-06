@@ -36,6 +36,12 @@ defmodule Nano.Application do
       :persistent_term.put(@boot_set, MapSet.new(Process.list()))
       # After the snapshot, so the dashboard user is listed as a process of kind "user".
       Nano.User.start("dashboard")
+      # Agents saved before the node last stopped come back, with their history.
+      best_effort(fn ->
+        Nano.StateStore.load()
+        NanoAgent.revive(Nano.AgentSupervisor)
+      end)
+
       {:ok, sup}
     end
   end

@@ -34,7 +34,18 @@ config :nano,
   eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
   result_max_bytes: int.("RESULT_MAX_BYTES", "16000"),
   network_policy: env.("NETWORK_POLICY", "openrouter-only"),
-  log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs"))
+  log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs")),
+  # Each agent's state is written here on every save and revived from here at boot.
+  state_dir:
+    env.(
+      "STATE_DIR",
+      case config_env() do
+        :prod -> "/data/state"
+        # Tests boot the app, which revives whatever is here, so keep dev nodes' state out.
+        :test -> "tmp/test_state"
+        _ -> "tmp/state"
+      end
+    )
 
 # NODE_COOKIE is not read here: it is consumed by `elixir --cookie` before the app starts.
 

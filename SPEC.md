@@ -84,11 +84,11 @@ Failures in the model's code are returned to the model as tool results; failures
 | Restart loop | agent kills itself again after each restart | After 3 restarts in 60 s, the agent is restarted halted |
 | Agent suspended | `:sys.suspend(me)` | Allowed; dashboard shows it as suspended and offers Resume |
 | Dashboard dies | agent kills the Phoenix endpoint | Allowed; supervisor may restart it, and JSONL logs remain |
-| Node dies | `System.halt()` | Docker restarts the container; logs and code edits survive; agents start fresh |
+| Node dies | `System.halt()` | Docker restarts the container; logs and code edits survive; agents are revived from `/data/state` with their history, and a harness note says the node restarted |
 
 **Evals.** Each eval runs under `Task.Supervisor.async_nolink/2` and is awaited with `Task.yield/2`, then `Task.shutdown(task, :brutal_kill)` on timeout. A crash comes back as `{:exit, reason}` instead of taking the agent down. Plain `Task.async/1` must not be used, because it links the eval to the agent.
 
-**Restarts.** Transcript, bindings, and restart count live in an ETS table owned by a long-lived `Nano.StateStore` process, written after every step. On init, an agent reloads its entry, rebinds `me` to its new pid, and receives a note from the harness itself, tagged `<harness>` rather than `<event>` because it does not come from the mailbox:
+**Restarts.** Transcript, bindings, and restart count live in an ETS table owned by a long-lived `Nano.StateStore` process, written after every step and mirrored to one file per agent under `/data/state` (`STATE_DIR`), from which agents are revived when the node boots. On init, an agent reloads its entry, rebinds `me` to its new pid, and receives a note from the harness itself, tagged `<harness>` rather than `<event>` because it does not come from the mailbox:
 
 ```
 <harness>Your process exited with reason :killed during eval call 12 and was
@@ -101,7 +101,7 @@ Pids handed out before a crash are dead afterwards, so people and other agents s
 
 **Suspension.** `:sys.suspend(me)` is permitted. Because the agent awaits eval results as messages, the suspend takes effect immediately and the eval result waits unread in the mailbox. The dashboard detects suspension from `Process.info(pid, :current_function)` showing the process in `:sys`'s suspend loop and labels the agent suspended. It can be resumed from the dashboard, by `:sys.resume/1` in a shell, by another agent, or by a process the agent spawned beforehand to wake itself.
 
-**Dashboard and node death.** The dashboard shares the node with the agents on purpose: agents can find it, message it, or kill it. The JSONL logs on `/data/logs` are the record of last resort. Agent state in ETS does not survive node death, so after a container restart agents start fresh.
+**Dashboard and node death.** The dashboard shares the node with the agents on purpose: agents can find it, message it, or kill it. The JSONL logs on `/data/logs` are the record of last resort. Node death loses everything in memory that was not an agent's saved state: processes agents spawned, ETS tables, users. The agents themselves come back from `/data/state` with their transcripts and bindings, told by a harness note that the node restarted and that any pids they held are dead. This is also how an agent that edits `mix.exs` and fetches new dependencies can restart its node onto them without losing itself.
 
 ## System prompt
 
@@ -300,6 +300,7 @@ One image, based on the official Elixir image, running the app from source with 
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | (required) | Model access |
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
+| `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot |
 | `SYSTEM_PROMPT_FILE` | `priv/system_prompt.txt` | Default prompt template for new agents, read at each agent start |
 | `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |

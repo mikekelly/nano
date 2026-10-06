@@ -1731,4 +1731,124 @@ defmodule NanoAgentTest do
     assert prompt =~ "I am the GenServer you are running in"
     assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
   end
+
+  ## Surviving node death
+
+  defp state_file(name), do: Path.join(Application.get_env(:nano, :state_dir), name <> ".term")
+
+  # What a node restart leaves: the agent's process and its rows in the table are gone, its
+  # state file and log are not. Then what boot does: load the files, revive the agents.
+  defp node_restart(ctx, id) do
+    pid = NanoAgent.whereis(ctx.name)
+    :sys.get_state(pid)
+    DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+    for key <- [ctx.name, {:exit, ctx.name}, {:seq, id}], do: :ets.delete(Nano.StateStore, key)
+    Nano.StateStore.load()
+    NanoAgent.revive(Nano.AgentSupervisor)
+    new = NanoAgent.whereis(ctx.name)
+    assert is_pid(new) and new != pid
+    :sys.get_state(new)
+    new
+  end
+
+  test "an agent's entry is written to its state file when it changes, and removed on stop",
+       ctx do
+    {pid, _id} = start!(ctx)
+    :sys.get_state(pid)
+    path = state_file(ctx.name)
+    assert path |> File.read!() |> :erlang.binary_to_term() == Nano.StateStore.get(ctx.name)
+
+    send(pid, :hello)
+    request!(ctx.model)
+    :sys.get_state(pid)
+    assert %{event_seq: 1, status: :thinking} = path |> File.read!() |> :erlang.binary_to_term()
+
+    # An unchanged entry is written again if its file is missing.
+    File.rm!(path)
+    Nano.StateStore.put(ctx.name, Nano.StateStore.get(ctx.name))
+    assert File.exists?(path)
+
+    Nano.StateStore.delete(ctx.name)
+    refute File.exists?(path)
+  end
+
+  test "after a node restart an agent comes back from its file with history and bindings",
+       ctx do
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "x = 5; spawn(fn -> Process.sleep(:infinity) end)"])
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    [child] = Nano.StateStore.get(ctx.name).spawned
+    Process.exit(child, :kill)
+
+    Fake.push(ctx.model, calls: [eval: "x"])
+    Fake.push(ctx.model, text: "ok")
+    new = node_restart(ctx, id)
+    body = request!(ctx.model)
+
+    # The history is there, and the note says what happened.
+    assert [_, _, %{"tool_calls" => [_]}, _, %{"content" => "ok"}, note] = body["messages"]
+
+    assert delivery(note) ==
+             "<harness>The node was restarted while idle, and I restored your process from what I " <>
+               "had saved. Your pid is now #{inspect(new)}; your registered name is unchanged. " <>
+               "Your history and variable bindings are back, but any pids, references or ports " <>
+               "in your bindings belonged to the old node and are dead, and the processes you " <>
+               "had started are gone.</harness>"
+
+    assert text(hd(body["messages"])) =~ "You are process #{inspect(new)}"
+    assert tool_texts(request!(ctx.model)) |> List.last() == "5"
+    assert %{restart_count: 1, halted: nil} = NanoAgent.info(ctx.name)
+    assert Nano.StateStore.get(ctx.name).spawned == []
+
+    assert %{"restarted" => true, "exit_reason" => ":node_restart"} =
+             await(id, :agent_started, & &1["restarted"])
+
+    # The log carries on where it left off.
+    seqs = Enum.map(Nano.Log.read(id), & &1["seq"])
+    assert seqs == Enum.to_list(1..length(seqs))
+  end
+
+  test "an agent halted before a node restart comes back halted", ctx do
+    {pid, id} = start!(ctx, max_turns: 1)
+    Fake.push(ctx.model, text: "last")
+    send(pid, :go)
+    request!(ctx.model)
+    await(id, :budget_exhausted)
+    node_restart(ctx, id)
+    assert %{halted: :budget, restart_count: 1} = NanoAgent.info(ctx.name)
+    refute_receive {:openrouter_request, _, _}, 100
+  end
+
+  test "an unreadable state file is skipped at boot, with an error logged", ctx do
+    dir = Application.get_env(:nano, :state_dir)
+    File.mkdir_p!(dir)
+    bad = Path.join(dir, "#{ctx.name}.term")
+    File.write!(bad, "not a term")
+    on_exit(fn -> File.rm(bad) end)
+    log = ExUnit.CaptureLog.capture_log(fn -> assert Nano.StateStore.load() == :ok end)
+    assert log =~ "Nano.StateStore: skipped #{bad}"
+    assert Nano.StateStore.get(ctx.name) == nil
+  end
+
+  test "a state file that cannot be written is logged; the agent carries on", ctx do
+    saved = Application.get_env(:nano, :state_dir)
+    Application.put_env(:nano, :state_dir, "/dev/null/state")
+    on_exit(fn -> Application.put_env(:nano, :state_dir, saved) end)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {pid, _id} = start!(ctx)
+        send(pid, :hello)
+        request!(ctx.model)
+        :sys.get_state(pid)
+      end)
+
+    assert log =~ "#{ctx.name}: could not save state to /dev/null/state/#{ctx.name}.term"
+    assert %{halted: nil, status: :thinking} = NanoAgent.info(ctx.name)
+  end
 end

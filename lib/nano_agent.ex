@@ -327,19 +327,26 @@ defmodule NanoAgent do
 
   defp restore(saved) do
     reason = Nano.StateStore.exit_reason(saved.name, saved.pid) || :unknown
+    # Revived at boot from the agent's state file: the whole node stopped, not just the process.
+    node_restart? = reason == :node_restart
     kill_tasks(saved.pid)
-    now = System.monotonic_time(:millisecond)
-    restarts = Enum.filter([now | saved.restarts], &(&1 > now - 60_000))
+    # Wall-clock time, so the 60 s window also spans node restarts (which count, like any exit).
+    wall = System.system_time(:millisecond)
+    restarts = Enum.filter([wall | saved.restarts], &(&1 > wall - 60_000))
+    # An entry saved by a :start_failed stand-in: restore works now, so the earlier halt is back.
+    {before, saved} = Map.pop(saved, :halted_before)
+    saved = if saved.halted == :start_failed, do: %{saved | halted: before}, else: saved
     brake? = saved.halted == nil and length(restarts) >= 3
 
-    # An eval in flight when the process died left its spawned processes on a dead device.
+    # An eval in flight when the process died left its spawned processes on a dead device;
+    # after a node restart there are none left.
     orphans = with %{io: io} <- saved.task, do: adopt(io, Process.group_leader()), else: (_ -> [])
 
     s = %{
       new_process(saved)
       | restart_count: saved.restart_count + 1,
         restarts: restarts,
-        spawned: saved.spawned ++ orphans
+        spawned: if(node_restart?, do: [], else: saved.spawned ++ orphans)
     }
 
     # The template file is read again, so edits to it take effect at a restart. If it cannot
@@ -372,8 +379,17 @@ defmodule NanoAgent do
     s =
       note(
         s,
-        "Your process exited with reason #{brief(reason)} #{doing(saved)} and was restarted. " <>
-          "Your pid is now #{inspect(self())}; your registered name is unchanged." <>
+        if(node_restart?,
+          do:
+            "The node was restarted #{doing(saved)}, and I restored your process from what I " <>
+              "had saved. Your pid is now #{inspect(self())}; your registered name is unchanged. " <>
+              "Your history and variable bindings are back, but any pids, references or ports " <>
+              "in your bindings belonged to the old node and are dead, and the processes you " <>
+              "had started are gone.",
+          else:
+            "Your process exited with reason #{brief(reason)} #{doing(saved)} and was restarted. " <>
+              "Your pid is now #{inspect(self())}; your registered name is unchanged."
+        ) <>
           with(
             {:error, e} <- read,
             do:

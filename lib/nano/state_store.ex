@@ -11,6 +11,9 @@ defmodule Nano.StateStore do
   The table dies with this process. When it is restarted (someone killed it), it asks every
   live agent to save its entry again; exit reasons, log seq counters (re-seeded from the log
   files) and the hourly token counter start over.
+
+  Each agent's entry is also written to `<state_dir>/<name>.term` whenever it changes, so it
+  survives node death: at boot, `load/0` reads the files back and the agents are revived.
   """
   use GenServer
   require Logger
@@ -30,20 +33,71 @@ defmodule Nano.StateStore do
     ArgumentError -> nil
   end
 
-  @doc "Stores the map for an agent name. A no-op in the moment while the table is being recreated."
+  @doc """
+  Stores the map for an agent name and, if it changed, writes it to the agent's state file.
+  A failed write is logged, not raised: the table still holds the entry. A no-op in the moment
+  while the table is being recreated.
+  """
   def put(name, map) do
+    # Unchanged entries are not rewritten, unless the file is missing (e.g. an agent started
+    # before this module wrote files).
+    changed? = :ets.lookup(@table, name) != [{name, map}]
     :ets.insert(@table, {name, map})
+    if changed? or not File.exists?(file(name)), do: write(name, map)
     :ok
   rescue
     ArgumentError -> :ok
   end
 
-  @doc "Deletes an agent's entry, its recorded exit and its log sequence counter."
+  @doc "Deletes an agent's entry, its state file, its recorded exit and its log sequence counter."
   def delete(name) do
     with %{id: id} <- get(name), do: :ets.delete(@table, {:seq, id})
     :ets.delete(@table, {:exit, name})
     :ets.delete(@table, name)
+    File.rm(file(name))
     :ok
+  end
+
+  @doc """
+  Loads every agent state file into the table, for agents not already in it, recording each
+  one's exit as `:node_restart` (the process that saved it belonged to a node that has since
+  stopped). Unreadable files are skipped and logged. Called once, at boot.
+  """
+  def load do
+    dir = Application.fetch_env!(:nano, :state_dir)
+
+    for name <- with({:ok, files} <- File.ls(dir), do: files, else: (_ -> [])),
+        Path.extname(name) == ".term" do
+      path = Path.join(dir, name)
+
+      try do
+        %{name: name, pid: pid} = entry = path |> File.read!() |> :erlang.binary_to_term()
+
+        if :ets.insert_new(@table, {name, entry}),
+          do: :ets.insert(@table, {{:exit, name}, pid, :node_restart})
+      rescue
+        e -> Logger.error("Nano.StateStore: skipped #{path}: #{Exception.message(e)}")
+      end
+    end
+
+    :ok
+  end
+
+  defp file(name), do: Path.join(Application.fetch_env!(:nano, :state_dir), name <> ".term")
+
+  # Atomically: a node that dies mid-write leaves the previous file, not half of this one.
+  defp write(name, map) do
+    path = file(name)
+    tmp = path <> ".tmp"
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(tmp, :erlang.term_to_binary(map)),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      {:error, reason} ->
+        Logger.error("#{name}: could not save state to #{path}: #{inspect(reason)}")
+    end
   end
 
   @doc "All stored agent maps."
