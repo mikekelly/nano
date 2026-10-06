@@ -8,13 +8,23 @@ defmodule Nano.OpenRouter do
   prefix stays stable between requests. Usage accounting is requested on every call.
   """
 
+  # "off", then OpenRouter's unified reasoning effort levels, lowest first.
+  @reasoning_levels ~w(off minimal low medium high xhigh max)
+
+  @doc """
+  The reasoning settings an agent can use: `"off"`, then OpenRouter's effort levels, lowest
+  first. Some models support only some levels; OpenRouter maps or rejects the others.
+  """
+  def reasoning_levels, do: @reasoning_levels
+
   @doc """
   `{:ok, %{message, finish_reason, usage, provider, cost}} | {:error, %{status, body}}`.
-  `messages` are OpenAI-format maps with string keys, system message first. `reasoning`
-  turns the model's thinking on or off (OpenRouter's unified `reasoning.enabled`). `status`
-  is nil when no HTTP response was received.
+  `messages` are OpenAI-format maps with string keys, system message first. `reasoning` is one
+  of `reasoning_levels/0`: `"off"` is sent explicitly (`reasoning.enabled: false`), since some
+  models reason by default; a level is sent as `reasoning.effort`. `status` is nil when no HTTP
+  response was received.
   """
-  def chat(model, messages, tools, reasoning \\ false) do
+  def chat(model, messages, tools, reasoning \\ "off") do
     key = Application.get_env(:nano, :openrouter_api_key)
 
     body = %{
@@ -22,7 +32,7 @@ defmodule Nano.OpenRouter do
       messages: cache(messages),
       tools: tools,
       usage: %{include: true},
-      reasoning: %{enabled: reasoning}
+      reasoning: if(reasoning == "off", do: %{enabled: false}, else: %{effort: reasoning})
     }
 
     opts = [json: body, auth: {:bearer, key}, retry: false, receive_timeout: 600_000]

@@ -671,7 +671,9 @@ defmodule NanoAgentTest do
           [max_tokens: 1.5],
           [start_idle: "false"],
           [system_prompt: :x],
-          [reasoning: "on"]
+          [reasoning: "on"],
+          [reasoning: true],
+          [reasoning: false]
         ],
         do:
           assert(
@@ -709,7 +711,7 @@ defmodule NanoAgentTest do
              restart_count: 0,
              cost: 0,
              cache_hit_rate: nil,
-             reasoning: false,
+             reasoning: "off",
              budget: %{max_turns: 7, max_tokens: max_tokens, turns_used: 0, tokens_used: 0}
            } = NanoAgent.info(ctx.name)
 
@@ -1254,26 +1256,40 @@ defmodule NanoAgentTest do
     end
   end
 
-  ## Reasoning switch
+  ## Reasoning level
 
-  test "the reasoning switch is sent on every request and survives a restart", ctx do
-    for {opts, expected} <- [
-          {[reasoning: true], true},
-          {[reasoning: false], false},
-          {[], Application.get_env(:nano, :reasoning)}
+  test "the reasoning level is sent on every request and survives a restart", ctx do
+    assert NanoAgent.reasoning_levels() == ~w(off minimal low medium high xhigh max)
+
+    for {opts, sent} <- [
+          {[reasoning: "off"], %{"enabled" => false}},
+          {[reasoning: "high"], %{"effort" => "high"}},
+          {[], %{"enabled" => false}}
         ] do
-      ctx = %{ctx | name: "#{ctx.name}r#{expected}#{length(opts)}", model: Fake.model()}
+      level = opts[:reasoning] || "off"
+      ctx = %{ctx | name: "#{ctx.name}r#{level}#{length(opts)}", model: Fake.model()}
       {pid, id} = start!(ctx, opts)
       send(pid, :go)
-      assert request!(ctx.model)["reasoning"] == %{"enabled" => expected}
-      assert NanoAgent.info(ctx.name).reasoning == expected
-      assert await(id, :agent_started)["reasoning"] == expected
+      assert request!(ctx.model)["reasoning"] == sent
+      assert NanoAgent.info(ctx.name).reasoning == level
+      assert await(id, :agent_started)["reasoning"] == level
 
-      if opts == [reasoning: true] do
+      if level == "high" do
         kill(ctx, id)
-        assert request!(ctx.model)["reasoning"] == %{"enabled" => true}
+        assert request!(ctx.model)["reasoning"] == %{"effort" => "high"}
       end
     end
+  end
+
+  test "an invalid REASONING default is rejected when an agent is started with it", ctx do
+    saved = Application.get_env(:nano, :reasoning)
+    Application.put_env(:nano, :reasoning, "loud")
+    on_exit(fn -> Application.put_env(:nano, :reasoning, saved) end)
+    assert NanoAgent.start(name: ctx.name, model: ctx.model) == {:error, :invalid_option}
+    Application.put_env(:nano, :reasoning, "low")
+    {pid, _id} = start!(ctx)
+    send(pid, :go)
+    assert request!(ctx.model)["reasoning"] == %{"effort" => "low"}
   end
 
   test "eval errors from matches, module bodies and arithmetic show only the model's frames",

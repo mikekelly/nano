@@ -90,12 +90,16 @@ defmodule NanoAgent do
   Starts an agent under `Nano.AgentSupervisor`. Options: `name:` (required; letters, digits,
   `_`, `.`, `-`), `model:` (default `DEFAULT_MODEL`), `start_idle:` (boolean, default true),
   `system_prompt:` (a template replacing the default; same `{{placeholders}}`), `max_turns:`,
-  `max_tokens:` (positive integers), `reasoning:` (boolean, default `REASONING`). Returns `{:error, :invalid_name | :invalid_option |
+  `max_tokens:` (positive integers), `reasoning:` (one of `reasoning_levels/0`, default
+  `REASONING`). Returns `{:error, :invalid_name | :invalid_option |
   :missing_model | :missing_openrouter_api_key}` or the supervisor's result.
   """
   def start(opts) do
     name = opts[:name]
     model = opts[:model] || Application.get_env(:nano, :default_model)
+    # An invalid REASONING default surfaces here, as an invalid option.
+    opts =
+      if opts[:reasoning] == nil, do: Keyword.put(opts, :reasoning, env(:reasoning)), else: opts
 
     cond do
       not (is_binary(name) and name =~ ~r/^[\w.-]+$/) ->
@@ -120,12 +124,15 @@ defmodule NanoAgent do
     end
   end
 
+  @doc "The `reasoning:` settings an agent can be started with: `\"off\"`, then effort levels, lowest first."
+  defdelegate reasoning_levels, to: Nano.OpenRouter
+
   defp valid_options?(opts) do
     Enum.all?(
       [:max_turns, :max_tokens],
       &(opts[&1] == nil or (is_integer(opts[&1]) and opts[&1] > 0))
     ) and
-      opts[:start_idle] in [nil, true, false] and opts[:reasoning] in [nil, true, false] and
+      opts[:start_idle] in [nil, true, false] and opts[:reasoning] in reasoning_levels() and
       Enum.all?([:model, :system_prompt], &(opts[&1] == nil or is_binary(opts[&1])))
   end
 
@@ -174,7 +181,7 @@ defmodule NanoAgent do
         system_prompt: s.system_prompt,
         restart_count: s.restart_count,
         cost: s.cost,
-        reasoning: Map.get(s, :reasoning, false),
+        reasoning: Map.get(s, :reasoning, "off"),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: Map.take(s, [:max_turns, :max_tokens, :turns_used, :tokens_used])
       }
@@ -281,7 +288,7 @@ defmodule NanoAgent do
       id: opts[:id],
       name: opts[:name],
       model: opts[:model],
-      reasoning: if(opts[:reasoning] == nil, do: env(:reasoning), else: opts[:reasoning]),
+      reasoning: opts[:reasoning] || env(:reasoning),
       pid: self(),
       tag: make_ref(),
       template: opts[:system_prompt],
@@ -591,7 +598,7 @@ defmodule NanoAgent do
         if log(s, :model_request, Map.put(fields, :approx_input_tokens, size)) == :ok do
           s = save(%{s | status: :thinking, request_id: id, turns_used: s.turns_used + 1})
           # Map.get: state saved by an older version of this module has no :reasoning.
-          args = [self(), s.tag, {s.model, Map.get(s, :reasoning, false)}, messages, id]
+          args = [self(), s.tag, {s.model, Map.get(s, :reasoning, "off")}, messages, id]
           task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :call_model, args)
           %{s | task: %{kind: :model, task: task}}
         else
