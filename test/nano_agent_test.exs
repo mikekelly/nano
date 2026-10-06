@@ -71,10 +71,15 @@ defmodule NanoAgentTest do
   defp delivery(message) do
     {lines, [budget]} = message |> text() |> String.split("\n") |> Enum.split(-1)
 
-    assert budget =~
-             ~r/^<harness>Budget used so far: \d+ of \d+ turns, \d+ of \d+ tokens\.<\/harness>$/
+    part = fn unit -> "\\d+ (of \\d+ )?#{unit}( \\(no limit\\))?" end
 
-    refute Enum.any?(lines, &(&1 =~ "Budget used so far"))
+    assert budget =~
+             Regex.compile!(
+               "^<harness>Used so far: #{part.("turns")}, #{part.("tokens")}, " <>
+                 "context #{part.("tokens")}\\.</harness>$"
+             )
+
+    refute Enum.any?(lines, &(&1 =~ "Used so far"))
     Enum.join(lines, "\n")
   end
 
@@ -505,8 +510,10 @@ defmodule NanoAgentTest do
              "<harness>An operator un-halted you. Your turn and token counters are reset to zero.</harness>"
 
     # The budget line shows the counters as reset.
+    ctx_max = Application.get_env(:nano, :agent_max_context)
+
     assert budget_line(List.last(body["messages"])) ==
-             "<harness>Budget used so far: 0 of 2 turns, 0 of #{max} tokens.</harness>"
+             "<harness>Used so far: 0 of 2 turns, 0 of #{max} tokens, context 110 of #{ctx_max} tokens.</harness>"
 
     :sys.get_state(pid)
     assert %{halted: nil, budget: %{turns_used: 1, tokens_used: 0}} = NanoAgent.info(ctx.name)
@@ -687,8 +694,10 @@ defmodule NanoAgentTest do
 
     for bad <- [
           [max_turns: "1"],
-          [max_turns: 0],
-          [max_tokens: 0],
+          [max_turns: -1],
+          [max_tokens: -1],
+          [max_context: -1],
+          [max_context: "1"],
           [max_tokens: 1.5],
           [start_idle: "false"],
           [system_prompt: :x],
@@ -751,7 +760,11 @@ defmodule NanoAgentTest do
     assert prompt =~ "(OTP #{System.otp_release()}, Elixir #{System.version()})"
     assert prompt =~ "Network access: openrouter-only."
     max = Application.get_env(:nano, :agent_max_tokens)
-    assert prompt =~ "You have a budget of\n50 turns and #{max} tokens"
+    ctx_max = Application.get_env(:nano, :agent_max_context)
+
+    assert prompt =~
+             "Your limits: 50\nturns, #{max} tokens in total, and a context of #{ctx_max}\ntokens."
+
     assert prompt =~ inspect(pid)
     assert await(id, :agent_started)["system_prompt"] == prompt
   end
@@ -1461,7 +1474,11 @@ defmodule NanoAgentTest do
     body = request!(ctx.model)
 
     # Counts before the call the delivery starts.
-    line = "<harness>Budget used so far: 0 of 50 turns, 0 of #{max} tokens.</harness>"
+    ctx_max = Application.get_env(:nano, :agent_max_context)
+
+    line =
+      "<harness>Used so far: 0 of 50 turns, 0 of #{max} tokens, context 0 of #{ctx_max} tokens.</harness>"
+
     assert budget_line(List.last(body["messages"])) == line
     assert delivery(List.last(body["messages"])) =~ ":first"
     assert %{"budget_note" => ^line} = await(id, :model_request)
@@ -1484,7 +1501,7 @@ defmodule NanoAgentTest do
     assert [_, _] = String.split(delivery(last), "\n")
 
     assert budget_line(last) ==
-             "<harness>Budget used so far: 3 of 50 turns, 330 of #{max} tokens.</harness>"
+             "<harness>Used so far: 3 of 50 turns, 330 of #{max} tokens, context 110 of #{ctx_max} tokens.</harness>"
   end
 
   test "a delivery of harness notes alone also ends with the budget line", ctx do
@@ -1494,7 +1511,7 @@ defmodule NanoAgentTest do
     request!(ctx.model)
     last = List.last(request!(ctx.model)["messages"])
     assert delivery(last) =~ ~r/^<harness>No message arrived within 20 ms/
-    assert budget_line(last) =~ "Budget used so far: 1 of 50 turns, 110 of"
+    assert budget_line(last) =~ "Used so far: 1 of 50 turns, 110 of"
   end
 
   test "the template in the code is the one in SPEC.md", ctx do
@@ -1504,6 +1521,121 @@ defmodule NanoAgentTest do
     assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
 
     assert NanoAgent.info(ctx.name).system_prompt =~
-             "Whenever I deliver\nevents or a note of my own, I tell you"
+             "Whenever I\ndeliver events or a note of my own, I tell you"
+  end
+
+  ## Unlimited limits and the context limit
+
+  test "unlimited turns, tokens and context never halt, and say so", ctx do
+    {pid, id} = start!(ctx, max_turns: 0, max_tokens: 0, max_context: 0)
+    prompt = NanoAgent.info(ctx.name).system_prompt
+
+    assert prompt =~
+             "Your limits: unlimited\nturns, unlimited tokens in total, and a context of unlimited\ntokens."
+
+    # More turns, tokens and context than the default limits allow.
+    for _ <- 1..54, do: Fake.push(ctx.model, calls: [eval: "1"], usage: {60_000, 10, 0})
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {2_000_000, 10, 0})
+    Fake.push(ctx.model, text: "done")
+    send(pid, :go)
+
+    body = request!(ctx.model)
+
+    assert budget_line(List.last(body["messages"])) ==
+             "<harness>Used so far: 0 turns (no limit), 0 tokens (no limit), context 0 tokens (no limit).</harness>"
+
+    for _ <- 1..55, do: request!(ctx.model)
+    assert await(id, :turn_ended)["reason"] == "no_tool_call"
+    assert entries(id, :budget_exhausted) == []
+    :sys.get_state(pid)
+
+    assert %{
+             halted: nil,
+             budget: %{
+               turns_used: 56,
+               max_turns: 0,
+               max_tokens: 0,
+               max_context: 0,
+               context_used: 110
+             }
+           } = NanoAgent.info(ctx.name)
+
+    assert NanoAgent.info(ctx.name).budget.tokens_used > 5_000_000
+  end
+
+  test "the context limit halts with :context; un-halting does not shrink it", ctx do
+    {pid, id} = start!(ctx, max_context: 150)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {100, 10, 0})
+    Fake.push(ctx.model, calls: [eval: "2"], usage: {140, 20, 0})
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+
+    assert %{"scope" => "context", "context_used" => 160, "max_context" => 150} =
+             await(id, :budget_exhausted)
+
+    assert await(id, :turn_ended, &(&1["reason"] == "budget"))
+    :sys.get_state(pid)
+
+    assert %{halted: :context, budget: %{context_used: 160, max_context: 150}} =
+             NanoAgent.info(ctx.name)
+
+    Fake.push(ctx.model, text: "still here", usage: {170, 5, 0})
+    NanoAgent.unhalt(ctx.name)
+    last = List.last(request!(ctx.model)["messages"])
+    max = Application.get_env(:nano, :agent_max_tokens)
+
+    assert delivery(last) ==
+             "<harness>This conversation's context has reached 160 of 150 tokens, so I have halted you: " <>
+               "I will not call the model until an operator un-halts you.</harness>\n" <>
+               "<harness>An operator un-halted you. This conversation does not shrink: its context is " <>
+               "still 160 of 150 tokens, so I will halt you again after my next call to the model.</harness>"
+
+    assert budget_line(last) ==
+             "<harness>Used so far: 2 of 50 turns, 270 of #{max} tokens, context 160 of 150 tokens.</harness>"
+
+    # As it said: halted again after that call.
+    await_nth(id, :budget_exhausted, 2)
+    :sys.get_state(pid)
+    assert %{halted: :context, budget: %{context_used: 175}} = NanoAgent.info(ctx.name)
+  end
+
+  test "a node-wide hourly cap of 0 is no cap", ctx do
+    Application.put_env(:nano, :node_max_tokens_per_hour, 0)
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "1"])
+    Fake.push(ctx.model, text: "done")
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+    assert await(id, :turn_ended)["reason"] == "no_tool_call"
+    assert entries(id, :budget_exhausted) == []
+  end
+
+  test "state saved by the previous version (no context fields) keeps working", ctx do
+    {pid, id} = start!(ctx)
+    old = fn s -> Map.drop(s, [:max_context, :context_used]) end
+    :sys.replace_state(pid, old)
+    Nano.StateStore.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
+    {mod, bin, file} = :code.get_object_code(NanoAgent)
+    for _ <- 1..2, do: {:module, NanoAgent} = :code.load_binary(mod, file, bin)
+
+    ctx_max = Application.get_env(:nano, :agent_max_context)
+    assert %{budget: %{context_used: 0, max_context: ^ctx_max}} = NanoAgent.info(ctx.name)
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+
+    assert budget_line(List.last(request!(ctx.model)["messages"])) =~
+             "context 0 of #{ctx_max} tokens"
+
+    await(id, :turn_ended)
+
+    # And through a restart, from an old-shape entry.
+    :sys.replace_state(pid, old)
+    Nano.StateStore.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
+    Fake.push(ctx.model, text: "ok")
+    kill(ctx, id)
+    assert delivery(List.last(request!(ctx.model)["messages"])) =~ "Your process exited"
+    assert NanoAgent.info(ctx.name).system_prompt =~ "a context of #{ctx_max}\ntokens"
   end
 end

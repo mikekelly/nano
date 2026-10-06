@@ -48,11 +48,12 @@ defmodule NanoAgent do
   from eval.
 
   This node runs in a disposable Docker container. You run as {{os_user}}
-  on {{os}}. Network access: {{network_policy}}. You have a budget of
-  {{max_turns}} turns and {{max_tokens}} tokens; when it runs out I stop
-  calling the model. Each call to the model counts as one turn of that
-  budget, and tokens are counted across all calls. Whenever I deliver
-  events or a note of my own, I tell you how much of the budget you have
+  on {{os}}. Network access: {{network_policy}}. Your limits: {{max_turns}}
+  turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
+  tokens. Each call to the model counts as one turn, tokens are counted
+  across all calls, and the context is the size of this conversation, which
+  only grows. When a limit is reached I stop calling the model. Whenever I
+  deliver events or a note of my own, I tell you how much of each you have
   used.
 
   If your process dies, I restart it, restore your history and bindings,
@@ -104,7 +105,7 @@ defmodule NanoAgent do
   Starts an agent under `Nano.AgentSupervisor`. Options: `name:` (required; letters, digits,
   `_`, `.`, `-`), `model:` (default `DEFAULT_MODEL`), `start_idle:` (boolean, default true),
   `system_prompt:` (a template replacing the default; same `{{placeholders}}`), `max_turns:`,
-  `max_tokens:` (positive integers), `reasoning:` (one of `reasoning_levels/0`, default
+  `max_tokens:`, `max_context:` (non-negative integers; 0 means no limit), `reasoning:` (one of `reasoning_levels/0`, default
   `REASONING`). Returns `{:error, :invalid_name | :invalid_option |
   :missing_model | :missing_openrouter_api_key}` or the supervisor's result.
   """
@@ -143,8 +144,8 @@ defmodule NanoAgent do
 
   defp valid_options?(opts) do
     Enum.all?(
-      [:max_turns, :max_tokens],
-      &(opts[&1] == nil or (is_integer(opts[&1]) and opts[&1] > 0))
+      [:max_turns, :max_tokens, :max_context],
+      &(opts[&1] == nil or (is_integer(opts[&1]) and opts[&1] >= 0))
     ) and
       opts[:start_idle] in [nil, true, false] and opts[:reasoning] in reasoning_levels() and
       Enum.all?([:model, :system_prompt], &(opts[&1] == nil or is_binary(opts[&1])))
@@ -198,7 +199,7 @@ defmodule NanoAgent do
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
-        budget: Map.take(s, [:max_turns, :max_tokens, :turns_used, :tokens_used])
+        budget: budget(s)
       }
     end
   end
@@ -226,7 +227,7 @@ defmodule NanoAgent do
   """
   def revive(sup) do
     for s <- Nano.StateStore.all(), whereis(s.name) == nil do
-      keys = [:name, :id, :model, :max_turns, :max_tokens, :reasoning]
+      keys = [:name, :id, :model, :max_turns, :max_tokens, :max_context, :reasoning]
       opts = s |> Map.take(keys) |> Map.put(:system_prompt, s.template) |> Keyword.new()
       DynamicSupervisor.start_child(sup, {__MODULE__, opts})
     end
@@ -315,8 +316,10 @@ defmodule NanoAgent do
       halted: nil,
       max_turns: opts[:max_turns] || env(:agent_max_turns),
       max_tokens: opts[:max_tokens] || env(:agent_max_tokens),
+      max_context: opts[:max_context] || env(:agent_max_context),
       turns_used: 0,
       tokens_used: 0,
+      context_used: 0,
       cost: 0,
       responses: 0,
       cache_hits: 0,
@@ -444,8 +447,9 @@ defmodule NanoAgent do
       "os_user" => System.get_env("USER") || String.trim(elem(System.cmd("id", ["-un"]), 0)),
       "os" => os_name(),
       "network_policy" => env(:network_policy),
-      "max_turns" => s.max_turns,
-      "max_tokens" => s.max_tokens
+      "max_turns" => limit(s.max_turns),
+      "max_tokens" => limit(s.max_tokens),
+      "max_context" => limit(budget(s).max_context)
     }
 
     Enum.reduce(vars, s.template || @template, fn {k, v}, acc ->
@@ -481,14 +485,25 @@ defmodule NanoAgent do
   end
 
   def handle_cast(:unhalt, s) do
-    {s, reset} =
-      if s.halted == :budget,
-        do:
-          {%{s | turns_used: 0, tokens_used: 0},
-           " Your turn and token counters are reset to zero."},
-        else: {s, ""}
+    b = budget(s)
 
-    s = note(%{s | halted: nil, restarts: []}, "An operator un-halted you.#{reset}")
+    {s, more} =
+      case s.halted do
+        :budget ->
+          {%{s | turns_used: 0, tokens_used: 0},
+           " Your turn and token counters are reset to zero."}
+
+        :context ->
+          {s,
+           " This conversation does not shrink: its context is still " <>
+             "#{used(b.context_used, b.max_context, "tokens")}, so I will halt you again " <>
+             "after my next call to the model."}
+
+        _ ->
+          {s, ""}
+      end
+
+    s = note(%{s | halted: nil, restarts: []}, "An operator un-halted you.#{more}")
     noreply(maybe_start_turn(s))
   end
 
@@ -593,7 +608,7 @@ defmodule NanoAgent do
       s.halted ->
         end_turn(s, if(s.halted == :log_failed, do: "error", else: "budget"))
 
-      node_used >= cap ->
+      reached?(node_used, cap) ->
         text =
           "This node has used #{node_used} tokens in the last hour, reaching its cap of #{cap}"
 
@@ -602,11 +617,15 @@ defmodule NanoAgent do
         s |> halt(:node_budget, text) |> end_turn("budget")
 
       true ->
-        # Each delivery ends with the budget used so far, not counting the call it starts.
-        used =
-          "#{s.turns_used} of #{s.max_turns} turns, #{s.tokens_used} of #{s.max_tokens} tokens"
+        # Each delivery ends with what is used so far: not counting the call it starts, and
+        # the context as of the latest response.
+        b = budget(s)
 
-        line = "<harness>Budget used so far: #{used}.</harness>"
+        line =
+          "<harness>Used so far: #{used(b.turns_used, b.max_turns, "turns")}, " <>
+            "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
+            "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
+
         user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
         s = if new_turn?, do: %{append(s, user) | pending: []}, else: s
         messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
@@ -716,6 +735,9 @@ defmodule NanoAgent do
           responses: s.responses + 1,
           cache_hits: s.cache_hits + if(cached > 0, do: 1, else: 0)
       }
+      # The context: the size of this conversation as the provider last measured it, i.e.
+      # this response's prompt plus its completion, which the next request at least contains.
+      |> Map.put(:context_used, prompt + completion)
       |> append(message)
       |> check_budget()
       |> save()
@@ -723,26 +745,54 @@ defmodule NanoAgent do
     if calls == [], do: end_turn(s, "no_tool_call"), else: run_calls(s)
   end
 
-  # Halts when the agent's own budget is reached; tool calls already returned still run.
-  defp check_budget(s) do
-    if s.halted == nil and (s.turns_used >= s.max_turns or s.tokens_used >= s.max_tokens) do
-      log(s, :budget_exhausted, budget(s, "agent"))
+  # Halts when one of the agent's own limits is reached; tool calls already returned still run.
+  defp check_budget(%{halted: nil} = s) do
+    b = budget(s)
 
-      used =
-        "#{s.turns_used} of #{s.max_turns} turns and #{s.tokens_used} of #{s.max_tokens} tokens"
+    cond do
+      reached?(b.turns_used, b.max_turns) or reached?(b.tokens_used, b.max_tokens) ->
+        log(s, :budget_exhausted, Map.put(b, :scope, "agent"))
+        turns = used(b.turns_used, b.max_turns, "turns")
 
-      halt(s, :budget, "You have used " <> used)
-    else
-      s
+        halt(
+          s,
+          :budget,
+          "You have used #{turns} and #{used(b.tokens_used, b.max_tokens, "tokens")}"
+        )
+
+      reached?(b.context_used, b.max_context) ->
+        log(s, :budget_exhausted, Map.put(b, :scope, "context"))
+
+        text =
+          "This conversation's context has reached #{used(b.context_used, b.max_context, "tokens")}"
+
+        halt(s, :context, text)
+
+      true ->
+        s
     end
   end
 
-  defp budget(s, scope),
-    do:
-      Map.merge(
-        %{scope: scope},
-        Map.take(s, [:turns_used, :tokens_used, :max_turns, :max_tokens])
-      )
+  defp check_budget(s), do: s
+
+  # Limits and use. State saved by an older version of this module has no context fields.
+  defp budget(s) do
+    s
+    |> Map.take([:max_turns, :max_tokens, :turns_used, :tokens_used])
+    |> Map.merge(%{
+      max_context: Map.get(s, :max_context, env(:agent_max_context)),
+      context_used: Map.get(s, :context_used, 0)
+    })
+  end
+
+  defp budget(s, scope), do: Map.put(budget(s), :scope, scope)
+
+  # A limit of 0 means no limit.
+  defp reached?(used, max), do: max > 0 and used >= max
+  defp used(n, 0, unit), do: "#{n} #{unit} (no limit)"
+  defp used(n, max, unit), do: "#{n} of #{max} #{unit}"
+  defp limit(0), do: "unlimited"
+  defp limit(max), do: max
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
   defp run_calls(%{calls: []} = s) do
