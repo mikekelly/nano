@@ -320,8 +320,38 @@ defmodule NanoWeb.ApiControllerTest do
           do: assert(start["description"] =~ inspect(l))
     end
 
+    test "the three limits are passed through; 0 means no limit, a negative is 422" do
+      name = unique("agent")
+      on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+      body =
+        post_json("/api/agents", %{name: name, max_turns: 0, max_tokens: 0, max_context: 777})
+        |> json_response(201)
+
+      assert %{"max_turns" => 0, "max_tokens" => 0, "max_context" => 777, "context_used" => 0} =
+               body["budget"]
+
+      for key <- [:max_turns, :max_tokens, :max_context] do
+        assert %{"error" => "could not start agent: :invalid_option"} =
+                 post_json("/api/agents", %{:name => unique("agent"), key => -1})
+                 |> json_response(422)
+      end
+
+      %{"endpoints" => endpoints} = build_conn() |> get("/api") |> json_response(200)
+      start = Enum.find(endpoints, &(&1["method"] == "POST" and &1["path"] == "/api/agents"))
+      assert start["description"] =~ "max_context"
+      assert start["description"] =~ "0 means no limit"
+      unhalt = Enum.find(endpoints, &(&1["path"] == "/api/agents/:name/unhalt"))
+      assert unhalt["description"] =~ "context"
+    end
+
     test "options of the wrong type are 422, not a silently ignored budget" do
-      for {key, value} <- [max_turns: "1", max_tokens: "100", start_idle: "false"] do
+      for {key, value} <- [
+            max_turns: "1",
+            max_tokens: "100",
+            max_context: "9",
+            start_idle: "false"
+          ] do
         name = unique("agent")
         on_exit(fn -> Nano.Ops.stop_agent(name) end)
 

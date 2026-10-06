@@ -233,10 +233,10 @@ defmodule NanoWeb.ProcessLiveTest do
     end
   end
 
-  test "the start form rejects a budget that is not a positive whole number", ctx do
+  test "the start form rejects a limit that is not a whole number, 0 or more", ctx do
     {:ok, view, _} = live(ctx.conn, "/")
 
-    for {field, value} <- [max_turns: "abc", max_tokens: "1.5", max_turns: "0", max_tokens: "-3"] do
+    for {field, value} <- [max_turns: "abc", max_tokens: "1.5", max_context: "x", max_turns: "-3"] do
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
 
@@ -245,9 +245,36 @@ defmodule NanoWeb.ProcessLiveTest do
         |> form("#start", %{:name => name, :model => ctx.model, field => value})
         |> render_submit()
 
-      assert html =~ "max turns and max tokens must be positive whole numbers"
+      assert html =~ "max turns, max tokens and max context must be whole numbers, 0 or more"
       assert Nano.Ops.agent(name) == nil
     end
+  end
+
+  test "the start form's three limits accept 0 (no limit), survive re-renders, and are passed on",
+       ctx do
+    {:ok, view, _} = live(ctx.conn, "/")
+
+    for field <- ~w(max_turns max_tokens max_context) do
+      assert has_element?(
+               view,
+               "#start input[name=#{field}][min='0'][placeholder*='0 = no limit']"
+             )
+    end
+
+    view |> form("#start", %{name: "typing", max_context: "1234"}) |> render_change()
+    send(view.pid, :refresh)
+    assert has_element?(view, "#start input[name=max_context][value='1234']")
+
+    name = unique("agent")
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+    limits = %{max_turns: "0", max_tokens: "0", max_context: "4321"}
+
+    assert {:error, {:live_redirect, _}} =
+             view
+             |> form("#start", Map.merge(%{name: name, model: ctx.model}, limits))
+             |> render_submit()
+
+    assert %{max_turns: 0, max_tokens: 0, max_context: 4321} = Nano.Ops.agent(name).budget
   end
 
   test "a suspended dashboard user does not take the page down", ctx do

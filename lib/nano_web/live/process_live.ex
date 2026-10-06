@@ -47,6 +47,7 @@ defmodule NanoWeb.ProcessLive do
         start_idle: params["start_idle"] != "false",
         max_turns: number(params["max_turns"]),
         max_tokens: number(params["max_tokens"]),
+        max_context: number(params["max_context"]),
         system_prompt: blank_to_nil(params["system_prompt"]),
         reasoning: params["reasoning"]
       ]
@@ -94,6 +95,21 @@ defmodule NanoWeb.ProcessLive do
     )
   end
 
+  defp limit_fields do
+    [
+      {"max_turns", "max turns", :agent_max_turns},
+      {"max_tokens", "max tokens", :agent_max_tokens},
+      {"max_context", "max context", :agent_max_context}
+    ]
+  end
+
+  defp placeholder(env) do
+    case Application.get_env(:nano, env) do
+      nil -> "0 = no limit"
+      default -> "default #{default}; 0 = no limit"
+    end
+  end
+
   # What the form shows selected: what was chosen, or until then the node's default (REASONING).
   defp reasoning(%{"reasoning" => level}), do: level
   defp reasoning(_), do: Application.get_env(:nano, :reasoning, "off")
@@ -125,7 +141,7 @@ defmodule NanoWeb.ProcessLive do
   defp start_error(:missing_model), do: "no model given and DEFAULT_MODEL is not set"
 
   defp start_error(:invalid_option),
-    do: "max turns and max tokens must be positive whole numbers"
+    do: "max turns, max tokens and max context must be whole numbers, 0 or more (0 = no limit)"
 
   defp start_error(reason), do: inspect(reason)
 
@@ -175,12 +191,15 @@ defmodule NanoWeb.ProcessLive do
           <button>Start</button>
           <details id="start-options" phx-mounted={keep_open()}>
             <summary>options</summary>
-            <label>
-              max turns <input type="number" name="max_turns" value={@start["max_turns"]} min="1" />
-            </label>
-            <label>
-              max tokens
-              <input type="number" name="max_tokens" value={@start["max_tokens"]} min="1" />
+            <label :for={{field, label, env} <- limit_fields()}>
+              {label}
+              <input
+                type="number"
+                name={field}
+                value={@start[field]}
+                min="0"
+                placeholder={placeholder(env)}
+              />
             </label>
             <label>
               reasoning

@@ -243,6 +243,9 @@ defmodule NanoWeb.Components do
 
   def int(n), do: txt(n)
 
+  @doc "A limit as `used / max`: a max of 0 means no limit (∞); a value the state lacks shows as –."
+  def limit(used, max), do: "#{int(used)} / #{if max == 0, do: "∞", else: int(max)}"
+
   def cost(n) when is_number(n), do: "$" <> :erlang.float_to_binary(n / 1, decimals: 4)
   def cost(nil), do: "–"
   def cost(n), do: txt(n)

@@ -23,16 +23,23 @@ defmodule NanoWeb.ApiController do
      "All agents: status, halted, suspended, model, reasoning, budget used, cost, restart count."},
     {"POST", "/api/agents",
      "Start an agent. Body: name, model (default DEFAULT_MODEL), start_idle (default true); " <>
-       "optional system_prompt, max_turns, max_tokens (positive integers) and reasoning " <>
+       "optional system_prompt; limits max_turns (model calls), max_tokens (prompt + " <>
+       "completion tokens, summed) and max_context (tokens in the conversation sent to the " <>
+       "model), each a non-negative integer where 0 means no limit, defaults AGENT_MAX_TURNS, " <>
+       "AGENT_MAX_TOKENS, AGENT_MAX_CONTEXT; and reasoning " <>
        "(how hard the model thinks before answering, a string: {reasoning_levels}; " <>
        "default REASONING, \"off\")."},
-    {"GET", "/api/agents/:name", "One agent: status, system prompt, budget, restart count."},
+    {"GET", "/api/agents/:name",
+     "One agent: status, system prompt, budget (turns, tokens and context: used and max, " <>
+       "0 = no limit), restart count."},
     {"POST", "/api/agents/:name/stop", "Terminate the agent and delete its state."},
     {"POST", "/api/agents/:name/restart",
      "Kill the agent with reason :operator_restart; it restarts with its history."},
     {"POST", "/api/agents/:name/resume", "Resume an agent suspended with :sys.suspend/1."},
     {"POST", "/api/agents/:name/unhalt",
-     "Clear a halt. halted is budget (the agent's turns or tokens), node_budget (the node-wide " <>
+     "Clear a halt. halted is budget (the agent's turns or tokens), context (its conversation " <>
+       "reached max_context; it never shrinks, so un-halting allows one more model call before " <>
+       "it halts again), node_budget (the node-wide " <>
        "hourly token cap), restart_brake (3 restarts within 60 s), start_failed (its process " <>
        "failed while starting; un-halting retries the start) or log_failed (its log could not " <>
        "be written; fix the disk first)."},
@@ -110,7 +117,10 @@ defmodule NanoWeb.ApiController do
   def start_agent(conn, params) do
     opts =
       for {key, value} <-
-            Map.take(params, ~w(model start_idle system_prompt max_turns max_tokens reasoning)),
+            Map.take(
+              params,
+              ~w(model start_idle system_prompt max_turns max_tokens max_context reasoning)
+            ),
           do: {String.to_atom(key), value}
 
     with {:ok, [name]} <- strings(params, ["name"]) do

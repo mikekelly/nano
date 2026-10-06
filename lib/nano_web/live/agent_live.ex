@@ -138,13 +138,9 @@ defmodule NanoWeb.AgentLive do
             <div>
               <dt>status</dt><dd><.status agent={@agent} /></dd>
             </div>
-            <div>
-              <dt>turns</dt>
-              <dd>{@agent.budget.turns_used} / {@agent.budget.max_turns}</dd>
-            </div>
-            <div>
-              <dt>tokens</dt>
-              <dd>{int(@agent.budget.tokens_used)} / {int(@agent.budget.max_tokens)}</dd>
+            <div :for={{label, used, max} <- limits()}>
+              <dt>{label}</dt>
+              <dd>{limit(@agent.budget[used], @agent.budget[max])}</dd>
             </div>
             <div>
               <dt>cost</dt><dd>{cost(@agent.cost)}</dd>
@@ -197,7 +193,22 @@ defmodule NanoWeb.AgentLive do
     """
   end
 
+  # Read with budget[key]: state saved before a limit existed lacks its keys.
+  defp limits do
+    [
+      {"turns", :turns_used, :max_turns},
+      {"tokens", :tokens_used, :max_tokens},
+      {"context", :context_used, :max_context}
+    ]
+  end
+
   defp halt_reason(:budget), do: "its own turn or token budget is used up"
+
+  defp halt_reason(:context),
+    do:
+      "context limit reached: the conversation sent to the model is as large as it may get " <>
+        "and never shrinks, so un-halting allows one more model call before it halts again"
+
   defp halt_reason(:node_budget), do: "the node-wide hourly token cap was reached"
   defp halt_reason(:restart_brake), do: "restart brake: it restarted 3 times within 60 s"
 
@@ -375,9 +386,10 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class="entry error">
       <.meta e={@e} label="budget exhausted">
-        scope {txt(@e["scope"])} · turns {txt(@e["turns_used"])} / {txt(@e["max_turns"])} · tokens {int(
-          @e["tokens_used"]
-        )} / {int(@e["max_tokens"])}
+        scope {txt(@e["scope"])} · turns {limit(@e["turns_used"], @e["max_turns"])} · tokens {limit(
+          @e["tokens_used"],
+          @e["max_tokens"]
+        )}<span :if={@e["context_used"]}> · context {limit(@e["context_used"], @e["max_context"])}</span>
       </.meta>
     </li>
     """

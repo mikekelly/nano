@@ -406,6 +406,7 @@ defmodule NanoWeb.AgentLiveTest do
 
     for {reason, text} <- [
           budget: "its own turn or token budget is used up",
+          context: "context limit reached",
           node_budget: "the node-wide hourly token cap was reached",
           restart_brake: "restart brake: it restarted 3 times within 60 s",
           start_failed: "failed while starting or restoring",
@@ -418,5 +419,33 @@ defmodule NanoWeb.AgentLiveTest do
       assert has_element?(view, ".flag.halted")
       assert has_element?(view, "button", "Un-halt")
     end
+  end
+
+  test "the header shows turns, tokens and context as used / max, ∞ for no limit", ctx do
+    {:ok, _} = Nano.Ops.start_agent(ctx.name, model: ctx.model, max_turns: 0, max_context: 5000)
+    {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+
+    assert html =~ ~r|<dt>turns</dt>\s*<dd>0 / ∞</dd>|
+    assert html =~ ~r|<dt>context</dt>\s*<dd>0 / 5,000</dd>|
+    tokens = NanoWeb.Components.int(Application.fetch_env!(:nano, :agent_max_tokens))
+    assert html =~ ~r|<dt>tokens</dt>\s*<dd>0 / #{tokens}</dd>|
+  end
+
+  test "an agent whose saved state predates the context limit still renders", ctx do
+    start!(ctx)
+    old = Map.drop(Nano.StateStore.get(ctx.name), [:max_context, :context_used])
+    Nano.StateStore.put(ctx.name, old)
+
+    {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert html =~ ~r|<dt>context</dt>\s*<dd>|
+
+    assert %{"budget" => %{}} =
+             build_conn() |> get("/api/agents/#{ctx.name}") |> json_response(200)
+  end
+
+  test "limit/2 renders used / max, ∞ for 0, – for a missing value" do
+    assert NanoWeb.Components.limit(12, 0) == "12 / ∞"
+    assert NanoWeb.Components.limit(2652, 3_000_000) == "2,652 / 3,000,000"
+    assert NanoWeb.Components.limit(nil, nil) == "– / –"
   end
 end
