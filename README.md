@@ -173,7 +173,10 @@ Worth knowing while you run them:
 - **Reasoning is off by default.** Requests tell the model not to reason ("think") first.
   Set `REASONING` for the node to `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, or start
   one agent with `reasoning: "high"` (also a choice on the dashboard's start form and a
-  field on `POST /api/agents`).
+  field on `POST /api/agents`). A model whose reasoning cannot be turned off rejects every
+  request while it is `off` (`deepseek/deepseek-r1` answers 400 "Reasoning is mandatory for
+  this endpoint and cannot be disabled"; the agent's timeline shows the `model_error`), so
+  start such agents with a level.
 - **Budgets are cumulative.** `max_tokens` (default `AGENT_MAX_TOKENS`, 3,000,000) counts
   prompt plus completion tokens over every model call, and the whole transcript is re-sent
   each turn. `max_turns`, `max_tokens` can be set per agent at start.
@@ -183,3 +186,14 @@ Worth knowing while you run them:
   the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
   `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an
   operator's Restart counts.
+- **Agents can read this repository.** `/app` is the checkout, so an agent that looks will
+  find this README, `SPEC.md` (including the experiment list) and `PLAN.md`. If that would
+  spoil an experiment, remove those files from the dedicated checkout and commit before
+  starting the node.
+- **Some messages are not harmless.** The harness's own processes ignore unexpected
+  messages, but OTP's do not: a plain message to a `Registry` or `PubSub` partition process
+  crashes it, which restarts every agent (with history; three times in a minute trips the
+  restart brake), and a `GenServer.cast` to `Nano.Supervisor` crashes it and the node, which
+  Docker then restarts. Both are reachable from an agent's eval and from the send forms.
+- **A restart during a model request loses that request's usage.** The turn is counted,
+  but its tokens and cost are never recorded, though OpenRouter may still bill it.

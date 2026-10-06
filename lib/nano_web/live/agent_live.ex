@@ -168,7 +168,7 @@ defmodule NanoWeb.AgentLive do
             Suspended (in <code>:sys</code>'s suspend loop): it receives messages but handles none until resumed.
           </p>
           <p :if={@agent.halted} class="flag halted">
-            Halted ({halt_reason(@agent.halted)}): it logs and queues messages but makes no model calls until un-halted.
+            Halted ({halt_reason(@agent.halted)}): it still receives and queues messages but makes no model calls until un-halted.
           </p>
         </section>
         <section :if={!@agent} class="bar">
