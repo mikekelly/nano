@@ -23,9 +23,11 @@ config :nano,
       "OPENROUTER_BASE_URL",
       if(test?, do: "http://127.0.0.1:1/unset", else: "https://openrouter.ai/api/v1")
     ),
+  # Model reasoning ("thinking") for new agents: off unless REASONING=on.
+  reasoning: env.("REASONING", "off") == "on",
   agent_max_turns: int.("AGENT_MAX_TURNS", "50"),
-  agent_max_tokens: int.("AGENT_MAX_TOKENS", "500000"),
-  node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "5000000"),
+  agent_max_tokens: int.("AGENT_MAX_TOKENS", "3000000"),
+  node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "15000000"),
   eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
   result_max_bytes: int.("RESULT_MAX_BYTES", "16000"),
   network_policy: env.("NETWORK_POLICY", "openrouter-only"),

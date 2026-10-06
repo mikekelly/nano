@@ -285,9 +285,10 @@ One image, based on the official Elixir image, running the app from source with 
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | (required) | Model access |
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
+| `REASONING` | `off` | Whether new agents ask the model to reason ("think") before answering; `on` or `off`, and settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |
 | `AGENT_MAX_TURNS` | 50 | Model calls per agent before halting |
-| `AGENT_MAX_TOKENS` | 500000 | Total tokens per agent before halting |
+| `AGENT_MAX_TOKENS` | 3000000 | Total tokens per agent before halting (prompt + completion, summed over every model call) |
 | `EVAL_TIMEOUT_MS` | 30000 | Per-eval timeout |
 | `RESULT_MAX_BYTES` | 16000 | Truncation limit for tool results and events |
 | `NETWORK_POLICY` | `openrouter-only` | Text shown in the system prompt; must match the actual network setup |

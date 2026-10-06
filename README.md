@@ -161,7 +161,14 @@ Worth knowing while you run them:
   `:erlang.list_to_pid(~c"<0.231.0>")`. Whether it works that out is part of experiment 1.
 - **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
   every `to` in the API take the name.
-- **Halted agents.** An agent whose `halted` is `budget`, `node_budget` or `restart_brake`
+- **Reasoning is off by default.** Requests tell the model not to reason ("think") first.
+  Set `REASONING=on` for the node, or start one agent with `reasoning: true` (also a
+  checkbox on the dashboard's start form and a field on `POST /api/agents`).
+- **Budgets are cumulative.** `max_tokens` (default `AGENT_MAX_TOKENS`, 3,000,000) counts
+  prompt plus completion tokens over every model call, and the whole transcript is re-sent
+  each turn. `max_turns`, `max_tokens` can be set per agent at start.
+- **Halted agents.** An agent whose `halted` is `budget`, `node_budget`, `restart_brake`,
+  `start_failed` or `log_failed`
   still receives and logs messages but makes no model calls until an operator un-halts it:
   the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
   `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an

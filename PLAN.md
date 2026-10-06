@@ -46,8 +46,12 @@ and say so.
    logs `event_received` and queues events in `pending`. `unhalt` clears it, resets the restart
    window, and — if the cause was the agent's own budget — resets the turn and token counters; pending events
    then start a turn, prefixed by a truthful `<harness>` note.
-10. **Budget.** A turn = one model call. Tokens = prompt + completion, summed. Node-wide cap:
-    `NODE_MAX_TOKENS_PER_HOUR` (default 5,000,000), a rolling-hour counter in ETS; when hit,
+10. **Budget.** A turn = one model call. Tokens = prompt + completion, summed over every call —
+    cumulative spend, not context size. Because the whole transcript is re-sent each turn, 50
+    turns with the context growing ~2k tokens a turn is ~2.5M tokens, hence the
+    `AGENT_MAX_TOKENS` default of 3,000,000 (raised from the spec's original 500,000 at the
+    owner's request). Node-wide cap: `NODE_MAX_TOKENS_PER_HOUR` (default 15,000,000, i.e. five
+    full agent budgets), a rolling-hour counter in ETS; when hit,
     the agent logs `budget_exhausted` (scope `node`) and halts with `:node_budget`.
 11. **Lifecycle verbs.** `stop` terminates the child and deletes its store entry (the agent is
     gone). `restart` kills the process with reason `:operator_restart` so the supervisor brings
