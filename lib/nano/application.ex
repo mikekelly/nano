@@ -1,30 +1,105 @@
 defmodule Nano.Application do
-  @moduledoc "Starts the node's supervision tree, records the boot set, and starts the dashboard user."
+  @moduledoc """
+  Starts the node's supervision tree, records the boot set, and starts the dashboard user.
+
+  Agents may kill anything here (the spec allows it); the tree is built so that each such kill
+  is recovered from without ending the node: every child's restart is retried for a while
+  rather than failing at once, the top supervisor tolerates many restarts, and a restarted
+  agent or user supervisor brings back what it held.
+  """
   use Application
+  require Logger
 
   @boot_set {__MODULE__, :boot_set}
 
   @impl true
   def start(_type, _args) do
-    children = [
-      {Phoenix.PubSub, name: Nano.PubSub},
-      {Registry, keys: :unique, name: Nano.Registry},
-      Nano.StateStore,
-      {Task.Supervisor, name: Nano.EvalSupervisor},
-      # Generous limits: the per-agent restart brake is the real limit (PLAN.md decision 11).
-      {DynamicSupervisor,
-       name: Nano.AgentSupervisor, strategy: :one_for_one, max_restarts: 1000, max_seconds: 60},
-      {DynamicSupervisor, name: Nano.UserSupervisor, strategy: :one_for_one},
-      NanoWeb.Endpoint
-    ]
+    children =
+      Enum.map(
+        [
+          {Phoenix.PubSub, name: Nano.PubSub},
+          {Registry, keys: :unique, name: Nano.Registry},
+          Nano.StateStore,
+          {Task.Supervisor, name: Nano.EvalSupervisor},
+          %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
+          %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
+          NanoWeb.Endpoint
+        ],
+        &retrying/1
+      )
 
-    with {:ok, sup} <-
-           Supervisor.start_link(children, strategy: :one_for_one, name: Nano.Supervisor) do
+    # Each kill of a child costs one restart; the default limit (3 in 5 s) would let a few
+    # kills of the dashboard end the whole node.
+    opts = [strategy: :one_for_one, name: Nano.Supervisor, max_restarts: 100, max_seconds: 10]
+
+    with {:ok, sup} <- Supervisor.start_link(children, opts) do
       :persistent_term.put(@boot_set, MapSet.new(Process.list()))
       # After the snapshot, so the dashboard user is listed as a process of kind "user".
       Nano.User.start("dashboard")
       {:ok, sup}
     end
+  end
+
+  # A killed child's old tree shuts down asynchronously: until it has, its names (and, for the
+  # endpoint, its port) are still taken and an immediate restart fails. Failing would make the
+  # supervisor retry in a tight loop until it gave up, ending the node; so wait and retry.
+  defp retrying(spec) do
+    %{start: start} = spec = Supervisor.child_spec(spec, [])
+    %{spec | start: {__MODULE__, :start_retrying, [start]}}
+  end
+
+  @doc false
+  # Calls the child's own start function, retrying every 50 ms for up to 5 s while it fails.
+  def start_retrying({m, f, a} = start, attempt \\ 1) do
+    case apply(m, f, a) do
+      {:error, _} when attempt < 100 ->
+        Process.sleep(50)
+        start_retrying(start, attempt + 1)
+
+      result ->
+        result
+    end
+  end
+
+  @doc """
+  Starts `Nano.AgentSupervisor`, with generous limits: the per-agent restart brake is the
+  real limit (PLAN.md decision 11). If it was killed, its agents died with it; they are
+  brought back from `Nano.StateStore`, history and all.
+  """
+  def start_agents do
+    opts = [
+      name: Nano.AgentSupervisor,
+      strategy: :one_for_one,
+      max_restarts: 1000,
+      max_seconds: 60
+    ]
+
+    with {:ok, sup} <- DynamicSupervisor.start_link(opts) do
+      best_effort(fn -> NanoAgent.revive(sup) end)
+      {:ok, sup}
+    end
+  end
+
+  @doc """
+  Starts `Nano.UserSupervisor`. If it was killed (or gave up after `Nano.Registry` was), its
+  users died with it; the dashboard's own user is started again. Other users are not.
+  """
+  def start_users do
+    with {:ok, sup} <-
+           DynamicSupervisor.start_link(name: Nano.UserSupervisor, strategy: :one_for_one) do
+      # The boot set exists only once the tree has come up the first time.
+      if :persistent_term.get(@boot_set, nil),
+        do: best_effort(fn -> Nano.User.start("dashboard") end)
+
+      {:ok, sup}
+    end
+  end
+
+  # Extra work in a start function must not fail the child it starts.
+  defp best_effort(fun) do
+    fun.()
+  catch
+    kind, reason -> Logger.error("Nano.Application: " <> Exception.format_banner(kind, reason))
   end
 
   @doc "The processes alive when the tree came up, as a `MapSet` of pids: the process view's standard set."

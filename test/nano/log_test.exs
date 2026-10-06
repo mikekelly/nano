@@ -72,4 +72,22 @@ defmodule Nano.LogTest do
     assert File.exists?(Path.join(dir, id <> ".jsonl"))
     assert [%{"reason" => "idle"}] = Nano.Log.read(id)
   end
+
+  test "a failed write is still broadcast, flagged, and logged once", %{agent: agent, id: id} do
+    Nano.Log.write(agent, :turn_ended, %{reason: "idle"})
+    path = Path.join(Application.fetch_env!(:nano, :log_dir), id <> ".jsonl")
+    File.rm!(path)
+    File.mkdir_p!(path)
+    on_exit(fn -> File.rm_rf(path) end)
+    Nano.Log.subscribe(id)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert %{seq: 2, log_error: ":eisdir"} =
+                 Nano.Log.write(agent, :turn_ended, %{reason: "x"})
+      end)
+
+    assert_receive {:nano_log, %{seq: 2, log_error: _}}
+    assert log =~ "log-test (#{id}): could not write turn_ended to the log: :eisdir"
+  end
 end

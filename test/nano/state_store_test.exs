@@ -52,4 +52,18 @@ defmodule Nano.StateStoreTest do
     StateStore.add_node_tokens(123)
     assert StateStore.node_tokens_last_hour() >= before + 123
   end
+
+  test "stray messages, casts and calls are ignored, not fatal", %{name: name} do
+    store = Process.whereis(StateStore)
+    StateStore.put(name, %{name: name})
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      send(store, :stray)
+      GenServer.cast(store, :stray)
+      assert GenServer.call(store, :stray) == {:error, :unknown_call}
+    end)
+
+    assert Process.whereis(StateStore) == store
+    assert StateStore.get(name) == %{name: name}
+  end
 end

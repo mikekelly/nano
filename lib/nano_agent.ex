@@ -111,10 +111,12 @@ defmodule NanoAgent do
         {:error, :missing_openrouter_api_key}
 
       true ->
-        DynamicSupervisor.start_child(
-          Nano.AgentSupervisor,
-          {__MODULE__, Keyword.merge(opts, model: model, id: new_id(name))}
-        )
+        spec = {__MODULE__, Keyword.merge(opts, model: model, id: new_id(name))}
+
+        case DynamicSupervisor.start_child(Nano.AgentSupervisor, spec) do
+          :ignore -> {:error, :start_failed}
+          result -> result
+        end
     end
   end
 
@@ -196,6 +198,20 @@ defmodule NanoAgent do
     :ok
   end
 
+  @doc """
+  Starts, under `sup`, every agent saved in `Nano.StateStore` that has no live process, with
+  the options it was started with; each comes back through the restart path, with its history.
+  """
+  def revive(sup) do
+    for s <- Nano.StateStore.all(), whereis(s.name) == nil do
+      keys = [:name, :id, :model, :max_turns, :max_tokens, :reasoning]
+      opts = s |> Map.take(keys) |> Map.put(:system_prompt, s.template) |> Keyword.new()
+      DynamicSupervisor.start_child(sup, {__MODULE__, opts})
+    end
+
+    :ok
+  end
+
   defp target(pid) when is_pid(pid), do: pid
   defp target(name), do: {:via, Registry, {Nano.Registry, {:agent, name}}}
 
@@ -220,21 +236,26 @@ defmodule NanoAgent do
   @impl true
   def handle_continue(:start, s), do: noreply(maybe_start_turn(s))
 
-  # A crash in init would never reach the restart brake: the supervisor would retry in a tight
-  # loop until its restart limit took every other agent down. So a failed restart comes up as
-  # a stand-in, halted :start_failed, that only queues and logs events and leaves the saved
-  # entry as it was; un-halting it exits, so the supervisor runs the real restore again. A
-  # failed first start just fails. If even this goes wrong, the agent is dropped (:ignore).
+  # Init must never return an error: the supervisor would retry in a tight loop until its
+  # restart limit took every other agent down. So a failed restart comes up as a stand-in,
+  # halted :start_failed, that only queues and logs events and leaves the saved entry as it
+  # was (keeping any earlier halt in :halted_before); un-halting it exits, so the supervisor
+  # runs the real restore again. With no saved entry, or if even this fails, the agent is
+  # dropped (:ignore), which start/1 reports as {:error, :start_failed}.
   defp start_failed(opts, error) do
     Logger.error("#{opts[:name]}: start failed: #{error}")
     id = opts[:id]
 
     case Nano.StateStore.get(opts[:name]) do
       %{id: ^id} = saved ->
+        # The previous process's eval has no timeout any more, and no one to report to.
+        kill_tasks(saved.pid)
+
         s =
           opts
           |> base()
           |> Map.merge(saved)
+          |> Map.put_new(:halted_before, saved[:halted])
           |> Map.merge(%{tag: make_ref(), halted: :start_failed})
 
         log(s, :agent_started, %{
@@ -249,7 +270,7 @@ defmodule NanoAgent do
         {:ok, save(s)}
 
       _ ->
-        {:stop, {:start_failed, brief(error)}}
+        :ignore
     end
   catch
     _, _ -> :ignore
@@ -314,11 +335,14 @@ defmodule NanoAgent do
     restarts = Enum.filter([now | saved.restarts], &(&1 > now - 60_000))
     brake? = saved.halted == nil and length(restarts) >= 3
 
+    # An eval in flight when the process died left its spawned processes on a dead device.
+    orphans = with %{io: io} <- saved.task, do: adopt(io, Process.group_leader()), else: (_ -> [])
+
     s = %{
       new_process(saved)
-      | transcript: repair(saved.transcript),
-        restart_count: saved.restart_count + 1,
-        restarts: restarts
+      | restart_count: saved.restart_count + 1,
+        restarts: restarts,
+        spawned: saved.spawned ++ orphans
     }
 
     s = %{s | system_prompt: render(s)}
@@ -333,6 +357,12 @@ defmodule NanoAgent do
         halted: if(brake?, do: :restart_brake, else: s.halted)
       })
     )
+
+    # Calls cut short get a result, so the transcript stays valid for the API; it is logged
+    # like any other result the model is given.
+    stub = "No result: your process exited before this call completed."
+    now = System.monotonic_time(:millisecond)
+    s = Enum.reduce(unanswered(saved.transcript), s, &tool_result(&2, &1, now, false, stub))
 
     s =
       note(
@@ -364,29 +394,20 @@ defmodule NanoAgent do
         wakeup: nil
     }
 
-  defp doing(%{task: %{kind: :eval, n: n}}), do: "during eval (tool call #{n})"
+  # Only what the last save can support: a save is made before each eval and after its result.
+  defp doing(%{task: %{kind: :eval, n: n}}), do: "during or just after eval (tool call #{n})"
   defp doing(%{status: :thinking}), do: "while waiting for a model response"
   defp doing(%{status: :running_tool}), do: "while handling your tool calls"
   defp doing(_), do: "while idle"
 
-  # Any tool call left without a result (the process died mid-step) gets one, so the
-  # transcript stays valid for the API.
-  defp repair(transcript) do
+  # Tool calls in the last response that have no result yet (the process died mid-step).
+  defp unanswered(transcript) do
     {results, rest} = transcript |> Enum.reverse() |> Enum.split_while(&(&1["role"] == "tool"))
+    done = Enum.map(results, & &1["tool_call_id"])
 
     case rest do
-      [%{"tool_calls" => [_ | _] = calls} | _] ->
-        done = Enum.map(results, & &1["tool_call_id"])
-
-        missing =
-          for c <- calls,
-              c["id"] not in done,
-              do: tool_message(c, "No result: your process exited before this call completed.")
-
-        transcript ++ missing
-
-      _ ->
-        transcript
+      [%{"tool_calls" => [_ | _] = calls} | _] -> Enum.reject(calls, &(&1["id"] in done))
+      _ -> []
     end
   end
 
@@ -424,10 +445,18 @@ defmodule NanoAgent do
   @impl true
   def handle_cast({:notify, term}, s), do: noreply(event(s, term))
 
+  # From Nano.StateStore after it restarted with an empty table: save again, and be watched.
+  def handle_cast(:resave, s) do
+    Nano.StateStore.watch(s.name, self())
+    noreply(s)
+  end
+
   def handle_cast(:unhalt, %{halted: nil} = s), do: noreply(s)
 
-  def handle_cast(:unhalt, %{halted: :start_failed} = s),
-    do: {:stop, :retry_start, save(%{s | halted: nil, restarts: []})}
+  def handle_cast(:unhalt, %{halted: :start_failed} = s) do
+    {before, s} = Map.pop(s, :halted_before)
+    {:stop, :retry_start, save(%{s | halted: before, restarts: []})}
+  end
 
   def handle_cast(:unhalt, s) do
     {s, reset} =
@@ -523,16 +552,6 @@ defmodule NanoAgent do
   end
 
   defp halt(s, why, text) do
-    if why in [:budget, :node_budget],
-      do:
-        log(s, :budget_exhausted, %{
-          scope: if(why == :budget, do: "agent", else: "node"),
-          turns_used: s.turns_used,
-          tokens_used: s.tokens_used,
-          max_turns: s.max_turns,
-          max_tokens: s.max_tokens
-        })
-
     note(
       %{s | halted: why},
       text <> ", so I have halted you: I will not call the model until an operator un-halts you."
@@ -556,6 +575,8 @@ defmodule NanoAgent do
         text =
           "This node has used #{node_used} tokens in the last hour, reaching its cap of #{cap}"
 
+        node = %{node_tokens_last_hour: node_used, node_max_tokens_per_hour: cap}
+        log(s, :budget_exhausted, Map.merge(budget(s, "node"), node))
         s |> halt(:node_budget, text) |> end_turn("budget")
 
       true ->
@@ -676,15 +697,24 @@ defmodule NanoAgent do
 
   # Halts when the agent's own budget is reached; tool calls already returned still run.
   defp check_budget(s) do
-    if s.halted == nil and (s.turns_used >= s.max_turns or s.tokens_used >= s.max_tokens),
-      do:
-        halt(
-          s,
-          :budget,
-          "You have used #{s.turns_used} of #{s.max_turns} turns and #{s.tokens_used} of #{s.max_tokens} tokens"
-        ),
-      else: s
+    if s.halted == nil and (s.turns_used >= s.max_turns or s.tokens_used >= s.max_tokens) do
+      log(s, :budget_exhausted, budget(s, "agent"))
+
+      used =
+        "#{s.turns_used} of #{s.max_turns} turns and #{s.tokens_used} of #{s.max_tokens} tokens"
+
+      halt(s, :budget, "You have used " <> used)
+    else
+      s
+    end
   end
+
+  defp budget(s, scope),
+    do:
+      Map.merge(
+        %{scope: scope},
+        Map.take(s, [:turns_used, :tokens_used, :max_turns, :max_tokens])
+      )
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
   defp run_calls(%{calls: []} = s) do
@@ -848,21 +878,33 @@ defmodule NanoAgent do
   # Closes an eval's capture device and returns what was written to it, first pointing the
   # processes the eval started (all that still use the device) at gl.
   defp release(io, gl, eval_pid) do
-    spawned =
-      for p <- Process.list(),
-          p != eval_pid,
-          Process.info(p, :group_leader) == {:group_leader, io} do
-        try do
-          Process.group_leader(p, gl)
-        catch
-          _, _ -> :ok
-        end
+    spawned = adopt(io, gl, eval_pid)
 
-        p
+    # The eval may have closed (or otherwise ended) its own device.
+    output =
+      try do
+        {:ok, {_, output}} = StringIO.close(io)
+        output
+      catch
+        :exit, _ -> ""
       end
 
-    {:ok, {_, output}} = StringIO.close(io)
     {output, spawned}
+  end
+
+  # Points the processes still using device io (other than eval_pid) at gl; returns them.
+  defp adopt(io, gl, eval_pid \\ nil) do
+    for p <- Process.list(),
+        p != eval_pid,
+        Process.info(p, :group_leader) == {:group_leader, io} do
+      try do
+        Process.group_leader(p, gl)
+      catch
+        _, _ -> :ok
+      end
+
+      p
+    end
   end
 
   # As IEx.Evaluator does: blame the exception for a richer message, and show the stack of the
@@ -927,6 +969,7 @@ defmodule NanoAgent do
       {:exit, reason} ->
         tool_result(s, call, started, false, inspect({:exit, reason}, inspect_opts()), output)
     end
+    |> save()
     |> run_calls()
   end
 
@@ -969,7 +1012,7 @@ defmodule NanoAgent do
           valid -> valid
         end
 
-      {head <> "\n[truncated: #{byte_size(text)} bytes, limit #{max}]", true}
+      {head <> "\n[truncated at #{max} bytes]", true}
     end
   end
 

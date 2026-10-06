@@ -23,8 +23,8 @@ config :nano,
       "OPENROUTER_BASE_URL",
       if(test?, do: "http://127.0.0.1:1/unset", else: "https://openrouter.ai/api/v1")
     ),
-  # Model reasoning ("thinking") for new agents: off unless REASONING=on.
-  reasoning: env.("REASONING", "off") == "on",
+  # Model reasoning ("thinking") for new agents: off unless REASONING is on/true/1.
+  reasoning: env.("REASONING", "off") in ["on", "true", "1"],
   agent_max_turns: int.("AGENT_MAX_TURNS", "50"),
   agent_max_tokens: int.("AGENT_MAX_TOKENS", "3000000"),
   node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "15000000"),

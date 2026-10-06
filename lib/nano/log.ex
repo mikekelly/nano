@@ -10,6 +10,8 @@ defmodule Nano.Log do
   strings, so the broadcast and the file always agree.
   """
 
+  require Logger
+
   @doc """
   Writes one entry for agent (`%{id:, name:}`) and returns it. It is broadcast even if the
   file write fails; it then carries a `log_error` field, and its seq stays used, so the file
@@ -35,11 +37,23 @@ defmodule Nano.Log do
              :ok <- File.mkdir_p(dir),
              do: File.write(Path.join(dir, id <> ".jsonl"), line, [:append])
            ) do
-        :ok -> entry
-        {:error, reason} -> Map.put(entry, :log_error, inspect(reason))
+        :ok ->
+          entry
+
+        {:error, reason} ->
+          # Also where an operator without the dashboard will see why the agent halted.
+          Logger.error("#{name} (#{id}): could not write #{type} to the log: #{inspect(reason)}")
+          Map.put(entry, :log_error, inspect(reason))
       end
 
-    Phoenix.PubSub.broadcast(Nano.PubSub, "agent:" <> id, {:nano_log, entry})
+    # The file is the record; a broadcast that fails (Nano.PubSub was killed) only costs the
+    # dashboard this entry.
+    try do
+      Phoenix.PubSub.broadcast(Nano.PubSub, "agent:" <> id, {:nano_log, entry})
+    rescue
+      ArgumentError -> :error
+    end
+
     entry
   end
 

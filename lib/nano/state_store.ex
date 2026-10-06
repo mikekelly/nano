@@ -7,26 +7,35 @@ defmodule Nano.StateStore do
   Rows: `{name, state_map}` per agent, `{{:exit, name}, pid, reason}` for the last watched
   exit, `{{:seq, id}, n}` log sequence counters, and `{{:node_tokens, minute}, n}` buckets
   for the node-wide hourly token cap. Every function but `watch/2` is a direct ETS access.
+
+  The table dies with this process. When it is restarted (someone killed it), it asks every
+  live agent to save its entry again; exit reasons, log seq counters (re-seeded from the log
+  files) and the hourly token counter start over.
   """
   use GenServer
+  require Logger
 
   @table __MODULE__
 
   @doc "Started by Nano.Application."
   def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
 
-  @doc "The stored map for an agent name, or nil."
+  @doc "The stored map for an agent name, or nil (also while the table is being recreated)."
   def get(name) do
     case :ets.lookup(@table, name) do
       [{_, map}] -> map
       [] -> nil
     end
+  rescue
+    ArgumentError -> nil
   end
 
-  @doc "Stores the map for an agent name."
+  @doc "Stores the map for an agent name. A no-op in the moment while the table is being recreated."
   def put(name, map) do
     :ets.insert(@table, {name, map})
     :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   @doc "Deletes an agent's entry, its recorded exit and its log sequence counter."
@@ -38,7 +47,11 @@ defmodule Nano.StateStore do
   end
 
   @doc "All stored agent maps."
-  def all, do: :ets.select(@table, [{{:"$1", :"$2"}, [{:is_binary, :"$1"}], [:"$2"]}])
+  def all do
+    :ets.select(@table, [{{:"$1", :"$2"}, [{:is_binary, :"$1"}], [:"$2"]}])
+  rescue
+    ArgumentError -> []
+  end
 
   @doc """
   Monitors pid and records its exit reason for the agent's next init (see `exit_reason/2`).
@@ -98,7 +111,16 @@ defmodule Nano.StateStore do
   def init(nil) do
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
     # name => {monitor_ref, pid}
-    {:ok, %{}}
+    {:ok, %{}, {:continue, :resave}}
+  end
+
+  @impl true
+  def handle_continue(:resave, watched) do
+    agents = Registry.select(Nano.Registry, [{{{:agent, :_}, :"$1", :_}, [], [:"$1"]}])
+    for pid <- agents, do: GenServer.cast(pid, :resave)
+    {:noreply, watched}
+  catch
+    _, _ -> {:noreply, watched}
   end
 
   @impl true
@@ -114,6 +136,11 @@ defmodule Nano.StateStore do
     {:reply, :ok, Map.put(watched, name, {Process.monitor(pid), pid})}
   end
 
+  def handle_call(msg, _from, watched) do
+    Logger.info("Nano.StateStore ignored call #{inspect(msg, limit: 10, printable_limit: 200)}")
+    {:reply, {:error, :unknown_call}, watched}
+  end
+
   @impl true
   def handle_info({:DOWN, ref, :process, pid, reason}, watched) do
     case Enum.find(watched, fn {_, {r, _}} -> r == ref end) do
@@ -124,6 +151,17 @@ defmodule Nano.StateStore do
       nil ->
         {:noreply, watched}
     end
+  end
+
+  # Anyone may send this process anything (the dashboard can); a crash would lose the table.
+  def handle_info(msg, watched), do: ignore(msg, watched)
+
+  @impl true
+  def handle_cast(msg, watched), do: ignore(msg, watched)
+
+  defp ignore(msg, watched) do
+    Logger.info("Nano.StateStore ignored #{inspect(msg, limit: 10, printable_limit: 200)}")
+    {:noreply, watched}
   end
 
   # Only for the process the entry belongs to: a stand-in that came up after a failed restore
