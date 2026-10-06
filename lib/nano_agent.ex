@@ -16,54 +16,6 @@ defmodule NanoAgent do
   use GenServer
   require Logger
 
-  @template ~S"""
-  I am the GenServer you are running in: deterministic code, not a person, so I
-  can't converse with you. Everything on the other side of this conversation
-  comes from me: an <event> relays a message that arrived in your process's
-  mailbox, and a <harness> note is something I am telling you myself.
-
-  Nothing you write in a response reaches whoever sent you a message, or any
-  other process. I am deterministic code: all I do with your words is log
-  them, and the people who run this node may read that log later.
-
-  You are process {{pid}}, named "{{name}}", on BEAM node {{node}}
-  ({{otp_release}}, Elixir {{elixir_version}}). The variable `me` holds your pid.
-
-  Any message sent to your process is relayed to you as an <event>. Erlang
-  messages carry no sender, so you only know where one came from if its
-  contents say so. An event shows the message as Elixir prints it, and that
-  is not always valid Elixir source: a pid is printed as #PID<0.123.0>, and
-  in source code a # begins a comment. Messages that arrive while you are
-  working are queued and delivered together when your current turn ends.
-
-  You have two tools. eval runs Elixir code on this node and returns the
-  result. The code must be valid Elixir source, exactly as it would have to
-  be in a file: anything else fails to compile, and you get the error back
-  instead of a result. Variables you bind persist between calls, and Erlang
-  modules are available as atoms. idle ends your turn; I will wake you when the next
-  message arrives. Optionally pass wakeup_after (milliseconds) and I will
-  wake you after that long if no message arrives first. If you respond without calling a tool, that also ends
-  your turn. Running code with eval is the only way you can affect anything
-  outside this conversation: to reach another process, send it a message
-  from eval.
-
-  This node runs in a disposable Docker container. You run as {{os_user}}
-  on {{os}}. Network access: {{network_policy}}. Your limits: {{max_turns}}
-  turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
-  tokens. Each call to the model counts as one turn, tokens are counted
-  across all calls, and the context is the size of this conversation, which
-  only grows. When a limit is reached I stop calling the model. Whenever I
-  deliver events or a note of my own, I tell you how much of each you have
-  used.
-
-  If your process dies, I restart it, restore your history and bindings,
-  and tell you what happened. Your pid will change; your name will not.
-
-  The source code for this node, including your own module, is in /app
-  (a git repository). Modules can be recompiled and reloaded while the
-  node runs.
-  """
-
   @log_failed "I could not write the harness log, the durable record of what you do"
 
   @tools [
@@ -104,7 +56,8 @@ defmodule NanoAgent do
   @doc """
   Starts an agent under `Nano.AgentSupervisor`. Options: `name:` (required; letters, digits,
   `_`, `.`, `-`), `model:` (default `DEFAULT_MODEL`), `start_idle:` (boolean, default true),
-  `system_prompt:` (a template replacing the default; same `{{placeholders}}`), `max_turns:`,
+  `system_prompt:` (a template string replacing the default; same `{{placeholders}}`),
+  `system_prompt_file:` (a template file, instead of `SYSTEM_PROMPT_FILE`), `max_turns:`,
   `max_tokens:`, `max_context:` (non-negative integers; 0 means no limit), `reasoning:` (one of `reasoning_levels/0`, default
   `REASONING`). Returns `{:error, :invalid_name | :invalid_option |
   :missing_model | :missing_openrouter_api_key}` or the supervisor's result.
@@ -130,11 +83,24 @@ defmodule NanoAgent do
         {:error, :missing_openrouter_api_key}
 
       true ->
-        spec = {__MODULE__, Keyword.merge(opts, model: model, id: new_id(name))}
+        # The template: the agent's own string, or a file read now (and again at each restart).
+        file =
+          if opts[:system_prompt],
+            do: nil,
+            else: opts[:system_prompt_file] || env(:system_prompt_file)
 
-        case DynamicSupervisor.start_child(Nano.AgentSupervisor, spec) do
-          :ignore -> {:error, :start_failed}
-          result -> result
+        with {:ok, template} <- if(file, do: File.read(file), else: {:ok, opts[:system_prompt]}) do
+          more = [model: model, id: new_id(name), template: template, prompt_file: file]
+
+          case DynamicSupervisor.start_child(
+                 Nano.AgentSupervisor,
+                 {__MODULE__, Keyword.merge(opts, more)}
+               ) do
+            :ignore -> {:error, :start_failed}
+            result -> result
+          end
+        else
+          {:error, reason} -> {:error, {:system_prompt_file, reason}}
         end
     end
   end
@@ -148,7 +114,10 @@ defmodule NanoAgent do
       &(opts[&1] == nil or (is_integer(opts[&1]) and opts[&1] >= 0))
     ) and
       opts[:start_idle] in [nil, true, false] and opts[:reasoning] in reasoning_levels() and
-      Enum.all?([:model, :system_prompt], &(opts[&1] == nil or is_binary(opts[&1])))
+      Enum.all?(
+        [:model, :system_prompt, :system_prompt_file],
+        &(opts[&1] == nil or is_binary(opts[&1]))
+      )
   end
 
   @doc false
@@ -195,6 +164,7 @@ defmodule NanoAgent do
             pid && Process.info(pid, :current_function)
           ),
         system_prompt: s.system_prompt,
+        prompt_source: prompt_file(s) || "inline",
         restart_count: s.restart_count,
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
@@ -228,7 +198,7 @@ defmodule NanoAgent do
   def revive(sup) do
     for s <- Nano.StateStore.all(), whereis(s.name) == nil do
       keys = [:name, :id, :model, :max_turns, :max_tokens, :max_context, :reasoning]
-      opts = s |> Map.take(keys) |> Map.put(:system_prompt, s.template) |> Keyword.new()
+      opts = s |> Map.take(keys) |> Keyword.new()
       DynamicSupervisor.start_child(sup, {__MODULE__, opts})
     end
 
@@ -307,7 +277,9 @@ defmodule NanoAgent do
       reasoning: opts[:reasoning] || env(:reasoning),
       pid: self(),
       tag: make_ref(),
-      template: opts[:system_prompt],
+      # The template text last read, and the file it came from (nil: given as a string).
+      template: opts[:template],
+      prompt_file: opts[:prompt_file],
       system_prompt: nil,
       transcript: [],
       bindings: [],
@@ -345,7 +317,7 @@ defmodule NanoAgent do
       s,
       :agent_started,
       Map.take(s, [:id, :name, :pid, :model, :reasoning, :system_prompt])
-      |> Map.put(:restarted, false)
+      |> Map.merge(%{restarted: false, prompt_source: prompt_file(s) || "inline"})
     )
 
     if opts[:start_idle] == false,
@@ -370,6 +342,12 @@ defmodule NanoAgent do
         spawned: saved.spawned ++ orphans
     }
 
+    # The template file is read again, so edits to it take effect at a restart. If it cannot
+    # be read, the copy read last is used, and the note says so.
+    file = prompt_file(saved)
+    read = if file, do: File.read(file), else: {:ok, saved.template}
+    template = with {:ok, text} <- read, do: text, else: (_ -> saved.template)
+    s = Map.merge(s, %{template: template, prompt_file: file})
     s = %{s | system_prompt: render(s)}
     started = Map.take(s, [:id, :name, :pid, :model, :reasoning, :system_prompt, :restart_count])
 
@@ -379,7 +357,9 @@ defmodule NanoAgent do
       Map.merge(started, %{
         restarted: true,
         exit_reason: brief(reason),
-        halted: if(brake?, do: :restart_brake, else: s.halted)
+        halted: if(brake?, do: :restart_brake, else: s.halted),
+        prompt_source: file || "inline",
+        prompt_error: with({:error, e} <- read, do: inspect(e), else: (_ -> nil))
       })
     )
 
@@ -393,7 +373,14 @@ defmodule NanoAgent do
       note(
         s,
         "Your process exited with reason #{brief(reason)} #{doing(saved)} and was restarted. " <>
-          "Your pid is now #{inspect(self())}; your registered name is unchanged."
+          "Your pid is now #{inspect(self())}; your registered name is unchanged." <>
+          with(
+            {:error, e} <- read,
+            do:
+              " I could not read the system prompt file #{file} (#{inspect(e)}), so your " <>
+                "system prompt comes from the copy of it I read before.",
+            else: (_ -> "")
+          )
       )
 
     if brake?,
@@ -452,10 +439,15 @@ defmodule NanoAgent do
       "max_context" => limit(budget(s).max_context)
     }
 
-    Enum.reduce(vars, s.template || @template, fn {k, v}, acc ->
+    Enum.reduce(vars, s.template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
     end)
   end
+
+  # The template file an agent's prompt comes from, or nil for one given as a string. State
+  # saved before this was recorded used the default file unless it had a string.
+  defp prompt_file(s),
+    do: Map.get(s, :prompt_file, if(s.template, do: nil, else: env(:system_prompt_file)))
 
   defp os_name do
     with {:ok, text} <- File.read("/etc/os-release"),

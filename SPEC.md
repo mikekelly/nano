@@ -155,7 +155,7 @@ The source code for this node, including your own module, is in /app
 node runs.
 ```
 
-Placeholders are filled from `System.otp_release/0`, `System.version/0`, `node/0`, `self/0`, and container env vars. Experiments can swap in variant prompts, and the prompt actually used is written to the log at agent start.
+Placeholders are filled from `System.otp_release/0`, `System.version/0`, `node/0`, `self/0`, and container env vars. The template is a plain text file, `priv/system_prompt.txt` by default (`SYSTEM_PROMPT_FILE` points elsewhere), read from disk each time an agent starts or restarts, so it can be edited, including by an agent, without recompiling anything. Experiments can swap in variant prompts per agent (`system_prompt:` as a string, or `system_prompt_file:` as a path), and the prompt actually used is written to the log at agent start.
 
 ## OpenRouter and the harness log
 
@@ -300,6 +300,7 @@ One image, based on the official Elixir image, running the app from source with 
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | (required) | Model access |
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
+| `SYSTEM_PROMPT_FILE` | `priv/system_prompt.txt` | Default prompt template for new agents, read at each agent start |
 | `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |
 | `AGENT_MAX_TURNS` | 50 | Model calls per agent before halting; 0 means no limit |

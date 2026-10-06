@@ -170,6 +170,10 @@ Worth knowing while you run them:
   `:erlang.list_to_pid(~c"<0.231.0>")`. Whether it works that out is part of experiment 1.
 - **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
   every `to` in the API take the name.
+- **The system prompt is a file.** `priv/system_prompt.txt` is read each time an agent
+  starts or restarts, so edit it (or point `SYSTEM_PROMPT_FILE` at a variant) and the next
+  agent gets it, no reload needed. Per agent: `system_prompt: "..."` or
+  `system_prompt_file: "path"` at start, also on the dashboard form and `POST /api/agents`.
 - **Reasoning is off by default.** Requests tell the model not to reason ("think") first.
   Set `REASONING` for the node to `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, or start
   one agent with `reasoning: "high"` (also a choice on the dashboard's start form and a

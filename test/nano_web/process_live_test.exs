@@ -233,6 +233,47 @@ defmodule NanoWeb.ProcessLiveTest do
     end
   end
 
+  test "the start form's prompt file survives re-renders and is passed on", ctx do
+    file = "tmp/prompt_#{System.unique_integer([:positive])}.txt"
+    File.mkdir_p!("tmp")
+    File.write!(file, "You are {{name}}, from the form's file.")
+    on_exit(fn -> File.rm(file) end)
+
+    {:ok, view, _} = live(ctx.conn, "/")
+
+    assert has_element?(
+             view,
+             "#start input[name=system_prompt_file][placeholder*='priv/system_prompt.txt']"
+           )
+
+    view |> form("#start", %{name: "typing", system_prompt_file: file}) |> render_change()
+    send(view.pid, :refresh)
+    assert has_element?(view, "#start input[name=system_prompt_file][value='#{file}']")
+
+    name = unique("agent")
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+    assert {:error, {:live_redirect, _}} =
+             view
+             |> form("#start", %{name: name, model: ctx.model, system_prompt_file: file})
+             |> render_submit()
+
+    assert Nano.Ops.agent(name).system_prompt == "You are #{name}, from the form's file."
+
+    {:ok, view, _} = live(ctx.conn, "/")
+
+    html =
+      view
+      |> form("#start", %{
+        name: unique("agent"),
+        model: ctx.model,
+        system_prompt_file: "tmp/none.txt"
+      })
+      |> render_submit()
+
+    assert html =~ "cannot read system_prompt_file: no such file or directory"
+  end
+
   test "the start form rejects a limit that is not a whole number, 0 or more", ctx do
     {:ok, view, _} = live(ctx.conn, "/")
 

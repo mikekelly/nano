@@ -198,6 +198,12 @@ defmodule NanoWeb.Components do
   @doc "Keeps a `<details>` element's open/closed state across the page's periodic re-renders."
   def keep_open, do: JS.ignore_attributes("open")
 
+  @doc "Why `NanoAgent.start/1` refused, as text: the prompt file's error in words, anything else inspected."
+  def refusal({:system_prompt_file, reason}) when is_atom(reason),
+    do: "cannot read system_prompt_file: #{:file.format_error(reason)}"
+
+  def refusal(reason), do: inspect(reason)
+
   @doc "The reasoning levels an agent can be started with, \"off\" first."
   def reasoning_levels, do: Enum.uniq(["off" | NanoAgent.reasoning_levels()])
 

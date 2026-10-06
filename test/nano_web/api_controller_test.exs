@@ -320,6 +320,36 @@ defmodule NanoWeb.ApiControllerTest do
           do: assert(start["description"] =~ inspect(l))
     end
 
+    test "system_prompt_file is passed through; a missing file is 422 with the reason" do
+      file = "tmp/prompt_#{System.unique_integer([:positive])}.txt"
+      File.mkdir_p!("tmp")
+      File.write!(file, "You are {{name}}, read from a file.")
+      on_exit(fn -> File.rm(file) end)
+      name = unique("agent")
+      on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+      assert %{"system_prompt" => "You are " <> rest} =
+               post_json("/api/agents", %{name: name, system_prompt_file: file})
+               |> json_response(201)
+
+      assert rest == "#{name}, read from a file."
+
+      assert %{
+               "error" =>
+                 "could not start agent: cannot read system_prompt_file: no such file or directory"
+             } =
+               post_json("/api/agents", %{
+                 name: unique("agent"),
+                 system_prompt_file: "tmp/no_such_prompt.txt"
+               })
+               |> json_response(422)
+
+      %{"endpoints" => endpoints} = build_conn() |> get("/api") |> json_response(200)
+      start = Enum.find(endpoints, &(&1["method"] == "POST" and &1["path"] == "/api/agents"))
+      assert start["description"] =~ "system_prompt_file"
+      assert start["description"] =~ "priv/system_prompt.txt"
+    end
+
     test "the three limits are passed through; 0 means no limit, a negative is 422" do
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)

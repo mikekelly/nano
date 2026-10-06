@@ -23,6 +23,8 @@ config :nano,
       "OPENROUTER_BASE_URL",
       if(test?, do: "http://127.0.0.1:1/unset", else: "https://openrouter.ai/api/v1")
     ),
+  # Default prompt template, read from disk each time an agent starts; relative to the app dir.
+  system_prompt_file: env.("SYSTEM_PROMPT_FILE", "priv/system_prompt.txt"),
   # Model reasoning ("thinking") effort for new agents: off, minimal, low, medium, high, xhigh or max.
   reasoning: env.("REASONING", "off"),
   agent_max_turns: int.("AGENT_MAX_TURNS", "50"),

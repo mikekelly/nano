@@ -1514,9 +1514,11 @@ defmodule NanoAgentTest do
     assert budget_line(last) =~ "Used so far: 1 of 50 turns, 110 of"
   end
 
-  test "the template in the code is the one in SPEC.md", ctx do
+  test "the default template file is the one in SPEC.md, and agents render it", ctx do
     start!(ctx)
     [_, spec] = Regex.run(~r/## System prompt.*?```\n(.*?)```/s, File.read!("SPEC.md"))
+    assert File.read!("priv/system_prompt.txt") == spec
+    assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
     pattern = spec |> Regex.escape() |> String.replace(~r/\\\{\\\{\w+\\\}\\\}/, ".+?")
     assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
 
@@ -1637,5 +1639,96 @@ defmodule NanoAgentTest do
     kill(ctx, id)
     assert delivery(List.last(request!(ctx.model)["messages"])) =~ "Your process exited"
     assert NanoAgent.info(ctx.name).system_prompt =~ "a context of #{ctx_max}\ntokens"
+  end
+
+  ## The template file
+
+  defp prompt_file(text) do
+    path = Path.join(System.tmp_dir!(), "nano_prompt_#{System.unique_integer([:positive])}.txt")
+    File.write!(path, text)
+    on_exit(fn -> File.rm(path) end)
+    path
+  end
+
+  test "SYSTEM_PROMPT_FILE and system_prompt_file: choose the template; a string still wins",
+       ctx do
+    env_file = prompt_file("from env: {{name}}")
+    saved = Application.get_env(:nano, :system_prompt_file)
+    Application.put_env(:nano, :system_prompt_file, env_file)
+    on_exit(fn -> Application.put_env(:nano, :system_prompt_file, saved) end)
+
+    {_, id} = start!(ctx)
+
+    assert %{system_prompt: "from env: " <> _, prompt_source: ^env_file} =
+             NanoAgent.info(ctx.name)
+
+    assert %{"prompt_source" => ^env_file} = await(id, :agent_started)
+
+    own = prompt_file("own file: {{name}}")
+    b = %{ctx | name: ctx.name <> "f", model: Fake.model()}
+    start!(b, system_prompt_file: own)
+    assert %{system_prompt: "own file: " <> _, prompt_source: ^own} = NanoAgent.info(b.name)
+
+    c = %{ctx | name: ctx.name <> "s", model: Fake.model()}
+    {_, id} = start!(c, system_prompt_file: own, system_prompt: "inline: {{name}}")
+    assert %{system_prompt: "inline: " <> _, prompt_source: "inline"} = NanoAgent.info(c.name)
+    assert %{"prompt_source" => "inline"} = await(id, :agent_started)
+  end
+
+  test "an edited file is read by the next start and at a restart", ctx do
+    file = prompt_file("first: {{pid}}")
+    {_, id} = start!(ctx, system_prompt_file: file)
+    assert NanoAgent.info(ctx.name).system_prompt =~ "first: "
+
+    File.write!(file, "second: {{pid}}")
+    b = %{ctx | name: ctx.name <> "b", model: Fake.model()}
+    start!(b, system_prompt_file: file)
+    assert NanoAgent.info(b.name).system_prompt =~ "second: "
+
+    # The first agent picks the edit up when it restarts.
+    Fake.push(ctx.model, text: "ok")
+    new = kill(ctx, id)
+    assert NanoAgent.info(ctx.name).system_prompt == "second: #{inspect(new)}"
+    assert text(hd(request!(ctx.model)["messages"])) == "second: #{inspect(new)}"
+  end
+
+  test "a missing or invalid template file fails the start", ctx do
+    assert NanoAgent.start(name: ctx.name, model: ctx.model, system_prompt_file: "/no/such/file") ==
+             {:error, {:system_prompt_file, :enoent}}
+
+    assert NanoAgent.start(name: ctx.name, model: ctx.model, system_prompt_file: :x) ==
+             {:error, :invalid_option}
+
+    assert NanoAgent.whereis(ctx.name) == nil
+  end
+
+  test "if the file vanishes, a restart keeps the copy read before and says so", ctx do
+    file = prompt_file("kept: {{pid}}")
+    {_, id} = start!(ctx, system_prompt_file: file)
+    File.rm!(file)
+    Fake.push(ctx.model, text: "ok")
+    new = kill(ctx, id)
+    assert NanoAgent.info(ctx.name).system_prompt == "kept: #{inspect(new)}"
+
+    assert delivery(List.last(request!(ctx.model)["messages"])) =~
+             "I could not read the system prompt file #{file} (:enoent), so your system prompt " <>
+               "comes from the copy of it I read before."
+
+    assert %{"prompt_error" => ":enoent"} = await(id, :agent_started, & &1["restarted"])
+  end
+
+  test "state saved before the template file existed still restarts, from the default file",
+       ctx do
+    {pid, id} = start!(ctx)
+    # The previous version kept no source, and nil as the template meant the built-in default.
+    old = fn s -> s |> Map.delete(:prompt_file) |> Map.put(:template, nil) end
+    :sys.replace_state(pid, old)
+    Nano.StateStore.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
+    Fake.push(ctx.model, text: "ok")
+    new = kill(ctx, id)
+    prompt = NanoAgent.info(ctx.name).system_prompt
+    assert prompt =~ "You are process #{inspect(new)}"
+    assert prompt =~ "I am the GenServer you are running in"
+    assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
   end
 end

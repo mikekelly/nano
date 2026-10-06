@@ -49,6 +49,7 @@ defmodule NanoWeb.ProcessLive do
         max_tokens: number(params["max_tokens"]),
         max_context: number(params["max_context"]),
         system_prompt: blank_to_nil(params["system_prompt"]),
+        system_prompt_file: blank_to_nil(params["system_prompt_file"]),
         reasoning: params["reasoning"]
       ]
       |> Enum.reject(fn {_, v} -> v == nil end)
@@ -143,7 +144,7 @@ defmodule NanoWeb.ProcessLive do
   defp start_error(:invalid_option),
     do: "max turns, max tokens and max context must be whole numbers, 0 or more (0 = no limit)"
 
-  defp start_error(reason), do: inspect(reason)
+  defp start_error(reason), do: NanoWeb.Components.refusal(reason)
 
   defp kind(%{kind: {:spawned_by, agent}} = assigns) do
     assigns = assign(assigns, agent: agent)
@@ -214,7 +215,17 @@ defmodule NanoWeb.ProcessLive do
               </select>
             </label>
             <label class="wide">
-              system prompt template (blank = default; same placeholders) <textarea
+              system prompt file
+              <input
+                type="text"
+                name="system_prompt_file"
+                value={@start["system_prompt_file"]}
+                placeholder={"blank = #{Application.get_env(:nano, :system_prompt_file)}; relative to the app directory; the template below wins if both are filled"}
+                autocomplete="off"
+              />
+            </label>
+            <label class="wide">
+              system prompt template (blank = the file above; same placeholders) <textarea
                 name="system_prompt"
                 rows="4"
               >{@start["system_prompt"]}</textarea>

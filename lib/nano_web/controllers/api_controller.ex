@@ -23,7 +23,9 @@ defmodule NanoWeb.ApiController do
      "All agents: status, halted, suspended, model, reasoning, budget used, cost, restart count."},
     {"POST", "/api/agents",
      "Start an agent. Body: name, model (default DEFAULT_MODEL), start_idle (default true); " <>
-       "optional system_prompt; limits max_turns (model calls), max_tokens (prompt + " <>
+       "optional system_prompt (a template string) or system_prompt_file (a template file, " <>
+       "relative to the app directory; system_prompt wins if both are given; default template: " <>
+       "SYSTEM_PROMPT_FILE, priv/system_prompt.txt); limits max_turns (model calls), max_tokens (prompt + " <>
        "completion tokens, summed) and max_context (tokens in the conversation sent to the " <>
        "model), each a non-negative integer where 0 means no limit, defaults AGENT_MAX_TURNS, " <>
        "AGENT_MAX_TOKENS, AGENT_MAX_CONTEXT; and reasoning " <>
@@ -119,7 +121,7 @@ defmodule NanoWeb.ApiController do
       for {key, value} <-
             Map.take(
               params,
-              ~w(model start_idle system_prompt max_turns max_tokens max_context reasoning)
+              ~w(model start_idle system_prompt system_prompt_file max_turns max_tokens max_context reasoning)
             ),
           do: {String.to_atom(key), value}
 
@@ -132,7 +134,11 @@ defmodule NanoWeb.ApiController do
           error(conn, 409, "agent already started: #{name}")
 
         {:error, reason} ->
-          error(conn, 422, "could not start agent: #{inspect(reason)}")
+          error(
+            conn,
+            422,
+            "could not start agent: #{NanoWeb.Components.refusal(reason)}"
+          )
       end
     else
       {:error, field} -> missing(conn, field)

@@ -15,6 +15,7 @@ services:
       - DEFAULT_MODEL
       - NODE_COOKIE
       - REASONING
+      - SYSTEM_PROMPT_FILE
       - AGENT_MAX_TURNS
       - AGENT_MAX_TOKENS
       - AGENT_MAX_CONTEXT
