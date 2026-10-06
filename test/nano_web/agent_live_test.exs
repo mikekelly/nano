@@ -96,8 +96,11 @@ defmodule NanoWeb.AgentLiveTest do
     html = view |> element("section.bar") |> render()
     assert html =~ ctx.model
     assert html =~ ~s(class="badge idle")
-    assert html =~ "3 / 50"
-    assert html =~ "2,652 / 500,000"
+    %{max_turns: max_turns, max_tokens: max_tokens} = Nano.Ops.agent(ctx.name).budget
+    assert html =~ ~r|<dt>reasoning</dt>\s*<dd>off</dd>|
+    assert html =~ "3 / #{max_turns}"
+    assert html =~ "2,652 / #{NanoWeb.Components.int(max_tokens)}"
+    assert max_tokens == Application.fetch_env!(:nano, :agent_max_tokens)
     assert html =~ "$0.0040"
     # One of the three responses had cached tokens.
     assert html =~ "33%"
@@ -338,5 +341,82 @@ defmodule NanoWeb.AgentLiveTest do
   test "an unknown agent renders a note" do
     {:ok, _view, html} = live(build_conn(), "/agents/nobody_here")
     assert html =~ ~s(No agent named &quot;nobody_here&quot; is running)
+  end
+
+  test "hostile log entries never stop the page from rendering", ctx do
+    {_pid, id} = start!(ctx)
+    agent = %{id: id, name: ctx.name}
+
+    hostile = [
+      {:tool_call, %{name: "eval", call_id: "c1", call_seq: 1, arguments: %{"code" => nil}}},
+      {:tool_call, %{name: "idle", call_id: "c2", call_seq: 2, arguments: "nonsense"}},
+      {:tool_call, %{name: %{"x" => 1}, call_id: "c3", call_seq: [1], arguments: [1, 2]}},
+      {:model_response,
+       %{
+         request_id: 9,
+         text: %{"odd" => 1},
+         reasoning: [1, %{}],
+         tool_calls: "garbage",
+         cost: "free",
+         prompt_tokens: nil,
+         cached_tokens: "x",
+         completion_tokens: %{},
+         latency_ms: nil,
+         provider: nil,
+         finish_reason: 3
+       }},
+      {:model_response,
+       %{request_id: 10, tool_calls: [%{"function" => "x"}, 5, %{"function" => %{"name" => 7}}]}},
+      {:event_received, %{event_seq: "x", message: %{"a" => [1, %{}]}, queue_length: nil}},
+      {:tool_result, %{name: nil, result: [1, %{}], io: %{"x" => 1}, ok: false}},
+      {:model_error, %{request_id: nil, status: %{}, body: [1, 2], attempt: []}},
+      {:budget_exhausted, %{scope: nil, turns_used: nil, tokens_used: "x"}},
+      {:turn_ended, %{reason: %{}}},
+      {:harness_note, %{text: nil}},
+      {:something_new, %{nested: %{"deep" => [1, 2]}}}
+    ]
+
+    for {type, fields} <- hostile, do: Nano.Log.write(agent, type, fields)
+
+    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert html =~ ~s(tool call 1: &quot;eval&quot;)
+    assert has_entry?(view, "event", ~s(%{"a" => [1, %{}]}))
+
+    # The same entries arriving live.
+    for {type, fields} <- hostile, do: Nano.Log.write(agent, type, fields)
+    await(:something_new)
+    assert render(view) =~ "something_new"
+  end
+
+  test "a suspended dashboard user does not take the page down", ctx do
+    start!(ctx)
+    user = Nano.User.pid("dashboard")
+    :sys.suspend(user)
+    on_exit(fn -> :sys.resume(user) end)
+
+    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert html =~ "The dashboard user is not responding"
+
+    assert view |> element("#send-text") |> render_submit(%{text: "hi"}) =~
+             "nothing was sent"
+  end
+
+  test "every halt reason is labelled truthfully, with Un-halt offered", ctx do
+    start!(ctx)
+
+    for {reason, text} <- [
+          budget: "its own turn or token budget is used up",
+          node_budget: "the node-wide hourly token cap was reached",
+          restart_brake: "restart brake: it restarted 3 times within 60 s",
+          start_failed: "failed while starting or restoring",
+          log_failed: "could not write its log",
+          something_else: "reason :something_else"
+        ] do
+      Nano.StateStore.put(ctx.name, %{Nano.StateStore.get(ctx.name) | halted: reason})
+      {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+      assert html =~ text
+      assert has_element?(view, ".flag.halted")
+      assert has_element?(view, "button", "Un-halt")
+    end
   end
 end

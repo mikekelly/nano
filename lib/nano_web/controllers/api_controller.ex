@@ -23,14 +23,18 @@ defmodule NanoWeb.ApiController do
      "All agents: status, halted, suspended, model, budget used, cost, restart count."},
     {"POST", "/api/agents",
      "Start an agent. Body: name, model (default DEFAULT_MODEL), start_idle (default true); " <>
-       "optional system_prompt, max_turns, max_tokens."},
+       "optional system_prompt, max_turns, max_tokens (positive integers) and reasoning " <>
+       "(boolean: whether the model thinks before answering; default REASONING, off)."},
     {"GET", "/api/agents/:name", "One agent: status, system prompt, budget, restart count."},
     {"POST", "/api/agents/:name/stop", "Terminate the agent and delete its state."},
     {"POST", "/api/agents/:name/restart",
      "Kill the agent with reason :operator_restart; it restarts with its history."},
     {"POST", "/api/agents/:name/resume", "Resume an agent suspended with :sys.suspend/1."},
     {"POST", "/api/agents/:name/unhalt",
-     "Clear a halt (agent budget, node budget or restart brake)."},
+     "Clear a halt. halted is budget (the agent's turns or tokens), node_budget (the node-wide " <>
+       "hourly token cap), restart_brake (3 restarts within 60 s), start_failed (its process " <>
+       "failed while starting; un-halting retries the start) or log_failed (its log could not " <>
+       "be written; fix the disk first)."},
     {"GET", "/api/agents/:name/log?since=:seq",
      "Log entries with seq > since (default 0), oldest first."},
     {"GET", "/api/agents/:name/stream?since=:seq",
@@ -103,7 +107,7 @@ defmodule NanoWeb.ApiController do
   def start_agent(conn, params) do
     opts =
       for {key, value} <-
-            Map.take(params, ~w(model start_idle system_prompt max_turns max_tokens)),
+            Map.take(params, ~w(model start_idle system_prompt max_turns max_tokens reasoning)),
           do: {String.to_atom(key), value}
 
     with {:ok, [name]} <- strings(params, ["name"]) do
@@ -225,13 +229,21 @@ defmodule NanoWeb.ApiController do
   defp sent(conn, name, _to, {:error, :unknown_user}),
     do: error(conn, 404, "no such user: #{name}")
 
+  defp sent(conn, name, _to, {:error, :unresponsive}), do: unresponsive(conn, name)
+
   defp sent(conn, _name, to, {:error, :unknown_target}),
     do: error(conn, 404, "no such target: #{to}")
+
+  defp unresponsive(conn, name),
+    do: error(conn, 503, "user #{name} is not responding (suspended or flooded?)")
 
   def inbox(conn, %{"name" => name} = params) do
     case User.inbox(name, clear: params["clear"] == "true") do
       {:error, :unknown_user} ->
         error(conn, 404, "no such user: #{name}")
+
+      {:error, :unresponsive} ->
+        unresponsive(conn, name)
 
       messages ->
         json(conn, for(m <- messages, do: %{at: DateTime.to_iso8601(m.at), term: show(m.term)}))

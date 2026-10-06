@@ -187,6 +187,64 @@ defmodule NanoWeb.ProcessLiveTest do
     assert html =~ "already running"
   end
 
+  test "the start form's Reasoning box is off by default, survives re-renders, and is passed on",
+       ctx do
+    {:ok, view, _} = live(ctx.conn, "/")
+    refute has_element?(view, "#start input[type=checkbox][name=reasoning][checked]")
+
+    view |> form("#start", %{name: "typing", reasoning: "true"}) |> render_change()
+    send(view.pid, :refresh)
+    assert has_element?(view, "#start input[type=checkbox][name=reasoning][checked]")
+
+    for reasoning <- [true, false] do
+      name = unique("agent")
+      on_exit(fn -> Nano.Ops.stop_agent(name) end)
+      {:ok, view, _} = live(ctx.conn, "/")
+
+      assert {:error, {:live_redirect, _}} =
+               view
+               |> form("#start", %{name: name, model: ctx.model, reasoning: to_string(reasoning)})
+               |> render_submit()
+
+      assert Nano.Ops.agent(name).reasoning == reasoning
+    end
+  end
+
+  test "the start form rejects a budget that is not a positive whole number", ctx do
+    {:ok, view, _} = live(ctx.conn, "/")
+
+    for {field, value} <- [max_turns: "abc", max_tokens: "1.5", max_turns: "0", max_tokens: "-3"] do
+      name = unique("agent")
+      on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+      html =
+        view
+        |> form("#start", %{:name => name, :model => ctx.model, field => value})
+        |> render_submit()
+
+      assert html =~ "max turns and max tokens must be positive whole numbers"
+      assert Nano.Ops.agent(name) == nil
+    end
+  end
+
+  test "a suspended dashboard user does not take the page down", ctx do
+    {name, _} = start_agent(ctx)
+    user = Nano.User.pid("dashboard")
+    :sys.suspend(user)
+    on_exit(fn -> :sys.resume(user) end)
+
+    {:ok, view, html} = live(ctx.conn, "/")
+    assert html =~ "The dashboard user is not responding"
+    view |> element("#{row(Nano.Ops.whereis(name))} button", "send") |> render_click()
+
+    html =
+      view
+      |> element("#{row(Nano.Ops.whereis(name))} form", "say")
+      |> render_submit(%{text: "hello"})
+
+    assert html =~ "not responding (suspended or flooded?); nothing was sent"
+  end
+
   test "any process row has the send form: text via say, terms via send_raw, parse errors shown",
        ctx do
     target = other_process()

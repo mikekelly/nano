@@ -45,9 +45,10 @@ defmodule NanoWeb.ProcessLive do
       [
         model: blank_to_nil(params["model"]),
         start_idle: params["start_idle"] != "false",
-        max_turns: positive(params["max_turns"]),
-        max_tokens: positive(params["max_tokens"]),
-        system_prompt: blank_to_nil(params["system_prompt"])
+        max_turns: number(params["max_turns"]),
+        max_tokens: number(params["max_tokens"]),
+        system_prompt: blank_to_nil(params["system_prompt"]),
+        reasoning: params["reasoning"] == "true"
       ]
       |> Enum.reject(fn {_, v} -> v == nil end)
 
@@ -93,6 +94,10 @@ defmodule NanoWeb.ProcessLive do
     )
   end
 
+  # Until the form is touched, the node's default (REASONING, off unless set).
+  defp reasoning?(%{"reasoning" => value}), do: value == "true"
+  defp reasoning?(_), do: Application.get_env(:nano, :reasoning, false) == true
+
   defp blank_to_nil(value) do
     case String.trim(value || "") do
       "" -> nil
@@ -100,10 +105,14 @@ defmodule NanoWeb.ProcessLive do
     end
   end
 
-  defp positive(value) do
-    case Integer.parse(String.trim(value || "")) do
-      {n, ""} when n > 0 -> n
-      _ -> nil
+  # A whole number as an integer; anything else typed is passed on as typed, for
+  # `NanoAgent.start/1` to reject as it would from the API. Blank means the default.
+  defp number(value) do
+    value = blank_to_nil(value)
+
+    case value && Integer.parse(value) do
+      {n, ""} -> n
+      _ -> value
     end
   end
 
@@ -114,6 +123,10 @@ defmodule NanoWeb.ProcessLive do
     do: "OPENROUTER_API_KEY is not set on this node"
 
   defp start_error(:missing_model), do: "no model given and DEFAULT_MODEL is not set"
+
+  defp start_error(:invalid_option),
+    do: "max turns and max tokens must be positive whole numbers"
+
   defp start_error(reason), do: inspect(reason)
 
   defp kind(%{kind: {:spawned_by, agent}} = assigns) do
@@ -168,6 +181,15 @@ defmodule NanoWeb.ProcessLive do
             <label>
               max tokens
               <input type="number" name="max_tokens" value={@start["max_tokens"]} min="1" />
+            </label>
+            <label class="check">
+              <input type="hidden" name="reasoning" value="false" />
+              <input
+                type="checkbox"
+                name="reasoning"
+                value="true"
+                checked={reasoning?(@start)}
+              /> Reasoning (the model thinks before answering)
             </label>
             <label class="wide">
               system prompt template (blank = default; same placeholders) <textarea

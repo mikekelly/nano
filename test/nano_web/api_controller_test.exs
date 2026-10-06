@@ -189,6 +189,23 @@ defmodule NanoWeb.ApiControllerTest do
       assert [] = build_conn() |> get("/api/users/#{name}/inbox") |> json_response(200)
     end
 
+    test "a user that does not answer is 503" do
+      {name, pid} = start_user()
+      :sys.suspend(pid)
+      on_exit(fn -> if Process.alive?(pid), do: :sys.resume(pid) end)
+      to = inspect(self())
+
+      assert %{"error" => "user " <> _} =
+               post_json("/api/users/#{name}/say", %{to: to, text: "x"}) |> json_response(503)
+
+      assert %{"error" => "user " <> _} =
+               post_json("/api/users/#{name}/send_raw", %{to: to, term: ":x"})
+               |> json_response(503)
+
+      assert %{"error" => "user " <> _} =
+               build_conn() |> get("/api/users/#{name}/inbox") |> json_response(503)
+    end
+
     test "unknown users and targets are 404, missing fields 422" do
       {name, _} = start_user()
       nobody = unique("nobody")
@@ -269,6 +286,27 @@ defmodule NanoWeb.ApiControllerTest do
 
       assert %{"error" => "name is required" <> _} =
                post_json("/api/agents", %{}) |> json_response(422)
+    end
+
+    test "reasoning is passed through: true, false, absent (off), and a non-boolean is 422" do
+      for {body, expected} <- [
+            {%{reasoning: true}, true},
+            {%{reasoning: false}, false},
+            {%{}, false}
+          ] do
+        name = unique("agent")
+        on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+        assert %{"reasoning" => ^expected} =
+                 post_json("/api/agents", Map.put(body, :name, name)) |> json_response(201)
+
+        assert %{"reasoning" => ^expected} =
+                 build_conn() |> get("/api/agents/#{name}") |> json_response(200)
+      end
+
+      assert %{"error" => "could not start agent: :invalid_option"} =
+               post_json("/api/agents", %{name: unique("agent"), reasoning: "yes"})
+               |> json_response(422)
     end
 
     test "options of the wrong type are 422, not a silently ignored budget" do

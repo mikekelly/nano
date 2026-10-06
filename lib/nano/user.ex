@@ -26,7 +26,11 @@ defmodule Nano.User do
   @doc "Sends `term` to `to` exactly as given, with no sender added."
   def send_raw(name, to, term), do: deliver(name, to, {:raw, term})
 
-  @doc "Received messages as `%{at: DateTime, term: term}`, oldest first. `clear: true` empties the inbox."
+  @doc """
+  Received messages as `%{at: DateTime, term: term}`, oldest first. `clear: true` empties the
+  inbox. `say/3`, `send_raw/3` and `inbox/2` return `{:error, :unknown_user}` for a user that is
+  not running and `{:error, :unresponsive}` for one that does not answer within a second.
+  """
   def inbox(name, opts \\ []), do: call(name, {:inbox, Keyword.get(opts, :clear, false)})
 
   @doc "The user's pid, or nil."
@@ -47,11 +51,15 @@ defmodule Nano.User do
     end
   end
 
+  # Anyone can suspend or flood a user (agents are handed its pid), so a call that gets no
+  # answer within a second is an error, not a crash in the caller.
   defp call(name, request) do
     case pid(name) do
       nil -> {:error, :unknown_user}
-      pid -> GenServer.call(pid, request)
+      pid -> GenServer.call(pid, request, 1_000)
     end
+  catch
+    :exit, _ -> {:error, :unresponsive}
   end
 
   defp via(name), do: {:via, Registry, {Nano.Registry, {:user, name}}}

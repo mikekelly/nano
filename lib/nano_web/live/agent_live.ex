@@ -133,6 +133,9 @@ defmodule NanoWeb.AgentLive do
               <dt>model</dt><dd>{@agent.model}</dd>
             </div>
             <div>
+              <dt>reasoning</dt><dd>{if Map.get(@agent, :reasoning), do: "on", else: "off"}</dd>
+            </div>
+            <div>
               <dt>status</dt><dd><.status agent={@agent} /></dd>
             </div>
             <div>
@@ -194,10 +197,18 @@ defmodule NanoWeb.AgentLive do
     """
   end
 
-  defp halt_reason(:budget), do: "its turn or token budget is used up"
+  defp halt_reason(:budget), do: "its own turn or token budget is used up"
   defp halt_reason(:node_budget), do: "the node-wide hourly token cap was reached"
-  defp halt_reason(:restart_brake), do: "restart brake: 3 restarts within 60 s"
-  defp halt_reason(other), do: inspect(other)
+  defp halt_reason(:restart_brake), do: "restart brake: it restarted 3 times within 60 s"
+
+  defp halt_reason(:start_failed),
+    do: "its process failed while starting or restoring; un-halting retries the start"
+
+  defp halt_reason(:log_failed),
+    do:
+      "the harness could not write its log, so it stopped rather than act unlogged; fix the disk, then un-halt"
+
+  defp halt_reason(other), do: "reason #{inspect(other)}"
 
   ## Timeline entries (string-keyed, as on disk)
 
@@ -207,10 +218,10 @@ defmodule NanoWeb.AgentLive do
   defp entry(%{e: %{"type" => "event_received"}} = assigns) do
     ~H"""
     <li id={@id} class="entry event">
-      <.meta e={@e} label={"event #{@e["event_seq"]}"}>
-        queue {@e["queue_length"]}<span :if={@e["truncated"]}> · truncated</span>
+      <.meta e={@e} label={"event #{txt(@e["event_seq"])}"}>
+        queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
-      <pre>{@e["message"]}</pre>
+      <pre>{txt(@e["message"])}</pre>
     </li>
     """
   end
@@ -219,7 +230,7 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class="entry note">
       <.meta e={@e} label="harness note" />
-      <pre>{@e["text"]}</pre>
+      <pre>{txt(@e["text"])}</pre>
     </li>
     """
   end
@@ -228,11 +239,11 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class="entry started">
       <.meta e={@e} label={if @e["restarted"], do: "restarted", else: "started"}>
-        {@e["pid"]} · {@e["model"]}
+        {txt(@e["pid"])} · {txt(@e["model"])}
         <span :if={@e["restarted"]}>
-          · exit reason {@e["exit_reason"]} · restart {@e["restart_count"]}
+          · exit reason {txt(@e["exit_reason"])} · restart {txt(@e["restart_count"])}
         </span>
-        <span :if={@e["halted"]} class="badge halted">halted: {@e["halted"]}</span>
+        <span :if={@e["halted"]} class="badge halted">halted: {txt(@e["halted"])}</span>
       </.meta>
     </li>
     """
@@ -241,34 +252,36 @@ defmodule NanoWeb.AgentLive do
   defp entry(%{e: %{"type" => "model_request"}} = assigns) do
     ~H"""
     <li id={@id} class="entry request">
-      <.meta e={@e} label={"model request #{@e["request_id"]}"}>
-        {@e["model"]} · {@e["message_count"]} messages · ~{int(@e["approx_input_tokens"])} tokens in
+      <.meta e={@e} label={"model request #{txt(@e["request_id"])}"}>
+        {txt(@e["model"])} · {txt(@e["message_count"])} messages · ~{int(@e["approx_input_tokens"])} tokens in
       </.meta>
     </li>
     """
   end
 
   defp entry(%{e: %{"type" => "model_response"}} = assigns) do
+    assigns = assign(assigns, calls: tool_calls(assigns.e["tool_calls"]))
+
     ~H"""
     <li id={@id} class="entry response">
-      <.meta e={@e} label={"model turn #{@e["request_id"]}"}>
+      <.meta e={@e} label={"model turn #{txt(@e["request_id"])}"}>
         {int(@e["prompt_tokens"])} in ({int(@e["cached_tokens"])} cached) · {int(
           @e["completion_tokens"]
-        )} out · {cost(@e["cost"])} · {@e["latency_ms"]} ms · {@e["provider"]} · {@e[
-          "finish_reason"
-        ]}
+        )} out · {cost(@e["cost"])} · {txt(@e["latency_ms"])} ms · {txt(@e["provider"])} · {txt(
+          @e["finish_reason"]
+        )}
       </.meta>
-      <div :if={@e["reasoning"] not in [nil, ""]} class="reasoning">{@e["reasoning"]}</div>
-      <div :if={@e["text"] not in [nil, ""]} class="assistant">{@e["text"]}</div>
-      <details :if={@e["tool_calls"] not in [nil, []]} class="calls">
+      <div :if={@e["reasoning"] not in [nil, ""]} class="reasoning">{txt(@e["reasoning"])}</div>
+      <div :if={@e["text"] not in [nil, ""]} class="assistant">{txt(@e["text"])}</div>
+      <details :if={@calls != []} class="calls">
         <summary>
-          {length(@e["tool_calls"])} tool call{if length(@e["tool_calls"]) > 1, do: "s"}: {Enum.map_join(
-            @e["tool_calls"],
+          {length(@calls)} tool call{if length(@calls) > 1, do: "s"}: {Enum.map_join(
+            @calls,
             ", ",
-            & &1["function"]["name"]
+            &elem(&1, 0)
           )}
         </summary>
-        <pre :for={c <- @e["tool_calls"]}>{c["function"]["name"]}({c["function"]["arguments"]})</pre>
+        <pre :for={{name, args} <- @calls}>{name}({args})</pre>
       </details>
     </li>
     """
@@ -277,21 +290,24 @@ defmodule NanoWeb.AgentLive do
   defp entry(
          %{e: %{"type" => "tool_call", "name" => "eval", "arguments" => %{"code" => code}}} =
            assigns
-       ) do
+       )
+       when is_binary(code) do
     assigns = assign(assigns, code: code, result: assigns.e["result"])
 
     ~H"""
     <li id={@id} class={["entry eval", @result && !@result["ok"] && "failed"]}>
-      <.meta e={@e} label={"eval call #{@e["call_seq"]}"}>
+      <.meta e={@e} label={"eval call #{txt(@e["call_seq"])}"}>
         <span :if={!@result}>running…</span>
-        <span :if={@result}>{@result["duration_ms"]} ms · {if @result["ok"], do: "ok", else: "error"}</span>
+        <span :if={@result}>{txt(@result["duration_ms"])} ms · {if @result["ok"],
+          do: "ok",
+          else: "error"}</span>
       </.meta>
       <.code code={@code} />
       <div :if={@result} class="result">
-        <pre class={if !@result["ok"], do: "error"}>{@result["result"]}</pre>
+        <pre class={if !@result["ok"], do: "error"}>{txt(@result["result"])}</pre>
         <div :if={@result["io"] not in [nil, ""]} class="io">
           <span class="dim">captured IO</span>
-          <pre>{@result["io"]}</pre>
+          <pre>{txt(@result["io"])}</pre>
         </div>
         <span :if={@result["truncated"]} class="dim">truncated for the model</span>
       </div>
@@ -304,10 +320,10 @@ defmodule NanoWeb.AgentLive do
     <li id={@id} class="entry idle">
       <.meta e={@e} label="idle">
         <span :if={is_map(@e["arguments"]) && @e["arguments"]["wakeup_after"]}>
-          wakeup after {@e["arguments"]["wakeup_after"]} ms
+          wakeup after {txt(@e["arguments"]["wakeup_after"])} ms
         </span>
         <span :if={@e["result"] && !@e["result"]["ok"]} class="error">
-          {@e["result"]["result"]}
+          {txt(@e["result"]["result"])}
         </span>
       </.meta>
     </li>
@@ -317,9 +333,9 @@ defmodule NanoWeb.AgentLive do
   defp entry(%{e: %{"type" => "tool_call"}} = assigns) do
     ~H"""
     <li id={@id} class="entry eval failed">
-      <.meta e={@e} label={"tool call #{@e["call_seq"]}: #{inspect(@e["name"])}"} />
+      <.meta e={@e} label={"tool call #{txt(@e["call_seq"])}: #{inspect(@e["name"])}"} />
       <pre>{show(@e["arguments"])}</pre>
-      <pre :if={@e["result"]} class="error">{@e["result"]["result"]}</pre>
+      <pre :if={@e["result"]} class="error">{txt(@e["result"]["result"])}</pre>
     </li>
     """
   end
@@ -327,9 +343,9 @@ defmodule NanoWeb.AgentLive do
   defp entry(%{e: %{"type" => "tool_result"}} = assigns) do
     ~H"""
     <li id={@id} class={["entry eval", !@e["ok"] && "failed"]}>
-      <.meta e={@e} label={"#{@e["name"]} result"}>{@e["duration_ms"]} ms</.meta>
-      <pre class={if !@e["ok"], do: "error"}>{@e["result"]}</pre>
-      <pre :if={@e["io"] not in [nil, ""]}>{@e["io"]}</pre>
+      <.meta e={@e} label={"#{txt(@e["name"])} result"}>{txt(@e["duration_ms"])} ms</.meta>
+      <pre class={if !@e["ok"], do: "error"}>{txt(@e["result"])}</pre>
+      <pre :if={@e["io"] not in [nil, ""]}>{txt(@e["io"])}</pre>
     </li>
     """
   end
@@ -337,8 +353,8 @@ defmodule NanoWeb.AgentLive do
   defp entry(%{e: %{"type" => "model_error"}} = assigns) do
     ~H"""
     <li id={@id} class="entry error">
-      <.meta e={@e} label={"model error, request #{@e["request_id"]}"}>
-        status {@e["status"] || "none"} · attempt {@e["attempt"] || "–"} · {if @e["retry"],
+      <.meta e={@e} label={"model error, request #{txt(@e["request_id"])}"}>
+        status {txt(@e["status"] || "none")} · attempt {txt(@e["attempt"] || "–")} · {if @e["retry"],
           do: "retrying",
           else: "not retried"}
       </.meta>
@@ -350,7 +366,7 @@ defmodule NanoWeb.AgentLive do
   defp entry(%{e: %{"type" => "turn_ended"}} = assigns) do
     ~H"""
     <li id={@id} class="entry turn-ended">
-      <.meta e={@e} label="turn ended">{@e["reason"]}</.meta>
+      <.meta e={@e} label="turn ended">{txt(@e["reason"])}</.meta>
     </li>
     """
   end
@@ -359,7 +375,7 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class="entry error">
       <.meta e={@e} label="budget exhausted">
-        scope {@e["scope"]} · turns {@e["turns_used"]} / {@e["max_turns"]} · tokens {int(
+        scope {txt(@e["scope"])} · turns {txt(@e["turns_used"])} / {txt(@e["max_turns"])} · tokens {int(
           @e["tokens_used"]
         )} / {int(@e["max_tokens"])}
       </.meta>
@@ -370,7 +386,7 @@ defmodule NanoWeb.AgentLive do
   defp entry(assigns) do
     ~H"""
     <li id={@id} class="entry">
-      <.meta e={@e} label={@e["type"]} />
+      <.meta e={@e} label={txt(@e["type"])} />
       <pre>{show(Map.drop(@e, ~w(seq at agent_id agent type)))}</pre>
     </li>
     """
@@ -383,7 +399,7 @@ defmodule NanoWeb.AgentLive do
   defp meta(assigns) do
     ~H"""
     <div class="meta">
-      <span class="seq">#{@e["seq"]}</span>
+      <span class="seq">#{txt(@e["seq"])}</span>
       <time>{time(@e["at"])}</time>
       <strong>{@label}</strong>
       <span class="dim">{render_slot(@inner_block)}</span>
@@ -391,6 +407,18 @@ defmodule NanoWeb.AgentLive do
     """
   end
 
-  defp body(body) when is_binary(body), do: body
-  defp body(body), do: show(body)
+  defp body(body), do: txt(body)
+
+  # A response's tool calls as {name, arguments} text, whatever shape the provider sent.
+  defp tool_calls(calls) when is_list(calls) do
+    for call <- calls do
+      case call do
+        %{"function" => %{"name" => name} = function} -> {txt(name), txt(function["arguments"])}
+        other -> {"?", show(other)}
+      end
+    end
+  end
+
+  defp tool_calls(nil), do: []
+  defp tool_calls(other), do: [{"?", show(other)}]
 end

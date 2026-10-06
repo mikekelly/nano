@@ -130,6 +130,19 @@ defmodule Nano.UserTest do
     assert_receive {:nano_user, %{dir: :received, to: ^user, term: :in, at: %DateTime{}}}
   end
 
+  test "a user that does not answer is an error for the caller, not a crash" do
+    {name, pid} = start_user()
+    :sys.suspend(pid)
+    on_exit(fn -> if Process.alive?(pid), do: :sys.resume(pid) end)
+
+    assert User.say(name, self(), "x") == {:error, :unresponsive}
+    assert User.inbox(name) == {:error, :unresponsive}
+    refute_received %{message: "x"}
+
+    :sys.resume(pid)
+    assert User.inbox(name) == []
+  end
+
   test "unknown users and targets are errors" do
     {name, _} = start_user()
     nobody = unique("nobody")

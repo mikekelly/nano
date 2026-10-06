@@ -23,7 +23,7 @@ defmodule NanoWeb.Components do
     |> refresh_inbox()
   end
 
-  @doc "Re-reads the dashboard user's inbox (newest first; nil if the user is not running)."
+  @doc "Re-reads the dashboard user's inbox (newest first; nil if the user is not running or not answering)."
   def refresh_inbox(socket) do
     inbox =
       case Nano.User.inbox(@user) do
@@ -74,6 +74,10 @@ defmodule NanoWeb.Components do
   defp result(:ok, message), do: {:ok, message}
   defp result({:error, :unknown_target}, _), do: {:error, "no such process (it may have exited)"}
   defp result({:error, :unknown_user}, _), do: {:error, "the #{@user} user is not running"}
+
+  defp result({:error, :unresponsive}, _),
+    do: {:error, "the #{@user} user is not responding (suspended or flooded?); nothing was sent"}
+
   defp result({:error, reason}, _), do: {:error, inspect(reason)}
 
   ## Components
@@ -128,7 +132,12 @@ defmodule NanoWeb.Components do
         inbox of user "dashboard" <span class="dim">{@pid && inspect(@pid)}</span>
         <button :if={@inbox not in [nil, []]} phx-click="clear_inbox" class="small">clear</button>
       </h2>
-      <p :if={@inbox == nil} class="error">The dashboard user is not running.</p>
+      <p :if={@inbox == nil} class="error">
+        {if @pid,
+          do:
+            "The dashboard user is not responding (suspended or flooded?), so its inbox cannot be read.",
+          else: "The dashboard user is not running."}
+      </p>
       <p :if={@inbox == []} class="dim">
         Nothing received yet. Messages sent with "say" carry this user's pid; in a term, use <code>Nano.User.pid("dashboard")</code>.
       </p>
@@ -209,6 +218,15 @@ defmodule NanoWeb.Components do
   def bytes(n) when n >= 1024, do: "#{Float.round(n / 1024, 1)} KB"
   def bytes(n), do: "#{n} B"
 
+  @doc """
+  Any logged value as display text: a string as it is, anything else as Elixir source. Log
+  fields can hold whatever a model or provider sent, so the pages render them through this.
+  """
+  def txt(nil), do: ""
+  def txt(value) when is_binary(value), do: value
+  def txt(value) when is_number(value) or is_atom(value), do: to_string(value)
+  def txt(value), do: show(value)
+
   def int(nil), do: "–"
 
   def int(n) when is_integer(n) do
@@ -217,11 +235,12 @@ defmodule NanoWeb.Components do
     |> String.replace(~r/\B(?=(\d{3})+$)/, ",")
   end
 
-  def int(n), do: to_string(n)
+  def int(n), do: txt(n)
 
+  def cost(n) when is_number(n), do: "$" <> :erlang.float_to_binary(n / 1, decimals: 4)
   def cost(nil), do: "–"
-  def cost(n), do: "$" <> :erlang.float_to_binary(n / 1, decimals: 4)
+  def cost(n), do: txt(n)
 
-  def percent(nil), do: "–"
-  def percent(rate), do: "#{round(rate * 100)}%"
+  def percent(rate) when is_number(rate), do: "#{round(rate * 100)}%"
+  def percent(_), do: "–"
 end

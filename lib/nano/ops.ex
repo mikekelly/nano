@@ -57,7 +57,7 @@ defmodule Nano.Ops do
     :exit, reason -> {:error, reason}
   end
 
-  @doc "Clears an agent's halt (agent budget, node budget or restart brake)."
+  @doc "Clears an agent's halt, whatever its reason (see `NanoAgent.info/1`)."
   def unhalt(name), do: with({:ok, _} <- find(name), do: NanoAgent.unhalt(name))
 
   @doc "An agent's log entries with seq > since, as read back from its JSONL file."
