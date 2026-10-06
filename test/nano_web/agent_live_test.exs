@@ -1,0 +1,340 @@
+defmodule NanoWeb.AgentLiveTest do
+  # Not async: the dashboard user's inbox is node-wide, and agents use the fake OpenRouter.
+  use ExUnit.Case, async: false
+
+  import Phoenix.ConnTest
+  import Phoenix.LiveViewTest
+
+  alias Nano.FakeOpenRouter, as: Fake
+
+  @endpoint NanoWeb.Endpoint
+
+  setup do
+    Fake.start()
+    saved = Application.get_env(:nano, :openrouter_backoff_ms)
+    Application.put_env(:nano, :openrouter_backoff_ms, 1)
+    on_exit(fn -> Application.put_env(:nano, :openrouter_backoff_ms, saved) end)
+    Nano.User.inbox("dashboard", clear: true)
+    name = "a#{System.unique_integer([:positive])}"
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+    %{model: Fake.model(), name: name, conn: build_conn()}
+  end
+
+  defp start!(ctx, opts \\ []) do
+    Fake.listen(ctx.model)
+    {:ok, pid} = Nano.Ops.start_agent(ctx.name, [model: ctx.model] ++ opts)
+    id = Nano.Ops.agent(ctx.name).id
+    Nano.Log.subscribe(id)
+    {pid, id}
+  end
+
+  # Waits for a log entry of type (from the live broadcast).
+  defp await(type, fun \\ fn _ -> true end) do
+    receive do
+      {:nano_log, %{type: ^type} = entry} ->
+        if fun.(entry), do: entry, else: await(type, fun)
+    after
+      2_000 -> flunk("no #{type} entry")
+    end
+  end
+
+  defp eventually(fun, tries \\ 100) do
+    cond do
+      fun.() -> :ok
+      tries == 0 -> flunk("condition never held")
+      true -> Process.sleep(20) && eventually(fun, tries - 1)
+    end
+  end
+
+  defp has_entry?(view, type, text),
+    do: has_element?(view, "#timeline li.#{type}", text)
+
+  # One scripted turn: an event, a model turn with an eval (code, result, IO), a final model
+  # turn with text, then turn_ended.
+  defp script_turn(ctx) do
+    Fake.push(ctx.model,
+      text: "Let me look.",
+      calls: [eval: ~s|IO.puts("hello from eval")\nEnum.sum([1, 2, 39]) # answer|],
+      usage: {1200, 30, 0},
+      cost: 0.0021
+    )
+
+    Fake.push(ctx.model, text: "The answer is 42.", usage: {1300, 12, 1100}, cost: 0.0009)
+  end
+
+  defp assert_turn_rendered(view) do
+    assert has_entry?(view, "event", "{:question, 6, 7}")
+    assert has_entry?(view, "request", "model request")
+    assert has_entry?(view, "response", "Let me look.")
+    assert has_entry?(view, "response", "1,200 in (0 cached) · 30 out · $0.0021")
+    # Tool calls collapsed inline in the model turn.
+    assert has_element?(view, "#timeline li.response details.calls summary", "1 tool call: eval")
+    # The eval: highlighted code, then result, captured IO and duration.
+    assert has_element?(view, "#timeline li.eval pre.code span.md", "IO")
+    assert has_element?(view, "#timeline li.eval pre.code span.st", ~s|"hello from eval"|)
+    assert has_element?(view, "#timeline li.eval pre.code span.cm", "# answer")
+    assert has_element?(view, "#timeline li.eval .result pre", "42")
+    assert has_element?(view, "#timeline li.eval .io pre", "hello from eval")
+    assert has_element?(view, "#timeline li.eval .meta", ~r/\d+ ms · ok/)
+    assert has_entry?(view, "response", "The answer is 42.")
+    assert has_entry?(view, "turn-ended", "no_tool_call")
+  end
+
+  test "renders the backlog: every entry type of a turn, and the header numbers", ctx do
+    {_pid, _id} = start!(ctx, start_idle: false)
+    Fake.push(ctx.model, text: "Started.")
+    await(:turn_ended)
+    script_turn(ctx)
+    NanoAgent.notify(ctx.name, {:question, 6, 7})
+    await(:turn_ended)
+
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert has_entry?(view, "started", "started")
+    assert has_entry?(view, "note", "Your process has just started.")
+    assert_turn_rendered(view)
+
+    html = view |> element("section.bar") |> render()
+    assert html =~ ctx.model
+    assert html =~ ~s(class="badge idle")
+    assert html =~ "3 / 50"
+    assert html =~ "2,652 / 500,000"
+    assert html =~ "$0.0040"
+    # One of the three responses had cached tokens.
+    assert html =~ "33%"
+
+    # The system prompt, collapsible at the top.
+    assert has_element?(
+             view,
+             "details#system-prompt pre",
+             "I am the GenServer you are running in"
+           )
+  end
+
+  test "streams entries live as they are logged", ctx do
+    {_pid, _id} = start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert has_entry?(view, "started", "started")
+    refute has_element?(view, "#timeline li.event")
+
+    # Hold the second model call so the eval can be seen before its turn ends.
+    Fake.push(ctx.model,
+      text: "Let me look.",
+      calls: [eval: ~s|IO.puts("hello from eval")\nEnum.sum([1, 2, 39]) # answer|],
+      usage: {1200, 30, 0},
+      cost: 0.0021
+    )
+
+    NanoAgent.notify(ctx.name, {:question, 6, 7})
+    await(:tool_result)
+    eventually(fn -> has_element?(view, "#timeline li.eval .result pre", "42") end)
+    eventually(fn -> has_element?(view, "section.bar .badge.thinking") end)
+
+    Fake.push(ctx.model, text: "The answer is 42.", usage: {1300, 12, 1100}, cost: 0.0009)
+    await(:turn_ended)
+    eventually(fn -> has_entry?(view, "turn-ended", "no_tool_call") end)
+    assert_turn_rendered(view)
+    eventually(fn -> view |> element("section.bar") |> render() =~ "2 / 50" end)
+  end
+
+  test "an eval in progress shows as running, then gets its result", ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    Fake.push(ctx.model, calls: [eval: "receive do :go -> :went end"])
+    NanoAgent.notify(ctx.name, :start)
+    await(:tool_call)
+    eventually(fn -> has_element?(view, "#timeline li.eval .meta", "running…") end)
+    assert has_element?(view, "section.bar .badge.running_tool")
+
+    # The eval runs in a task the agent spawned; let it finish.
+    Fake.push(ctx.model, calls: [idle: 5_000])
+
+    for %{kind: {:spawned_by, name}, pid: pid} <- Nano.Ops.processes(),
+        name == ctx.name,
+        do: send(pid, :go)
+
+    eventually(fn -> has_element?(view, "#timeline li.eval .result pre", ":went") end)
+    eventually(fn -> has_element?(view, "#timeline li.idle", "wakeup after 5000 ms") end)
+  end
+
+  test "failed evals, unknown tools, model errors and budget exhaustion", ctx do
+    start!(ctx, max_turns: 2)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    Fake.push(ctx.model, calls: [eval: ~s|raise "boom"|, bogus: %{x: 1}])
+    Fake.push(ctx.model, status: 400)
+    NanoAgent.notify(ctx.name, :go)
+    await(:turn_ended, &(&1.reason == "error"))
+
+    eventually(fn -> has_element?(view, "#timeline li.eval.failed pre.error", "boom") end)
+    assert has_element?(view, "#timeline li.eval.failed", ~s|tool call 2: "bogus"|)
+    assert has_element?(view, "#timeline li.error", "model error, request 2")
+    assert has_element?(view, "#timeline li.error", "status 400")
+
+    NanoAgent.notify(ctx.name, :again)
+    await(:budget_exhausted)
+    eventually(fn -> has_element?(view, "#timeline li.error", "budget exhausted") end)
+    assert has_element?(view, "#timeline li.error", "turns 2 / 2")
+  end
+
+  test "shows a model turn's reasoning when the entry carries one", ctx do
+    {_, id} = start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+
+    Nano.Log.write(%{id: id, name: ctx.name}, :model_response, %{
+      request_id: 1,
+      text: "Hello.",
+      reasoning: "The operator wants a greeting.",
+      tool_calls: [],
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      cached_tokens: 0,
+      cost: 0.0001
+    })
+
+    eventually(fn ->
+      has_element?(view, "#timeline li.response .reasoning", "wants a greeting")
+    end)
+
+    assert has_element?(view, "#timeline li.response .assistant", "Hello.")
+  end
+
+  test "any halt reason is flagged with Un-halt offered", ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    # A halt value this view has no special wording for still shows, with Un-halt.
+    state = Nano.StateStore.get(ctx.name)
+    Nano.StateStore.put(ctx.name, %{state | halted: :node_budget})
+    send(view.pid, :refresh)
+    assert has_element?(view, "section.bar .badge.halted", "halted: node_budget")
+    assert has_element?(view, ".flag.halted", "node-wide hourly token cap")
+    assert has_element?(view, "button", "Un-halt")
+  end
+
+  test "the send form: text via say, terms via send_raw, parse errors shown", ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    Fake.push(ctx.model, calls: [idle: nil])
+    Fake.push(ctx.model, calls: [idle: nil])
+
+    view |> element(".send form", "say") |> render_submit(%{text: "anyone home?"})
+    entry = await(:event_received)
+    assert entry.message =~ ~s(message: "anyone home?")
+    assert entry.message =~ inspect(Nano.User.pid("dashboard"))
+    await(:turn_ended)
+
+    view
+    |> element(".send form", "send term")
+    |> render_submit(%{term: ~s|{:hello, Nano.User.pid("dashboard"), "are you there?"}|})
+
+    entry = await(:event_received)
+    assert entry.message == inspect({:hello, Nano.User.pid("dashboard"), "are you there?"})
+    eventually(fn -> has_entry?(view, "event", "are you there?") end)
+
+    html = view |> element(".send form", "send term") |> render_submit(%{term: "%{oops"})
+    assert html =~ ~s(class="sent error")
+    assert html =~ "MissingError" or html =~ "SyntaxError"
+  end
+
+  test "replies that land in the dashboard user's inbox show on the page", ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+
+    Fake.push(ctx.model,
+      calls: [eval: ~s|send(Nano.User.pid("dashboard"), {:reply, "yes, I am here"})|]
+    )
+
+    Fake.push(ctx.model, calls: [idle: nil])
+
+    view
+    |> element(".send form", "send term")
+    |> render_submit(%{term: ~s|{:hello, Nano.User.pid("dashboard"), "are you there?"}|})
+
+    eventually(fn -> has_element?(view, ".inbox li pre", ~s|{:reply, "yes, I am here"}|) end)
+  end
+
+  test "a suspended agent is labelled suspended and offers Resume", ctx do
+    {pid, _} = start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    refute has_element?(view, "button", "Resume")
+
+    :sys.suspend(pid)
+    send(view.pid, :refresh)
+    assert has_element?(view, "section.bar .badge.suspended")
+    assert has_element?(view, ".flag.suspended")
+
+    view |> element("button", "Resume") |> render_click()
+    refute Nano.Ops.agent(ctx.name).suspended
+    refute has_element?(view, "button", "Resume")
+    refute has_element?(view, ".badge.suspended")
+  end
+
+  test "an agent suspended by its own eval resumes and finishes its turn", ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    Fake.push(ctx.model, calls: [eval: ":sys.suspend(me); :suspended_myself"])
+    Fake.push(ctx.model, text: "back")
+    NanoAgent.notify(ctx.name, :go)
+    eventually(fn -> Nano.Ops.agent(ctx.name).suspended end)
+    send(view.pid, :refresh)
+    view |> element("button", "Resume") |> render_click()
+    await(:turn_ended)
+    eventually(fn -> has_element?(view, "#timeline li.eval .result pre", ":suspended_myself") end)
+  end
+
+  test "a halted agent is flagged until un-halted", ctx do
+    start!(ctx, max_turns: 1)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    refute has_element?(view, "button", "Un-halt")
+    Fake.push(ctx.model, text: "one")
+    NanoAgent.notify(ctx.name, :one)
+    await(:turn_ended)
+    NanoAgent.notify(ctx.name, :two)
+    await(:budget_exhausted)
+
+    eventually(fn -> Nano.Ops.agent(ctx.name).halted == :budget end)
+    send(view.pid, :refresh)
+    assert has_element?(view, "section.bar .badge.halted", "halted: budget")
+    assert has_element?(view, ".flag.halted", "budget is used up")
+
+    Fake.push(ctx.model, text: "two")
+    view |> element("button", "Un-halt") |> render_click()
+    await(:turn_ended, &(&1.reason == "no_tool_call"))
+    eventually(fn -> not has_element?(view, ".flag.halted") end)
+    refute has_element?(view, "button", "Un-halt")
+    eventually(fn -> has_entry?(view, "note", "An operator un-halted you.") end)
+  end
+
+  test "Restart restarts the agent with its history; the timeline continues", ctx do
+    {pid, _} = start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    view |> element("button", "Restart") |> render_click()
+    await(:agent_started, & &1.restarted)
+    assert Nano.Ops.whereis(ctx.name) != pid
+    eventually(fn -> has_entry?(view, "started", "restarted") end)
+    assert has_entry?(view, "started", ":operator_restart")
+
+    eventually(fn ->
+      view |> element("section.bar") |> render() =~ ~r/restarts<\/dt>\s*<dd>1</
+    end)
+  end
+
+  test "Stop stops the agent; the page says so and follows a new agent of the same name", ctx do
+    {_, old_id} = start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    view |> element("button", "Stop") |> render_click()
+    assert Nano.Ops.agent(ctx.name) == nil
+    assert has_element?(view, ".flag.down", "it was stopped")
+    # The old timeline stays visible.
+    assert has_entry?(view, "started", "started")
+
+    {_, new_id} = start!(ctx)
+    assert new_id != old_id
+    send(view.pid, :refresh)
+    assert has_element?(view, "header", new_id)
+    refute has_element?(view, ".flag.down")
+  end
+
+  test "an unknown agent renders a note" do
+    {:ok, _view, html} = live(build_conn(), "/agents/nobody_here")
+    assert html =~ ~s(No agent named &quot;nobody_here&quot; is running)
+  end
+end
