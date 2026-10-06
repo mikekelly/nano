@@ -10,12 +10,20 @@ defmodule Nano.OpenRouter do
 
   @doc """
   `{:ok, %{message, finish_reason, usage, provider, cost}} | {:error, %{status, body}}`.
-  `messages` are OpenAI-format maps with string keys, system message first. `status` is nil
-  when no HTTP response was received.
+  `messages` are OpenAI-format maps with string keys, system message first. `reasoning`
+  turns the model's thinking on or off (OpenRouter's unified `reasoning.enabled`). `status`
+  is nil when no HTTP response was received.
   """
-  def chat(model, messages, tools) do
+  def chat(model, messages, tools, reasoning \\ false) do
     key = Application.get_env(:nano, :openrouter_api_key)
-    body = %{model: model, messages: cache(messages), tools: tools, usage: %{include: true}}
+
+    body = %{
+      model: model,
+      messages: cache(messages),
+      tools: tools,
+      usage: %{include: true},
+      reasoning: %{enabled: reasoning}
+    }
 
     opts = [json: body, auth: {:bearer, key}, retry: false, receive_timeout: 600_000]
 

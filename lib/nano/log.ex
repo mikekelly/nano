@@ -10,7 +10,11 @@ defmodule Nano.Log do
   strings, so the broadcast and the file always agree.
   """
 
-  @doc "Writes one entry for agent (`%{id:, name:}`); returns the entry."
+  @doc """
+  Writes one entry for agent (`%{id:, name:}`) and returns it. It is broadcast even if the
+  file write fails; it then carries a `log_error` field, and its seq stays used, so the file
+  shows a gap where it is missing.
+  """
   def write(%{id: id, name: name}, type, fields) do
     entry =
       fields
@@ -24,8 +28,17 @@ defmodule Nano.Log do
       |> jsonable()
 
     dir = Application.fetch_env!(:nano, :log_dir)
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, id <> ".jsonl"), [Jason.encode!(entry), ?\n], [:append])
+    line = [Jason.encode!(entry), ?\n]
+
+    entry =
+      case with(
+             :ok <- File.mkdir_p(dir),
+             do: File.write(Path.join(dir, id <> ".jsonl"), line, [:append])
+           ) do
+        :ok -> entry
+        {:error, reason} -> Map.put(entry, :log_error, inspect(reason))
+      end
+
     Phoenix.PubSub.broadcast(Nano.PubSub, "agent:" <> id, {:nano_log, entry})
     entry
   end

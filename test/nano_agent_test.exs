@@ -474,7 +474,8 @@ defmodule NanoAgentTest do
     NanoAgent.unhalt(ctx.name)
     body = request!(ctx.model)
     assert [halt, more, unhalt] = String.split(text(List.last(body["messages"])), "\n")
-    assert halt =~ "You have used 2 of 2 turns and 220 of 500000 tokens, so I have halted you"
+    max = Application.get_env(:nano, :agent_max_tokens)
+    assert halt =~ "You have used 2 of 2 turns and 220 of #{max} tokens, so I have halted you"
     assert more =~ ":more"
 
     assert unhalt ==
@@ -651,7 +652,15 @@ defmodule NanoAgentTest do
     assert NanoAgent.start(name: "bad name", model: ctx.model) == {:error, :invalid_name}
     assert NanoAgent.start(model: ctx.model) == {:error, :invalid_name}
 
-    for bad <- [[max_turns: "1"], [max_tokens: 1.5], [start_idle: "false"], [system_prompt: :x]],
+    for bad <- [
+          [max_turns: "1"],
+          [max_turns: 0],
+          [max_tokens: 0],
+          [max_tokens: 1.5],
+          [start_idle: "false"],
+          [system_prompt: :x],
+          [reasoning: "on"]
+        ],
         do:
           assert(
             NanoAgent.start([name: ctx.name, model: ctx.model] ++ bad) ==
@@ -688,10 +697,13 @@ defmodule NanoAgentTest do
              restart_count: 0,
              cost: 0,
              cache_hit_rate: nil,
-             budget: %{max_turns: 7, max_tokens: 500_000, turns_used: 0, tokens_used: 0}
+             reasoning: false,
+             budget: %{max_turns: 7, max_tokens: max_tokens, turns_used: 0, tokens_used: 0}
            } = NanoAgent.info(ctx.name)
 
-    assert {name, model} == {ctx.name, ctx.model}
+    assert {name, model, max_tokens} ==
+             {ctx.name, ctx.model, Application.get_env(:nano, :agent_max_tokens)}
+
     assert prompt == "#{ctx.name} on #{node()}, 7 turns"
     assert NanoAgent.info("nobody") == nil
   end
@@ -703,7 +715,8 @@ defmodule NanoAgentTest do
     assert prompt =~ "I am the GenServer you are running in: deterministic code, not a person"
     assert prompt =~ "(OTP #{System.otp_release()}, Elixir #{System.version()})"
     assert prompt =~ "Network access: openrouter-only."
-    assert prompt =~ "You have a budget of\n50 turns and 500000 tokens"
+    max = Application.get_env(:nano, :agent_max_tokens)
+    assert prompt =~ "You have a budget of\n50 turns and #{max} tokens"
     assert prompt =~ inspect(pid)
     assert await(id, :agent_started)["system_prompt"] == prompt
   end
@@ -732,45 +745,6 @@ defmodule NanoAgentTest do
         {:dictionary, d} <- [Process.info(t, :dictionary)],
         {_, [^pid | _]} <- [List.keyfind(d, :"$callers", 0)],
         do: t
-  end
-
-  test "a crash while restoring brings the agent back halted instead of looping the supervisor",
-       ctx do
-    sup = Process.whereis(Nano.AgentSupervisor)
-    {bystander, _} = start!(%{ctx | name: ctx.name <> "b", model: Fake.model()})
-    {pid, id} = start!(ctx)
-    Fake.push(ctx.model, text: "hi")
-    send(pid, :before)
-    request!(ctx.model)
-    await(id, :turn_ended)
-    :sys.get_state(pid)
-
-    # A saved entry restore cannot handle (as a broken edit or a bad value would).
-    Nano.StateStore.put(ctx.name, Map.delete(Nano.StateStore.get(ctx.name), :restarts))
-    Process.exit(pid, :kill)
-    started = await(id, :agent_started, &(&1["error"] != nil))
-    assert started["error"] =~ "KeyError"
-    assert started["halted"] == "restart_brake"
-    new = NanoAgent.whereis(ctx.name)
-    :sys.get_state(new)
-    assert %{halted: :restart_brake} = NanoAgent.info(ctx.name)
-    assert Process.whereis(Nano.AgentSupervisor) == sup
-    assert Process.alive?(bystander)
-
-    # It still receives and logs, and makes no model calls.
-    send(new, :after)
-    assert await(id, :event_received, &(&1["message"] == ":after"))["queue_length"] == 1
-    refute_receive {:openrouter_request, _, _}, 50
-
-    # Un-halted, it carries on from its saved history.
-    NanoAgent.unhalt(ctx.name)
-    body = request!(ctx.model)
-
-    assert [_system, _before, %{"role" => "assistant", "content" => "hi"}, last] =
-             body["messages"]
-
-    assert text(last) =~
-             ~r/^<harness>I failed while starting your process \(\*\* \(KeyError\).*so I have halted you.*<\/harness>\n<event seq="2".*:after<\/event>\n<harness>An operator un-halted you.<\/harness>$/s
   end
 
   test "a reply with neither content nor tool calls goes back as empty text", ctx do
@@ -938,26 +912,6 @@ defmodule NanoAgentTest do
     assert NanoAgent.whereis(ctx.name) == pid
   end
 
-  test "an agent whose log cannot be written still starts and works", ctx do
-    saved = Application.get_env(:nano, :log_dir)
-    Application.put_env(:nano, :log_dir, "/dev/null/logs")
-    on_exit(fn -> Application.put_env(:nano, :log_dir, saved) end)
-    Fake.listen(ctx.model)
-
-    ExUnit.CaptureLog.capture_log(fn ->
-      {:ok, pid} = NanoAgent.start(name: ctx.name, model: ctx.model)
-
-      on_exit(fn ->
-        DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
-        Nano.StateStore.delete(ctx.name)
-      end)
-
-      send(pid, :hi)
-      request!(ctx.model)
-      assert %{status: :thinking, restart_count: 0} = NanoAgent.info(ctx.name)
-    end)
-  end
-
   test "eval errors read as IEx shows them: blamed, pruned, diagnostics first", ctx do
     {pid, _id} = start!(ctx)
     module = "EvalErrors#{System.unique_integer([:positive])}"
@@ -991,5 +945,308 @@ defmodule NanoAgentTest do
 
     assert clause =~ "** (FunctionClauseError) no function clause matching in String.split/3"
     assert clause =~ "The following arguments were given to String.split/3"
+  end
+
+  ## Start failures (items 1 and 5 of fix round 2)
+
+  test "a failed first start returns an error instead of a halted agent", ctx do
+    saved = Application.get_env(:nano, :network_policy)
+    Application.delete_env(:nano, :network_policy)
+    on_exit(fn -> Application.put_env(:nano, :network_policy, saved) end)
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      assert {:error, {:start_failed, error}} = NanoAgent.start(name: ctx.name, model: ctx.model)
+      assert error =~ "network_policy"
+    end)
+
+    assert NanoAgent.whereis(ctx.name) == nil
+    assert NanoAgent.info(ctx.name) == nil
+  end
+
+  test "a failed restore comes up as a :start_failed stand-in; un-halting retries the real restore",
+       ctx do
+    sup = Process.whereis(Nano.AgentSupervisor)
+    {bystander, _} = start!(%{ctx | name: ctx.name <> "b", model: Fake.model()})
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "Process.sleep(:infinity)"])
+    send(pid, :go)
+    request!(ctx.model)
+    await(id, :tool_call)
+    :sys.get_state(pid)
+    good = Nano.StateStore.get(ctx.name)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        # An entry restore cannot handle, as a broken edit or a bad value would.
+        Nano.StateStore.put(ctx.name, %{good | transcript: :garbage})
+        Process.exit(pid, :kill)
+
+        assert await(id, :agent_started, &(&1["halted"] == "start_failed"))["error"] =~
+                 "Enumerable"
+
+        stand_in = NanoAgent.whereis(ctx.name)
+        :sys.get_state(stand_in)
+        assert %{halted: :start_failed, restart_count: 0} = NanoAgent.info(ctx.name)
+        assert Process.whereis(Nano.AgentSupervisor) == sup
+        assert Process.alive?(bystander)
+
+        # It queues and logs events and makes no model calls.
+        send(stand_in, :while_down)
+        assert await(id, :event_received, &(&1["message"] == ":while_down"))["queue_length"] == 1
+        refute_receive {:openrouter_request, _, _}, 50
+
+        # Un-halting while restore still fails: a fresh stand-in, still halted.
+        NanoAgent.unhalt(ctx.name)
+        await_nth(id, :agent_started, 3)
+        :sys.get_state(NanoAgent.whereis(ctx.name))
+        assert %{halted: :start_failed, restart_count: 0} = NanoAgent.info(ctx.name)
+
+        # Fixed, then un-halted: the real restore runs.
+        # A stand-in saves its own copy of the entry, so the fix goes into its state (as a
+        # code reload would fix the code rather than the entry).
+        :sys.replace_state(NanoAgent.whereis(ctx.name), &%{&1 | transcript: good.transcript})
+        NanoAgent.unhalt(ctx.name)
+        body = request!(ctx.model)
+        new = NanoAgent.whereis(ctx.name)
+        assert text(hd(body["messages"])) =~ "You are process #{inspect(new)}"
+        assert [_, _, %{"tool_calls" => [call]}, tool, last] = body["messages"]
+
+        assert {tool["tool_call_id"], text(tool)} ==
+                 {call["id"], "No result: your process exited before this call completed."}
+
+        # The exit it reports is the agent's own, not the stand-ins'.
+        assert text(last) =~
+                 ~r/<event seq="2".*:while_down<\/event>\n<harness>Your process exited with reason :killed during eval \(tool call 1\) and was restarted. Your pid is now #{Regex.escape(inspect(new))};/s
+
+        :sys.get_state(new)
+        assert %{halted: nil, restart_count: 1} = NanoAgent.info(ctx.name)
+      end)
+
+    assert log =~ "start failed"
+  end
+
+  test "if even the fallback fails, the agent is dropped and the supervisor survives", ctx do
+    sup = Process.whereis(Nano.AgentSupervisor)
+    {bystander, _} = start!(%{ctx | name: ctx.name <> "b", model: Fake.model()})
+    {pid, _id} = start!(ctx)
+    :sys.get_state(pid)
+    # save/1 cannot handle this, in restore and in the :start_failed fallback alike.
+    Nano.StateStore.put(ctx.name, %{Nano.StateStore.get(ctx.name) | spawned: :bad})
+    ref = Process.monitor(sup)
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      Process.exit(pid, :kill)
+      refute_receive {:DOWN, ^ref, _, _, _}, 200
+    end)
+
+    assert NanoAgent.whereis(ctx.name) == nil
+    assert DynamicSupervisor.which_children(sup) |> Enum.all?(fn {_, p, _, _} -> p != pid end)
+    assert Process.alive?(bystander)
+  end
+
+  ## The log as the durable record (item 2)
+
+  test "no model call is made when its log entry cannot be written; the agent halts :log_failed",
+       ctx do
+    {pid, id} = start!(ctx)
+    path = Path.join(Application.get_env(:nano, :log_dir), id <> ".jsonl")
+    File.rm!(path)
+    File.mkdir_p!(path)
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      send(pid, :hello)
+      # Entries are still broadcast, flagged.
+      assert_receive {:nano_log, %{type: :event_received, log_error: _}}, 1_000
+      assert_receive {:nano_log, %{type: :model_request, log_error: _}}, 1_000
+      refute_receive {:openrouter_request, _, _}, 100
+      :sys.get_state(pid)
+      assert NanoAgent.info(ctx.name).halted == :log_failed
+    end)
+
+    File.rmdir!(path)
+    Fake.push(ctx.model, text: "ok")
+    NanoAgent.unhalt(ctx.name)
+    body = request!(ctx.model)
+
+    assert text(List.last(body["messages"])) =~
+             ~r/<harness>I could not write the harness log, the durable record of what you do, so I have halted you.*<\/harness>\n<harness>An operator un-halted you.<\/harness>$/s
+  end
+
+  test "no tool runs when its log entry cannot be written", ctx do
+    {pid, id} = start!(ctx)
+    send(pid, :go)
+    request!(ctx.model)
+    path = Path.join(Application.get_env(:nano, :log_dir), id <> ".jsonl")
+    File.rm!(path)
+    File.mkdir_p!(path)
+    marker = Path.join(System.tmp_dir!(), "nano-should-not-exist-#{id}")
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      Fake.push(ctx.model, calls: [eval: ~s|File.write!(#{inspect(marker)}, "x")|, eval: "1"])
+      assert_receive {:nano_log, %{type: :turn_ended, reason: "error"}}, 1_000
+    end)
+
+    refute File.exists?(marker)
+    refute_receive {:openrouter_request, _, _}, 50
+    assert %{halted: :log_failed} = NanoAgent.info(ctx.name)
+
+    assert Nano.StateStore.get(ctx.name).transcript
+           |> Enum.filter(&(&1["role"] == "tool"))
+           |> Enum.map(& &1["content"]) ==
+             List.duplicate("Not run: the harness log could not be written.", 2)
+
+    File.rmdir!(path)
+  end
+
+  ## Eval error formatting (item 6)
+
+  test "eval errors keep the model's frames and name the file of a compile error", ctx do
+    {pid, _id} = start!(ctx)
+    n = System.unique_integer([:positive])
+    file = Path.join(System.tmp_dir!(), "nano_bad_#{n}.exs")
+    File.write!(file, "x = 1\nIO.puts(y)\n")
+    on_exit(fn -> File.rm(file) end)
+
+    nested = """
+    defmodule Outer#{n} do
+      def wrap(code), do: code |> Code.eval_string() |> elem(0)
+    end
+    Outer#{n}.wrap("raise \\"inner\\"")
+    """
+
+    compiled =
+      ~s|Code.compile_string("defmodule Nested#{n} do\\n def f, do: undefined_thing\\nend")|
+
+    Fake.push(ctx.model,
+      calls: [
+        eval: nested,
+        eval: "Code.compile_file(#{inspect(file)})",
+        eval: "1 +",
+        eval: compiled
+      ]
+    )
+
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+    request!(ctx.model)
+    [nested, from_file, syntax, compiled] = tool_texts(request!(ctx.model))
+
+    # (i) a model function that calls Code.eval_string keeps its frame
+    assert nested =~ "** (RuntimeError) inner"
+    assert nested =~ "Outer#{n}.wrap/1"
+
+    # (ii) a compile error in a file names the file
+    assert from_file =~ "** (CompileError) #{file}"
+    assert from_file =~ ~s|error: undefined variable "y" (#{Path.relative_to_cwd(file)}:2)|
+
+    # (iii) syntax errors show no harness frames
+    assert syntax =~ "** (TokenMissingError)"
+    refute syntax =~ "Code."
+
+    # (iv) nested compilation shows no compiler internals
+    assert compiled =~ "** (CompileError)"
+    assert compiled =~ ~s|error: undefined variable "undefined_thing" (line 2)|
+
+    for text <- [nested, from_file, syntax, compiled],
+        internal <-
+          ~w(NanoAgent Task.Supervised elixir_expand elixir_module elixir_compiler erl_eval),
+        do: refute(text =~ internal, "#{internal} in:\n#{text}")
+  end
+
+  ## Evals that do not return (item 7)
+
+  test "a timed-out eval reports what it printed and the processes it started", ctx do
+    Application.put_env(:nano, :eval_timeout_ms, 100)
+    {pid, id} = start!(ctx)
+
+    code =
+      ~s|spawn(fn -> receive do {:w, to} -> send(to, {:w, IO.write("")}) end end); IO.puts("partial"); Process.sleep(:infinity)|
+
+    Fake.push(ctx.model, calls: [eval: code])
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+    request!(ctx.model)
+
+    assert tool_texts(request!(ctx.model)) == [
+             "Timeout: the eval was killed after 100 ms.\n\nCaptured IO:\npartial\n"
+           ]
+
+    assert %{"io" => "partial\n"} = await(id, :tool_result)
+    :sys.get_state(pid)
+    assert [child] = Nano.StateStore.get(ctx.name).spawned
+    send(child, {:w, self()})
+    assert_receive {:w, :ok}
+  end
+
+  ## Mutation gaps (item 10)
+
+  test "a failed request that uses the last turn halts the agent", ctx do
+    {pid, id} = start!(ctx, max_turns: 1)
+    Fake.push(ctx.model, status: 400)
+    send(pid, :go)
+    request!(ctx.model)
+    assert await(id, :turn_ended)["reason"] == "error"
+    assert %{"scope" => "agent", "turns_used" => 1} = await(id, :budget_exhausted)
+    :sys.get_state(pid)
+    assert NanoAgent.info(ctx.name).halted == :budget
+  end
+
+  test "processes started by an eval that raises are tracked", ctx do
+    {pid, id} = start!(ctx)
+
+    Fake.push(ctx.model,
+      calls: [eval: ~s|spawn(fn -> Process.sleep(:infinity) end); raise "after spawning"|]
+    )
+
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    assert [child] = Nano.StateStore.get(ctx.name).spawned
+    Process.exit(child, :kill)
+  end
+
+  test "a model response is saved before its tool calls are handled", ctx do
+    {pid, id} = start!(ctx)
+    send(pid, :go)
+    request!(ctx.model)
+    # Make handling the response crash after it has been accounted (truncate reads this).
+    saved = Application.get_env(:nano, :result_max_bytes)
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      Application.delete_env(:nano, :result_max_bytes)
+      Fake.push(ctx.model, calls: [idle: nil])
+      await(id, :agent_started, & &1["restarted"])
+      Application.put_env(:nano, :result_max_bytes, saved)
+    end)
+
+    body = request!(ctx.model)
+    assert [_, _, %{"tool_calls" => [_]}, %{"role" => "tool"}, note] = body["messages"]
+    assert text(note) =~ "while handling your tool calls"
+    assert %{budget: %{tokens_used: 110}} = NanoAgent.info(ctx.name)
+  end
+
+  ## Reasoning switch
+
+  test "the reasoning switch is sent on every request and survives a restart", ctx do
+    for {opts, expected} <- [
+          {[reasoning: true], true},
+          {[reasoning: false], false},
+          {[], Application.get_env(:nano, :reasoning)}
+        ] do
+      ctx = %{ctx | name: "#{ctx.name}r#{expected}#{length(opts)}", model: Fake.model()}
+      {pid, id} = start!(ctx, opts)
+      send(pid, :go)
+      assert request!(ctx.model)["reasoning"] == %{"enabled" => expected}
+      assert NanoAgent.info(ctx.name).reasoning == expected
+      assert await(id, :agent_started)["reasoning"] == expected
+
+      if opts == [reasoning: true] do
+        kill(ctx, id)
+        assert request!(ctx.model)["reasoning"] == %{"enabled" => true}
+      end
+    end
   end
 end

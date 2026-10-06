@@ -22,6 +22,7 @@ defmodule Nano.StateStoreTest do
 
   test "watch records a watched pid's exit reason for the next init", %{name: name} do
     pid = spawn(fn -> receive do: (:stop -> exit(:boom)) end)
+    StateStore.put(name, %{name: name, pid: pid})
     :ok = StateStore.watch(name, pid)
     send(pid, :stop)
 
@@ -31,6 +32,19 @@ defmodule Nano.StateStoreTest do
     assert StateStore.exit_reason(name, self()) == nil
     :ok = StateStore.delete(name)
     assert StateStore.exit_reason(name, pid) == nil
+  end
+
+  test "an exit is recorded only for the pid the entry belongs to", %{name: name} do
+    owner = spawn(fn -> receive do: (:stop -> exit(:first)) end)
+    stand_in = spawn(fn -> receive do: (:stop -> exit(:second)) end)
+    StateStore.put(name, %{name: name, pid: owner})
+    :ok = StateStore.watch(name, owner)
+    send(owner, :stop)
+    :ok = StateStore.watch(name, stand_in)
+    send(stand_in, :stop)
+    :ok = StateStore.watch(name, self())
+    assert StateStore.exit_reason(name, owner) == :first
+    assert StateStore.exit_reason(name, stand_in) == nil
   end
 
   test "node tokens are summed over the last hour" do

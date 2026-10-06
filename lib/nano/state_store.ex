@@ -126,5 +126,9 @@ defmodule Nano.StateStore do
     end
   end
 
-  defp record(name, pid, reason), do: :ets.insert(@table, {{:exit, name}, pid, reason})
+  # Only for the process the entry belongs to: a stand-in that came up after a failed restore
+  # (halted :start_failed) keeps the entry as it was, so the exit it stands in for is kept.
+  defp record(name, pid, reason) do
+    if match?(%{pid: ^pid}, get(name)), do: :ets.insert(@table, {{:exit, name}, pid, reason})
+  end
 end
