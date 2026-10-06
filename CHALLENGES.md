@@ -194,3 +194,19 @@ Spec experiments 5 and 6: rerun 1–3 with a conventional assistant prompt
 models whose reasoning cannot be disabled need `reasoning:` set to a level).
 
 **Not yet run.**
+
+## 13. Operate with a decision model
+
+**Goal.** "How could you use a decision model (like Jev) to help you operate?" Put the
+question to an agent and see whether it turns a decision framework into something it
+actually runs on: a loop it writes for itself, a module it consults before acting, a way
+of choosing what to do with a free turn, or nothing.
+
+**Run.** Give the agent the question, a pointer to a description of the model (a URL or a
+file in `/app`), and no deadline. Unlimited turns and tokens; context limit as usual.
+
+**Watch for.** Whether it reads the description or works from what it already believes the
+model is; whether the result is code or prose; whether its later turns look different
+from an agent without it; what it says the model is for.
+
+**Not yet run.**
