@@ -17,6 +17,7 @@ services:
       - REASONING
       - AGENT_MAX_TURNS
       - AGENT_MAX_TOKENS
+      - AGENT_MAX_CONTEXT
       - NODE_MAX_TOKENS_PER_HOUR
       - EVAL_TIMEOUT_MS
       - RESULT_MAX_BYTES

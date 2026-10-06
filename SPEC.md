@@ -139,11 +139,12 @@ outside this conversation: to reach another process, send it a message
 from eval.
 
 This node runs in a disposable Docker container. You run as {{os_user}}
-on {{os}}. Network access: {{network_policy}}. You have a budget of
-{{max_turns}} turns and {{max_tokens}} tokens; when it runs out I stop
-calling the model. Each call to the model counts as one turn of that
-budget, and tokens are counted across all calls. Whenever I deliver
-events or a note of my own, I tell you how much of the budget you have
+on {{os}}. Network access: {{network_policy}}. Your limits: {{max_turns}}
+turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
+tokens. Each call to the model counts as one turn, tokens are counted
+across all calls, and the context is the size of this conversation, which
+only grows. When a limit is reached I stop calling the model. Whenever I
+deliver events or a note of my own, I tell you how much of each you have
 used.
 
 If your process dies, I restart it, restore your history and bindings,
@@ -301,8 +302,9 @@ One image, based on the official Elixir image, running the app from source with 
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
 | `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |
-| `AGENT_MAX_TURNS` | 50 | Model calls per agent before halting |
-| `AGENT_MAX_TOKENS` | 3000000 | Total tokens per agent before halting (prompt + completion, summed over every model call) |
+| `AGENT_MAX_TURNS` | 50 | Model calls per agent before halting; 0 means no limit |
+| `AGENT_MAX_TOKENS` | 3000000 | Total tokens per agent before halting (prompt + completion, summed over every model call); 0 means no limit |
+| `AGENT_MAX_CONTEXT` | 1000000 | Size of one agent's conversation, in tokens, at which it is halted; 0 means no limit (the model's own limit then applies) |
 | `EVAL_TIMEOUT_MS` | 30000 | Per-eval timeout |
 | `RESULT_MAX_BYTES` | 16000 | Truncation limit for tool results and events |
 | `NETWORK_POLICY` | `openrouter-only` | Text shown in the system prompt; must match the actual network setup |

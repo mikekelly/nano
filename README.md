@@ -177,9 +177,12 @@ Worth knowing while you run them:
   request while it is `off` (`deepseek/deepseek-r1` answers 400 "Reasoning is mandatory for
   this endpoint and cannot be disabled"; the agent's timeline shows the `model_error`), so
   start such agents with a level.
-- **Budgets are cumulative.** `max_tokens` (default `AGENT_MAX_TOKENS`, 3,000,000) counts
-  prompt plus completion tokens over every model call, and the whole transcript is re-sent
-  each turn. `max_turns`, `max_tokens` can be set per agent at start.
+- **Three limits per agent, each settable at start, each 0 for no limit.** `max_turns`
+  (default 50) counts model calls. `max_tokens` (default 3,000,000) is cumulative: prompt
+  plus completion tokens over every call, with the whole transcript re-sent each turn.
+  `max_context` (default 1,000,000) is the size of the conversation itself; nothing trims
+  it, so this is where an otherwise unlimited agent stops. With turns and tokens unlimited,
+  the node-wide hourly cap and the limit on your OpenRouter key are the only spend controls.
 - **Halted agents.** An agent whose `halted` is `budget`, `node_budget`, `restart_brake`,
   `start_failed` or `log_failed`
   still receives and logs messages but makes no model calls until an operator un-halts it:
