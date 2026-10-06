@@ -69,9 +69,12 @@ and say so.
     `./data` volume at `/data`, and uses `restart: unless-stopped`. Container name `nano`.
     Cookie: generated into a file at build; `NODE_COOKIE` overrides; the entrypoint and
     `bin/shell` / `bin/rpc` all resolve it the same way.
-16. **Only the orchestrator commits**, at stage boundaries, and pushes to `origin`
-    (github.com/mikekelly/lolwut, private). Working agents never run git write commands, so
-    parallel agents cannot fight over the index. End-to-end checks that need a dedicated
+16. **Commits.** Work is committed as it lands and pushed to `origin`
+    (github.com/mikekelly/lolwut, private). Agents sharing the main working tree (stages 1–2)
+    do not run git write commands — the orchestrator commits their work at the stage boundary,
+    so parallel agents cannot sweep up each other's half-written files. Agents from stage 3 on
+    work in their own git worktree and commit there on a branch; the orchestrator merges to
+    `main` and pushes. End-to-end checks that need a dedicated
     committed `/app` make a throwaway clone under `~/.cache/` (colima only shares `/Users/mike`).
 
 ## Contracts (what parallel work codes against)
