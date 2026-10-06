@@ -99,7 +99,7 @@ form.start h2 { margin: 0; }
 form.start details { flex-basis: 100%; }
 form.start details label { display: inline-block; margin: 0.3rem 1rem 0 0; }
 form.start details label.wide { display: block; }
-form.start textarea { width: 100%; display: block; }
+form.start textarea, form.start label.wide input { width: 100%; display: block; }
 form.start input[type="number"] { width: 8rem; }
 form.start .error { flex-basis: 100%; margin: 0; }
 
@@ -197,6 +197,31 @@ ol.timeline.reading .r { margin: 0.9rem 0; }
   max-width: 78ch;
 }
 .r details.reasoning .prose { color: var(--dim); font-style: italic; font-size: 14px; }
+/* The model's words: a bot glyph and a speech bubble whose tail points at it. */
+.r.says { display: flex; gap: 0.7rem; align-items: flex-start; }
+.r.says .bot { flex: none; margin-top: 0.4rem; color: var(--thinking); }
+.r.says .bubble {
+  position: relative;
+  min-width: 0;
+  max-width: 82ch;
+  padding: 0.5rem 0.85rem;
+  background: #fff8ef;
+  border: 1px solid #f1d7b5;
+  border-radius: 12px;
+}
+.r.says .bubble::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 0.8rem;
+  width: 12px;
+  height: 12px;
+  background: inherit;
+  border-left: 1px solid #f1d7b5;
+  border-bottom: 1px solid #f1d7b5;
+  transform: rotate(45deg);
+}
+.r.says .prose + details.reasoning { margin-top: 0.4rem; border-top: 1px dashed #f1d7b5; padding-top: 0.3rem; }
 .r.eval { border-left: 3px solid var(--running); padding-left: 0.6rem; }
 .r.eval.running { border-left-style: dashed; }
 .r.eval.failed { border-left-color: var(--halted); }

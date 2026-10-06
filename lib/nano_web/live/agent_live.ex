@@ -210,7 +210,11 @@ defmodule NanoWeb.AgentLive do
         </section>
 
         <details :if={@agent} id="system-prompt" class="prompt" phx-mounted={keep_open()}>
-          <summary>system prompt</summary>
+          <summary>
+            system prompt<span :if={Map.get(@agent, :prompt_source)}> · from {txt(
+              @agent.prompt_source
+            )}</span>
+          </summary>
           <pre>{@agent.system_prompt}</pre>
         </details>
 
@@ -501,11 +505,18 @@ defmodule NanoWeb.AgentLive do
   defp read(%{e: %{"type" => "model_response"}} = assigns) do
     ~H"""
     <li id={@id} class="r says">
-      <details :if={present?(@e["reasoning"])} class="reasoning">
-        <summary>reasoning</summary>
-        <div class="prose">{txt(@e["reasoning"])}</div>
-      </details>
-      <div :if={present?(@e["text"])} class="prose">{txt(@e["text"])}</div>
+      <svg class="bot" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path d="M12 2.5v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        <rect x="3.5" y="6" width="17" height="13.5" rx="4" fill="currentColor" />
+        <circle cx="9" cy="12.5" r="1.7" fill="#fff" /><circle cx="15" cy="12.5" r="1.7" fill="#fff" />
+      </svg>
+      <div class="bubble">
+        <div :if={present?(@e["text"])} class="prose">{txt(@e["text"])}</div>
+        <details :if={present?(@e["reasoning"])} class="reasoning">
+          <summary>reasoning</summary>
+          <div class="prose">{txt(@e["reasoning"])}</div>
+        </details>
+      </div>
     </li>
     """
   end

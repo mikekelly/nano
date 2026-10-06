@@ -454,6 +454,13 @@ defmodule NanoWeb.AgentLiveTest do
     assert NanoWeb.Components.limit(nil, nil) == "– / –"
   end
 
+  test "the system prompt section says where the prompt came from", ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    source = Nano.Ops.agent(ctx.name).prompt_source
+    assert has_element?(view, "#system-prompt summary", "from #{source}")
+  end
+
   ## Reading view
 
   defp reading?(view, selector, text \\ nil),
