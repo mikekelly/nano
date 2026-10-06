@@ -1,0 +1,10 @@
+#!/bin/sh
+# Start the sandbox. Needs a .env with OPENROUTER_API_KEY; makes the agents' checkout if missing.
+cd "$(dirname "$0")/.." || exit 1
+[ -n "$OPENROUTER_API_KEY" ] || grep -q '^OPENROUTER_API_KEY=.' .env 2>/dev/null || { echo "put OPENROUTER_API_KEY=... in .env (see .env.example)" >&2; exit 1; }
+checkout=${NANO_CHECKOUT:-$(sed -n 's/^NANO_CHECKOUT=//p' .env 2>/dev/null)}; checkout=${checkout:-../nano-checkout}
+[ -d "$checkout" ] || { echo "cloning this repo to $checkout: the dedicated checkout the agents will edit"; git clone -q . "$checkout" || exit 1; }
+mkdir -p data && docker compose up -d --build || exit 1
+url="http://$(docker compose port nano 4000)"
+for i in $(seq 120); do curl -fsS -o /dev/null "$url/api" 2>/dev/null && { echo "dashboard: $url"; exit 0; }; sleep 1; done
+echo "the node has not come up; see: docker compose logs" >&2; exit 1

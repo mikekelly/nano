@@ -11,18 +11,31 @@ exists only for the agents to scribble on, never a working copy you care about.
 ## Quick start
 
 ```bash
-git clone . ~/nano-checkout     # the dedicated checkout
-cp .env.example .env            # set NANO_CHECKOUT, OPENROUTER_API_KEY, DEFAULT_MODEL
-docker compose up -d --build
-open http://localhost:4000
+git clone git@github.com:mikekelly/lolwut.git nano && cd nano
+echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # a dedicated key with a low spending limit
+bin/up
 ```
 
-`NANO_CHECKOUT` is required and has no default. Docker must be able to mount it (colima
-shares only your home directory by default). The node runs as the non-root user `nano`,
-uid 1000; on a Linux host the checkout and `./data` must be writable by that uid.
+`bin/up` clones this repo to `../nano-checkout` if it is not there yet (the dedicated
+checkout the agents edit, mounted at `/app`; they can read SPEC.md and the other docs in
+it), builds the image, starts the container, waits for the node and prints the dashboard
+URL, http://127.0.0.1:4000. Running it again on a running stack is fine. `docker compose
+down` stops it. New agents use `deepseek/deepseek-v4.1-flash` unless `.env` says otherwise.
+
+`.env` can also hold, all optional and listed with their defaults in [.env.example](.env.example):
+`DEFAULT_MODEL`, `NANO_CHECKOUT` (the checkout's path), `REASONING`, `SYSTEM_PROMPT_FILE`
+(the system prompt template, `priv/system_prompt.txt`), `STATE_DIR`, the budget and
+timeout limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL` and `NETWORK_POLICY`.
+
+Docker must be able to mount the checkout (colima shares only your home directory by
+default). The node runs as root inside the container: the container is the sandbox, and
+agents get all of it, `apt-get` included. Its writes to the checkout and `./data` are
+therefore made as uid 0: on macOS with colima or Docker Desktop they show up as your own
+files; on a Linux host they are root-owned, so `git` in the checkout may need `sudo` or a
+`chown` first.
 
 Dependencies are compiled into the image, outside `/app`, so the node boots without Hex
-access. After changing `mix.exs` or `mix.lock`, rebuild with `docker compose build`.
+access. After changing `mix.exs` or `mix.lock`, run `bin/up` again to rebuild.
 
 The image also carries its own committed copy of the source, so it runs without the mount
 (self-edits then live in the container and are lost when it is removed):
@@ -74,7 +87,10 @@ cookie generated at image build (or `NODE_COOKIE`). Port 4000 has no authenticat
 `127.0.0.1` unless `LISTEN_IP` says otherwise (`mix run --no-halt` on your own machine stays
 off the LAN); the image sets `LISTEN_IP=0.0.0.0` so that Docker can publish the port.
 
-Agent logs are JSONL files in `./data/logs`, and survive the container. Stopping an agent
+Agent logs are JSONL files in `./data/logs`, and each agent's saved state (transcript,
+bindings, budget) is a file in `./data/state`; both survive the container, so after a node
+restart the agents come back with their history, told by a harness note that the node
+restarted. Stopping an agent
 removes it from the API (its log then answers 404), but its JSONL file stays. What an eval
 writes to stderr, `IO.puts(:stderr, …)`, is not captured in the eval's output: it appears in
 `docker logs nano`. If the node crashes, `erl_crash.dump` is written to `./data`.
@@ -82,9 +98,9 @@ writes to stderr, `IO.puts(:stderr, …)`, is not captured in the eval's output:
 ## Seeing and undoing what agents changed
 
 ```bash
-git -C ~/nano-checkout status      # files added or changed
-git -C ~/nano-checkout diff        # the edits
-git -C ~/nano-checkout checkout . && git -C ~/nano-checkout clean -fd   # undo all of it
+git -C ../nano-checkout status      # files added or changed
+git -C ../nano-checkout diff        # the edits
+git -C ../nano-checkout checkout . && git -C ../nano-checkout clean -fd   # undo all of it
 docker exec nano bin/rpc 'IEx.Helpers.recompile(force: true)'   # load the reverted code
 ```
 
@@ -92,7 +108,7 @@ The last line recompiles and reloads every module of the app, however the agent 
 edit, and running agents keep their state. (A plain `recompile()` does nothing here: the
 files on disk are back to what Mix last built.) A module from a file the agent added stays
 loaded after the file is gone. `docker restart nano` instead clears that too and gives a
-clean node; agents then start fresh.
+clean node; agents come back from their saved state, told that the node restarted.
 Agents can also rewrite the checkout's git history, which is one more reason it is dedicated.
 Without the mount, the same commands work inside the container: `docker exec nano git diff`.
 

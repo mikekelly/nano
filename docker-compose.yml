@@ -8,14 +8,16 @@ services:
     ports:
       - "127.0.0.1:4000:4000" # no authentication and /api/eval runs code: localhost only
     volumes:
-      - ${NANO_CHECKOUT:?set NANO_CHECKOUT to a dedicated git checkout of this repo - agents can rewrite it}:/app
-      - ./data:/data # JSONL logs in ./data/logs
+      # A dedicated clone of this repo, never this working copy: agents can rewrite it.
+      - ${NANO_CHECKOUT:-../nano-checkout}:/app
+      - ./data:/data # JSONL logs in ./data/logs, agents' saved state in ./data/state
     environment:
       - OPENROUTER_API_KEY
-      - DEFAULT_MODEL
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-deepseek/deepseek-v4.1-flash}
       - NODE_COOKIE
       - REASONING
       - SYSTEM_PROMPT_FILE
+      - STATE_DIR
       - AGENT_MAX_TURNS
       - AGENT_MAX_TOKENS
       - AGENT_MAX_CONTEXT

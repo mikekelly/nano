@@ -294,7 +294,7 @@ The node runs from source so that any module, including `NanoAgent` itself, can 
 
 ## Container, configuration and limits
 
-One image, based on the official Elixir image, running the app from source with Mix rather than as a release (see Hot code reloading), running as a non-root `nano` user. Logs go to a mounted volume at `/data` so they survive the container, and `/app` is bind-mounted from a checkout on the host (see Hot code reloading).
+One image, based on the official Elixir image, running the app from source with Mix rather than as a release (see Hot code reloading), running as root inside the container so that agents have full control of it, including installing packages; the container, not the user, is the sandbox. Logs go to a mounted volume at `/data` so they survive the container, and `/app` is bind-mounted from a checkout on the host (see Hot code reloading).
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
