@@ -81,13 +81,16 @@ defmodule Nano.UserTest do
 
   test "a user name is a target, and its inbox keeps messages oldest first with timestamps" do
     {alice, alice_pid} = start_user("alice")
-    {bob, _} = start_user("bob")
+    {bob, bob_pid} = start_user("bob")
+    Phoenix.PubSub.subscribe(Nano.PubSub, "user:" <> bob)
 
     assert User.say(alice, bob, "one") == :ok
+    assert_receive {:nano_user, %{dir: :received, term: %{message: "one"}}}
     assert User.send_raw(alice, bob, :two) == :ok
-    send(User.pid(bob), "three")
+    assert_receive {:nano_user, %{dir: :received, term: :two}}
+    send(bob_pid, "three")
 
-    [first, second, third] = wait_for_inbox(bob, 3)
+    [first, second, third] = User.inbox(bob)
     assert first.term == %{sender_pid: alice_pid, message: "one"}
     assert second.term == :two
     assert third.term == "three"
@@ -96,6 +99,23 @@ defmodule Nano.UserTest do
 
     assert length(User.inbox(bob, clear: true)) == 3
     assert User.inbox(bob) == []
+  end
+
+  test "GenServer calls and casts from anyone are kept in the inbox, not a crash" do
+    {name, pid} = start_user()
+
+    GenServer.cast(pid, {:reply, "hi"})
+    assert {:timeout, _} = catch_exit(GenServer.call(pid, :whatever, 50))
+    assert {:timeout, _} = catch_exit(GenServer.call(pid, {:send, "not a pid", {:say, "x"}}, 50))
+
+    assert [
+             %{term: {:"$gen_cast", {:reply, "hi"}}},
+             %{term: {:"$gen_call", {caller, _}, :whatever}},
+             %{term: {:"$gen_call", _, {:send, "not a pid", {:say, "x"}}}}
+           ] = User.inbox(name)
+
+    assert caller == self()
+    assert User.pid(name) == pid
   end
 
   test "everything sent and received is broadcast on user:<name>" do
@@ -126,12 +146,5 @@ defmodule Nano.UserTest do
   defp wait_dead(pid) do
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, _, _, _}
-  end
-
-  defp wait_for_inbox(name, n, tries \\ 50) do
-    case User.inbox(name) do
-      messages when length(messages) >= n or tries == 0 -> messages
-      _ -> Process.sleep(10) && wait_for_inbox(name, n, tries - 1)
-    end
   end
 end

@@ -60,26 +60,33 @@ defmodule Nano.User do
   def init(name), do: {:ok, %{name: name, inbox: []}}
 
   @impl true
-  def handle_call({:send, target, message}, _from, state) do
-    term =
-      case message do
-        {:say, text} -> %{sender_pid: self(), message: text}
-        {:raw, term} -> term
-      end
+  def handle_call({:send, target, {:say, text}}, _from, state) when is_pid(target),
+    do: deliver_now(state, target, %{sender_pid: self(), message: text})
 
-    send(target, term)
-    publish(state, :sent, target, term)
-    {:reply, :ok, state}
-  end
+  def handle_call({:send, target, {:raw, term}}, _from, state) when is_pid(target),
+    do: deliver_now(state, target, term)
 
   def handle_call({:inbox, clear?}, _from, state) do
     {:reply, Enum.reverse(state.inbox), if(clear?, do: %{state | inbox: []}, else: state)}
   end
 
+  # Any other call or cast (an agent replying with GenServer.call/cast, say) is a message
+  # like any other, kept in the raw form it arrived in, as NanoAgent does. A call gets no reply.
+  def handle_call(msg, from, state), do: handle_info({:"$gen_call", from, msg}, state)
+
+  @impl true
+  def handle_cast(msg, state), do: handle_info({:"$gen_cast", msg}, state)
+
   @impl true
   def handle_info(term, state) do
     entry = publish(state, :received, self(), term)
     {:noreply, %{state | inbox: [Map.take(entry, [:at, :term]) | state.inbox]}}
+  end
+
+  defp deliver_now(state, target, term) do
+    send(target, term)
+    publish(state, :sent, target, term)
+    {:reply, :ok, state}
   end
 
   defp publish(state, dir, to, term) do

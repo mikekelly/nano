@@ -86,7 +86,8 @@ defmodule NanoWeb.ApiControllerTest do
 
     test "unknown processes are 404" do
       dead = spawn(fn -> :ok end)
-      Process.sleep(10)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, _, _, _}
 
       for target <- [path_pid(dead), "nothing_here", "%23PID%3C9.9.9%3E"] do
         assert %{"error" => "no such process: " <> _} =
@@ -180,7 +181,7 @@ defmodule NanoWeb.ApiControllerTest do
       {name, user} = start_user()
       send(user, :one)
       send(user, {:two, 2})
-      Process.sleep(10)
+      # The inbox request below is a call from this same process, so it arrives after both.
 
       assert [%{"term" => ":one"}, %{"term" => "{:two, 2}"}] =
                build_conn() |> get("/api/users/#{name}/inbox?clear=true") |> json_response(200)
@@ -268,6 +269,16 @@ defmodule NanoWeb.ApiControllerTest do
 
       assert %{"error" => "name is required" <> _} =
                post_json("/api/agents", %{}) |> json_response(422)
+    end
+
+    test "options of the wrong type are 422, not a silently ignored budget" do
+      for {key, value} <- [max_turns: "1", max_tokens: "100", start_idle: "false"] do
+        name = unique("agent")
+        on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+        assert %{"error" => "could not start agent: :invalid_option"} =
+                 post_json("/api/agents", %{:name => name, key => value}) |> json_response(422)
+      end
     end
 
     test "GET /api/agents and /api/agents/:name" do

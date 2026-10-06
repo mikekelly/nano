@@ -28,8 +28,11 @@ defmodule Nano.Ops do
   @doc "Stops an agent for good: terminates its process, if running, and deletes its stored state."
   def stop_agent(name) do
     if agent(name) do
-      with {:ok, pid} <- find(name),
-           do: DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+      with {:ok, pid} <- find(name) do
+        DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+        # Its evals and model requests run in tasks that would outlive it.
+        NanoAgent.kill_tasks(pid)
+      end
 
       Nano.StateStore.delete(name)
     else
@@ -54,7 +57,7 @@ defmodule Nano.Ops do
     :exit, reason -> {:error, reason}
   end
 
-  @doc "Clears an agent's halt (budget or restart brake)."
+  @doc "Clears an agent's halt (agent budget, node budget or restart brake)."
   def unhalt(name), do: with({:ok, _} <- find(name), do: NanoAgent.unhalt(name))
 
   @doc "An agent's log entries with seq > since, as read back from its JSONL file."
@@ -124,15 +127,18 @@ defmodule Nano.Ops do
   or `:other`), `current_function`, `message_queue_len`, `memory`, `reductions`, and `agent`
   (the agent's info map, for agents). The caller computes reductions per second from deltas.
 
-  The standard set is the processes alive at boot, plus those started since by other OTP
-  applications (Finch pools, kernel helpers: their group leader is that application's master)
-  and anything under `NanoWeb.Endpoint` (connection handlers, LiveViews, channels).
+  A process is spawned by an agent if the agent's evals started it (the `spawned` pids the
+  agent records), or if its parent, `$callers` or `$ancestors` chain reaches the agent, its
+  running eval, or one of those pids. The standard set is the processes alive at boot, the
+  agents' own model requests, processes of other OTP applications (Finch pools, kernel
+  helpers: their group leader is that application's master), and anything under
+  `NanoWeb.Endpoint` (connection handlers, LiveViews, channels).
   """
   def processes do
     ctx = context()
 
     Process.list()
-    |> Enum.map(&{&1, kind(&1, ctx, [])})
+    |> Enum.map(&{&1, kind(&1, ctx)})
     |> Enum.reject(fn {_, kind} -> kind == :standard end)
     |> Enum.flat_map(fn {pid, kind} -> List.wrap(row(pid, kind, ctx)) end)
     |> Enum.sort_by(&if(&1.kind == :agent, do: {0, &1.name}, else: {1, nil}))
@@ -142,7 +148,7 @@ defmodule Nano.Ops do
   def process(target) do
     with pid when is_pid(pid) <- resolve(target),
          info when is_list(info) <- Process.info(pid) do
-      info |> Map.new() |> Map.merge(%{pid: pid, kind: kind(pid, context(), [])})
+      info |> Map.new() |> Map.merge(%{pid: pid, kind: kind(pid, context())})
     end
   end
 
@@ -166,69 +172,57 @@ defmodule Nano.Ops do
   end
 
   defp context do
+    # pid => {:agent, name} | {:user, name}
+    names =
+      Map.new(Registry.select(Nano.Registry, [{{:"$1", :"$2", :_}, [], [{{:"$2", :"$1"}}]}]))
+
+    agents = Nano.StateStore.all()
+
     %{
       boot: Nano.Application.boot_set(),
       endpoint: Process.whereis(NanoWeb.Endpoint),
-      # pid => {:agent, name} | {:user, name}
-      names:
-        Map.new(Registry.select(Nano.Registry, [{{:"$1", :"$2", :_}, [], [{{:"$2", :"$1"}}]}]))
+      names: names,
+      model_requests: for(%{task: %{kind: :model, task: %{pid: pid}}} <- agents, do: pid),
+      # pid => agent name: each agent, its running eval, and what its evals started.
+      owned:
+        Map.new(
+          for({pid, {:agent, name}} <- names, do: {pid, name}) ++
+            for(
+              %{name: name, spawned: spawned} = s <- agents,
+              pid <- spawned ++ for(%{kind: :eval, task: %{pid: p}} <- [s.task], do: p),
+              do: {pid, name}
+            )
+        )
     }
   end
 
-  # Who a process belongs to, judged from who started it: its parent, then the `$callers`
-  # (Task) and `$ancestors` (proc_lib) chains in its process dictionary. Any agent in the
-  # chain makes it the agent's; otherwise the nearest live process in the chain decides.
-  defp kind(pid, ctx, seen) do
+  defp kind(pid, ctx) do
     case ctx.names[pid] do
       {:agent, _} -> :agent
       {:user, _} -> :user
-      _ -> if MapSet.member?(ctx.boot, pid), do: :standard, else: started_by(pid, ctx, seen)
+      _ -> unnamed_kind(pid, ctx)
     end
   end
 
-  defp started_by(pid, ctx, seen) do
-    links = links(pid)
+  defp unnamed_kind(pid, ctx) do
+    chain = [pid | chain(pid)]
 
     cond do
-      agent =
-          Enum.find_value(
-            links,
-            &with({:agent, name} <- ctx.names[&1], do: name, else: (_ -> nil))
-          ) ->
-        {:spawned_by, agent}
-
-      ctx.endpoint in [pid | links] or
-          :application.get_application(pid) not in [:undefined, {:ok, :nano}] ->
-        :standard
-
-      true ->
-        nearest(links, ctx, [pid | seen])
+      MapSet.member?(ctx.boot, pid) or pid in ctx.model_requests -> :standard
+      agent = Enum.find_value(chain, &ctx.owned[&1]) -> {:spawned_by, agent}
+      ctx.endpoint in chain -> :standard
+      :application.get_application(pid) not in [:undefined, {:ok, :nano}] -> :standard
+      true -> :other
     end
   end
 
-  # The nearest live process it came from: a boot-time process (e.g. a supervisor of ours)
-  # tells us nothing more, so the process is "other"; a later one passes on its own kind.
-  defp nearest([link | _], ctx, seen) do
-    if link in seen or MapSet.member?(ctx.boot, link) do
-      :other
-    else
-      case kind(link, ctx, seen) do
-        :user -> :other
-        kind -> kind
-      end
-    end
-  end
-
-  defp nearest([], _ctx, _seen), do: :other
-
-  defp links(pid) do
+  # Who started the process: its parent, then the `$callers` (Task) and `$ancestors`
+  # (proc_lib) chains from its dictionary, registered names resolved to pids.
+  defp chain(pid) do
     case Process.info(pid, [:parent, {:dictionary, :"$callers"}, {:dictionary, :"$ancestors"}]) do
       [{:parent, parent}, {_, callers}, {_, ancestors}] ->
         for link <- [parent | List.wrap(callers) ++ List.wrap(ancestors)],
-            link <- [if(is_atom(link), do: Process.whereis(link), else: link)],
-            is_pid(link) and node(link) == node() and Process.alive?(link),
-            uniq: true,
-            do: link
+            do: if(is_atom(link), do: Process.whereis(link), else: link)
 
       nil ->
         []
@@ -270,56 +264,27 @@ defmodule Nano.Ops do
   end
 
   @doc """
-  Evaluates Elixir source on the node, like `bin/rpc`: `{:ok, inspected_result, output}` or
-  `{:error, message, output}`, where output is anything the code printed. Runs in a task under
-  `Nano.EvalSupervisor`, killed after `EVAL_TIMEOUT_MS`.
+  Evaluates Elixir source on the node, like `bin/rpc`, the way an agent's eval tool does
+  (`NanoAgent.run_eval/2`, in a task killed after `EVAL_TIMEOUT_MS`): `{:ok, inspected_result,
+  output}` or `{:error, message, output}`, where output is what the code printed.
   """
   def eval(code) do
-    with {:ok, value, output} <- run(code), do: {:ok, inspect(value, @inspect), output}
+    timeout = Application.fetch_env!(:nano, :eval_timeout_ms)
+    task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, NanoAgent, :run_eval, [code, []])
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {{:ok, result, _bindings}, output, _spawned}} -> {:ok, result, output}
+      {:ok, {{:error, message}, output, _spawned}} -> {:error, message, output}
+      {:exit, reason} -> {:error, Exception.format_banner(:exit, reason), ""}
+      nil -> {:error, "timed out after #{timeout} ms", ""}
+    end
   end
 
   @doc "Parses and evaluates Elixir source to a term, as the send forms do: `{:ok, term}` or `{:error, message}`."
   def term(code) do
-    case run(code) do
-      {:ok, value, _} -> {:ok, value}
-      {:error, message, _} -> {:error, message}
-    end
-  end
-
-  defp run(code) do
-    {:ok, io} = StringIO.open("")
-    timeout = Application.get_env(:nano, :eval_timeout_ms, 30_000)
-
-    task =
-      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
-        Process.group_leader(self(), io)
-
-        try do
-          {value, _binding} = code |> Code.string_to_quoted!() |> Code.eval_quoted()
-          {:ok, value}
-        catch
-          kind, reason -> {:error, Exception.format_banner(kind, reason, __STACKTRACE__)}
-        end
-      end)
-
-    result =
-      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, result} -> result
-        {:exit, reason} -> {:error, Exception.format_banner(:exit, reason)}
-        nil -> {:error, "timed out after #{timeout} ms"}
-      end
-
-    # Processes the code spawned inherited the capture device; give them the caller's instead.
-    for pid <- Process.list(), Process.info(pid, :group_leader) == {:group_leader, io} do
-      try do
-        Process.group_leader(pid, Process.group_leader())
-      rescue
-        ArgumentError -> :exited
-      end
-    end
-
-    {:ok, {_, output}} = StringIO.close(io)
-    {tag, value} = result
-    {tag, value, output}
+    {value, _binding} = code |> Code.string_to_quoted!() |> Code.eval_quoted()
+    {:ok, value}
+  catch
+    kind, reason -> {:error, Exception.format_banner(kind, reason, __STACKTRACE__)}
   end
 end

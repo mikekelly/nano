@@ -42,16 +42,17 @@ and say so.
    repairs the transcript so it is valid for the API (any tool call left without a result gets
    one saying the process exited), then delivers the `<harness>` restart note. The exit reason
    is obtained by having `Nano.StateStore` monitor agent pids and record the `:DOWN` reason.
-9. **Halting.** One `halted` field: `nil`, `:budget`, or `:restart_brake`. A halted agent still
+9. **Halting.** One `halted` field: `nil`, `:budget`, `:node_budget`, or `:restart_brake`. A halted agent still
    logs `event_received` and queues events in `pending`. `unhalt` clears it, resets the restart
-   window, and — if the cause was budget — resets the turn and token counters; pending events
+   window, and — if the cause was the agent's own budget — resets the turn and token counters; pending events
    then start a turn, prefixed by a truthful `<harness>` note.
 10. **Budget.** A turn = one model call. Tokens = prompt + completion, summed. Node-wide cap:
     `NODE_MAX_TOKENS_PER_HOUR` (default 5,000,000), a rolling-hour counter in ETS; when hit,
-    the agent logs `budget_exhausted` (scope `node`) and halts with `:budget`.
+    the agent logs `budget_exhausted` (scope `node`) and halts with `:node_budget`.
 11. **Lifecycle verbs.** `stop` terminates the child and deletes its store entry (the agent is
     gone). `restart` kills the process with reason `:operator_restart` so the supervisor brings
-    it back with history; it does not count toward the restart brake. Agents are `:permanent`
+    it back with history. It counts toward the restart brake like any other exit (an exemption
+    would let an agent dodge the brake by exiting itself with that reason). Agents are `:permanent`
     children; the `DynamicSupervisor` gets a generous `max_restarts` (the brake is the real limit).
 12. **`OPENROUTER_BASE_URL`** (default `https://openrouter.ai/api/v1`) exists so tests and
     end-to-end checks can point the node at a scripted fake. It is the only test seam.

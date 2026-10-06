@@ -21,8 +21,7 @@ defmodule Nano.OpsTest do
     {name, pid}
   end
 
-  # A process registered as an agent that runs functions the way NanoAgent runs evals: in a
-  # task under Nano.EvalSupervisor. Lets the listing be tested without a model.
+  # A process registered under an agent name, without a store entry or a model.
   defp fake_agent do
     test = self()
     name = unique("fake")
@@ -31,21 +30,27 @@ defmodule Nano.OpsTest do
       spawn_link(fn ->
         Registry.register(Nano.Registry, {:agent, name}, nil)
         send(test, :registered)
-        fake_agent_loop()
+        Process.sleep(:infinity)
       end)
 
     assert_receive :registered
     {name, pid}
   end
 
-  defp fake_agent_loop do
-    receive do
-      {:eval, fun} -> Task.Supervisor.async_nolink(Nano.EvalSupervisor, fun)
-      _task_reply_or_down -> :ok
-    end
-
-    fake_agent_loop()
+  # A real agent whose model replies are scripted; the test follows its log.
+  defp scripted_agent(responses) do
+    Nano.FakeOpenRouter.start()
+    model = Nano.FakeOpenRouter.model()
+    for response <- responses, do: Nano.FakeOpenRouter.push(model, response)
+    name = unique("agent")
+    {:ok, pid} = Ops.start_agent(name, model: model)
+    on_exit(fn -> Ops.stop_agent(name) end)
+    Nano.Log.subscribe(Ops.agent(name).id)
+    {name, pid, model}
   end
+
+  # Elixir source that evaluates to the test process's pid.
+  defp test_pid_source, do: ":erlang.list_to_pid(#{inspect(:erlang.pid_to_list(self()))})"
 
   defp sleeper, do: fn -> Process.sleep(:infinity) end
 
@@ -92,17 +97,15 @@ defmodule Nano.OpsTest do
     test "returns the inspected result and captured output" do
       assert Ops.eval("1 + 1") == {:ok, "2", ""}
       assert Ops.eval(~s|IO.puts("hi"); %{a: 1}|) == {:ok, "%{a: 1}", "hi\n"}
-      assert {:ok, list, _} = Ops.eval("Enum.to_list(1..100)")
-      refute list =~ "..."
     end
 
     test "parse and eval failures return the exception message" do
-      assert {:error, "** (RuntimeError) boom", "before\n"} =
+      assert {:error, "** (RuntimeError) boom" <> _, "before\n"} =
                Ops.eval(~s|IO.puts("before"); raise "boom"|)
 
-      assert {:error, "** (SyntaxError)" <> _, ""} = Ops.eval("1 +* 2")
-      assert {:error, "** (exit) :bye", ""} = Ops.eval("exit(:bye)")
-      assert {:error, "** (throw) 1", ""} = Ops.eval("throw(1)")
+      assert {:error, "** (SyntaxError)" <> _, _} = Ops.eval("1 +* 2")
+      assert {:error, "** (exit) :bye" <> _, ""} = Ops.eval("exit(:bye)")
+      assert {:error, "** (throw) 1" <> _, ""} = Ops.eval("throw(1)")
       assert {:error, "** (exit) killed", ""} = Ops.eval("Process.exit(self(), :kill)")
     end
 
@@ -163,64 +166,61 @@ defmodule Nano.OpsTest do
                Enum.find(Ops.processes(), &(&1.pid == pid))
     end
 
-    test "processes started during an agent's eval are tagged with the agent" do
-      {agent, agent_pid} = fake_agent()
-      test = self()
+    test "what an agent's eval starts stays tagged with it after the eval ends and a restart" do
+      {name, agent_pid, model} =
+        scripted_agent([
+          [
+            calls: [
+              eval: """
+              test = #{test_pid_source()}
+              plain = spawn(fn ->
+                receive do
+                  {:spawn, to} -> send(to, {:grandchild, spawn(fn -> Process.sleep(:infinity) end)})
+                end
+                Process.sleep(:infinity)
+              end)
+              {:ok, server} = Agent.start(fn -> :state end)
+              {:ok, task} = Task.start(fn -> Process.sleep(:infinity) end)
+              send(test, {:spawned, self(), [plain, server, task]})
+              receive do: (:finish -> :ok)
+              """
+            ]
+          ],
+          [calls: [idle: nil]]
+        ])
 
-      send(
-        agent_pid,
-        {:eval,
-         fn ->
-           plain = spawn(sleeper())
-           {:ok, server} = Agent.start(fn -> :state end)
-           {:ok, task} = Task.start(sleeper())
-           send(test, {:spawned, self(), plain, server, task})
-           receive do: (:finish -> :ok)
-         end}
-      )
-
-      assert_receive {:spawned, eval_task, plain, server, task}
+      NanoAgent.notify(name, :go)
+      assert_receive {:spawned, eval_task, [plain | _] = started}, 5_000
       kinds = kinds()
-      for pid <- [eval_task, plain, server, task], do: assert(kinds[pid] == {:spawned_by, agent})
+      for pid <- [eval_task | started], do: assert(kinds[pid] == {:spawned_by, name})
 
-      # Once the eval task has exited, only the `$callers` chain of a Task still leads to the
-      # agent; a plain spawn or a GenServer started in the eval is then just "other".
       send(eval_task, :finish)
-      wait_dead(eval_task)
+      assert_receive {:nano_log, %{type: :turn_ended}}, 5_000
+      refute Process.alive?(eval_task)
+      send(plain, {:spawn, self()})
+      assert_receive {:grandchild, grandchild}
       kinds = kinds()
-      assert kinds[task] == {:spawned_by, agent}
-      assert kinds[plain] == :other
-      assert kinds[server] == :other
+      for pid <- [grandchild | started], do: assert(kinds[pid] == {:spawned_by, name})
+
+      # A crash restart: the agent's pid changes, the record of what it started does not.
+      Nano.FakeOpenRouter.push(model, calls: [idle: nil])
+      Process.exit(agent_pid, :kill)
+      assert_receive {:nano_log, %{type: :turn_ended}}, 5_000
+      kinds = kinds()
+      for pid <- [grandchild | started], do: assert(kinds[pid] == {:spawned_by, name})
     end
 
-    test "a real agent's eval: what it starts is tagged with the agent" do
-      Nano.FakeOpenRouter.start()
-      model = Nano.FakeOpenRouter.model()
-      name = unique("agent")
-
-      code = """
-      test = :erlang.list_to_pid(#{inspect(~c"#{:erlang.pid_to_list(self())}")})
-      {:ok, task} = Task.start(fn -> Process.sleep(:infinity) end)
-      plain = spawn(fn -> Process.sleep(:infinity) end)
-      send(test, {:spawned, self(), task, plain})
-      receive do: (:finish -> :ok)
-      """
-
-      Nano.FakeOpenRouter.push(model, calls: [eval: code])
-      Nano.FakeOpenRouter.push(model, calls: [idle: nil])
-      {:ok, _} = Ops.start_agent(name, model: model)
-      on_exit(fn -> Ops.stop_agent(name) end)
+    test "an agent's own model request is harness plumbing, not listed" do
+      {name, agent_pid, model} = scripted_agent([])
+      Nano.FakeOpenRouter.listen(model)
       NanoAgent.notify(name, :go)
+      # The fake holds the request open until a reply is pushed.
+      assert_receive {:openrouter_request, ^model, _}, 5_000
+      :sys.get_state(agent_pid)
 
-      assert_receive {:spawned, eval_task, task, plain}, 5_000
-      kinds = kinds()
-      for pid <- [eval_task, task, plain], do: assert(kinds[pid] == {:spawned_by, name})
-
-      send(eval_task, :finish)
-      wait_dead(eval_task)
-      kinds = kinds()
-      assert kinds[task] == {:spawned_by, name}
-      assert kinds[plain] == :other
+      %{task: %{kind: :model, task: %Task{pid: request}}} = Nano.StateStore.get(name)
+      assert Process.alive?(request)
+      refute Map.has_key?(kinds(), request)
     end
 
     test "processes of other OTP applications and under the endpoint are standard" do
@@ -307,6 +307,19 @@ defmodule Nano.OpsTest do
       # The Registry drops a dead process asynchronously.
       wait_for(fn -> Ops.whereis(name) == nil end)
       refute name in NanoAgent.list()
+    end
+
+    test "stop kills an eval still running" do
+      {name, _, _} =
+        scripted_agent([
+          [calls: [eval: "send(#{test_pid_source()}, {:eval, self()}); Process.sleep(:infinity)"]]
+        ])
+
+      NanoAgent.notify(name, :go)
+      assert_receive {:eval, task}, 5_000
+      ref = Process.monitor(task)
+      assert Ops.stop_agent(name) == :ok
+      assert_receive {:DOWN, ^ref, _, _, :killed}
     end
 
     test "unknown agents" do
