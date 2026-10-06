@@ -1,0 +1,41 @@
+import Config
+
+# Every environment variable the node reads is read here, into application env under :nano.
+# Tests ignore the OS environment so they never depend on (or spend with) a developer's shell.
+test? = config_env() == :test
+
+env = fn name, default ->
+  case System.get_env(name) do
+    value when value in [nil, ""] or test? -> default
+    value -> value
+  end
+end
+
+int = fn name, default -> name |> env.(default) |> String.to_integer() end
+
+config :nano,
+  # "Required", but only when an agent is started: the harness reports it then, so the node boots without.
+  openrouter_api_key: env.("OPENROUTER_API_KEY", if(test?, do: "test-key")),
+  default_model: env.("DEFAULT_MODEL", if(test?, do: "test/model")),
+  # Tests must point this at a scripted fake; the test default refuses connections.
+  openrouter_base_url:
+    env.(
+      "OPENROUTER_BASE_URL",
+      if(test?, do: "http://127.0.0.1:1/unset", else: "https://openrouter.ai/api/v1")
+    ),
+  agent_max_turns: int.("AGENT_MAX_TURNS", "50"),
+  agent_max_tokens: int.("AGENT_MAX_TOKENS", "500000"),
+  node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "5000000"),
+  eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
+  result_max_bytes: int.("RESULT_MAX_BYTES", "16000"),
+  network_policy: env.("NETWORK_POLICY", "openrouter-only"),
+  log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs"))
+
+# NODE_COOKIE is not read here: it is consumed by `elixir --cookie` before the app starts.
+
+config :nano, NanoWeb.Endpoint,
+  http: [ip: {0, 0, 0, 0}, port: if(test?, do: 4002, else: int.("PORT", "4000"))],
+  server: not test?,
+  # No authentication, local use only: the secret only signs the session cookie that carries
+  # the CSRF token, so a fresh one per boot is enough (open pages reload after a node restart).
+  secret_key_base: env.("SECRET_KEY_BASE", Base.encode64(:crypto.strong_rand_bytes(48)))

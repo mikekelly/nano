@@ -1,0 +1,5 @@
+/* Placeholder (owner: dashboard). The dashboard's only stylesheet; there is no asset pipeline. */
+body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin: 1.5rem;
+}

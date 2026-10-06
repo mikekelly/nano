@@ -1,0 +1,6 @@
+/_build/
+/deps/
+/tmp/
+/data/
+.env
+erl_crash.dump
