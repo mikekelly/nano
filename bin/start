@@ -1,0 +1,3 @@
+#!/bin/sh
+# Container entrypoint: compile /app and run the node from source.
+exec elixir --name nano@127.0.0.1 --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" -S mix run --no-halt

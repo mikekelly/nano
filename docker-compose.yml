@@ -1,0 +1,24 @@
+services:
+  nano:
+    build: .
+    image: nano
+    container_name: nano
+    restart: unless-stopped # brings the node back after System.halt()
+    ports:
+      - "127.0.0.1:4000:4000" # no authentication and /api/eval runs code: localhost only
+    volumes:
+      - ${NANO_CHECKOUT:?set NANO_CHECKOUT to a dedicated git checkout of this repo - agents can rewrite it}:/app
+      - ./data:/data # JSONL logs in ./data/logs
+    environment:
+      - OPENROUTER_API_KEY
+      - DEFAULT_MODEL
+      - NODE_COOKIE
+      - AGENT_MAX_TURNS
+      - AGENT_MAX_TOKENS
+      - NODE_MAX_TOKENS_PER_HOUR
+      - EVAL_TIMEOUT_MS
+      - RESULT_MAX_BYTES
+      - OPENROUTER_BASE_URL
+      # Shown to agents in their system prompt, so it must be true. This file does not
+      # restrict egress; if you do (see README), change this text to match.
+      - NETWORK_POLICY=unrestricted outbound internet access

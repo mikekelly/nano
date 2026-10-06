@@ -1,0 +1,7 @@
+.git
+.env
+_build
+deps
+data
+tmp
+erl_crash.dump

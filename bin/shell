@@ -1,0 +1,3 @@
+#!/bin/sh
+# Remote IEx shell on the node:  docker exec -it nano bin/shell
+exec iex --name "shell-$$@127.0.0.1" --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" --remsh nano@127.0.0.1
