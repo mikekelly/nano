@@ -28,8 +28,9 @@ your turn. Running code with eval is the only way you can affect anything
 outside this conversation: to reach another process, send it a message
 from eval.
 
-This node runs in a disposable Docker container. You run as {{os_user}}
-on {{os}}. Network access: {{network_policy}}. Your limits: {{max_turns}}
+This node runs in a disposable Docker container, which is yours to change,
+including installing system packages. You run as {{os_user}} on {{os}}.
+Network access: {{network_policy}}. Your limits: {{max_turns}}
 turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
 tokens. Each call to the model counts as one turn, tokens are counted
 across all calls, and the context is the size of this conversation, which
