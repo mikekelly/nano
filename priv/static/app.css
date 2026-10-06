@@ -180,6 +180,42 @@ ol.timeline { list-style: none; padding: 0; margin: 0.8rem 0; }
 .entry .result { margin-top: 0.2rem; }
 .entry .io pre { background: #f1f5e9; }
 
+/* Reading view: the story, readable; the debug view above keeps every detail. */
+nav.views { display: flex; gap: 0.8rem; margin: 0.8rem 0 0; }
+nav.views a.current { color: var(--fg); font-weight: bold; }
+ol.timeline.reading .r { margin: 0.9rem 0; }
+.r .r-label, .r time { color: var(--dim); font-size: 0.9em; }
+.r.event pre { background: #e6f3fa; padding: 0.3rem 0.5rem; margin-top: 0.15rem; }
+.r.note { color: var(--dim); font-size: 0.9em; white-space: pre-wrap; }
+.r.note.halt { color: var(--halted); }
+.r.state { color: var(--dim); border-top: 1px dashed var(--line); padding-top: 0.3rem; }
+.r.state.error { color: var(--halted); }
+.r .prose {
+  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 78ch;
+}
+.r details.reasoning .prose { color: var(--dim); font-style: italic; font-size: 14px; }
+.r.eval { border-left: 3px solid var(--running); padding-left: 0.6rem; }
+.r.eval.running { border-left-style: dashed; }
+.r.eval.failed { border-left-color: var(--halted); }
+.r.eval pre { background: var(--panel); padding: 0.3rem 0.5rem; }
+.r.eval pre.code { background: #f8f8fb; }
+.r.eval pre.error { background: #fdecec; color: var(--halted); }
+.r.eval .io pre { background: #f1f5e9; }
+.r.idle { color: var(--dim); font-size: 0.9em; }
+.r.idle .error { color: var(--halted); }
+
+/* Shown by the Follow hook while the reader has scrolled away from the latest entries. */
+#jump {
+  position: fixed;
+  right: 1.2rem;
+  bottom: 1.2rem;
+  z-index: 2;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
 /* Highlighted Elixir */
 pre.code { background: #f8f8fb; border: 1px solid var(--line); }
 pre.code .kw { color: #7c3aed; }

@@ -8,18 +8,24 @@ defmodule NanoWeb.AgentLive do
   disk (string keys). An eval's `tool_result` is folded into its `tool_call` item, so the
   call shows its code followed by result, IO and duration. If the agent is stopped and
   started again under the same name it gets a new id, and the timeline switches to it.
+
+  Two views of the same entries: the reading view (default) tells the story — events, the
+  model's text, each tool call with its result, restarts, halts — and leaves out the plumbing;
+  `?view=debug` shows every entry with its details. Streamed items are not kept on the
+  server, so switching views re-reads the log.
   """
   use Phoenix.LiveView
 
   import NanoWeb.Components
 
   @refresh_ms 1_000
-  def mount(%{"name" => name}, _session, socket) do
+  def mount(%{"name" => name} = params, _session, socket) do
     if connected?(socket), do: :timer.send_interval(@refresh_ms, :refresh)
 
     socket =
       socket
       |> assign(page_title: name, name: name, id: nil, last_seq: 0, open_calls: %{}, notice: nil)
+      |> assign(view: view(params))
       |> stream_configure(:entries, dom_id: &"e-#{&1["seq"]}")
       |> stream(:entries, [])
       |> mount_shared()
@@ -27,6 +33,16 @@ defmodule NanoWeb.AgentLive do
 
     {:ok, socket}
   end
+
+  def handle_params(params, _uri, socket) do
+    view = view(params)
+    reload? = view != socket.assigns.view and socket.assigns.id != nil
+    socket = assign(socket, view: view)
+    {:noreply, if(reload?, do: load(socket, socket.assigns.id), else: socket)}
+  end
+
+  defp view(%{"view" => "debug"}), do: "debug"
+  defp view(_), do: "reading"
 
   def handle_info(:refresh, socket), do: {:noreply, sync(socket)}
   def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_inbox(socket)}
@@ -96,28 +112,48 @@ defmodule NanoWeb.AgentLive do
       last_seq: Enum.max(Enum.map(entries, & &1["seq"]), fn -> 0 end),
       open_calls: open
     )
-    |> stream(:entries, items, reset: true)
+    |> stream(:entries, Enum.filter(items, &shown?(socket, &1)), reset: true)
   end
 
   defp insert(socket, %{"type" => "tool_call"} = call) do
     socket
     |> update(:open_calls, &Map.put(&1, call["call_id"], call))
-    |> stream_insert(:entries, Map.put(call, "result", nil))
+    |> put(Map.put(call, "result", nil))
   end
 
   defp insert(socket, %{"type" => "tool_result"} = result) do
     case Map.pop(socket.assigns.open_calls, result["call_id"]) do
       {nil, _} ->
-        stream_insert(socket, :entries, result)
+        put(socket, result)
 
       {call, open} ->
         socket
         |> assign(open_calls: open)
-        |> stream_insert(:entries, Map.put(call, "result", result))
+        |> put(Map.put(call, "result", result))
     end
   end
 
-  defp insert(socket, entry), do: stream_insert(socket, :entries, entry)
+  defp insert(socket, entry), do: put(socket, entry)
+
+  defp put(socket, item),
+    do: if(shown?(socket, item), do: stream_insert(socket, :entries, item), else: socket)
+
+  # The reading view leaves out the plumbing: requests and their budget line, turn ends,
+  # retried model errors, responses that only call tools, and anything it does not know.
+  defp shown?(%{assigns: %{view: "debug"}}, _), do: true
+
+  defp shown?(_, %{"type" => type} = e) do
+    case type do
+      t when t in ~w(event_received harness_note agent_started tool_call tool_result) -> true
+      "model_response" -> present?(e["text"]) or present?(e["reasoning"])
+      "model_error" -> e["retry"] != true
+      _ -> false
+    end
+  end
+
+  defp shown?(_, _), do: false
+
+  defp present?(value), do: value not in [nil, ""]
 
   def render(assigns) do
     ~H"""
@@ -157,7 +193,6 @@ defmodule NanoWeb.AgentLive do
             <button phx-click="restart" disabled={@agent.pid == nil}>Restart</button>
             <button :if={@agent.suspended} phx-click="resume" class="warn">Resume</button>
             <button :if={@agent.halted} phx-click="unhalt" class="warn">Un-halt</button>
-            <a href="#end">latest ↓</a>
             <span :if={@notice} class={["sent", elem(@notice, 0)]}>{elem(@notice, 1)}</span>
           </div>
           <p :if={@agent.suspended} class="flag suspended">
@@ -181,10 +216,30 @@ defmodule NanoWeb.AgentLive do
 
         <.send_form :if={@agent} id="send" to={@name} draft={@draft} sent={@sent} />
 
-        <ol id="timeline" class="timeline" phx-update="stream">
-          <.entry :for={{dom_id, e} <- @streams.entries} id={dom_id} e={e} />
+        <nav class="views">
+          <.link
+            :for={v <- ~w(reading debug)}
+            patch={"/agents/#{@name}" <> if(v == "debug", do: "?view=debug", else: "")}
+            class={@view == v && "current"}
+          >
+            {v}
+          </.link>
+        </nav>
+        <ol
+          id="timeline"
+          class={["timeline", @view]}
+          phx-update="stream"
+          phx-hook="Follow"
+          data-view={@view}
+        >
+          <%= for {dom_id, e} <- @streams.entries do %>
+            <.entry :if={@view == "debug"} id={dom_id} e={e} />
+            <.read :if={@view != "debug"} id={dom_id} e={e} />
+          <% end %>
         </ol>
-        <span id="end"></span>
+        <div id="follow" phx-update="ignore">
+          <button id="jump" type="button" hidden>jump to latest ↓</button>
+        </div>
       </main>
       <aside>
         <.inbox inbox={@inbox} pid={@inbox_pid} />
@@ -314,14 +369,7 @@ defmodule NanoWeb.AgentLive do
           else: "error"}</span>
       </.meta>
       <.code code={@code} />
-      <div :if={@result} class="result">
-        <pre class={if !@result["ok"], do: "error"}>{txt(@result["result"])}</pre>
-        <div :if={@result["io"] not in [nil, ""]} class="io">
-          <span class="dim">captured IO</span>
-          <pre>{txt(@result["io"])}</pre>
-        </div>
-        <span :if={@result["truncated"]} class="dim">truncated for the model</span>
-      </div>
+      <.eval_result :if={@result} result={@result} />
     </li>
     """
   end
@@ -403,6 +451,122 @@ defmodule NanoWeb.AgentLive do
     </li>
     """
   end
+
+  attr :result, :map, required: true
+
+  # A tool result: its value (marked if it failed), captured IO, and whether it was truncated.
+  defp eval_result(assigns) do
+    ~H"""
+    <div class="result">
+      <pre class={if !@result["ok"], do: "error"}>{txt(@result["result"])}</pre>
+      <div :if={@result["io"] not in [nil, ""]} class="io">
+        <span class="dim">captured IO</span>
+        <pre>{txt(@result["io"])}</pre>
+      </div>
+      <span :if={@result["truncated"]} class="dim">truncated for the model</span>
+    </div>
+    """
+  end
+
+  ## Reading view items
+
+  attr :id, :string, required: true
+  attr :e, :map, required: true
+
+  defp read(%{e: %{"type" => "event_received"}} = assigns) do
+    ~H"""
+    <li id={@id} class="r event">
+      <div class="r-label">received <time>{time(@e["at"])}</time></div>
+      <pre>{txt(@e["message"])}</pre>
+    </li>
+    """
+  end
+
+  defp read(%{e: %{"type" => "harness_note"}} = assigns) do
+    ~H"""
+    <li id={@id} class={["r note", halt_note?(@e["text"]) && "halt"]}>{txt(@e["text"])}</li>
+    """
+  end
+
+  defp read(%{e: %{"type" => "agent_started"}} = assigns) do
+    ~H"""
+    <li id={@id} class="r state">
+      {if @e["restarted"], do: "restarted", else: "started"} <time>{time(@e["at"])}</time>
+      <span :if={@e["restarted"]}>· exit reason {txt(@e["exit_reason"])}</span>
+      <span :if={@e["halted"]} class="badge halted">halted: {txt(@e["halted"])}</span>
+    </li>
+    """
+  end
+
+  defp read(%{e: %{"type" => "model_response"}} = assigns) do
+    ~H"""
+    <li id={@id} class="r says">
+      <details :if={present?(@e["reasoning"])} class="reasoning">
+        <summary>reasoning</summary>
+        <div class="prose">{txt(@e["reasoning"])}</div>
+      </details>
+      <div :if={present?(@e["text"])} class="prose">{txt(@e["text"])}</div>
+    </li>
+    """
+  end
+
+  defp read(
+         %{e: %{"type" => "tool_call", "name" => "eval", "arguments" => %{"code" => code}}} =
+           assigns
+       )
+       when is_binary(code) do
+    assigns = assign(assigns, code: code, result: assigns.e["result"])
+
+    ~H"""
+    <li id={@id} class={["r eval", !@result && "running", @result && !@result["ok"] && "failed"]}>
+      <div class="r-label">
+        eval <span :if={!@result}>running…</span>
+        <span :if={@result}>
+          {if @result["ok"], do: "ok", else: "failed"} · {txt(@result["duration_ms"])} ms
+        </span>
+      </div>
+      <.code code={@code} />
+      <.eval_result :if={@result} result={@result} />
+    </li>
+    """
+  end
+
+  defp read(%{e: %{"type" => "tool_call", "name" => "idle"}} = assigns) do
+    ~H"""
+    <li id={@id} class="r idle">
+      idle<span :if={is_map(@e["arguments"]) && @e["arguments"]["wakeup_after"]}>
+        · wake after {txt(@e["arguments"]["wakeup_after"])} ms if nothing arrives
+      </span>
+      <span :if={@e["result"] && !@e["result"]["ok"]} class="error">
+        · {txt(@e["result"]["result"])}
+      </span>
+    </li>
+    """
+  end
+
+  defp read(%{e: %{"type" => type}} = assigns) when type in ~w(tool_call tool_result) do
+    ~H"""
+    <li id={@id} class="r eval failed">
+      <div class="r-label">{String.replace(txt(@e["type"]), "_", " ")} {inspect(@e["name"])}</div>
+      <pre :if={@e["type"] == "tool_call"}>{show(@e["arguments"])}</pre>
+      <.eval_result :if={@e["type"] == "tool_result"} result={@e} />
+      <.eval_result :if={is_map(@e["result"])} result={@e["result"]} />
+    </li>
+    """
+  end
+
+  defp read(%{e: %{"type" => "model_error"}} = assigns) do
+    ~H"""
+    <li id={@id} class="r state error">
+      model error, not retried: status {txt(@e["status"] || "none")} · {body(@e["body"])}
+    </li>
+    """
+  end
+
+  defp read(assigns), do: ~H|<li id={@id} hidden></li>|
+
+  # The harness's own notes about halting and un-halting say "halted you".
+  defp halt_note?(text), do: is_binary(text) and String.contains?(text, "halted you")
 
   attr :e, :map, required: true
   attr :label, :string, required: true

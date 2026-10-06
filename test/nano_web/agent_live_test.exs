@@ -88,7 +88,7 @@ defmodule NanoWeb.AgentLiveTest do
     NanoAgent.notify(ctx.name, {:question, 6, 7})
     await(:turn_ended)
 
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert has_entry?(view, "started", "started")
     assert has_entry?(view, "note", "Your process has just started.")
     assert_turn_rendered(view)
@@ -115,7 +115,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "streams entries live as they are logged", ctx do
     {_pid, _id} = start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert has_entry?(view, "started", "started")
     refute has_element?(view, "#timeline li.event")
 
@@ -141,7 +141,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "an eval in progress shows as running, then gets its result", ctx do
     start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     Fake.push(ctx.model, calls: [eval: "receive do :go -> :went end"])
     NanoAgent.notify(ctx.name, :start)
     await(:tool_call)
@@ -161,7 +161,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "failed evals, unknown tools, model errors and budget exhaustion", ctx do
     start!(ctx, max_turns: 2)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     Fake.push(ctx.model, calls: [eval: ~s|raise "boom"|, bogus: %{x: 1}])
     Fake.push(ctx.model, status: 400)
     NanoAgent.notify(ctx.name, :go)
@@ -180,7 +180,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "shows a model turn's reasoning when the entry carries one", ctx do
     {_, id} = start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
 
     Nano.Log.write(%{id: id, name: ctx.name}, :model_response, %{
       request_id: 1,
@@ -202,7 +202,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "any halt reason is flagged with Un-halt offered", ctx do
     start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     # A halt value this view has no special wording for still shows, with Un-halt.
     state = Nano.StateStore.get(ctx.name)
     Nano.StateStore.put(ctx.name, %{state | halted: :node_budget})
@@ -214,7 +214,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "the send form: text via say, terms via send_raw, parse errors shown", ctx do
     start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     Fake.push(ctx.model, calls: [idle: nil])
     Fake.push(ctx.model, calls: [idle: nil])
 
@@ -239,7 +239,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "replies that land in the dashboard user's inbox show on the page", ctx do
     start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
 
     Fake.push(ctx.model,
       calls: [eval: ~s|send(Nano.User.pid("dashboard"), {:reply, "yes, I am here"})|]
@@ -256,7 +256,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "a suspended agent is labelled suspended and offers Resume", ctx do
     {pid, _} = start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     refute has_element?(view, "button", "Resume")
 
     :sys.suspend(pid)
@@ -272,7 +272,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "an agent suspended by its own eval resumes and finishes its turn", ctx do
     start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     Fake.push(ctx.model, calls: [eval: ":sys.suspend(me); :suspended_myself"])
     Fake.push(ctx.model, text: "back")
     NanoAgent.notify(ctx.name, :go)
@@ -286,7 +286,7 @@ defmodule NanoWeb.AgentLiveTest do
   test "a halted agent is flagged until un-halted", ctx do
     # The agent halts as soon as its last turn is used, so it needs room for a turn after un-halt.
     start!(ctx, max_turns: 2)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     refute has_element?(view, "button", "Un-halt")
     Fake.push(ctx.model, text: "one")
     NanoAgent.notify(ctx.name, :one)
@@ -310,7 +310,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "Restart restarts the agent with its history; the timeline continues", ctx do
     {pid, _} = start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     view |> element("button", "Restart") |> render_click()
     await(:agent_started, & &1.restarted)
     assert Nano.Ops.whereis(ctx.name) != pid
@@ -324,7 +324,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "Stop stops the agent; the page says so and follows a new agent of the same name", ctx do
     {_, old_id} = start!(ctx)
-    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     view |> element("button", "Stop") |> render_click()
     assert Nano.Ops.agent(ctx.name) == nil
     assert has_element?(view, ".flag.down", "it was stopped")
@@ -378,14 +378,19 @@ defmodule NanoWeb.AgentLiveTest do
 
     for {type, fields} <- hostile, do: Nano.Log.write(agent, type, fields)
 
-    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert html =~ ~s(tool call 1: &quot;eval&quot;)
     assert has_entry?(view, "event", ~s(%{"a" => [1, %{}]}))
+
+    # The reading view, from the backlog and then with the same entries arriving live.
+    {:ok, reading, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert html =~ ~s(tool call &quot;eval&quot;)
 
     # The same entries arriving live.
     for {type, fields} <- hostile, do: Nano.Log.write(agent, type, fields)
     await(:something_new)
     assert render(view) =~ "something_new"
+    assert render(reading) =~ ~s(%{&quot;a&quot; =&gt; [1, %{}]})
   end
 
   test "a suspended dashboard user does not take the page down", ctx do
@@ -394,7 +399,7 @@ defmodule NanoWeb.AgentLiveTest do
     :sys.suspend(user)
     on_exit(fn -> :sys.resume(user) end)
 
-    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert html =~ "The dashboard user is not responding"
 
     assert view |> element("#send-text") |> render_submit(%{text: "hi"}) =~
@@ -414,7 +419,7 @@ defmodule NanoWeb.AgentLiveTest do
           something_else: "reason :something_else"
         ] do
       Nano.StateStore.put(ctx.name, %{Nano.StateStore.get(ctx.name) | halted: reason})
-      {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+      {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
       assert html =~ text
       assert has_element?(view, ".flag.halted")
       assert has_element?(view, "button", "Un-halt")
@@ -423,7 +428,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   test "the header shows turns, tokens and context as used / max, ∞ for no limit", ctx do
     {:ok, _} = Nano.Ops.start_agent(ctx.name, model: ctx.model, max_turns: 0, max_context: 5000)
-    {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
 
     assert html =~ ~r|<dt>turns</dt>\s*<dd>0 / ∞</dd>|
     assert html =~ ~r|<dt>context</dt>\s*<dd>0 / 5,000</dd>|
@@ -436,7 +441,7 @@ defmodule NanoWeb.AgentLiveTest do
     old = Map.drop(Nano.StateStore.get(ctx.name), [:max_context, :context_used])
     Nano.StateStore.put(ctx.name, old)
 
-    {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert html =~ ~r|<dt>context</dt>\s*<dd>|
 
     assert %{"budget" => %{}} =
@@ -447,5 +452,138 @@ defmodule NanoWeb.AgentLiveTest do
     assert NanoWeb.Components.limit(12, 0) == "12 / ∞"
     assert NanoWeb.Components.limit(2652, 3_000_000) == "2,652 / 3,000,000"
     assert NanoWeb.Components.limit(nil, nil) == "– / –"
+  end
+
+  ## Reading view
+
+  defp reading?(view, selector, text \\ nil),
+    do: has_element?(view, "#timeline.reading " <> selector, text)
+
+  test "the reading view is the default; the toggle switches views and is kept in the URL", ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert has_element?(view, "#timeline.reading")
+    assert has_element?(view, "nav.views a.current", "reading")
+
+    view |> element("nav.views a", "debug") |> render_click()
+    assert_patch(view, "/agents/#{ctx.name}?view=debug")
+    assert has_element?(view, "#timeline.debug li.started")
+    assert has_element?(view, "nav.views a.current", "debug")
+
+    view |> element("nav.views a", "reading") |> render_click()
+    assert_patch(view, "/agents/#{ctx.name}")
+    assert reading?(view, "li.r.state", "started")
+    refute has_element?(view, "#timeline li.entry")
+
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
+    assert has_element?(view, "#timeline.debug")
+  end
+
+  test "a scripted turn reads as a story, from the backlog and live", ctx do
+    {_pid, _id} = start!(ctx, start_idle: false)
+    Fake.push(ctx.model, text: "Started.")
+    await(:turn_ended)
+
+    {:ok, live_view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    script_turn(ctx)
+    NanoAgent.notify(ctx.name, {:question, 6, 7})
+    await(:turn_ended)
+    {:ok, backlog_view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    # The live view gets the agent's broadcasts on its own schedule.
+    eventually(fn -> reading?(live_view, "li.r.says .prose", "The answer is 42.") end)
+
+    for view <- [backlog_view, live_view] do
+      assert reading?(view, "li.r.state", "started")
+      assert reading?(view, "li.r.note", "Your process has just started.")
+      assert reading?(view, "li.r.event pre", "{:question, 6, 7}")
+      assert reading?(view, "li.r.says .prose", "Let me look.")
+      assert reading?(view, "li.r.says .prose", "The answer is 42.")
+      # The code and its result as one unit.
+      assert reading?(view, "li.r.eval pre.code span.st", ~s|"hello from eval"|)
+      assert reading?(view, "li.r.eval .result pre", "42")
+      assert reading?(view, "li.r.eval .io pre", "hello from eval")
+      assert reading?(view, "li.r.eval .r-label", ~r/ok · \d+ ms/)
+      # The plumbing is left out.
+      html = view |> element("#timeline") |> render()
+      refute html =~ "model request"
+      refute html =~ "turn ended"
+      refute html =~ "Used so far"
+      refute html =~ ~s(class="seq")
+    end
+  end
+
+  test "each kind of reading item, from the backlog and live", ctx do
+    {_pid, id} = start!(ctx)
+    agent = %{id: id, name: ctx.name}
+
+    entries = fn n ->
+      [
+        {:tool_call,
+         %{name: "eval", call_id: "e#{n}", call_seq: 1, arguments: %{"code" => "1 + :a"}}},
+        {:tool_result,
+         %{
+           call_id: "e#{n}",
+           name: "eval",
+           ok: false,
+           duration_ms: 3,
+           result: "** (ArithmeticError) bad",
+           io: ""
+         }},
+        {:tool_call,
+         %{
+           name: "eval",
+           call_id: "r#{n}",
+           call_seq: 2,
+           arguments: %{"code" => "Process.sleep(1)"}
+         }},
+        {:tool_call, %{name: "idle", call_id: "i#{n}", call_seq: 3, arguments: %{}}},
+        {:tool_call,
+         %{name: "idle", call_id: "w#{n}", call_seq: 4, arguments: %{"wakeup_after" => 5000}}},
+        {:model_response, %{request_id: n, text: "Plain words.", reasoning: "Thinking it over."}},
+        {:model_response,
+         %{request_id: n, text: nil, tool_calls: [%{"function" => %{"name" => "idle"}}]}},
+        {:agent_started, %{restarted: true, exit_reason: ":killed", halted: "restart_brake"}},
+        {:harness_note,
+         %{text: "Too many restarts, so I have halted you: I will not call the model."}},
+        {:harness_note, %{text: "An operator un-halted you."}},
+        {:model_error, %{request_id: n, status: 500, body: "upstream broke", retry: false}},
+        {:model_error, %{request_id: n, status: 502, body: "retried quietly", retry: true}},
+        {:model_request, %{request_id: n, budget_note: "<harness>Used so far: 1 turns</harness>"}}
+      ]
+    end
+
+    for {type, fields} <- entries.(1), do: Nano.Log.write(agent, type, fields)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+
+    check = fn count ->
+      n = fn selector, text ->
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#timeline.reading " <> selector)
+        |> Enum.count(&(LazyHTML.text(&1) =~ text))
+      end
+
+      assert n.("li.r.eval.failed", "ArithmeticError") == count
+      assert n.("li.r.eval.running", "running…") == count
+      assert n.("li.r.idle", "idle") == 2 * count
+      assert n.("li.r.idle", "wake after 5000 ms") == count
+      assert n.("li.r.says details.reasoning", "Thinking it over.") == count
+      assert n.("li.r.says .prose", "Plain words.") == count
+      assert n.("li.r.state", "restarted") == count
+      assert n.("li.r.state .badge.halted", "restart_brake") == count
+      assert n.("li.r.note.halt", "so I have halted you") == count
+      assert n.("li.r.note.halt", "un-halted you") == count
+      assert n.("li.r.state.error", "upstream broke") == count
+      assert n.("li", "retried quietly") == 0
+      assert n.("li", "Used so far") == 0
+    end
+
+    check.(1)
+    refute has_element?(view, "li.r.says details.reasoning[open]")
+
+    for {type, fields} <- entries.(2), do: Nano.Log.write(agent, type, fields)
+    await(:model_request)
+    check.(2)
   end
 end
