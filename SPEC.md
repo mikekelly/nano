@@ -131,8 +131,9 @@ This node runs in a disposable Docker container. You run as {{os_user}}
 on {{os}}. Network access: {{network_policy}}. You have a budget of
 {{max_turns}} turns and {{max_tokens}} tokens; when it runs out I stop
 calling the model. Each call to the model counts as one turn of that
-budget, and tokens are counted across all calls. With each delivery of
-events I tell you how much of the budget you have used.
+budget, and tokens are counted across all calls. Whenever I deliver
+events or a note of my own, I tell you how much of the budget you have
+used.
 
 If your process dies, I restart it, restore your history and bindings,
 and tell you what happened. Your pid will change; your name will not.

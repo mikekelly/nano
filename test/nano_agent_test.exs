@@ -67,6 +67,19 @@ defmodule NanoAgentTest do
   defp text(%{"content" => [%{"text" => text}]}), do: text
   defp text(%{"content" => text}), do: text
 
+  # A delivered user message without its closing budget line, checking there is exactly one.
+  defp delivery(message) do
+    {lines, [budget]} = message |> text() |> String.split("\n") |> Enum.split(-1)
+
+    assert budget =~
+             ~r/^<harness>Budget used so far: \d+ of \d+ turns, \d+ of \d+ tokens\.<\/harness>$/
+
+    refute Enum.any?(lines, &(&1 =~ "Budget used so far"))
+    Enum.join(lines, "\n")
+  end
+
+  defp budget_line(message), do: message |> text() |> String.split("\n") |> List.last()
+
   defp tool_texts(body), do: for(%{"role" => "tool"} = m <- body["messages"], do: text(m))
 
   # Kills the agent and waits for its supervisor to bring it back; returns the new pid.
@@ -104,7 +117,9 @@ defmodule NanoAgentTest do
     assert [%{"text" => event, "cache_control" => %{"type" => "ephemeral"}}] = user["content"]
     me = inspect(self())
 
-    assert event =~
+    assert [%{"text" => event}] = user["content"]
+
+    assert delivery(%{"content" => event}) =~
              ~r/^<event seq="1" at="\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ">\{:hello, #{Regex.escape(me)}, "are you there\?"\}<\/event>$/
 
     body = request!(ctx.model)
@@ -128,7 +143,7 @@ defmodule NanoAgentTest do
     NanoAgent.notify(ctx.name, :again)
     body = request!(ctx.model)
     assert length(body["messages"]) == 6
-    assert text(List.last(body["messages"])) =~ ~s(<event seq="2")
+    assert delivery(List.last(body["messages"])) =~ ~s(<event seq="2")
   end
 
   test "events received while busy are delivered together in the next turn", ctx do
@@ -146,7 +161,7 @@ defmodule NanoAgentTest do
     Fake.push(ctx.model, text: "ok")
     body = request!(ctx.model)
     assert [_system, _first, %{"role" => "assistant"}, last] = body["messages"]
-    assert [second, third, fourth] = String.split(text(last), "\n")
+    assert [second, third, fourth] = String.split(delivery(last), "\n")
     assert second =~ ~r/^<event seq="2" .*>:second<\/event>$/
     assert third =~ ~r/^<event seq="3" .*>:third<\/event>$/
     assert fourth =~ ~r/^<event seq="4" .*>\{:"\$gen_cast", :fourth\}<\/event>$/
@@ -156,7 +171,9 @@ defmodule NanoAgentTest do
     {pid, _id} = start!(ctx)
     catch_exit(GenServer.call(pid, :status, 50))
     body = request!(ctx.model)
-    assert text(List.last(body["messages"])) =~ ~r/\{:"\$gen_call", \{#PID<.*>, .*\}, :status\}/
+
+    assert delivery(List.last(body["messages"])) =~
+             ~r/\{:"\$gen_call", \{#PID<.*>, .*\}, :status\}/
   end
 
   test "idle ends the turn with an empty tool result; evals before it run first", ctx do
@@ -180,7 +197,7 @@ defmodule NanoAgentTest do
     request!(ctx.model)
     body = request!(ctx.model)
     note = "<harness>No message arrived within 20 ms, so I am waking you as you asked.</harness>"
-    assert text(List.last(body["messages"])) == note
+    assert delivery(List.last(body["messages"])) == note
     assert await(id, :harness_note)["text"] =~ "No message arrived within 20 ms"
   end
 
@@ -192,7 +209,7 @@ defmodule NanoAgentTest do
     request!(ctx.model)
     await(id, :turn_ended, &(&1["reason"] == "idle"))
     send(pid, :poke)
-    assert text(List.last(request!(ctx.model)["messages"])) =~ ~s(<event seq="2")
+    assert delivery(List.last(request!(ctx.model)["messages"])) =~ ~s(<event seq="2")
     await(id, :turn_ended, &(&1["reason"] == "no_tool_call"))
 
     # The wakeup's timer still fires at 100 ms; it must neither wake the agent nor become an event.
@@ -216,7 +233,7 @@ defmodule NanoAgentTest do
     start!(ctx, start_idle: false)
     body = request!(ctx.model)
     note = "<harness>Your process has just started. No message has arrived yet.</harness>"
-    assert text(List.last(body["messages"])) == note
+    assert delivery(List.last(body["messages"])) == note
   end
 
   test "eval captures IO, keeps bindings between calls, and binds me", ctx do
@@ -306,7 +323,7 @@ defmodule NanoAgentTest do
     assert {r2["tool_call_id"], text(r2)} == {c1["id"], exited}
     assert {r3["tool_call_id"], text(r3)} == {c2["id"], exited}
 
-    assert text(note) ==
+    assert delivery(note) ==
              "<harness>Your process exited with reason :killed during or just after eval (tool call 2) and was restarted. " <>
                "Your pid is now #{inspect(new)}; your registered name is unchanged.</harness>"
 
@@ -343,7 +360,7 @@ defmodule NanoAgentTest do
     kill(ctx, id)
     body = request!(ctx.model)
     assert [_system, _event, note] = body["messages"]
-    assert text(note) =~ "exited with reason :killed while waiting for a model response"
+    assert delivery(note) =~ "exited with reason :killed while waiting for a model response"
   end
 
   test "three restarts within 60 s bring the agent back halted; it keeps logging until un-halted",
@@ -375,7 +392,7 @@ defmodule NanoAgentTest do
     body = request!(ctx.model)
     # Notes and events arrive in the order they happened.
     assert [restart3, brake, event, restart4, unhalt] =
-             String.split(text(List.last(body["messages"])), "\n")
+             String.split(delivery(List.last(body["messages"])), "\n")
 
     assert restart3 =~ "<harness>Your process exited with reason :killed while idle"
 
@@ -421,7 +438,7 @@ defmodule NanoAgentTest do
       Fake.push(ctx.model, text: "ok")
       kill(ctx, id, :operator_restart)
 
-      assert text(List.last(request!(ctx.model)["messages"])) =~
+      assert delivery(List.last(request!(ctx.model)["messages"])) =~
                "exited with reason :operator_restart while"
 
       await_nth(id, :turn_ended, n)
@@ -479,13 +496,17 @@ defmodule NanoAgentTest do
 
     NanoAgent.unhalt(ctx.name)
     body = request!(ctx.model)
-    assert [halt, more, unhalt] = String.split(text(List.last(body["messages"])), "\n")
+    assert [halt, more, unhalt] = String.split(delivery(List.last(body["messages"])), "\n")
     max = Application.get_env(:nano, :agent_max_tokens)
     assert halt =~ "You have used 2 of 2 turns and 220 of #{max} tokens, so I have halted you"
     assert more =~ ":more"
 
     assert unhalt ==
              "<harness>An operator un-halted you. Your turn and token counters are reset to zero.</harness>"
+
+    # The budget line shows the counters as reset.
+    assert budget_line(List.last(body["messages"])) ==
+             "<harness>Budget used so far: 0 of 2 turns, 0 of #{max} tokens.</harness>"
 
     :sys.get_state(pid)
     assert %{halted: nil, budget: %{turns_used: 1, tokens_used: 0}} = NanoAgent.info(ctx.name)
@@ -530,7 +551,7 @@ defmodule NanoAgentTest do
     Application.put_env(:nano, :node_max_tokens_per_hour, 1_000_000_000_000)
     NanoAgent.unhalt(ctx.name)
     body = request!(ctx.model)
-    assert [halt, unhalt] = String.split(text(List.last(body["messages"])), "\n")
+    assert [halt, unhalt] = String.split(delivery(List.last(body["messages"])), "\n")
 
     assert halt =~
              ~r/This node has used \d+ tokens in the last hour, reaching its cap of \d+, so I have halted you/
@@ -793,7 +814,7 @@ defmodule NanoAgentTest do
   test "a long exit reason is shortened in the restart note", ctx do
     {_pid, id} = start!(ctx)
     kill(ctx, id, {:big, String.duplicate("x", 5000)})
-    note = text(List.last(request!(ctx.model)["messages"]))
+    note = delivery(List.last(request!(ctx.model)["messages"]))
     assert note =~ "Your process exited with reason {:big, \"xxx"
     assert note =~ "…"
     assert byte_size(note) < 700
@@ -1036,7 +1057,7 @@ defmodule NanoAgentTest do
                  {call["id"], "No result: your process exited before this call completed."}
 
         # The exit it reports is the agent's own, not the stand-ins'.
-        assert text(last) =~
+        assert delivery(last) =~
                  ~r/<event seq="2".*:while_down<\/event>\n<harness>Your process exited with reason :killed during or just after eval \(tool call 1\) and was restarted. Your pid is now #{Regex.escape(inspect(new))};/s
 
         :sys.get_state(new)
@@ -1089,7 +1110,7 @@ defmodule NanoAgentTest do
     NanoAgent.unhalt(ctx.name)
     body = request!(ctx.model)
 
-    assert text(List.last(body["messages"])) =~
+    assert delivery(List.last(body["messages"])) =~
              ~r/<harness>I could not write the harness log, the durable record of what you do, so I have halted you.*<\/harness>\n<harness>An operator un-halted you.<\/harness>$/s
   end
 
@@ -1333,7 +1354,7 @@ defmodule NanoAgentTest do
     Fake.push(ctx.model, text: "ok")
     kill(ctx, NanoAgent.info(ctx.name).id)
 
-    assert text(List.last(request!(ctx.model)["messages"])) =~
+    assert delivery(List.last(request!(ctx.model)["messages"])) =~
              "Your process exited with reason :killed"
   end
 
@@ -1426,5 +1447,63 @@ defmodule NanoAgentTest do
     :sys.get_state(NanoAgent.whereis(ctx.name))
     assert %{halted: :budget, restart_count: 1} = NanoAgent.info(ctx.name)
     refute_receive {:openrouter_request, _, _}, 100
+  end
+
+  ## Budget line on each delivery
+
+  test "each delivery ends with one line of budget used so far; tool results never carry it",
+       ctx do
+    max = Application.get_env(:nano, :agent_max_tokens)
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "1"])
+    Fake.push(ctx.model, text: "done")
+    send(pid, :first)
+    body = request!(ctx.model)
+
+    # Counts before the call the delivery starts.
+    line = "<harness>Budget used so far: 0 of 50 turns, 0 of #{max} tokens.</harness>"
+    assert budget_line(List.last(body["messages"])) == line
+    assert delivery(List.last(body["messages"])) =~ ":first"
+    assert %{"budget_note" => ^line} = await(id, :model_request)
+
+    # A mid-turn call carries only the tool result and has no line.
+    body = request!(ctx.model)
+    assert tool_texts(body) == ["1"]
+    refute Enum.any?(body["messages"], &(&1["role"] == "tool" and text(&1) =~ "Budget"))
+    refute Map.has_key?(await(id, :model_request, &(&1["request_id"] == 2)), "budget_note")
+    await(id, :turn_ended)
+
+    # A batched delivery has one line, after all its events.
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :second)
+    request!(ctx.model)
+    send(pid, :third)
+    send(pid, :fourth)
+    body = request!(ctx.model)
+    last = List.last(body["messages"])
+    assert [_, _] = String.split(delivery(last), "\n")
+
+    assert budget_line(last) ==
+             "<harness>Budget used so far: 3 of 50 turns, 330 of #{max} tokens.</harness>"
+  end
+
+  test "a delivery of harness notes alone also ends with the budget line", ctx do
+    {pid, _id} = start!(ctx)
+    Fake.push(ctx.model, calls: [idle: 20])
+    send(pid, :go)
+    request!(ctx.model)
+    last = List.last(request!(ctx.model)["messages"])
+    assert delivery(last) =~ ~r/^<harness>No message arrived within 20 ms/
+    assert budget_line(last) =~ "Budget used so far: 1 of 50 turns, 110 of"
+  end
+
+  test "the template in the code is the one in SPEC.md", ctx do
+    start!(ctx)
+    [_, spec] = Regex.run(~r/## System prompt.*?```\n(.*?)```/s, File.read!("SPEC.md"))
+    pattern = spec |> Regex.escape() |> String.replace(~r/\\\{\\\{\w+\\\}\\\}/, ".+?")
+    assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
+
+    assert NanoAgent.info(ctx.name).system_prompt =~
+             "Whenever I deliver\nevents or a note of my own, I tell you"
   end
 end

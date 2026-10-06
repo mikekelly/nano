@@ -39,7 +39,10 @@ defmodule NanoAgent do
   This node runs in a disposable Docker container. You run as {{os_user}}
   on {{os}}. Network access: {{network_policy}}. You have a budget of
   {{max_turns}} turns and {{max_tokens}} tokens; when it runs out I stop
-  calling the model.
+  calling the model. Each call to the model counts as one turn of that
+  budget, and tokens are counted across all calls. Whenever I deliver
+  events or a note of my own, I tell you how much of the budget you have
+  used.
 
   If your process dies, I restart it, restore your history and bindings,
   and tell you what happened. Your pid will change; your name will not.
@@ -587,12 +590,18 @@ defmodule NanoAgent do
         s |> halt(:node_budget, text) |> end_turn("budget")
 
       true ->
-        user = %{"role" => "user", "content" => Enum.join(s.pending, "\n")}
+        # Each delivery ends with the budget used so far, not counting the call it starts.
+        used =
+          "#{s.turns_used} of #{s.max_turns} turns, #{s.tokens_used} of #{s.max_tokens} tokens"
+
+        line = "<harness>Budget used so far: #{used}.</harness>"
+        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
         s = if new_turn?, do: %{append(s, user) | pending: []}, else: s
         messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
         id = s.request_id + 1
         size = div(byte_size(Jason.encode!(messages)), 4)
         fields = %{request_id: id, model: s.model, message_count: length(messages)}
+        fields = if new_turn?, do: Map.put(fields, :budget_note, line), else: fields
 
         # No model call whose record could not be written.
         if log(s, :model_request, Map.put(fields, :approx_input_tokens, size)) == :ok do
