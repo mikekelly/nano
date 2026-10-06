@@ -252,10 +252,12 @@ defmodule NanoWeb.ProcessLiveTest do
     refute Nano.Ops.agent(agent).suspended
     refute has_element?(view, "#{row(pid)} .badge.suspended")
 
-    {halted, hpid} = start_agent(ctx, max_turns: 1)
-    Fake.push(ctx.model, text: "first and last")
+    # The agent halts as soon as its last turn is used, so it needs room for a turn after un-halt.
+    {halted, hpid} = start_agent(ctx, max_turns: 2)
+    Fake.push(ctx.model, text: "first")
     NanoAgent.notify(halted, :wake)
     eventually(fn -> Nano.Ops.agent(halted).budget.turns_used == 1 end)
+    Fake.push(ctx.model, text: "last")
     NanoAgent.notify(halted, :again)
     eventually(fn -> Nano.Ops.agent(halted).halted == :budget end)
     send(view.pid, :refresh)

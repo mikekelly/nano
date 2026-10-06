@@ -281,12 +281,14 @@ defmodule NanoWeb.AgentLiveTest do
   end
 
   test "a halted agent is flagged until un-halted", ctx do
-    start!(ctx, max_turns: 1)
+    # The agent halts as soon as its last turn is used, so it needs room for a turn after un-halt.
+    start!(ctx, max_turns: 2)
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
     refute has_element?(view, "button", "Un-halt")
     Fake.push(ctx.model, text: "one")
     NanoAgent.notify(ctx.name, :one)
     await(:turn_ended)
+    Fake.push(ctx.model, text: "last")
     NanoAgent.notify(ctx.name, :two)
     await(:budget_exhausted)
 

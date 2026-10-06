@@ -7,12 +7,14 @@ defmodule NanoAgent do
   so the agent stays responsive (and suspendable) while they run. Internal messages carry
   the task refs or a per-process `tag` ref; everything else that arrives is an event.
 
-  State is a plain map. It is written to `Nano.StateStore` after every callback and before
-  every model request and eval, and a restarted process resumes from it. Nothing in state
-  is a closure, so this module can be recompiled under running agents as long as new code
-  accepts the same map.
+  State is a plain map. It is written to `Nano.StateStore` after every callback, after each
+  model response, and before every model request and eval, and a restarted process resumes
+  from it. Nothing in state is a closure, so this module can be recompiled under running
+  agents as long as new code accepts the same map. `init/1` cannot fail: if restoring
+  crashes, the agent comes up halted, so a broken edit cannot loop the supervisor.
   """
   use GenServer
+  require Logger
 
   @template ~S"""
   I am the GenServer you are running in: deterministic code, not a person, so I
@@ -84,9 +86,10 @@ defmodule NanoAgent do
 
   @doc """
   Starts an agent under `Nano.AgentSupervisor`. Options: `name:` (required; letters, digits,
-  `_`, `.`, `-`), `model:` (default `DEFAULT_MODEL`), `start_idle:` (default true),
+  `_`, `.`, `-`), `model:` (default `DEFAULT_MODEL`), `start_idle:` (boolean, default true),
   `system_prompt:` (a template replacing the default; same `{{placeholders}}`), `max_turns:`,
-  `max_tokens:`.
+  `max_tokens:` (non-negative integers). Returns `{:error, :invalid_name | :invalid_option |
+  :missing_model | :missing_openrouter_api_key}` or the supervisor's result.
   """
   def start(opts) do
     name = opts[:name]
@@ -95,6 +98,9 @@ defmodule NanoAgent do
     cond do
       not (is_binary(name) and name =~ ~r/^[\w.-]+$/) ->
         {:error, :invalid_name}
+
+      not valid_options?(opts) ->
+        {:error, :invalid_option}
 
       model in [nil, ""] ->
         {:error, :missing_model}
@@ -110,6 +116,15 @@ defmodule NanoAgent do
     end
   end
 
+  defp valid_options?(opts) do
+    Enum.all?(
+      [:max_turns, :max_tokens],
+      &(opts[&1] == nil or (is_integer(opts[&1]) and opts[&1] >= 0))
+    ) and
+      opts[:start_idle] in [nil, true, false] and
+      Enum.all?([:model, :system_prompt], &(opts[&1] == nil or is_binary(opts[&1])))
+  end
+
   @doc false
   def start_link(opts),
     do:
@@ -117,10 +132,10 @@ defmodule NanoAgent do
         name: {:via, Registry, {Nano.Registry, {:agent, opts[:name]}}}
       )
 
-  @doc "The agent's pid, or nil (Registry lookup; no call to the agent)."
+  @doc "The agent's live pid, or nil (Registry lookup; no call to the agent)."
   def whereis(name) do
     case Registry.lookup(Nano.Registry, {:agent, name}) do
-      [{pid, _}] -> pid
+      [{pid, _}] -> if Process.alive?(pid), do: pid
       [] -> nil
     end
   end
@@ -128,12 +143,13 @@ defmodule NanoAgent do
   @doc "Casts a term to an agent (pid or name); it arrives as an event, like a plain `send/2`."
   def notify(agent, term), do: GenServer.cast(target(agent), {:notify, term})
 
-  @doc "Clears an agent's halt (budget or restart brake)."
+  @doc "Clears an agent's halt (budget, node budget or restart brake)."
   def unhalt(agent), do: GenServer.cast(target(agent), :unhalt)
 
   @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
-  while the agent is busy or suspended. `cache_hit_rate` is nil until the first response.
+  while the agent is busy or suspended. `halted` is nil, `:budget`, `:node_budget` or
+  `:restart_brake`; `cache_hit_rate` is nil until the first response.
   """
   def info(name) do
     with %{} = s <- Nano.StateStore.get(name) do
@@ -163,6 +179,20 @@ defmodule NanoAgent do
   @doc "Names of all agents in the state store, sorted."
   def list, do: Nano.StateStore.all() |> Enum.map(& &1.name) |> Enum.sort()
 
+  @doc """
+  Kills every task under `Nano.EvalSupervisor` (evals and model requests) started by the
+  agent process `pid`, found by `$callers`. Tasks outlive their agent, so this is how a
+  stopped or restarted agent's work is cleaned up. Returns `:ok`.
+  """
+  def kill_tasks(pid) do
+    for task <- Task.Supervisor.children(Nano.EvalSupervisor),
+        {:dictionary, dict} <- [Process.info(task, :dictionary)],
+        {_, [^pid | _]} <- [List.keyfind(dict, :"$callers", 0)],
+        do: Process.exit(task, :kill)
+
+    :ok
+  end
+
   defp target(pid) when is_pid(pid), do: pid
   defp target(name), do: {:via, Registry, {Nano.Registry, {:agent, name}}}
 
@@ -171,36 +201,37 @@ defmodule NanoAgent do
   ## Start and restart
 
   @impl true
-  def init(opts) do
-    Nano.StateStore.watch(opts[:name], self())
-
-    # The supervisor restarts us with the same opts, so a matching id means this is a restart.
-    id = opts[:id]
-
-    state =
-      case Nano.StateStore.get(opts[:name]) do
-        %{id: ^id} = saved -> restore(saved)
-        _ -> fresh(opts)
-      end
-
-    {:ok, save(state), {:continue, :start}}
-  end
+  def init(opts), do: {:ok, start_state(opts), {:continue, :start}}
 
   @impl true
   def handle_continue(:start, s), do: noreply(maybe_start_turn(s))
 
-  defp fresh(opts) do
-    s = %{
+  defp start_state(opts) do
+    id = opts[:id]
+    Nano.StateStore.watch(opts[:name], self())
+
+    # The supervisor restarts us with the same opts, so a matching id means this is a restart.
+    case Nano.StateStore.get(opts[:name]) do
+      %{id: ^id} = saved -> restore(saved)
+      _ -> fresh(opts)
+    end
+    |> save()
+  catch
+    kind, reason -> broken(opts, Exception.format(kind, reason, __STACKTRACE__))
+  end
+
+  defp base(opts) do
+    %{
       id: opts[:id],
       name: opts[:name],
       model: opts[:model],
       pid: self(),
       tag: make_ref(),
+      template: opts[:system_prompt],
       system_prompt: nil,
       transcript: [],
-      bindings: [me: self()],
+      bindings: [],
       status: :idle,
-      activity: :idle,
       pending: [],
       halted: nil,
       max_turns: opts[:max_turns] || env(:agent_max_turns),
@@ -219,11 +250,14 @@ defmodule NanoAgent do
       idle_called: false,
       wakeup_after: nil,
       wakeup: nil,
-      model_task: nil,
-      eval: nil
+      task: nil,
+      spawned: []
     }
+  end
 
-    s = %{s | system_prompt: render(opts[:system_prompt] || @template, s)}
+  defp fresh(opts) do
+    s = base(opts)
+    s = %{s | system_prompt: render(s)}
 
     log(
       s,
@@ -238,48 +272,97 @@ defmodule NanoAgent do
 
   defp restore(saved) do
     reason = Nano.StateStore.exit_reason(saved.name, saved.pid) || :unknown
-    # A model request or eval still running for the previous process has no one to report to.
-    for %Task{pid: pid} <- [saved.model_task, saved.eval && saved.eval.task],
-        do: Process.exit(pid, :kill)
-
+    kill_tasks(saved.pid)
     now = System.monotonic_time(:millisecond)
-    restarts = if reason == :operator_restart, do: saved.restarts, else: [now | saved.restarts]
-    restarts = Enum.filter(restarts, &(&1 > now - 60_000))
+    restarts = Enum.filter([now | saved.restarts], &(&1 > now - 60_000))
+    brake? = saved.halted == nil and length(restarts) >= 3
 
     s = %{
-      saved
-      | pid: self(),
-        tag: make_ref(),
-        transcript: repair(saved.transcript),
-        bindings: Keyword.put(saved.bindings, :me, self()),
-        status: :idle,
-        activity: :idle,
+      new_process(saved)
+      | transcript: repair(saved.transcript),
         restart_count: saved.restart_count + 1,
-        restarts: restarts,
-        halted: saved.halted || if(length(restarts) >= 3, do: :restart_brake),
-        calls: [],
-        idle_called: false,
-        wakeup: nil,
-        model_task: nil,
-        eval: nil
+        restarts: restarts
     }
+
+    s = %{s | system_prompt: render(s)}
+    started = Map.take(s, [:id, :name, :pid, :model, :system_prompt, :restart_count])
 
     log(
       s,
       :agent_started,
-      Map.take(s, [:id, :name, :pid, :model, :system_prompt, :restart_count, :halted])
-      |> Map.merge(%{restarted: true, exit_reason: inspect(reason, inspect_opts())})
+      Map.merge(started, %{
+        restarted: true,
+        exit_reason: brief(reason),
+        halted: if(brake?, do: :restart_brake, else: s.halted)
+      })
     )
 
-    note(
-      s,
-      "Your process exited with reason #{inspect(reason, inspect_opts())} #{doing(saved.activity)} and was restarted. " <>
-        "Your pid is now #{inspect(self())}; your registered name is unchanged."
-    )
+    s =
+      note(
+        s,
+        "Your process exited with reason #{brief(reason)} #{doing(saved)} and was restarted. " <>
+          "Your pid is now #{inspect(self())}; your registered name is unchanged."
+      )
+
+    if brake?,
+      do:
+        halt(
+          s,
+          :restart_brake,
+          "Your process has restarted #{length(restarts)} times within 60 seconds"
+        ),
+      else: s
   end
 
-  defp doing({:eval, n}), do: "during eval call #{n}"
-  defp doing(:model_request), do: "while waiting for a model response"
+  # Init must not fail: a crash here never reaches the restart brake, and the supervisor would
+  # burn through its restart limit in a tight loop, taking every other agent with it. Come up
+  # halted instead, with the saved history if it can be used.
+  defp broken(opts, error) do
+    id = opts[:id]
+
+    log(%{id: id, name: opts[:name]}, :agent_started, %{
+      id: id,
+      name: opts[:name],
+      pid: self(),
+      model: opts[:model],
+      restarted: true,
+      error: brief(error),
+      halted: :restart_brake
+    })
+
+    text = "I failed while starting your process (#{brief(error)})"
+
+    s =
+      try do
+        %{id: ^id} = saved = Nano.StateStore.get(opts[:name])
+        opts |> base() |> Map.merge(saved) |> new_process() |> halt(:restart_brake, text)
+      catch
+        _, _ -> opts |> base() |> halt(:restart_brake, text)
+      end
+
+    try do
+      save(s)
+    catch
+      _, _ -> s
+    end
+  end
+
+  # The fields that belong to a process rather than to the agent's history.
+  defp new_process(s),
+    do: %{
+      s
+      | pid: self(),
+        tag: make_ref(),
+        status: :idle,
+        task: nil,
+        calls: [],
+        idle_called: false,
+        wakeup: nil
+    }
+
+  defp doing(%{task: %{kind: :eval, n: n}}), do: "during eval (tool call #{n})"
+  defp doing(%{status: :thinking}), do: "while waiting for a model response"
+  defp doing(%{status: :running_tool}), do: "while handling your tool calls"
   defp doing(_), do: "while idle"
 
   # Any tool call left without a result (the process died mid-step) gets one, so the
@@ -303,7 +386,8 @@ defmodule NanoAgent do
     end
   end
 
-  defp render(template, s) do
+  # Rendered at start and again at every restart, so the pid it states is always current.
+  defp render(s) do
     vars = %{
       "pid" => inspect(self()),
       "name" => s.name,
@@ -317,7 +401,7 @@ defmodule NanoAgent do
       "max_tokens" => s.max_tokens
     }
 
-    Enum.reduce(vars, template, fn {k, v}, acc ->
+    Enum.reduce(vars, s.template || @template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
     end)
   end
@@ -339,22 +423,14 @@ defmodule NanoAgent do
   def handle_cast(:unhalt, %{halted: nil} = s), do: noreply(s)
 
   def handle_cast(:unhalt, s) do
-    {why, s} =
-      case s.halted do
-        :budget ->
-          {"your budget ran out. Your turn and token counters are now reset",
-           %{s | turns_used: 0, tokens_used: 0}}
+    {s, reset} =
+      if s.halted == :budget,
+        do:
+          {%{s | turns_used: 0, tokens_used: 0},
+           " Your turn and token counters are reset to zero."},
+        else: {s, ""}
 
-        :restart_brake ->
-          {"your process was restarted 3 times within 60 seconds", s}
-      end
-
-    s =
-      note(
-        %{s | halted: nil, restarts: []},
-        "An operator un-halted you. I had stopped calling the model because #{why}."
-      )
-
+    s = note(%{s | halted: nil, restarts: []}, "An operator un-halted you.#{reset}")
     noreply(maybe_start_turn(s))
   end
 
@@ -365,34 +441,17 @@ defmodule NanoAgent do
   def handle_call(msg, from, s), do: noreply(event(s, {:"$gen_call", from, msg}))
 
   @impl true
-  def handle_info({ref, result}, %{model_task: %Task{ref: ref}} = s) do
+  def handle_info({ref, result}, %{task: %{task: %Task{ref: ref}}} = s) do
     Process.demonitor(ref, [:flush])
-    noreply(model_done(%{s | model_task: nil}, result))
+    noreply(task_done(s, result))
   end
 
-  def handle_info({:DOWN, ref, :process, _, reason}, %{model_task: %Task{ref: ref}} = s) do
-    error = %{status: nil, body: "model request task exited: " <> inspect(reason, inspect_opts())}
-
-    log(
-      s,
-      :model_error,
-      Map.merge(error, %{request_id: s.request_id, attempt: nil, retry: false})
-    )
-
-    noreply(model_done(%{s | model_task: nil}, {:error, error}))
-  end
-
-  def handle_info({ref, result}, %{eval: %{task: %Task{ref: ref}}} = s) do
-    Process.demonitor(ref, [:flush])
-    noreply(eval_done(s, result))
-  end
-
-  def handle_info({:DOWN, ref, :process, _, reason}, %{eval: %{task: %Task{ref: ref}}} = s),
-    do: noreply(eval_done(s, {:exit, reason}))
+  def handle_info({:DOWN, ref, :process, _, reason}, %{task: %{task: %Task{ref: ref}}} = s),
+    do: noreply(task_done(s, {:exit, reason}))
 
   def handle_info(
         {tag, :eval_timeout, ref},
-        %{tag: tag, eval: %{task: %Task{ref: ref} = task}} = s
+        %{tag: tag, task: %{task: %Task{ref: ref} = task}} = s
       ) do
     result =
       case Task.shutdown(task, :brutal_kill) do
@@ -401,7 +460,7 @@ defmodule NanoAgent do
         exit -> exit
       end
 
-    noreply(eval_done(s, result))
+    noreply(task_done(s, result))
   end
 
   def handle_info({tag, :wakeup, id}, %{tag: tag, wakeup: id} = s) do
@@ -412,6 +471,12 @@ defmodule NanoAgent do
       )
 
     noreply(maybe_start_turn(s))
+  end
+
+  # Failed attempts reported by the model request task, logged here so entries stay in seq order.
+  def handle_info({tag, :model_error, fields}, %{tag: tag} = s) do
+    log(s, :model_error, fields)
+    noreply(s)
   end
 
   # A stale timer (its eval finished, or an event cancelled the wakeup).
@@ -427,24 +492,44 @@ defmodule NanoAgent do
     s = %{
       s
       | event_seq: seq,
-        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)],
-        wakeup: nil
+        wakeup: nil,
+        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
     }
+
+    # queue_length: events waiting for the next turn, this one included.
+    queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
 
     log(s, :event_received, %{
       event_seq: seq,
       message: text,
-      queue_length: length(s.pending),
+      queue_length: queued,
       truncated: truncated
     })
 
     maybe_start_turn(s)
   end
 
-  # Harness notes go ahead of any pending events and are delivered with them.
+  # Harness notes queue up with events, in the order things happened.
   defp note(s, text) do
     log(s, :harness_note, %{text: text})
-    %{s | pending: ["<harness>#{text}</harness>" | s.pending]}
+    %{s | pending: s.pending ++ ["<harness>#{text}</harness>"]}
+  end
+
+  defp halt(s, why, text) do
+    if why != :restart_brake,
+      do:
+        log(s, :budget_exhausted, %{
+          scope: if(why == :budget, do: "agent", else: "node"),
+          turns_used: s.turns_used,
+          tokens_used: s.tokens_used,
+          max_turns: s.max_turns,
+          max_tokens: s.max_tokens
+        })
+
+    note(
+      %{s | halted: why},
+      text <> ", so I have halted you: I will not call the model until an operator un-halts you."
+    )
   end
 
   ## The loop
@@ -454,13 +539,19 @@ defmodule NanoAgent do
 
   defp request(s, new_turn?) do
     node_used = Nano.StateStore.node_tokens_last_hour()
+    cap = env(:node_max_tokens_per_hour)
 
     cond do
-      s.turns_used >= s.max_turns or s.tokens_used >= s.max_tokens ->
-        exhausted(s, "agent", node_used)
+      s.halted ->
+        end_turn(s, "budget")
 
-      node_used >= env(:node_max_tokens_per_hour) ->
-        exhausted(s, "node", node_used)
+      node_used >= cap ->
+        s
+        |> halt(
+          :node_budget,
+          "This node has used #{node_used} tokens in the last hour, reaching its cap of #{cap}"
+        )
+        |> end_turn("budget")
 
       true ->
         s =
@@ -482,44 +573,25 @@ defmodule NanoAgent do
           approx_input_tokens: div(byte_size(Jason.encode!(messages)), 4)
         })
 
-        s =
-          save(%{
-            s
-            | status: :thinking,
-              activity: :model_request,
-              request_id: id,
-              turns_used: s.turns_used + 1
-          })
+        s = save(%{s | status: :thinking, request_id: id, turns_used: s.turns_used + 1})
 
         task =
           Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :call_model, [
-            Map.take(s, [:id, :name]),
+            self(),
+            s.tag,
             s.model,
             messages,
             id
           ])
 
-        %{s | model_task: task}
+        %{s | task: %{kind: :model, task: task}}
     end
   end
 
-  defp exhausted(s, scope, node_used) do
-    log(s, :budget_exhausted, %{
-      scope: scope,
-      turns_used: s.turns_used,
-      tokens_used: s.tokens_used,
-      max_turns: s.max_turns,
-      max_tokens: s.max_tokens,
-      node_tokens_last_hour: node_used,
-      node_max_tokens_per_hour: env(:node_max_tokens_per_hour)
-    })
-
-    end_turn(%{s | halted: :budget}, "budget")
-  end
-
   @doc false
-  # Runs in a task: one model call with up to 3 attempts for transient errors.
-  def call_model(agent, model, messages, request_id, attempt \\ 1) do
+  # Runs in a task: one model call with up to 3 attempts for transient errors. Failed attempts
+  # are reported to the agent, which logs them.
+  def call_model(agent, tag, model, messages, request_id, attempt \\ 1) do
     started = System.monotonic_time(:millisecond)
 
     case Nano.OpenRouter.chat(model, messages, @tools) do
@@ -529,36 +601,55 @@ defmodule NanoAgent do
       {:error, error} ->
         retry = attempt < 3 and Nano.OpenRouter.transient?(error)
 
-        Nano.Log.write(
+        send(
           agent,
-          :model_error,
-          Map.merge(error, %{request_id: request_id, attempt: attempt, retry: retry})
+          {tag, :model_error,
+           Map.merge(error, %{request_id: request_id, attempt: attempt, retry: retry})}
         )
 
         if retry do
           Process.sleep(Application.get_env(:nano, :openrouter_backoff_ms, 1_000) * attempt)
-          call_model(agent, model, messages, request_id, attempt + 1)
+          call_model(agent, tag, model, messages, request_id, attempt + 1)
         else
           {:error, error}
         end
     end
   end
 
-  defp model_done(s, {:error, _}), do: end_turn(s, "error")
+  defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
 
-  defp model_done(s, {:ok, r}) do
-    usage = r.usage
-    prompt = usage["prompt_tokens"] || 0
-    completion = usage["completion_tokens"] || 0
-    cached = get_in(usage, ["prompt_tokens_details", "cached_tokens"]) || 0
-    calls = r.message["tool_calls"] || []
+  defp task_done(%{task: %{kind: :eval} = t} = s, result),
+    do: eval_done(%{s | task: nil}, t, result)
+
+  defp model_done(s, {:exit, reason}) do
+    body = "model request task exited: " <> brief(reason)
+
+    log(s, :model_error, %{
+      request_id: s.request_id,
+      status: nil,
+      body: body,
+      attempt: nil,
+      retry: false
+    })
+
+    model_done(s, {:error, body})
+  end
+
+  defp model_done(s, {:error, _}), do: s |> check_budget() |> end_turn("error")
+
+  defp model_done(s, {:ok, %{message: msg} = r}) do
+    prompt = r.usage["prompt_tokens"] || 0
+    completion = r.usage["completion_tokens"] || 0
+    cached = get_in(r.usage, ["prompt_tokens_details", "cached_tokens"]) || 0
+    calls = msg["tool_calls"] || []
     Nano.StateStore.add_node_tokens(prompt + completion)
 
     log(s, :model_response, %{
       request_id: s.request_id,
       latency_ms: r.latency_ms,
       finish_reason: r.finish_reason,
-      text: r.message["content"],
+      text: msg["content"],
+      reasoning: msg["reasoning"],
       tool_calls: calls,
       provider: r.provider,
       prompt_tokens: prompt,
@@ -567,16 +658,41 @@ defmodule NanoAgent do
       cost: r.cost
     })
 
-    s = %{
-      s
-      | tokens_used: s.tokens_used + prompt + completion,
-        cost: s.cost + (r.cost || 0),
-        responses: s.responses + 1,
-        cache_hits: s.cache_hits + if(cached > 0, do: 1, else: 0)
-    }
+    # Null content is not valid in a later request; tool calls and reasoning details go back as sent.
+    message =
+      %{"role" => "assistant", "content" => msg["content"] || ""}
+      |> Map.merge(
+        Map.take(msg, ["tool_calls", "reasoning_details"])
+        |> Map.reject(fn {_, v} -> v in [nil, []] end)
+      )
 
-    s = append(s, Map.take(r.message, ["role", "content", "tool_calls"]))
-    if calls == [], do: end_turn(s, "no_tool_call"), else: run_calls(%{s | calls: calls})
+    s =
+      %{
+        s
+        | status: :running_tool,
+          calls: calls,
+          tokens_used: s.tokens_used + prompt + completion,
+          cost: s.cost + (r.cost || 0),
+          responses: s.responses + 1,
+          cache_hits: s.cache_hits + if(cached > 0, do: 1, else: 0)
+      }
+      |> append(message)
+      |> check_budget()
+      |> save()
+
+    if calls == [], do: end_turn(s, "no_tool_call"), else: run_calls(s)
+  end
+
+  # Halts when the agent's own budget is reached; tool calls already returned still run.
+  defp check_budget(s) do
+    if s.halted == nil and (s.turns_used >= s.max_turns or s.tokens_used >= s.max_tokens),
+      do:
+        halt(
+          s,
+          :budget,
+          "You have used #{s.turns_used} of #{s.max_turns} turns and #{s.tokens_used} of #{s.max_tokens} tokens"
+        ),
+      else: s
   end
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
@@ -592,20 +708,42 @@ defmodule NanoAgent do
     s = %{s | calls: rest, call_seq: s.call_seq + 1}
     name = call["function"]["name"]
     raw = call["function"]["arguments"]
-    args = if raw in [nil, ""], do: {:ok, %{}}, else: Jason.decode(raw)
     started = System.monotonic_time(:millisecond)
+
+    args =
+      cond do
+        is_map(raw) -> {:ok, raw}
+        raw in [nil, ""] -> {:ok, %{}}
+        is_binary(raw) -> Jason.decode(raw)
+        true -> :error
+      end
+
+    wakeup = with {:ok, %{} = a} <- args, do: a["wakeup_after"], else: (_ -> nil)
+    idle_called = s.idle_called
 
     log(s, :tool_call, %{
       call_id: call["id"],
       call_seq: s.call_seq,
       name: name,
-      arguments: with({:ok, map} <- args, do: map, else: (_ -> raw)),
+      arguments: with({:ok, a} <- args, do: a, else: (_ -> raw)),
       started_at: DateTime.utc_now() |> DateTime.to_iso8601()
     })
 
     case {name, args} do
+      _ when idle_called ->
+        run_calls(
+          tool_result(
+            s,
+            call,
+            started,
+            false,
+            "Not run: an earlier idle call in this response ended your turn."
+          )
+        )
+
       {"eval", {:ok, %{"code" => code}}} when is_binary(code) ->
-        s = save(%{s | status: :running_tool, activity: {:eval, s.call_seq}})
+        task = %{kind: :eval, n: s.call_seq, call: call, started: started}
+        s = save(%{s | status: :running_tool, task: task})
 
         task =
           Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :run_eval, [
@@ -614,15 +752,22 @@ defmodule NanoAgent do
           ])
 
         Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, env(:eval_timeout_ms))
-        %{s | eval: %{task: task, call: call, started: started}}
+        %{s | task: Map.put(s.task, :task, task)}
 
-      {"idle", {:ok, %{"wakeup_after" => ms}}} when not is_integer(ms) or ms < 0 ->
-        error = "Error: wakeup_after must be a non-negative integer (ms)."
-        run_calls(tool_result(s, call, started, false, error))
-
-      {"idle", {:ok, %{} = a}} ->
+      {"idle", {:ok, %{}}} when is_nil(wakeup) or wakeup in 0..4_294_967_295 ->
         s = tool_result(s, call, started, true, "")
-        run_calls(%{s | idle_called: true, wakeup_after: a["wakeup_after"]})
+        run_calls(%{s | idle_called: true, wakeup_after: wakeup})
+
+      {"idle", {:ok, %{}}} ->
+        run_calls(
+          tool_result(
+            s,
+            call,
+            started,
+            false,
+            "Error: wakeup_after must be an integer from 0 to 4294967295 (ms)."
+          )
+        )
 
       _ ->
         error =
@@ -640,11 +785,23 @@ defmodule NanoAgent do
 
   defp end_turn(s, reason) do
     log(s, :turn_ended, %{reason: reason})
-    maybe_start_turn(%{s | status: :idle, activity: :idle, calls: [], idle_called: false})
+    maybe_start_turn(%{s | status: :idle, calls: [], idle_called: false})
   end
 
-  @doc false
-  # Runs in a task under Nano.EvalSupervisor, with IO captured through a StringIO group leader.
+  @doc """
+  Evaluates `code` against `bindings` in the calling process, with IO captured through a
+  `StringIO` group leader and compiler diagnostics collected. Never raises. Returns
+  `{result, output, spawned}`:
+
+    * `result`: `{:ok, inspected_value, new_bindings}` or `{:error, formatted}`, where
+      `formatted` reads as IEx would show it: the blamed exception banner, any compiler
+      diagnostics, then the stacktrace pruned to the evaluated code and what it called
+    * `output`: captured IO, followed on success by any compiler warnings, as a string
+    * `spawned`: pids of processes the code started that are still alive
+
+  Processes the code started keep running; their later output goes to the caller's group
+  leader. The harness runs this in a task under `Nano.EvalSupervisor`.
+  """
   def run_eval(code, bindings) do
     gl = Process.group_leader()
     {:ok, io} = StringIO.open("")
@@ -657,38 +814,88 @@ defmodule NanoAgent do
           {value, bindings} = Code.eval_string(code, bindings)
           {:ok, inspect(value, [pretty: true] ++ inspect_opts()), bindings}
         catch
-          kind, reason -> {:error, Exception.format(kind, reason, __STACKTRACE__)}
+          kind, reason -> {:error, kind, reason, __STACKTRACE__}
         end
       end)
 
+    diagnostics =
+      Enum.map_join(diagnostics, &"#{&1.severity}: #{&1.message}#{at_line(&1.position)}\n")
+
     Process.group_leader(self(), gl)
 
-    # Processes the eval spawned inherited the capture device; send their later output to the node's.
-    for p <- Process.list(), Process.info(p, :group_leader) == {:group_leader, io} do
-      try do
-        Process.group_leader(p, gl)
-      catch
-        _, _ -> :ok
+    # Processes the eval started inherited the capture device, which is about to close.
+    spawned =
+      for p <- Process.list(), Process.info(p, :group_leader) == {:group_leader, io} do
+        try do
+          Process.group_leader(p, gl)
+        catch
+          _, _ -> :ok
+        end
+
+        p
       end
-    end
 
     {:ok, {_, output}} = StringIO.close(io)
-    {result, output <> Enum.map_join(diagnostics, &"#{&1.severity}: #{&1.message}\n")}
-  end
-
-  defp eval_done(%{eval: %{call: call, started: started}} = s, result) do
-    s = %{s | eval: nil}
 
     case result do
-      {{:ok, value, bindings}, io} ->
-        tool_result(%{s | bindings: bindings}, call, started, true, value, io)
+      {:ok, _, _} ->
+        {result, output <> diagnostics, spawned}
 
-      {{:error, error}, io} ->
-        tool_result(s, call, started, false, error, io)
+      {:error, kind, reason, stack} ->
+        {{:error, format_error(kind, reason, stack, diagnostics)}, output, spawned}
+    end
+  end
+
+  # As IEx.Evaluator does: blame the exception for a richer message, and keep only the frames
+  # above the evaluator's (the model's code and what it called). Compiler diagnostics go
+  # straight under the banner, where truncation cannot reach them first.
+  defp format_error(kind, reason, stack, diagnostics) do
+    {reason, stack} =
+      case reason do
+        %CompileError{line: 0, description: "cannot compile file" <> _} ->
+          {%CompileError{description: "cannot compile code"}, []}
+
+        _ ->
+          Exception.blame(kind, reason, stack)
+      end
+
+    frames =
+      case stack |> Enum.reverse() |> Enum.drop_while(&(elem(&1, 0) != :elixir_compiler)) do
+        [] -> stack
+        frames -> Enum.reverse(frames)
+      end
+
+    stacktrace = if frames == [], do: "", else: Exception.format_stacktrace(frames)
+    Exception.format_banner(kind, reason, stack) <> "\n" <> diagnostics <> stacktrace
+  end
+
+  defp at_line({line, _column}), do: " (line #{line})"
+  defp at_line(line) when is_integer(line) and line > 0, do: " (line #{line})"
+  defp at_line(_), do: ""
+
+  defp eval_done(s, %{call: call, started: started}, result) do
+    case result do
+      {{:ok, value, bindings}, io, spawned} ->
+        tool_result(
+          %{s | bindings: bindings, spawned: s.spawned ++ spawned},
+          call,
+          started,
+          true,
+          value,
+          io
+        )
+
+      {{:error, error}, io, spawned} ->
+        tool_result(%{s | spawned: s.spawned ++ spawned}, call, started, false, error, io)
 
       :timeout ->
-        timeout = "Timeout: the eval was killed after #{env(:eval_timeout_ms)} ms."
-        tool_result(s, call, started, false, timeout)
+        tool_result(
+          s,
+          call,
+          started,
+          false,
+          "Timeout: the eval was killed after #{env(:eval_timeout_ms)} ms."
+        )
 
       {:exit, reason} ->
         tool_result(s, call, started, false, inspect({:exit, reason}, inspect_opts()))
@@ -739,11 +946,24 @@ defmodule NanoAgent do
     end
   end
 
+  # A short rendering of an exit reason or error, for notes: harness stacktraces stay in the log.
+  defp brief(term) do
+    text = if is_binary(term), do: term, else: inspect(term, limit: 10, printable_limit: 300)
+    if String.length(text) > 300, do: String.slice(text, 0, 300) <> "…", else: text
+  end
+
   defp inspect_opts, do: [limit: 500, printable_limit: env(:result_max_bytes)]
 
-  defp log(s, type, fields), do: Nano.Log.write(s, type, fields)
+  # Best effort: a log that cannot be written must not take the agent down.
+  defp log(s, type, fields) do
+    Nano.Log.write(s, type, fields)
+  catch
+    kind, reason ->
+      Logger.error("#{s.name}: could not log #{type}: " <> Exception.format_banner(kind, reason))
+  end
 
   defp save(s) do
+    s = %{s | spawned: Enum.filter(s.spawned, &Process.alive?/1)}
     Nano.StateStore.put(s.name, s)
     s
   end

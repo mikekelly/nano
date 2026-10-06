@@ -56,8 +56,20 @@ defmodule Nano.StateStore do
     end
   end
 
-  @doc "Next per-agent log sequence number."
-  def next_seq(id), do: :ets.update_counter(@table, {:seq, id}, 1, {{:seq, id}, 0})
+  @doc """
+  Next per-agent log sequence number. A missing counter (a new agent, or this store was
+  restarted) starts from the last seq in the agent's log file, so seq never goes back.
+  """
+  def next_seq(id) do
+    key = {:seq, id}
+
+    unless :ets.member(@table, key) do
+      last = id |> Nano.Log.read() |> List.last()
+      :ets.insert_new(@table, {key, if(last, do: last["seq"], else: 0)})
+    end
+
+    :ets.update_counter(@table, key, 1)
+  end
 
   @doc "Adds tokens to the node-wide rolling-hour counter."
   def add_node_tokens(n) do

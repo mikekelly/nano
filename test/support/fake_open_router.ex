@@ -19,8 +19,9 @@ defmodule Nano.FakeOpenRouter do
   queued waits until something is pushed, so a test can hold an agent in `:thinking`.
 
   Response options: `text:`, `calls:` (a list of `{:eval, code}`, `{:idle, ms | nil}`, or
-  `{name, args}` with args a map or a raw JSON string), `usage: {prompt, completion, cached}`
-  (default `{100, 10, 0}`), `cost:` (default 0.001), `provider:`, `finish_reason:`. Or
+  `{name, args}` with args a map, a raw JSON string, or `{:raw, term}` to send `term` as the
+  arguments value itself), `usage: {prompt, completion, cached}` (default `{100, 10, 0}`),
+  `cost:` (default 0.001), `provider:`, `finish_reason:`, `reasoning:`, `reasoning_details:`. Or
   `status:` (and optionally `body:`) for an error response. The success shape mirrors what
   OpenRouter returned for anthropic/claude-haiku-4.5 in October 2026.
   """
@@ -109,8 +110,12 @@ defmodule Nano.FakeOpenRouter do
           end
 
         message =
-          %{"role" => "assistant", "content" => opts[:text], "refusal" => nil, "reasoning" => nil}
+          %{"role" => "assistant", "content" => opts[:text], "refusal" => nil}
+          |> Map.put("reasoning", opts[:reasoning])
           |> then(&if calls == [], do: &1, else: Map.put(&1, "tool_calls", calls))
+          |> then(
+            &if d = opts[:reasoning_details], do: Map.put(&1, "reasoning_details", d), else: &1
+          )
 
         {200,
          %{
@@ -139,6 +144,7 @@ defmodule Nano.FakeOpenRouter do
     end
   end
 
+  defp arguments(_, {:raw, term}), do: term
   defp arguments(:eval, code), do: Jason.encode!(%{code: code})
   defp arguments(:idle, nil), do: "{}"
   defp arguments(:idle, ms), do: Jason.encode!(%{wakeup_after: ms})
