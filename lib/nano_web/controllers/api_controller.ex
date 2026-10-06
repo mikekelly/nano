@@ -1,0 +1,302 @@
+defmodule NanoWeb.ApiController do
+  @moduledoc """
+  The JSON API: a thin skin over `Nano.Ops` and `Nano.User`, so it can do exactly what the
+  dashboard and the shell can. Pids go out as strings like `"#PID<0.231.0>"`, terms come in
+  as Elixir source and go out as `inspect/2` output, and errors are `{"error": ...}`.
+  """
+  use Phoenix.Controller, formats: [:json]
+
+  alias Nano.{Ops, User}
+
+  @keepalive_ms 15_000
+
+  @endpoints [
+    {"GET", "/api", "This index."},
+    {"GET", "/api/processes",
+     "Live processes outside the standard set (boot-time, OTP and dashboard processes), agents first. " <>
+       "Each: pid, name, kind (agent | user | spawned_by | other), spawned_by (agent name), " <>
+       "current_function, message_queue_len, memory, reductions, agent (info, for agents). " <>
+       "kind other = appeared since boot, belongs to no agent: usually the interesting ones."},
+    {"GET", "/api/processes/:target",
+     "Process.info for one process, plus kind. :target is a URL-encoded pid string, an agent, user or registered name."},
+    {"GET", "/api/agents",
+     "All agents: status, halted, suspended, model, budget used, cost, restart count."},
+    {"POST", "/api/agents",
+     "Start an agent. Body: name, model (default DEFAULT_MODEL), start_idle (default true); " <>
+       "optional system_prompt, max_turns, max_tokens."},
+    {"GET", "/api/agents/:name", "One agent: status, system prompt, budget, restart count."},
+    {"POST", "/api/agents/:name/stop", "Terminate the agent and delete its state."},
+    {"POST", "/api/agents/:name/restart",
+     "Kill the agent with reason :operator_restart; it restarts with its history (not counted by the restart brake)."},
+    {"POST", "/api/agents/:name/resume", "Resume an agent suspended with :sys.suspend/1."},
+    {"POST", "/api/agents/:name/unhalt", "Clear a budget or restart-brake halt."},
+    {"GET", "/api/agents/:name/log?since=:seq",
+     "Log entries with seq > since (default 0), oldest first."},
+    {"GET", "/api/agents/:name/stream?since=:seq",
+     "Log entries with seq > since, then new ones live, as server-sent events (id: seq, data: entry JSON). " <>
+       "Honours Last-Event-ID."},
+    {"POST", "/api/users", "Start a user, or find it if already started. Body: name."},
+    {"POST", "/api/users/:name/say",
+     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text."},
+    {"POST", "/api/users/:name/send_raw",
+     "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
+    {"GET", "/api/users/:name/inbox?clear=true",
+     "Messages the user has received, oldest first: at, term."},
+    {"POST", "/api/eval",
+     "Evaluate Elixir on the node, like bin/rpc. Body: code. Returns result (inspected) and output (printed IO)."}
+  ]
+
+  @conventions "Pids are strings such as \"#PID<0.231.0>\". Wherever a target is expected (to), " <>
+                 "give an agent name, a user name, a registered process name, or a pid string. " <>
+                 "Terms are sent as Elixir source strings and returned as inspect/2 output. " <>
+                 "Request bodies are JSON. Errors are JSON with an error field and, for parse or " <>
+                 "eval failures, the exception in message. Unknown agents, users and processes give 404."
+
+  def index(conn, _params) do
+    json(conn, %{
+      description:
+        "Nano agent sandbox: one BEAM node hosting LLM agents, each a GenServer. " <>
+          "Everything the dashboard can do is here too.",
+      conventions: @conventions,
+      endpoints:
+        for(
+          {method, path, about} <- @endpoints,
+          do: %{method: method, path: path, description: about}
+        )
+    })
+  end
+
+  ## Processes
+
+  def processes(conn, _params), do: json(conn, Enum.map(Ops.processes(), &process_json/1))
+
+  def process(conn, %{"pid" => target}) do
+    case Ops.process(target) do
+      nil -> error(conn, 404, "no such process: #{target}")
+      info -> json(conn, process_json(info))
+    end
+  end
+
+  defp process_json(process) do
+    {kind, spawned_by} =
+      case process.kind do
+        {:spawned_by, agent} -> {"spawned_by", agent}
+        kind -> {kind, nil}
+      end
+
+    process
+    |> Map.merge(%{kind: kind, spawned_by: spawned_by})
+    |> Map.new(fn
+      {key, name} when key in [:name, :registered_name] and is_atom(name) and name != nil ->
+        {key, inspect(name)}
+
+      {key, value} ->
+        {key, encode(value)}
+    end)
+  end
+
+  ## Agents
+
+  def agents(conn, _params), do: json(conn, encode(Ops.agents()))
+
+  def start_agent(conn, params) do
+    opts =
+      for {key, value} <-
+            Map.take(params, ~w(model start_idle system_prompt max_turns max_tokens)),
+          do: {String.to_atom(key), value}
+
+    with {:ok, [name]} <- strings(params, ["name"]) do
+      case Ops.start_agent(name, opts) do
+        {:ok, pid} ->
+          conn |> put_status(201) |> json(encode(Ops.agent(name) || %{name: name, pid: pid}))
+
+        {:error, {:already_started, _}} ->
+          error(conn, 409, "agent already started: #{name}")
+
+        {:error, reason} ->
+          error(conn, 422, "could not start agent: #{inspect(reason)}")
+      end
+    else
+      {:error, field} -> missing(conn, field)
+    end
+  end
+
+  def agent(conn, %{"name" => name}) do
+    case Ops.agent(name) do
+      nil -> error(conn, 404, "no such agent: #{name}")
+      info -> json(conn, encode(info))
+    end
+  end
+
+  def stop_agent(conn, %{"name" => name}), do: lifecycle(conn, name, Ops.stop_agent(name))
+  def restart_agent(conn, %{"name" => name}), do: lifecycle(conn, name, Ops.restart_agent(name))
+  def resume(conn, %{"name" => name}), do: lifecycle(conn, name, Ops.resume(name))
+  def unhalt(conn, %{"name" => name}), do: lifecycle(conn, name, Ops.unhalt(name))
+
+  defp lifecycle(conn, _name, :ok), do: json(conn, %{ok: true})
+  defp lifecycle(conn, name, {:error, :not_found}), do: error(conn, 404, "no such agent: #{name}")
+  defp lifecycle(conn, _name, {:error, reason}), do: error(conn, 500, inspect(reason))
+
+  def log(conn, %{"name" => name} = params) do
+    with {:ok, since} <- since(params["since"]),
+         entries when is_list(entries) <- Ops.log(name, since) do
+      json(conn, entries)
+    else
+      :bad_since -> error(conn, 400, "since must be a non-negative integer")
+      {:error, :not_found} -> error(conn, 404, "no such agent: #{name}")
+    end
+  end
+
+  def stream(conn, %{"name" => name} = params) do
+    with {:ok, since} <-
+           since(List.first(get_req_header(conn, "last-event-id")) || params["since"]),
+         %{id: id} <- Ops.agent(name) do
+      # Subscribe before reading the backlog, so nothing falls between the two.
+      Nano.Log.subscribe(id)
+
+      conn
+      |> put_resp_content_type("text/event-stream")
+      |> put_resp_header("cache-control", "no-cache")
+      |> send_chunked(200)
+      |> sse(Nano.Log.read(id, since), since)
+    else
+      :bad_since -> error(conn, 400, "since must be a non-negative integer")
+      nil -> error(conn, 404, "no such agent: #{name}")
+    end
+  end
+
+  # Sends the backlog, then each live entry as it arrives, until a write fails: that is how a
+  # closed connection shows up, so a keepalive comment is written when nothing else is.
+  defp sse(conn, [entry | rest], last) do
+    seq = entry[:seq] || entry["seq"]
+
+    if seq <= last,
+      do: sse(conn, rest, last),
+      else: write(conn, "id: #{seq}\ndata: #{Jason.encode!(entry)}\n\n", rest, seq)
+  end
+
+  defp sse(conn, [], last) do
+    receive do
+      {:nano_log, entry} -> sse(conn, [entry], last)
+    after
+      @keepalive_ms -> write(conn, ": keepalive\n\n", [], last)
+    end
+  end
+
+  defp write(conn, data, rest, last) do
+    case chunk(conn, data) do
+      {:ok, conn} -> sse(conn, rest, last)
+      {:error, _closed} -> conn
+    end
+  end
+
+  ## Users
+
+  def start_user(conn, params) do
+    case strings(params, ["name"]) do
+      {:ok, [name]} -> json(conn, %{name: name, pid: inspect(User.start(name))})
+      {:error, field} -> missing(conn, field)
+    end
+  end
+
+  def say(conn, %{"name" => name} = params) do
+    case strings(params, ["to", "text"]) do
+      {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
+      {:error, field} -> missing(conn, field)
+    end
+  end
+
+  def send_raw(conn, %{"name" => name} = params) do
+    with {:ok, [to, source]} <- strings(params, ["to", "term"]),
+         pid when is_pid(pid) <- User.pid(name),
+         {:ok, term} <- Ops.term(source) do
+      sent(conn, name, to, User.send_raw(name, to, term))
+    else
+      {:error, "term"} -> missing(conn, "term")
+      {:error, "to"} -> missing(conn, "to")
+      nil -> error(conn, 404, "no such user: #{name}")
+      {:error, message} -> error(conn, 422, "could not evaluate term", message)
+    end
+  end
+
+  defp sent(conn, _name, _to, :ok), do: json(conn, %{ok: true})
+
+  defp sent(conn, name, _to, {:error, :unknown_user}),
+    do: error(conn, 404, "no such user: #{name}")
+
+  defp sent(conn, _name, to, {:error, :unknown_target}),
+    do: error(conn, 404, "no such target: #{to}")
+
+  def inbox(conn, %{"name" => name} = params) do
+    case User.inbox(name, clear: params["clear"] == "true") do
+      {:error, :unknown_user} ->
+        error(conn, 404, "no such user: #{name}")
+
+      messages ->
+        json(conn, for(m <- messages, do: %{at: DateTime.to_iso8601(m.at), term: show(m.term)}))
+    end
+  end
+
+  ## Eval
+
+  def eval(conn, params) do
+    with {:ok, [code]} <- strings(params, ["code"]) do
+      case Ops.eval(code) do
+        {:ok, result, output} ->
+          json(conn, %{result: result, output: output})
+
+        {:error, message, output} ->
+          conn
+          |> put_status(422)
+          |> json(%{error: "eval failed", message: message, output: output})
+      end
+    else
+      {:error, field} -> missing(conn, field)
+    end
+  end
+
+  ## Helpers
+
+  defp since(nil), do: {:ok, 0}
+
+  defp since(string) do
+    case Integer.parse(string) do
+      {n, ""} when n >= 0 -> {:ok, n}
+      _ -> :bad_since
+    end
+  end
+
+  # The values of the given body fields, all of which must be non-empty strings.
+  defp strings(params, fields) do
+    Enum.reduce_while(fields, {:ok, []}, fn field, {:ok, acc} ->
+      case params[field] do
+        value when is_binary(value) and value != "" -> {:cont, {:ok, acc ++ [value]}}
+        _ -> {:halt, {:error, field}}
+      end
+    end)
+  end
+
+  defp missing(conn, field), do: error(conn, 422, "#{field} is required (a non-empty string)")
+
+  defp error(conn, status, error, message \\ nil) do
+    body = if message, do: %{error: error, message: message}, else: %{error: error}
+    conn |> put_status(status) |> json(body)
+  end
+
+  defp show(term), do: inspect(term, pretty: true, limit: :infinity, printable_limit: :infinity)
+
+  # Agent info and process maps as JSON: atoms as strings, other non-JSON terms inspected.
+  defp encode(%DateTime{} = time), do: DateTime.to_iso8601(time)
+
+  defp encode(map) when is_map(map) and not is_struct(map),
+    do: Map.new(map, fn {k, v} -> {k, encode(v)} end)
+
+  defp encode(list) when is_list(list), do: Enum.map(list, &encode/1)
+  defp encode(value) when is_number(value) or is_boolean(value) or is_nil(value), do: value
+  defp encode(atom) when is_atom(atom), do: Atom.to_string(atom)
+
+  defp encode(string) when is_binary(string),
+    do: if(String.valid?(string), do: string, else: inspect(string))
+
+  defp encode(other), do: inspect(other)
+end

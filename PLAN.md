@@ -5,7 +5,9 @@ Source of truth is `SPEC.md`. This plan adds only (a) decisions where the spec i
 exit criteria. Where this plan and the spec disagree, the spec wins — report the conflict.
 
 **The prime directive is the spec's: simplicity.** Target is a harness a reader can hold in
-their head — on the order of 1,000–1,500 lines of Elixir for everything outside tests. Use
+their head. (An early draft of this plan put line counts on that; they were the
+orchestrator's guess, not a spec requirement. Size is reviewed for removable machinery, not
+against a number.) Use
 OTP as is. No behaviours, protocols, macros, or config layers of our own. No dependency
 that is not needed. If a contract below turns out to be more than the job needs, shrink it
 and say so.
