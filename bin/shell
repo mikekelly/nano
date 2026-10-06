@@ -1,3 +1,5 @@
 #!/bin/sh
 # Remote IEx shell on the node:  docker exec -it nano bin/shell
+# Without a terminal, end of input would halt the node, so refuse: scripts use bin/rpc.
+[ -t 0 ] || { echo "bin/shell needs a terminal: docker exec -it nano bin/shell (for scripts: bin/rpc 'EXPR')" >&2; exit 1; }
 exec iex --name "shell-$$@127.0.0.1" --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" --remsh nano@127.0.0.1

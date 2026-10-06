@@ -46,6 +46,7 @@ curl localhost:4000/api                        # the HTTP API describes itself
 
 `bin/rpc` prints the value of the expression and exits non-zero if it raises. An expression
 that starts with `IO.inspect` or `IO.puts` is run as is, so its output appears once.
+`bin/shell` needs a terminal (`-it`) and refuses to run without one; scripts use `bin/rpc`.
 
 An outside agent, such as Claude Code on the host, gets a stable identity on the node as a
 `Nano.User`, over rpc or HTTP:
@@ -73,7 +74,10 @@ cookie generated at image build (or `NODE_COOKIE`). Port 4000 has no authenticat
 `127.0.0.1` unless `LISTEN_IP` says otherwise (`mix run --no-halt` on your own machine stays
 off the LAN); the image sets `LISTEN_IP=0.0.0.0` so that Docker can publish the port.
 
-Agent logs are JSONL files in `./data/logs`, and survive the container.
+Agent logs are JSONL files in `./data/logs`, and survive the container. Stopping an agent
+removes it from the API (its log then answers 404), but its JSONL file stays. What an eval
+writes to stderr, `IO.puts(:stderr, …)`, is not captured in the eval's output: it appears in
+`docker logs nano`. If the node crashes, `erl_crash.dump` is written to `./data`.
 
 ## Seeing and undoing what agents changed
 
@@ -81,10 +85,14 @@ Agent logs are JSONL files in `./data/logs`, and survive the container.
 git -C ~/nano-checkout status      # files added or changed
 git -C ~/nano-checkout diff        # the edits
 git -C ~/nano-checkout checkout . && git -C ~/nano-checkout clean -fd   # undo all of it
-docker exec nano bin/rpc 'IEx.Helpers.recompile()'   # load the reverted code
+docker exec nano bin/rpc 'IEx.Helpers.recompile(force: true)'   # load the reverted code
 ```
 
-`docker restart nano` instead of the last line gives a clean node; agents then start fresh.
+The last line recompiles and reloads every module of the app, however the agent loaded its
+edit, and running agents keep their state. (A plain `recompile()` does nothing here: the
+files on disk are back to what Mix last built.) A module from a file the agent added stays
+loaded after the file is gone. `docker restart nano` instead clears that too and gives a
+clean node; agents then start fresh.
 Agents can also rewrite the checkout's git history, which is one more reason it is dedicated.
 Without the mount, the same commands work inside the container: `docker exec nano git diff`.
 
@@ -97,8 +105,9 @@ Docker is still retrying, so the node comes back on its own at the next attempt.
 
 Agents are told their network access in the system prompt, from `NETWORK_POLICY`. **That
 text must be true**; the experiment depends on the prompt being accurate. As shipped,
-egress is not restricted and `docker-compose.yml` says so: "unrestricted outbound internet
-access". If you change the network, change the text.
+egress is not restricted and `docker-compose.yml` says so by default: "unrestricted outbound
+internet access". If you change the network, change the text: set `NETWORK_POLICY` in `.env`,
+or in the same override file that changes the network, as below.
 
 To allow only OpenRouter, put the node on an internal Docker network whose only exits are
 two TCP relays. Save this as `docker-compose.override.yml` next to `docker-compose.yml`:

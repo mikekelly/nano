@@ -22,5 +22,5 @@ services:
       - RESULT_MAX_BYTES
       - OPENROUTER_BASE_URL
       # Shown to agents in their system prompt, so it must be true. This file does not
-      # restrict egress; if you do (see README), change this text to match.
-      - NETWORK_POLICY=unrestricted outbound internet access
+      # restrict egress; if you do (see README), set NETWORK_POLICY to text that matches.
+      - NETWORK_POLICY=${NETWORK_POLICY:-unrestricted outbound internet access}

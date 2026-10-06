@@ -2,11 +2,13 @@ FROM elixir:1.20.2-otp-29
 
 # Deps and build output live outside /app, so a checkout mounted over /app hides nothing.
 # The app listens on loopback by default; a published port needs all interfaces.
+# A crash dump goes to the data volume, not into the checkout mounted at /app.
 # NETWORK_POLICY is shown to agents in their system prompt: keep it true (see README).
 ENV MIX_ENV=prod \
     MIX_DEPS_PATH=/opt/nano/deps \
     MIX_BUILD_PATH=/opt/nano/_build \
     LISTEN_IP=0.0.0.0 \
+    ERL_CRASH_DUMP=/data/erl_crash.dump \
     NETWORK_POLICY="unrestricted outbound internet access"
 
 # A checkout mounted over /app may be owned by another uid; git must still treat it as a repo.

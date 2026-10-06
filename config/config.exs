@@ -16,6 +16,12 @@ config :phoenix, :json_library, Jason
 
 config :logger, :default_formatter, format: "$time [$level] $message\n"
 
+# Phoenix logs every request at debug; in the container that would flood `docker logs`,
+# since the dashboard and any polling client hit the node constantly.
+if config_env() == :prod do
+  config :logger, level: :info
+end
+
 if config_env() == :test do
   config :logger, level: :warning
 end
