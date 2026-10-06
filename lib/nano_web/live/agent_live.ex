@@ -160,6 +160,7 @@ defmodule NanoWeb.AgentLive do
     <header class="top">
       <h1><.link navigate="/">nano</.link> / {@name}</h1>
       <span :if={@agent} class="dim">{@agent.id} · {inspect(@agent.pid)}</span>
+      <.inbox_menu inbox={@inbox} pid={@inbox_pid} />
     </header>
     <div class="layout">
       <main>
@@ -245,9 +246,6 @@ defmodule NanoWeb.AgentLive do
           <button id="jump" type="button" hidden>jump to latest ↓</button>
         </div>
       </main>
-      <aside>
-        <.inbox inbox={@inbox} pid={@inbox_pid} />
-      </aside>
     </div>
     """
   end

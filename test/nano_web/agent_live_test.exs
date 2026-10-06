@@ -148,8 +148,9 @@ defmodule NanoWeb.AgentLiveTest do
     eventually(fn -> has_element?(view, "#timeline li.eval .meta", "running…") end)
     assert has_element?(view, "section.bar .badge.running_tool")
 
-    # The eval runs in a task the agent spawned; let it finish.
+    # The eval runs in a task the agent spawned (once its state is saved); let it finish.
     Fake.push(ctx.model, calls: [idle: 5_000])
+    eventually(fn -> match?(%{task: %{task: %Task{}}}, Nano.StateStore.get(ctx.name)) end)
 
     for %{kind: {:spawned_by, name}, pid: pid} <- Nano.Ops.processes(),
         name == ctx.name,
@@ -251,7 +252,7 @@ defmodule NanoWeb.AgentLiveTest do
     |> element(".send form", "send term")
     |> render_submit(%{term: ~s|{:hello, Nano.User.pid("dashboard"), "are you there?"}|})
 
-    eventually(fn -> has_element?(view, ".inbox li pre", ~s|{:reply, "yes, I am here"}|) end)
+    eventually(fn -> has_element?(view, ".inbox li .summary", ~s|{:reply, "yes, I am here"}|) end)
   end
 
   test "a suspended agent is labelled suspended and offers Resume", ctx do

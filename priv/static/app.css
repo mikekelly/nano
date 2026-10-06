@@ -62,10 +62,8 @@ header.top {
   padding: 0.8rem 0;
   border-bottom: 1px solid var(--line);
   margin-bottom: 1rem;
+  padding-right: 6rem;
 }
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) 22rem; gap: 1.5rem; }
-@media (max-width: 1000px) { .layout { grid-template-columns: minmax(0, 1fr); } }
-aside { min-width: 0; }
 
 /* Status badges */
 .badges { display: inline-flex; gap: 0.3rem; margin-left: 0.4rem; }
@@ -132,10 +130,50 @@ tr.send-row td { background: var(--panel); white-space: normal; }
 .sent.error { color: var(--halted); }
 
 /* Inbox */
-.inbox { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0.6rem 0.8rem; }
+/* The dashboard user's inbox: an icon fixed at the top right, its messages dropping down. */
+.inbox-menu { position: fixed; top: 0.6rem; right: 1rem; z-index: 3; }
+.inbox-menu summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.25rem 0.45rem;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.inbox-menu summary::-webkit-details-marker { display: none; }
+.inbox-menu .count { font-size: 0.8em; padding: 0 0.35rem; border-radius: 8px; background: var(--panel); }
+.inbox-menu .count.new { background: var(--suspended); color: #fff; }
+.inbox-menu .count.warn { background: var(--halted); color: #fff; }
+.inbox {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.3rem);
+  width: min(540px, calc(100vw - 2rem));
+  max-height: 70vh;
+  overflow: auto;
+  padding: 0.6rem 0.8rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
 .inbox ol { list-style: none; padding: 0; margin: 0; }
-.inbox li { border-top: 1px solid var(--line); padding: 0.3rem 0; }
-.inbox time { color: var(--dim); }
+.inbox li { border-top: 1px solid var(--line); padding: 0.4rem 0; }
+.inbox time { color: var(--dim); font-size: 0.9em; }
+.inbox .summary { display: block; background: none; overflow-wrap: anywhere; }
+.inbox .text { margin-top: 0.3rem; }
+.inbox .where { color: var(--dim); font-size: 0.85em; }
+.inbox .body {
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--panel);
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+}
 
 /* Agent header bar */
 section.bar {
@@ -243,6 +281,8 @@ ol.timeline.reading .r { margin: 0.9rem 0; }
 
 /* Highlighted Elixir */
 pre.code { background: #f8f8fb; border: 1px solid var(--line); }
+/* Eval code, results and captured IO keep their lines as written; long ones scroll sideways. */
+pre.code, .result pre { white-space: pre; word-break: normal; overflow-x: auto; }
 pre.code .kw { color: #7c3aed; }
 pre.code .at { color: #0369a1; }
 pre.code .st { color: #15803d; }

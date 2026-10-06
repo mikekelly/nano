@@ -162,6 +162,7 @@ defmodule NanoWeb.ProcessLive do
           @refreshed_at
         )} UTC
       </span>
+      <.inbox_menu inbox={@inbox} pid={@inbox_pid} />
     </header>
     <div class="layout">
       <main>
@@ -308,9 +309,6 @@ defmodule NanoWeb.ProcessLive do
           = appeared since boot, belongs to no agent: usually the interesting ones.
         </p>
       </main>
-      <aside>
-        <.inbox inbox={@inbox} pid={@inbox_pid} />
-      </aside>
     </div>
     """
   end

@@ -392,6 +392,100 @@ defmodule NanoWeb.ProcessLiveTest do
     _ = ctx
   end
 
+  defp inbox_count(view, selector, text \\ "") do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#inbox-menu " <> selector)
+    |> Enum.count(&(LazyHTML.text(&1) =~ text))
+  end
+
+  test "the inbox sits behind an icon with a count; messages are made readable", ctx do
+    user = Nano.User.pid("dashboard")
+    {:ok, view, _} = live(ctx.conn, "/")
+    assert has_element?(view, "header.top #inbox-menu summary svg")
+    refute has_element?(view, "#inbox-menu summary .count:not(.new)")
+    refute has_element?(view, "aside")
+
+    long = String.duplicate("a long reply that keeps going ", 4)
+    send(user, "line one\nline two")
+    send(user, {:reply, "multi\nline"})
+    send(user, %{sender_pid: self(), message: long})
+    send(user, {:ping, 42})
+    # They arrive live, newest first, and the count follows.
+    eventually(fn -> inbox_count(view, "#inbox li") == 4 end)
+    assert inbox_count(view, "summary .count", "4") == 1
+
+    # A bare string is just text, with its line break.
+    assert inbox_count(view, "li .body", "line one\nline two") == 1
+    assert inbox_count(view, "li .summary", "line one") == 0
+    # A tuple: the one-line summary, then the readable string and where it sat.
+    assert inbox_count(view, "li .summary", ~s|{:reply, "multi\\nline"}|) == 1
+    assert inbox_count(view, "li .where", "elem 1") == 1
+    assert inbox_count(view, "li .body", "multi\nline") == 1
+    # A map: the key labels the text.
+    assert inbox_count(view, "li .where", "message:") == 1
+    assert inbox_count(view, "li .body", long) == 1
+    # Short and structural: the summary alone.
+    assert inbox_count(view, "li .summary", "{:ping, 42}") == 1
+
+    [first | _] =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#inbox li")
+      |> Enum.to_list()
+
+    assert LazyHTML.text(first) =~ "{:ping, 42}"
+
+    view |> element(".inbox button", "clear") |> render_click()
+    assert inbox_count(view, "#inbox li") == 0
+    refute has_element?(view, "#inbox-menu summary .count:not(.new)")
+    _ = ctx
+  end
+
+  test "hostile inbox terms render, bounded" do
+    user = Nano.User.pid("dashboard")
+    deep = Enum.reduce(1..10_000, "a deep string\nat the bottom", fn _, acc -> {acc} end)
+    many = for i <- 1..20, do: "string number #{i} is long enough to be shown as text, surely"
+    huge = List.duplicate(String.duplicate("z", 70), 100_000)
+
+    for term <- [
+          deep,
+          <<255, 0, 10, 65>>,
+          many,
+          huge,
+          fn -> :ok end,
+          [1, 2 | String.duplicate("t", 80)],
+          %{"key" => String.duplicate("v\n", 3000)}
+        ],
+        do: send(user, term)
+
+    {:ok, view, _} = live(build_conn(), "/")
+    eventually(fn -> inbox_count(view, "#inbox li") == 7 end)
+    assert inbox_count(view, "li .summary", "#Function<") == 1
+    assert inbox_count(view, "li .summary", "<<255, 0, 10, 65>>") == 1
+    assert inbox_count(view, "li .where", "tail") == 1
+    assert inbox_count(view, "li .where", ~s|"key" =>|) == 1
+  end
+
+  test "texts/1 finds long or multi-line strings with where they sat, within limits" do
+    alias NanoWeb.Components
+    long = String.duplicate("x", 70)
+
+    assert Components.texts({:a, %{message: "two\nlines", other: "short"}}) ==
+             [{"elem 1 › message:", "two\nlines"}]
+
+    assert Components.texts([1, long]) == [{"item 1", long}]
+    assert length(Components.texts(List.duplicate(long, 50))) == 6
+    assert Components.texts(<<255, 10>>) == []
+    assert Components.texts({<<255, 10>> <> long}) == []
+    [{nil, clipped}] = Components.texts(String.duplicate("y", 10_000))
+    assert String.length(clipped) < 4100
+    # Deeper than 8 levels is not looked into.
+    assert Components.texts(Enum.reduce(1..12, long, fn _, acc -> {acc} end)) == []
+  end
+
   test "suspended agents offer Resume and halted agents Un-halt in their row", ctx do
     {agent, pid} = start_agent(ctx)
     :sys.suspend(pid)
