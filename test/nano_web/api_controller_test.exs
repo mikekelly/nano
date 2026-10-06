@@ -288,11 +288,14 @@ defmodule NanoWeb.ApiControllerTest do
                post_json("/api/agents", %{}) |> json_response(422)
     end
 
-    test "reasoning is passed through: true, false, absent (off), and a non-boolean is 422" do
+    test "reasoning is a level passed through as given; absent means the node default" do
+      level = hd(NanoAgent.reasoning_levels() -- ["off"])
+      default = Application.fetch_env!(:nano, :reasoning)
+
       for {body, expected} <- [
-            {%{reasoning: true}, true},
-            {%{reasoning: false}, false},
-            {%{}, false}
+            {%{}, default},
+            {%{reasoning: "off"}, "off"},
+            {%{reasoning: level}, level}
           ] do
         name = unique("agent")
         on_exit(fn -> Nano.Ops.stop_agent(name) end)
@@ -304,9 +307,17 @@ defmodule NanoWeb.ApiControllerTest do
                  build_conn() |> get("/api/agents/#{name}") |> json_response(200)
       end
 
-      assert %{"error" => "could not start agent: :invalid_option"} =
-               post_json("/api/agents", %{name: unique("agent"), reasoning: "yes"})
-               |> json_response(422)
+      for bad <- ["turbo", true, false] do
+        assert %{"error" => "could not start agent: :invalid_option"} =
+                 post_json("/api/agents", %{name: unique("agent"), reasoning: bad})
+                 |> json_response(422)
+      end
+
+      %{"endpoints" => endpoints} = build_conn() |> get("/api") |> json_response(200)
+      start = Enum.find(endpoints, &(&1["method"] == "POST" and &1["path"] == "/api/agents"))
+
+      for l <- ["off" | NanoAgent.reasoning_levels()],
+          do: assert(start["description"] =~ inspect(l))
     end
 
     test "options of the wrong type are 422, not a silently ignored budget" do

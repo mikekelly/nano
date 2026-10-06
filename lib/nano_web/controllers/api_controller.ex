@@ -20,11 +20,12 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/processes/:target",
      "Process.info for one process, plus kind. :target is a URL-encoded pid string, an agent, user or registered name."},
     {"GET", "/api/agents",
-     "All agents: status, halted, suspended, model, budget used, cost, restart count."},
+     "All agents: status, halted, suspended, model, reasoning, budget used, cost, restart count."},
     {"POST", "/api/agents",
      "Start an agent. Body: name, model (default DEFAULT_MODEL), start_idle (default true); " <>
        "optional system_prompt, max_turns, max_tokens (positive integers) and reasoning " <>
-       "(boolean: whether the model thinks before answering; default REASONING, off)."},
+       "(how hard the model thinks before answering, a string: {reasoning_levels}; " <>
+       "default REASONING, \"off\")."},
     {"GET", "/api/agents/:name", "One agent: status, system prompt, budget, restart count."},
     {"POST", "/api/agents/:name/stop", "Terminate the agent and delete its state."},
     {"POST", "/api/agents/:name/restart",
@@ -58,16 +59,18 @@ defmodule NanoWeb.ApiController do
                  "eval failures, the exception in message. Unknown agents, users and processes give 404."
 
   def index(conn, _params) do
+    levels = Enum.map_join(NanoWeb.Components.reasoning_levels(), ", ", &inspect/1)
+
     json(conn, %{
       description:
         "Nano agent sandbox: one BEAM node hosting LLM agents, each a GenServer. " <>
           "Everything the dashboard can do is here too.",
       conventions: @conventions,
       endpoints:
-        for(
-          {method, path, about} <- @endpoints,
-          do: %{method: method, path: path, description: about}
-        )
+        for {method, path, about} <- @endpoints do
+          about = String.replace(about, "{reasoning_levels}", levels)
+          %{method: method, path: path, description: about}
+        end
     })
   end
 
@@ -235,7 +238,13 @@ defmodule NanoWeb.ApiController do
     do: error(conn, 404, "no such target: #{to}")
 
   defp unresponsive(conn, name),
-    do: error(conn, 503, "user #{name} is not responding (suspended or flooded?)")
+    do:
+      error(
+        conn,
+        503,
+        "user #{name} is not responding (suspended or flooded?); the request is queued in its " <>
+          "mailbox and will be carried out if it resumes, so retrying would repeat it"
+      )
 
   def inbox(conn, %{"name" => name} = params) do
     case User.inbox(name, clear: params["clear"] == "true") do

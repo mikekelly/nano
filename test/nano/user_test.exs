@@ -139,7 +139,9 @@ defmodule Nano.UserTest do
     assert User.inbox(name) == {:error, :unresponsive}
     refute_received %{message: "x"}
 
+    # The timed-out requests were queued, not dropped: resumed, the user carries them out.
     :sys.resume(pid)
+    assert_receive %{sender_pid: ^pid, message: "x"}
     assert User.inbox(name) == []
   end
 

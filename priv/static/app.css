@@ -188,3 +188,22 @@ pre.code .st { color: #15803d; }
 pre.code .md { color: #b45309; }
 pre.code .nm { color: #be185d; }
 pre.code .cm { color: var(--dim); font-style: italic; }
+
+/* Connection lost. LiveView puts phx-error on its container when the socket drops or the view
+   crashes, and phx-connected back once it has rejoined; phx-loading alone (every initial join
+   and navigation) shows nothing. */
+#disconnected {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding: 0.6em 1em;
+  background: var(--halted);
+  color: #fff;
+  font-weight: bold;
+  text-align: center;
+}
+[data-phx-main].phx-error ~ #disconnected { display: block; }
+[data-phx-main].phx-error { opacity: 0.5; }

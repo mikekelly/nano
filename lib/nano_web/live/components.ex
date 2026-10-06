@@ -76,7 +76,10 @@ defmodule NanoWeb.Components do
   defp result({:error, :unknown_user}, _), do: {:error, "the #{@user} user is not running"}
 
   defp result({:error, :unresponsive}, _),
-    do: {:error, "the #{@user} user is not responding (suspended or flooded?); nothing was sent"}
+    do:
+      {:error,
+       "the #{@user} user is not responding (suspended or flooded?); the message is queued " <>
+         "in its mailbox and will go out if it resumes, so sending again would send it twice"}
 
   defp result({:error, reason}, _), do: {:error, inspect(reason)}
 
@@ -194,6 +197,9 @@ defmodule NanoWeb.Components do
 
   @doc "Keeps a `<details>` element's open/closed state across the page's periodic re-renders."
   def keep_open, do: JS.ignore_attributes("open")
+
+  @doc "The reasoning levels an agent can be started with, \"off\" first."
+  def reasoning_levels, do: Enum.uniq(["off" | NanoAgent.reasoning_levels()])
 
   ## Formatting
 

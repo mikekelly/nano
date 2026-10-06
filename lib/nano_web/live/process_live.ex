@@ -48,7 +48,7 @@ defmodule NanoWeb.ProcessLive do
         max_turns: number(params["max_turns"]),
         max_tokens: number(params["max_tokens"]),
         system_prompt: blank_to_nil(params["system_prompt"]),
-        reasoning: params["reasoning"] == "true"
+        reasoning: params["reasoning"]
       ]
       |> Enum.reject(fn {_, v} -> v == nil end)
 
@@ -94,9 +94,9 @@ defmodule NanoWeb.ProcessLive do
     )
   end
 
-  # Until the form is touched, the node's default (REASONING, off unless set).
-  defp reasoning?(%{"reasoning" => value}), do: value == "true"
-  defp reasoning?(_), do: Application.get_env(:nano, :reasoning, false) == true
+  # What the form shows selected: what was chosen, or until then the node's default (REASONING).
+  defp reasoning(%{"reasoning" => level}), do: level
+  defp reasoning(_), do: Application.get_env(:nano, :reasoning, "off")
 
   defp blank_to_nil(value) do
     case String.trim(value || "") do
@@ -182,14 +182,17 @@ defmodule NanoWeb.ProcessLive do
               max tokens
               <input type="number" name="max_tokens" value={@start["max_tokens"]} min="1" />
             </label>
-            <label class="check">
-              <input type="hidden" name="reasoning" value="false" />
-              <input
-                type="checkbox"
-                name="reasoning"
-                value="true"
-                checked={reasoning?(@start)}
-              /> Reasoning (the model thinks before answering)
+            <label>
+              reasoning
+              <select name="reasoning">
+                <option
+                  :for={level <- reasoning_levels()}
+                  value={level}
+                  selected={level == reasoning(@start)}
+                >
+                  {level}
+                </option>
+              </select>
             </label>
             <label class="wide">
               system prompt template (blank = default; same placeholders) <textarea

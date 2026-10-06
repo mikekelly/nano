@@ -187,23 +187,46 @@ defmodule NanoWeb.ProcessLiveTest do
     assert html =~ "already running"
   end
 
-  test "the start form's Reasoning box is off by default, survives re-renders, and is passed on",
+  test "the layout carries a banner that app.css shows only while the page is disconnected" do
+    html = build_conn() |> get("/") |> html_response(200)
+
+    # A sibling after the LiveView container, so `[data-phx-main].phx-error ~ #disconnected` matches.
+    assert html =~
+             ~r/data-phx-main.*<div id="disconnected" role="alert">\s*Disconnected from the node/s
+
+    # LiveView's debug logging stays off unless turned on from the console.
+    assert html =~ ~s|sessionStorage.getItem("phx:live-socket:debug") === null|
+
+    css = build_conn() |> get("/app.css") |> response(200)
+    assert css =~ "#disconnected {\n  display: none;"
+    assert css =~ "[data-phx-main].phx-error ~ #disconnected { display: block; }"
+    # No rule on phx-loading, which every initial join and navigation sets briefly.
+    refute css =~ ".phx-loading"
+  end
+
+  test "the start form's reasoning level: node default preselected, kept across re-renders, passed on",
        ctx do
+    level = hd(NanoAgent.reasoning_levels() -- ["off"])
+    selected = &"#start select[name=reasoning] option[selected][value='#{&1}']"
+
     {:ok, view, _} = live(ctx.conn, "/")
-    refute has_element?(view, "#start input[type=checkbox][name=reasoning][checked]")
+    assert has_element?(view, selected.(Application.fetch_env!(:nano, :reasoning)))
 
-    view |> form("#start", %{name: "typing", reasoning: "true"}) |> render_change()
+    for l <- ["off" | NanoAgent.reasoning_levels()],
+        do: assert(has_element?(view, "#start select[name=reasoning] option[value='#{l}']"))
+
+    view |> form("#start", %{name: "typing", reasoning: level}) |> render_change()
     send(view.pid, :refresh)
-    assert has_element?(view, "#start input[type=checkbox][name=reasoning][checked]")
+    assert has_element?(view, selected.(level))
 
-    for reasoning <- [true, false] do
+    for reasoning <- ["off", level] do
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
       {:ok, view, _} = live(ctx.conn, "/")
 
       assert {:error, {:live_redirect, _}} =
                view
-               |> form("#start", %{name: name, model: ctx.model, reasoning: to_string(reasoning)})
+               |> form("#start", %{name: name, model: ctx.model, reasoning: reasoning})
                |> render_submit()
 
       assert Nano.Ops.agent(name).reasoning == reasoning
@@ -242,7 +265,7 @@ defmodule NanoWeb.ProcessLiveTest do
       |> element("#{row(Nano.Ops.whereis(name))} form", "say")
       |> render_submit(%{text: "hello"})
 
-    assert html =~ "not responding (suspended or flooded?); nothing was sent"
+    assert html =~ "not responding (suspended or flooded?); the message is queued"
   end
 
   test "any process row has the send form: text via say, terms via send_raw, parse errors shown",

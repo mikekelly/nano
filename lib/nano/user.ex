@@ -29,7 +29,9 @@ defmodule Nano.User do
   @doc """
   Received messages as `%{at: DateTime, term: term}`, oldest first. `clear: true` empties the
   inbox. `say/3`, `send_raw/3` and `inbox/2` return `{:error, :unknown_user}` for a user that is
-  not running and `{:error, :unresponsive}` for one that does not answer within a second.
+  not running and `{:error, :unresponsive}` for one that does not answer within a second. The
+  request is then still in the user's mailbox and is carried out if the user resumes: a send
+  goes out late, so retrying it would deliver it twice.
   """
   def inbox(name, opts \\ []), do: call(name, {:inbox, Keyword.get(opts, :clear, false)})
 
@@ -52,7 +54,7 @@ defmodule Nano.User do
   end
 
   # Anyone can suspend or flood a user (agents are handed its pid), so a call that gets no
-  # answer within a second is an error, not a crash in the caller.
+  # answer within a second is an error, not a crash in the caller. The request stays queued.
   defp call(name, request) do
     case pid(name) do
       nil -> {:error, :unknown_user}

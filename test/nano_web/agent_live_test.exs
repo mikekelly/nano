@@ -398,7 +398,7 @@ defmodule NanoWeb.AgentLiveTest do
     assert html =~ "The dashboard user is not responding"
 
     assert view |> element("#send-text") |> render_submit(%{text: "hi"}) =~
-             "nothing was sent"
+             "will go out if it resumes"
   end
 
   test "every halt reason is labelled truthfully, with Un-halt offered", ctx do

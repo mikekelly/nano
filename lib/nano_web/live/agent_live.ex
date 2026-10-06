@@ -133,7 +133,7 @@ defmodule NanoWeb.AgentLive do
               <dt>model</dt><dd>{@agent.model}</dd>
             </div>
             <div>
-              <dt>reasoning</dt><dd>{if Map.get(@agent, :reasoning), do: "on", else: "off"}</dd>
+              <dt>reasoning</dt><dd>{txt(Map.get(@agent, :reasoning) || "off")}</dd>
             </div>
             <div>
               <dt>status</dt><dd><.status agent={@agent} /></dd>
