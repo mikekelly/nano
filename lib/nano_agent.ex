@@ -95,6 +95,27 @@ defmodule NanoAgent do
           }
         }
       }
+    },
+    %{
+      type: "function",
+      function: %{
+        name: "shell",
+        description:
+          "Run a command line with bash and return its output and exit status. The working " <>
+            "directory and environment carry over from one call to the next; other shell state does not. " <>
+            "The command is killed after timeout_ms (default 120000). Output is truncated at 200000 bytes.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            command: %{type: "string", description: "The command line to run with bash -c."},
+            timeout_ms: %{
+              type: "integer",
+              description: "Milliseconds after which to kill the command (default 120000)."
+            }
+          },
+          required: ["command"]
+        }
+      }
     }
   ]
 
@@ -201,6 +222,15 @@ defmodule NanoAgent do
         budget: Map.take(s, [:max_turns, :max_tokens, :turns_used, :tokens_used])
       }
     end
+  end
+
+  @doc false
+  # Test hook: runs one tool call exactly as `run_calls/1` would, against a state map, and
+  # returns the state after the call. For exercising a tool's dispatch without a model turn.
+  def __dispatch_tool__(name, arguments, s, call_id \\ "test-call") do
+    call = %{"id" => call_id, "function" => %{"name" => name, "arguments" => arguments}}
+
+    run_calls(%{s | calls: [call], idle_called: false})
   end
 
   @doc "Names of all agents in the state store, sorted."
@@ -330,7 +360,8 @@ defmodule NanoAgent do
       wakeup_after: nil,
       wakeup: nil,
       task: nil,
-      spawned: []
+      spawned: [],
+      shell: Nano.Shell.new()
     }
   end
 
@@ -800,6 +831,25 @@ defmodule NanoAgent do
       _ when skip != nil ->
         run_calls(tool_result(s, call, started, false, skip))
 
+      {"shell", {:ok, %{"command" => command} = opts}} when is_binary(command) ->
+        # The shell tool keeps its own working directory and environment, in `s.shell`, so
+        # they carry from call to call and survive a restart. Map.get for state saved by an
+        # older version of this module.
+        shell = Map.get(s, :shell) || Nano.Shell.new()
+        timeout = shell_timeout(opts)
+
+        case Nano.Shell.run(command, shell, timeout: timeout) do
+          {{:ok, output, status}, shell} ->
+            result =
+              "Exit status: #{status || "unknown"}\n" <>
+                if(output == "", do: "(no output)", else: output)
+
+            run_calls(tool_result(%{s | shell: shell}, call, started, status in [0, nil], result))
+
+          {{:error, message}, shell} ->
+            run_calls(tool_result(%{s | shell: shell}, call, started, false, message))
+        end
+
       {"eval", {:ok, %{"code" => code}}} when is_binary(code) ->
         # The agent owns the capture device, so output and spawned processes survive a timeout.
         {:ok, io} = StringIO.open("")
@@ -834,11 +884,18 @@ defmodule NanoAgent do
 
       _ ->
         error =
-          "Error: cannot call #{inspect(name)} with arguments #{inspect(raw)}. Tools: eval(code), idle(wakeup_after)."
+          "Error: cannot call #{inspect(name)} with arguments #{inspect(raw)}. Tools: eval(code), shell(command, timeout_ms), idle(wakeup_after)."
 
         run_calls(tool_result(s, call, started, false, error))
     end
   end
+
+  # The shell tool's per-call timeout, in ms: an explicit timeout_ms, else the state's own
+  # default. Anything not a positive integer (up to a year) is rejected by the caller.
+  defp shell_timeout(%{"timeout_ms" => ms}) when is_integer(ms) and ms > 0 and ms <= 31_536_000_000,
+    do: ms
+
+  defp shell_timeout(_), do: Nano.Shell.default_timeout()
 
   defp arm_wakeup(s) do
     id = make_ref()
