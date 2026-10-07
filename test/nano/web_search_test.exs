@@ -4,7 +4,7 @@ defmodule Nano.WebSearchTest do
   setup do
     dir = Path.join(System.tmp_dir!(), "nova-web-test-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(dir) end)
-    %{opts: [cache_dir: dir]}
+    %{opts: [cache_dir: dir, research_dir: Path.join(dir, "research")]}
   end
 
   defp mock(body, status \\ 200, type \\ "application/json") do
@@ -325,6 +325,75 @@ defmodule Nano.WebSearchTest do
 
     assert byte_size(Jason.encode!(answer)) < 35_000
     assert String.valid?(answer.answer)
+  end
+
+  test "durable journal restores only GET polling, without keys or queries", %{opts: opts} do
+    parent = self()
+
+    plug = fn conn ->
+      if conn.method == "POST" do
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(%{"id" => "durable-run"}))
+      else
+        send(parent, {:poll_worker, self()})
+
+        receive do
+          :never -> conn
+        end
+      end
+    end
+
+    assert {:ok, %{ref: ref, job_id: job_id, pid: pid}} =
+             Nano.Search.research(
+               "DO_NOT_PERSIST_QUERY",
+               opts ++
+                 [
+                   notify: "stable-name",
+                   notify_timeout: 0,
+                   api_key: "DO_NOT_PERSIST_KEY",
+                   req_options: [plug: plug]
+                 ]
+             )
+
+    assert_receive {:poll_worker, _}, 2000
+    file = Path.join(opts[:research_dir], job_id <> ".json")
+    data = File.read!(file)
+    refute data =~ "DO_NOT_PERSIST"
+    assert {:ok, %{"id" => "durable-run", "notify" => "stable-name"}} = Jason.decode(data)
+    Process.exit(pid, :kill)
+    monitor = Process.monitor(pid)
+    assert_receive {:DOWN, ^monitor, _, _, _}, 2000
+
+    restored_plug = fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/agent/runs/durable-run"
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(
+        200,
+        Jason.encode!(%{
+          "id" => "durable-run",
+          "status" => "completed",
+          "output" => %{"text" => "Recovered"}
+        })
+      )
+    end
+
+    assert {:ok, [_]} =
+             Nano.Search.restore(
+               opts ++ [notify: self(), api_key: "test", req_options: [plug: restored_plug]]
+             )
+
+    assert_receive {:nano_research_restored, ^job_id, {:ok, %{page: page}}}, 2000
+    assert page.text =~ "Recovered"
+    assert {:ok, _} = Nano.Web.read(page.id, opts)
+    # Delivery happens just before journal cleanup.
+    Process.sleep(10)
+    refute File.exists?(file)
+    assert {:ok, []} = Nano.Search.restore(opts ++ [api_key: "test"])
+    assert is_reference(ref)
   end
 
   test "browser missing and shell-free URL validation" do

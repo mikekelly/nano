@@ -74,6 +74,7 @@ defmodule Nano.Search do
 
       if is_pid(recipient) or is_binary(recipient) do
         ref = make_ref()
+        job_id = Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
 
         pid =
           spawn(fn ->
@@ -87,14 +88,16 @@ defmodule Nano.Search do
                          opts
                        ),
                      id when is_binary(id) <- run["id"] do
-                  notify(recipient, {:nano_research_started, ref, id}, opts)
+                  with :ok <- save_job(job_id, id, recipient, opts) do
+                    notify(recipient, {:nano_research_started, ref, id}, opts)
 
-                  poll(
-                    id,
-                    opts,
-                    System.monotonic_time(:millisecond) +
-                      Keyword.get(opts, :research_timeout, 900_000)
-                  )
+                    poll(
+                      id,
+                      opts,
+                      System.monotonic_time(:millisecond) +
+                        Keyword.get(opts, :research_timeout, 900_000)
+                    )
+                  end
                 else
                   nil -> {:error, :missing_run_id}
                   error -> error
@@ -105,15 +108,119 @@ defmodule Nano.Search do
                 _, _ -> {:error, :research_worker_failed}
               end
 
-            notify(recipient, {:nano_research, ref, result}, opts)
+            delivery = notify(recipient, {:nano_research, ref, result}, opts)
+            if terminal?(result) and delivery != :undelivered, do: File.rm(job_path(job_id, opts))
           end)
 
-        {:ok, %{ref: ref, pid: pid}}
+        {:ok, %{ref: ref, pid: pid, job_id: job_id}}
       else
         {:error, :invalid_notify}
       end
     end
   end
+
+  @doc "Resume journaled remote runs after node restart. Never creates another billable run; reads credentials from current environment."
+  def restore(opts \\ []) do
+    if key(opts) in [nil, ""] do
+      {:error, :missing_api_key}
+    else
+      jobs = Path.wildcard(Path.join(research_dir(opts), "*.json"))
+
+      started =
+        Enum.flat_map(jobs, fn file ->
+          with {:ok, data} <- File.read(file),
+               {:ok, job} <- Jason.decode(data),
+               true <- is_binary(job["id"]) and is_binary(job["job_id"]),
+               recipient when is_pid(recipient) or is_binary(recipient) <-
+                 Keyword.get(opts, :notify, job["notify"]) do
+            job_id = job["job_id"]
+            id = job["id"]
+
+            worker_opts =
+              Keyword.put(opts, :cache_dir, Keyword.get(opts, :cache_dir, job["cache_dir"]))
+
+            pid =
+              spawn(fn ->
+                case Registry.register(Nano.Registry, {:research, job_id}, nil) do
+                  {:ok, _} ->
+                    result =
+                      try do
+                        poll(
+                          id,
+                          worker_opts,
+                          System.monotonic_time(:millisecond) +
+                            Keyword.get(opts, :research_timeout, 900_000)
+                        )
+                      rescue
+                        _ -> {:error, :research_worker_failed}
+                      catch
+                        _, _ -> {:error, :research_worker_failed}
+                      end
+
+                    delivery = notify(recipient, {:nano_research_restored, job_id, result}, opts)
+                    if terminal?(result) and delivery != :undelivered, do: File.rm(file)
+
+                  _ ->
+                    :already_running
+                end
+              end)
+
+            [%{job_id: job_id, id: id, pid: pid}]
+          else
+            _ -> []
+          end
+        end)
+
+      {:ok, started}
+    end
+  rescue
+    _ -> {:error, :restore_failed}
+  end
+
+  defp save_job(job_id, id, recipient, opts) do
+    # Whitelist only: no keys, queries, provider body, base URL or request options.
+    job = %{
+      "job_id" => job_id,
+      "id" => id,
+      "notify" => if(is_binary(recipient), do: recipient, else: nil),
+      "cache_dir" => Keyword.get(opts, :cache_dir, Path.join(System.tmp_dir!(), "nano-web-cache"))
+    }
+
+    file = job_path(job_id, opts)
+
+    temp =
+      file <> "." <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false) <> ".tmp"
+
+    with :ok <- File.mkdir_p(Path.dirname(file)),
+         :ok <- File.write(temp, Jason.encode!(job), [:exclusive]),
+         :ok <- File.rename(temp, file) do
+      Registry.register(Nano.Registry, {:research, job_id}, nil)
+      :ok
+    else
+      _ ->
+        File.rm(temp)
+        {:error, %{reason: :research_journal_failed, id: id}}
+    end
+  end
+
+  defp research_dir(opts) do
+    Keyword.get(
+      opts,
+      :research_dir,
+      Path.join(
+        Application.get_env(:nano, :state_dir, Path.join(System.tmp_dir!(), "nano-state")),
+        "research"
+      )
+    )
+  end
+
+  defp job_path(job_id, opts), do: Path.join(research_dir(opts), job_id <> ".json")
+  defp terminal?({:ok, %{status: "completed"}}), do: true
+
+  defp terminal?({:error, %{reason: reason}}) when reason in ["failed", "cancelled", "canceled"],
+    do: true
+
+  defp terminal?(_), do: false
 
   defp default_recipient do
     Enum.find_value([self() | List.wrap(Process.get(:"$callers"))], fn pid ->
