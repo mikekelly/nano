@@ -28,6 +28,7 @@ defmodule Nano.ChatGPT do
              id: id,
              name: id,
              context_length: 272_000,
+             input_modalities: ["text"],
              reasoning_levels: ~w(low medium high xhigh max),
              default_reasoning: if(id == "gpt-6.1-sol", do: "low", else: "medium")
            }
@@ -102,7 +103,7 @@ defmodule Nano.ChatGPT do
   ## Chat messages to Responses input items
 
   defp input(%{"role" => "user", "content" => text}),
-    do: [%{type: "message", role: "user", content: [%{type: "input_text", text: text}]}]
+    do: [%{type: "message", role: "user", content: Vega.Images.responses_content(text)}]
 
   # Reasoning first, as the model produced it, then the text, then the calls.
   defp input(%{"role" => "assistant"} = m) do
@@ -219,6 +220,7 @@ defmodule Nano.ChatGPT do
   @limits ~w(usage_limit_reached usage_not_included)
 
   defp error(status, body) do
+    body = Vega.Images.redact(body)
     e = if is_map(body) and is_map(body["error"]), do: body["error"], else: %{}
     kind = Enum.find([e["type"], e["code"]], &(&1 in @limits)) || e["code"]
 
@@ -309,7 +311,8 @@ defmodule Nano.ChatGPT do
         %{
           id: m["slug"],
           name: m["display_name"] || m["slug"],
-          context_length: m["context_window"]
+          context_length: m["context_window"],
+          input_modalities: m["input_modalities"] || ["text"]
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )

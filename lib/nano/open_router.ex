@@ -31,7 +31,7 @@ defmodule Nano.OpenRouter do
 
     body = %{
       model: model,
-      messages: cache(messages),
+      messages: messages |> Vega.Images.openrouter() |> cache(),
       tools: tools,
       usage: %{include: true},
       reasoning: if(reasoning == "off", do: %{enabled: false}, else: %{effort: reasoning})
@@ -58,7 +58,7 @@ defmodule Nano.OpenRouter do
          }}
 
       {:ok, %{status: status, body: body}} ->
-        {:error, %{status: status, body: body}}
+        {:error, %{status: status, body: Vega.Images.redact(body)}}
 
       {:error, exception} ->
         {:error, %{status: nil, body: Exception.message(exception)}}
@@ -118,6 +118,7 @@ defmodule Nano.OpenRouter do
           id: m["id"],
           name: m["name"],
           context_length: m["context_length"],
+          input_modalities: get_in(m, ["architecture", "input_modalities"]) || ["text"],
           max_output: get_in(m, ["top_provider", "max_completion_tokens"]),
           prompt_price: price.(get_in(m, ["pricing", "prompt"])),
           completion_price: price.(get_in(m, ["pricing", "completion"]))
@@ -153,6 +154,27 @@ defmodule Nano.OpenRouter do
           %{"type" => "text", "text" => text, "cache_control" => %{"type" => "ephemeral"}}
         ]
     }
+  end
+
+  defp mark(%{"content" => parts} = message) when is_list(parts) do
+    # Cache marker on the last text part, never on the binary attachment.
+    index =
+      parts
+      |> Enum.with_index()
+      |> Enum.filter(fn {p, _} -> p["type"] == "text" end)
+      |> List.last()
+
+    if index do
+      {_, i} = index
+
+      Map.put(
+        message,
+        "content",
+        List.update_at(parts, i, &Map.put(&1, "cache_control", %{"type" => "ephemeral"}))
+      )
+    else
+      message
+    end
   end
 
   defp mark(message), do: message
