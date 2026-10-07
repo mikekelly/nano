@@ -46,6 +46,43 @@ defmodule Nano.OpenRouterTest do
     assert [%{id: "a/one"}, %{id: "b/two"}] = Nano.OpenRouter.models()
   end
 
+  test "models/0: each model's reasoning levels, lowest first, and its default" do
+    # Reasoning blocks as OpenRouter lists them (2026-10-07).
+    Fake.models([
+      %{
+        "id" => "a/optional",
+        "reasoning" => %{
+          "mandatory" => false,
+          "default_enabled" => true,
+          "supported_efforts" => ["max", "high", "low"],
+          "default_effort" => "high"
+        }
+      },
+      %{
+        "id" => "b/mandatory",
+        "reasoning" => %{
+          "mandatory" => true,
+          "supported_efforts" => ["max", "xhigh", "high", "medium", "low"],
+          "default_effort" => "medium"
+        }
+      },
+      %{"id" => "c/any", "reasoning" => %{"mandatory" => false, "supported_efforts" => []}},
+      %{"id" => "d/none-listed", "reasoning" => %{"supported_efforts" => ["none", "minimal"]}},
+      %{"id" => "e/no-reasoning"}
+    ])
+
+    assert [
+             %{reasoning_levels: ~w(off low high max), default_reasoning: "high"},
+             %{reasoning_levels: ~w(low medium high xhigh max), default_reasoning: "medium"},
+             %{
+               reasoning_levels: ~w(off minimal low medium high xhigh max),
+               default_reasoning: "off"
+             },
+             %{reasoning_levels: ~w(off minimal), default_reasoning: "off"},
+             %{reasoning_levels: ["off"], default_reasoning: "off"}
+           ] = Nano.OpenRouter.models()
+  end
+
   test "models/0 returns [] when the request fails or nothing answers" do
     Fake.models(503)
     assert Nano.OpenRouter.models() == []

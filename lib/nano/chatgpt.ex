@@ -18,11 +18,18 @@ defmodule Nano.ChatGPT do
   """
 
   # Used when the backend's own list cannot be had: the models it listed on 2026-10-07, in its
-  # order of priority (gpt-5.5, hidden then, retires on 2026-10-14).
+  # order of priority (gpt-5.5, hidden then, retires on 2026-10-14). The levels and defaults are
+  # an approximation: gpt-6.x's on that day.
   @known for(
            id <-
              ~w(gpt-6.1-sol gpt-6-astra gpt-6-sol gpt-6-luna gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna),
-           do: %{id: id, name: id, context_length: 272_000}
+           do: %{
+             id: id,
+             name: id,
+             context_length: 272_000,
+             reasoning_levels: ~w(low medium high xhigh max),
+             default_reasoning: if(id == "gpt-6.1-sol", do: "low", else: "medium")
+           }
          )
 
   @doc "As `Nano.Model.chat/4`, for `model` without its `openai-codex/` prefix."
@@ -252,10 +259,11 @@ defmodule Nano.ChatGPT do
   ## Models
 
   @doc """
-  The models the connected subscription offers, as `%{id, name, context_length}` (ids without
-  the `openai-codex/` prefix): the backend's list (`GET /models`, as the Codex CLI fetches
-  it, in its order of priority), or the Codex CLI's bundled list if that cannot be had; `[]`
-  when no subscription is connected. Cached for an hour, a fallback for a minute.
+  The models the connected subscription offers, as `%{id, name, context_length,
+  reasoning_levels, default_reasoning}` (ids without the `openai-codex/` prefix; levels as
+  `Nano.Model.reasoning/3` gives them): the backend's list (`GET /models`, as the Codex CLI
+  fetches it, in its order of priority), or the Codex CLI's bundled list if that cannot be had;
+  `[]` when no subscription is connected. Cached for an hour, a fallback for a minute.
   """
   def models do
     now = System.monotonic_time(:second)
@@ -288,8 +296,20 @@ defmodule Nano.ChatGPT do
       Req.get(url("/models?client_version=#{client_version()}"), opts)
 
     # In the catalog's `priority` order, lowest first, as the Codex CLI's picker lists them.
+    # The context is `context_window`, the size Codex works within; gpt-6.x also list a larger
+    # `max_context_window` (872,000 on 2026-10-07), not used here. Codex models reason unless
+    # they list effort "none"; "ultra" (delegating to sub-agents) has no level here.
     for m <- Enum.sort_by(models, & &1["priority"]), m["visibility"] in [nil, "list"] do
-      %{id: m["slug"], name: m["display_name"] || m["slug"], context_length: m["context_window"]}
+      efforts = for %{"effort" => e} <- m["supported_reasoning_levels"] || [], do: e
+
+      Map.merge(
+        %{
+          id: m["slug"],
+          name: m["display_name"] || m["slug"],
+          context_length: m["context_window"]
+        },
+        Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
+      )
     end
   catch
     _, _ -> []

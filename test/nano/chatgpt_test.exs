@@ -392,12 +392,41 @@ defmodule Nano.ChatGPTTest do
     assert Nano.ChatGPT.models() == []
     connect!()
 
+    # Levels as the backend lists them (2026-10-07): "none" is "off", and "ultra" has no level.
+    efforts = &for(e <- &1, do: %{"effort" => e, "description" => "#{e} reasoning"})
+
     Fake.models([
-      %{"slug" => "gpt-x", "display_name" => "GPT-X", "context_window" => 1000},
+      %{
+        "slug" => "gpt-x",
+        "display_name" => "GPT-X",
+        "context_window" => 1000,
+        "supported_reasoning_levels" => efforts.(~w(low medium high xhigh max ultra)),
+        "default_reasoning_level" => "low"
+      },
+      %{
+        "slug" => "gpt-y",
+        "supported_reasoning_levels" => efforts.(~w(none low medium)),
+        "default_reasoning_level" => "none"
+      },
       %{"slug" => "hidden", "visibility" => "hide"}
     ])
 
-    assert Nano.ChatGPT.models() == [%{id: "gpt-x", name: "GPT-X", context_length: 1000}]
+    assert Nano.ChatGPT.models() == [
+             %{
+               id: "gpt-x",
+               name: "GPT-X",
+               context_length: 1000,
+               reasoning_levels: ~w(low medium high xhigh max),
+               default_reasoning: "low"
+             },
+             %{
+               id: "gpt-y",
+               name: "gpt-y",
+               context_length: nil,
+               reasoning_levels: ~w(off low medium),
+               default_reasoning: "off"
+             }
+           ]
 
     # In the catalog's priority order, lowest first.
     :persistent_term.erase({Nano.ChatGPT, :models})
@@ -411,10 +440,20 @@ defmodule Nano.ChatGPTTest do
 
     :persistent_term.erase({Nano.ChatGPT, :models})
     Fake.models(500)
-    assert %{id: "gpt-6.1-sol", context_length: 272_000} = hd(Nano.ChatGPT.models())
+
+    assert %{id: "gpt-6.1-sol", context_length: 272_000, default_reasoning: "low"} =
+             hd(Nano.ChatGPT.models())
+
+    assert hd(Nano.ChatGPT.models()).reasoning_levels == ~w(low medium high xhigh max)
   end
 
   ## Operator surfaces
+
+  # The levels the start form's reasoning select offers.
+  defp levels(view) do
+    html = view |> element("#start select[name=reasoning]") |> render()
+    for [_, level] <- Regex.scan(~r/<option[^>]*value="([^"]+)"/, html), do: level
+  end
 
   test "the API: status, login and logout, never the tokens" do
     tokens = Fake.tokens()
@@ -463,24 +502,52 @@ defmodule Nano.ChatGPTTest do
     view |> element("#chatgpt button", "cancel") |> render_click()
     view |> form("#start", %{name: "typing"}) |> render_change()
 
+    levels = for e <- ~w(low medium high xhigh max ultra), do: %{"effort" => e}
+
     Fake.models([
-      %{"slug" => "gpt-6-luna", "display_name" => "GPT-6 Luna", "priority" => 4},
-      %{"slug" => "gpt-6.1-sol", "display_name" => "GPT-6.1 Sol", "priority" => 1}
+      %{
+        "slug" => "gpt-6-luna",
+        "display_name" => "GPT-6 Luna",
+        "priority" => 4,
+        "supported_reasoning_levels" => levels,
+        "default_reasoning_level" => "medium"
+      },
+      %{
+        "slug" => "gpt-6.1-sol",
+        "display_name" => "GPT-6.1 Sol",
+        "priority" => 1,
+        "supported_reasoning_levels" => levels,
+        "default_reasoning_level" => "low",
+        "context_window" => 272_000,
+        "max_context_window" => 872_000
+      }
     ])
 
     connect!()
     send(view.pid, :refresh)
     assert has_element?(view, "#chatgpt", "connected as me@example.com (plus)")
     refute has_element?(view, "#start button.primary[disabled]")
-    # The box left blank gets the subscription's first model, shown without its prefix.
+    # The box left blank gets the subscription's first model, shown without its prefix, and
+    # the reasoning select only that model's levels, set to its default (REASONING, "off" here,
+    # is not one of them); max context is its context window.
     assert has_element?(view, "#start input[name=model][value='gpt-6.1-sol']")
-    assert has_element?(view, "#start option[value=minimal]", "minimal (= low)")
+    assert levels(view) == ~w(low medium high xhigh max)
+    assert has_element?(view, "#start option[selected][value=low]")
+    assert has_element?(view, "#start input[name=max_context][value='272000']")
 
     # Only the subscription's models are offered, by name.
-    view |> form("#start", %{model: "luna"}) |> render_change()
+    view |> form("#start", %{model: "luna"}) |> render_change(%{_target: ["model"]})
     assert has_element?(view, "#start .matches button .id", ~r/^gpt-6-luna$/)
 
-    # It is sent as an openai-codex/ slug.
+    # Choosing a model sets its default; a level chosen for it is kept until the model changes.
+    view |> element("#start .matches button", "gpt-6-luna") |> render_click()
+    assert has_element?(view, "#start option[selected][value=medium]")
+    view |> form("#start", %{reasoning: "max"}) |> render_change(%{_target: ["reasoning"]})
+    view |> form("#start", %{name: "typing"}) |> render_change(%{_target: ["name"]})
+    send(view.pid, :refresh)
+    assert has_element?(view, "#start option[selected][value=max]")
+
+    # It is sent as an openai-codex/ slug, with the level chosen.
     Fake.listen()
     name = "codex_#{System.unique_integer([:positive])}"
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
@@ -488,7 +555,7 @@ defmodule Nano.ChatGPTTest do
     assert {:error, {:live_redirect, _}} =
              view |> form("#start", %{name: name, model: "gpt-6-luna"}) |> render_submit()
 
-    assert Nano.Ops.agent(name).model == "openai-codex/gpt-6-luna"
+    assert %{model: "openai-codex/gpt-6-luna", reasoning: "max"} = Nano.Ops.agent(name)
 
     # Back to OpenRouter: its default model, and nothing about the subscription.
     {:ok, view, _} = live(build_conn(), "/")

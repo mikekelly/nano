@@ -62,8 +62,9 @@ defmodule Nano.OpenRouter do
   end
 
   @doc """
-  OpenRouter's models as `%{id, name, context_length, prompt_price, completion_price}` (prices in
-  USD per million tokens, nil if not given), sorted by id. Cached for an hour, a failure for a
+  OpenRouter's models as `%{id, name, context_length, prompt_price, completion_price,
+  reasoning_levels, default_reasoning}` (prices in USD per million tokens, nil if not given;
+  levels as `Nano.Model.reasoning/3` gives them), sorted by id. Cached for an hour, a failure for a
   minute; `[]` if they cannot be fetched (5 s at most).
   """
   def models do
@@ -95,13 +96,23 @@ defmodule Nano.OpenRouter do
 
     data
     |> Enum.map(fn m ->
-      %{
-        id: m["id"],
-        name: m["name"],
-        context_length: m["context_length"],
-        prompt_price: price.(get_in(m, ["pricing", "prompt"])),
-        completion_price: price.(get_in(m, ["pricing", "completion"]))
-      }
+      # A model without a reasoning block does not reason: "off" is its only level.
+      r = m["reasoning"] || %{"supported_efforts" => ["none"]}
+
+      Map.merge(
+        %{
+          id: m["id"],
+          name: m["name"],
+          context_length: m["context_length"],
+          prompt_price: price.(get_in(m, ["pricing", "prompt"])),
+          completion_price: price.(get_in(m, ["pricing", "completion"]))
+        },
+        Nano.Model.reasoning(
+          r["supported_efforts"] || [],
+          r["mandatory"] != true,
+          r["default_effort"]
+        )
+      )
     end)
     |> Enum.sort_by(& &1.id)
   catch

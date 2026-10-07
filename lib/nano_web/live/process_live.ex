@@ -92,7 +92,7 @@ defmodule NanoWeb.ProcessLive do
     do: {:noreply, assign(socket, start: NanoWeb.StartForm.draft(params))}
 
   def handle_event("pick_model", %{"id" => id}, socket),
-    do: {:noreply, update(socket, :start, &Map.put(&1, "model", id))}
+    do: {:noreply, update(socket, :start, &Map.put(NanoWeb.StartForm.unchosen(&1), "model", id))}
 
   def handle_event("start", params, socket) do
     name = String.trim(params["name"] || "")
@@ -149,12 +149,12 @@ defmodule NanoWeb.ProcessLive do
     chatgpt = Nano.Ops.chatgpt()
 
     # The subscription's models arrive once it is connected, and leave when it is not; a model
-    # box left blank meanwhile gets the provider's default again.
+    # box left blank meanwhile gets the provider's default again, with that model's settings.
     socket =
       if connected?(socket) and chatgpt.status != socket.assigns.chatgpt.status do
         socket
         |> update(:models, &Map.put(&1, "chatgpt", Nano.ChatGPT.models()))
-        |> update(:start, &if(&1["model"] == "", do: Map.delete(&1, "model"), else: &1))
+        |> update(:start, &if(&1["model"] == "", do: NanoWeb.StartForm.unchosen(&1), else: &1))
       else
         socket
       end

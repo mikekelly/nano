@@ -355,6 +355,79 @@ defmodule NanoWeb.ProcessLiveTest do
     assert Nano.Ops.agent(name).model == ctx.model
   end
 
+  test "the chosen model sets the reasoning select (its levels, its default) and max context",
+       ctx do
+    :persistent_term.erase({Nano.OpenRouter, :models})
+    on_exit(fn -> :persistent_term.erase({Nano.OpenRouter, :models}) end)
+    reasoning = &%{"mandatory" => &1, "supported_efforts" => &2, "default_effort" => &3}
+
+    Fake.models([
+      %{
+        "id" => "deepseek/deepseek-v4.1-flash",
+        "context_length" => 1_048_576,
+        "reasoning" => reasoning.(false, ~w(max high low), "high")
+      },
+      %{
+        "id" => "openai/gpt-6.1-sol",
+        "context_length" => 400_000,
+        "reasoning" => reasoning.(true, ~w(max high medium low), "medium")
+      },
+      %{"id" => "anthropic/claude-haiku-4.5"}
+    ])
+
+    {:ok, view, _} = live(ctx.conn, "/")
+    model = &(view |> form("#start", %{model: &1}) |> render_change(%{_target: ["model"]}))
+
+    selected =
+      &has_element?(view, "#start select[name=reasoning] option[selected][value='#{&1}']")
+
+    context = &has_element?(view, "#start input[name=max_context][value='#{&1}']")
+    node_context = Application.fetch_env!(:nano, :agent_max_context)
+
+    # REASONING ("off" here) where the model has it, else the model's default.
+    assert Application.fetch_env!(:nano, :reasoning) == "off"
+
+    model.("deepseek/deepseek-v4.1-flash")
+    assert levels(view) == ~w(off low high max)
+    assert selected.("off")
+    assert context.(1_048_576)
+
+    model.("openai/gpt-6.1-sol")
+    assert levels(view) == ~w(low medium high max)
+    assert selected.("medium")
+    assert context.(400_000)
+
+    # What is chosen then is kept across re-renders and other fields, until the model changes.
+    view
+    |> form("#start", %{reasoning: "max", max_context: "5000"})
+    |> render_change(%{_target: ["reasoning"]})
+
+    view |> form("#start", %{name: "typing"}) |> render_change(%{_target: ["name"]})
+    send(view.pid, :refresh)
+    assert selected.("max")
+    assert context.(5000)
+
+    # No reasoning block: only "off". No context length: the node's default.
+    model.("anthropic/claude-haiku-4.5")
+    assert levels(view) == ["off"]
+    assert context.(node_context)
+
+    # Picked from the list, the same; a model not in the list offers every level.
+    model.("6.1")
+    view |> element("#start .matches button", "openai/gpt-6.1-sol") |> render_click()
+    assert selected.("medium")
+    assert context.(400_000)
+    model.(ctx.model)
+    assert levels(view) == NanoWeb.Components.reasoning_levels()
+    assert selected.("off")
+    assert context.(node_context)
+  end
+
+  defp levels(view) do
+    html = view |> element("#start select[name=reasoning]") |> render()
+    for [_, level] <- Regex.scan(~r/<option[^>]*value="([^"]+)"/, html), do: level
+  end
+
   test "the start form rejects a limit that is not a whole number, 0 or more", ctx do
     {:ok, view, _} = live(ctx.conn, "/?view=debug")
 

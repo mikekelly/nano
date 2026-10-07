@@ -184,7 +184,8 @@ Un-halt it once it has. Other rate limits and server errors are retried, up to t
 attempts, as for OpenRouter.
 
 **Reasoning.** `off` is sent as effort `none`, `minimal` as `low` (these models have no
-`minimal`), and `low` to `max` by name. `gpt-5.5` has no `max` and rejects it; the efforts
+`minimal`), and `low` to `max` by name. The gpt-6.x models have no `none` and reject `off`
+(so with `REASONING` at its default, give them a level); `gpt-5.5` has no `max` and rejects it; the efforts
 above `max` that some models offer (`ultra`) have no level here.
 
 ## Network and the API key
@@ -280,12 +281,16 @@ Worth knowing while you run them:
   request while it is `off` (`deepseek/deepseek-r1` answers 400 "Reasoning is mandatory for
   this endpoint and cannot be disabled"; the agent's timeline shows the `model_error`), so
   start such agents with a level. ChatGPT subscription models map the levels as described
-  above.
+  above. The start form offers only the levels the provider lists for the chosen model, and
+  preselects `REASONING` if the model has it, else the model's own default (`low` for
+  `gpt-6.1-sol`, which cannot reason `off`); the API and the shell do not check.
 - **Three limits per agent, each settable at start, each 0 for no limit.** `max_turns`
   (default 500) counts model calls. `max_tokens` (default 30,000,000) is cumulative: prompt
   plus completion tokens over every call, with the whole transcript re-sent each turn.
   `max_context` (default 1,000,000) is the size of the conversation itself; nothing trims
-  it, so this is where an otherwise unlimited agent stops. With turns and tokens unlimited,
+  it, so this is where an otherwise unlimited agent stops. On the start form it defaults to
+  the chosen model's context window, where its provider lists one (272,000 for the ChatGPT
+  models, whose larger `max_context_window` is not used). With turns and tokens unlimited,
   the node-wide hourly cap and the limit on your OpenRouter key are the only spend controls.
 - **Halted agents.** An agent whose `halted` is `budget`, `context`, `node_budget`,
   `usage_limit`, `restart_brake`, `start_failed` or `log_failed`

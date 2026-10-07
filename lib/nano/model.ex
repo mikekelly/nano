@@ -33,6 +33,40 @@ defmodule Nano.Model do
   end
 
   @doc """
+  The `reasoning_levels` and `default_reasoning` of an entry of either provider's model list
+  (`Nano.OpenRouter.models/0`, `Nano.ChatGPT.models/0`), from the efforts the provider lists for
+  the model and its default effort: the levels of `NanoAgent.reasoning_levels/0` the model
+  supports, lowest first. `"none"` is `"off"`, the others go by name, and efforts with no level
+  here are dropped; no efforts listed means the provider takes any level. `"off"` is also
+  supported when `off?`. Without a default, the lowest level supported.
+  """
+  def reasoning(efforts, off?, default) do
+    efforts = Enum.map(efforts, &level/1)
+
+    levels =
+      for l <- NanoAgent.reasoning_levels(),
+          if(l == "off", do: off? or l in efforts, else: efforts == [] or l in efforts),
+          do: l
+
+    %{reasoning_levels: levels, default_reasoning: level(default) || List.first(levels)}
+  end
+
+  defp level("none"), do: "off"
+  defp level(effort), do: if(effort in NanoAgent.reasoning_levels(), do: effort)
+
+  @doc """
+  The level the start form chooses for an entry of a model list (or nil, a model not listed):
+  `REASONING` if the model supports it, else the model's default (if it has any level here).
+  """
+  def default_reasoning(model) do
+    level = Application.get_env(:nano, :reasoning)
+
+    if model == nil or level in model.reasoning_levels,
+      do: level,
+      else: model.default_reasoning || level
+  end
+
+  @doc """
   A slug as its provider and the model's name there: `{:chatgpt, "gpt-5.5"}` for
   `openai-codex/gpt-5.5`, `{:openrouter, slug}` for anything else.
   """

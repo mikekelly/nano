@@ -4,9 +4,12 @@ defmodule NanoWeb.StartForm do
   is chosen first, OpenRouter or the ChatGPT subscription, and the model box offers only that
   provider's models (`Nano.OpenRouter.models/0` or `Nano.ChatGPT.models/0`), filtering them as
   you type but taking any name; a ChatGPT model is shown without its `openai-codex/` prefix and
-  sent with it. With ChatGPT chosen, its connection sits under the model: connect (a
-  device-code login), the code to enter while pending, then who is connected; Start waits for
-  it. The system prompt is one of default / file / custom, so only one can be sent.
+  sent with it. The reasoning select offers the chosen model's levels, if its provider lists
+  it; whenever the model changes, the select is set to `Nano.Model.default_reasoning/1`'s
+  level and max context to the model's context window. With ChatGPT chosen, its connection
+  sits under the model: connect (a device-code login), the code to enter while pending, then
+  who is connected; Start waits for it. The system prompt is one of default / file / custom,
+  so only one can be sent.
   `NanoWeb.ProcessLive` holds what was typed (so the once-a-second refresh keeps it) and calls
   `draft/1`, `opts/1` and `error/1`.
   """
@@ -20,6 +23,9 @@ defmodule NanoWeb.StartForm do
     {"max_context", "max context", :agent_max_context}
   ]
 
+  # The fields a model sets when it is chosen.
+  @set_by_model ~w(reasoning max_context)
+
   attr :start, :map, required: true, doc: "what was typed so far"
   attr :models, :map, required: true, doc: ~s|each provider's models, by "openrouter", "chatgpt"|
   attr :error, :any, required: true
@@ -30,12 +36,27 @@ defmodule NanoWeb.StartForm do
     chatgpt? = v["provider"] == "chatgpt"
     models = assigns.models[v["provider"]] || []
     v = Map.put_new(v, "model", default_model(v["provider"], models))
+    model = Enum.find(models, &(&1.id == v["model"]))
+
+    # What the model sets, unless typed since it was chosen: its reasoning level, and its
+    # context window as max context (else the node's default).
+    set = %{
+      "reasoning" => Nano.Model.default_reasoning(model),
+      "max_context" => to_string((model && model.context_length) || v["max_context"])
+    }
+
+    v = Map.merge(v, Map.drop(set, Map.keys(assigns.start)))
 
     assigns =
       assign(assigns,
         v: v,
         chatgpt?: chatgpt?,
         models: models,
+        levels:
+          case model do
+            %{reasoning_levels: [_ | _] = levels} -> levels
+            _ -> reasoning_levels()
+          end,
         matches: matches(models, v["model"]),
         blocked: chatgpt? and assigns.chatgpt.status != :connected
       )
@@ -89,12 +110,8 @@ defmodule NanoWeb.StartForm do
         <label class="field">
           reasoning
           <select name="reasoning">
-            <option
-              :for={level <- reasoning_levels()}
-              value={level}
-              selected={level == @v["reasoning"]}
-            >
-              {level}{if @chatgpt? and level == "minimal", do: " (= low)"}
+            <option :for={level <- @levels} value={level} selected={level == @v["reasoning"]}>
+              {level}
             </option>
           </select>
         </label>
@@ -189,7 +206,8 @@ defmodule NanoWeb.StartForm do
   defp limits, do: @limits
 
   # What the form shows before anything is typed: the node's defaults, as values. The model is
-  # `default_model/2`'s, for the provider chosen.
+  # `default_model/2`'s, for the provider chosen; the model then sets the reasoning level and
+  # max context.
   defp defaults do
     limits =
       for {field, _, env} <- @limits,
@@ -201,7 +219,6 @@ defmodule NanoWeb.StartForm do
     Map.merge(limits, %{
       "name" => "",
       "provider" => Atom.to_string(provider),
-      "reasoning" => Application.get_env(:nano, :reasoning, "off"),
       "start_idle" => "true",
       "prompt" => "default"
     })
@@ -219,13 +236,20 @@ defmodule NanoWeb.StartForm do
     end
   end
 
+  @doc "What was typed, less the model and what it sets: the form shows the provider's default."
+  def unchosen(params), do: Map.drop(params, ["model" | @set_by_model])
+
   @doc """
   What was typed, as the form keeps it. Choosing a provider empties the model, so the box
-  shows that provider's default. A whole slug of the other provider's chooses it: an
+  shows that provider's default; choosing a model, its reasoning level and max context, so
+  the form shows that model's. A whole slug of the other provider's chooses it: an
   `openai-codex/` slug ChatGPT, leaving the model's name in the box; while ChatGPT is chosen,
   a slug with a `/` OpenRouter, since ChatGPT's model names have none.
   """
-  def draft(%{"_target" => ["provider"]} = params), do: Map.delete(params, "model")
+  def draft(%{"_target" => ["provider"]} = params), do: unchosen(params)
+
+  def draft(%{"_target" => ["model"]} = params),
+    do: params |> Map.drop(["_target" | @set_by_model]) |> draft()
 
   def draft(params) do
     case Nano.Model.split(String.trim(params["model"] || "")) do
