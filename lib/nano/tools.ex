@@ -14,41 +14,39 @@ defmodule Nano.Tools do
       limit = Keyword.get(opts, :limit, 200)
       cap = Keyword.get(opts, :max_bytes, 16_000)
 
-      with true <- positive(offset) and positive(limit) and positive(cap),
-           {:ok, text} <- File.read(path) do
-        lines = lines(text)
+      unless positive(offset) and positive(limit) and positive(cap),
+        do: throw({:error, "offset, limit and max_bytes must be positive integers"})
 
-        if offset > max(length(lines), 1) do
-          {:error, "offset past EOF (#{length(lines)} lines)"}
-        else
-          selected = Enum.slice(lines, offset - 1, limit)
+      with {:ok, stat} <- File.stat(path) do
+        unless stat.type == :regular, do: throw({:error, "read requires a regular file"})
+        {:ok, file} = :file.open(String.to_charlist(path), [:read, :binary, :raw])
 
-          {kept, bytes} =
-            Enum.reduce_while(selected, {[], 0}, fn line, {acc, n} ->
-              size = byte_size(line) + 1
-              if n + size <= cap, do: {:cont, {[line | acc], n + size}}, else: {:halt, {acc, n}}
-            end)
+        {kept, total, bytes, stopped, _, _} =
+          try do
+            read_chunks(file, {[], 0, 0, false, "", 0}, offset, limit, cap)
+          after
+            :file.close(file)
+          end
 
-          count = length(kept)
+        cond do
+          offset > max(total, 1) ->
+            {:error, "offset past EOF (#{total} lines)"}
 
-          if count == 0 and selected != [] do
+          kept == [] and stopped ->
             {:error, "line #{offset} exceeds max_bytes=#{cap}; increase max_bytes"}
-          else
-            more = offset - 1 + count < length(lines)
+
+          true ->
+            more = offset - 1 + length(kept) < total
 
             {:ok,
              %{
                text: kept |> Enum.reverse() |> Enum.join("\n"),
                bytes: bytes,
-               total_lines: length(lines),
+               total_lines: total,
                truncated: more,
-               next_offset: if(more, do: offset + count)
+               next_offset: if(more, do: offset + length(kept))
              }}
-          end
         end
-      else
-        false -> {:error, "offset, limit and max_bytes must be positive integers"}
-        error -> error
       end
     end)
   end
@@ -234,6 +232,50 @@ defmodule Nano.Tools do
         error ->
           error
       end
+    end
+  end
+
+  defp read_chunks(file, state, offset, limit, cap) do
+    case :file.read(file, 8192) do
+      {:ok, chunk} ->
+        parts = :binary.split(chunk, "\n", [:global])
+
+        state =
+          parts
+          |> Enum.with_index()
+          |> Enum.reduce(state, fn {part, i}, state ->
+            {kept, total, bytes, stopped, pending, size} = state
+            size = size + byte_size(part)
+
+            pending =
+              if not stopped and total + 1 >= offset do
+                combined = pending <> part
+                binary_part(combined, 0, min(byte_size(combined), cap + 1))
+              else
+                ""
+              end
+
+            state = {kept, total, bytes, stopped, pending, size}
+            if i < length(parts) - 1, do: finish_read_line(state, offset, limit, cap), else: state
+          end)
+
+        read_chunks(file, state, offset, limit, cap)
+
+      :eof ->
+        if elem(state, 5) > 0, do: finish_read_line(state, offset, limit, cap), else: state
+
+      {:error, reason} ->
+        throw({:error, reason})
+    end
+  end
+
+  defp finish_read_line({kept, total, bytes, stopped, pending, size}, offset, limit, cap) do
+    total = total + 1
+
+    cond do
+      total < offset or stopped -> {kept, total, bytes, stopped, "", 0}
+      length(kept) >= limit or bytes + size + 1 > cap -> {kept, total, bytes, true, "", 0}
+      true -> {[pending | kept], total, bytes + size + 1, false, "", 0}
     end
   end
 

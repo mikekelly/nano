@@ -26,8 +26,7 @@ Listings cap 500 entries; find caps 1000 paths; grep caps 100 matches with 500
 characters per matching line. Find/grep respect git ignore via git check-ignore
 when inside a repository (`respect_gitignore: false` disables). Grep supports regex,
 literal, ignore_case, glob, limit and line_limit; context lines are not implemented.
-Results are maps for branching, not formatted CLI output. Read currently loads
-whole files; tail uses an EOF seek window bounded by max_bytes + 4; find enumerates the glob before capping. Result bounds do not imply
+Results are maps for branching, not formatted CLI output. Read scans fixed 8KB chunks with capped pending-line storage to count total lines; tail uses an EOF seek window bounded by max_bytes + 4; find enumerates the glob before capping. Result bounds do not imply
 bounded input memory or search runtime. Tail byte slicing drops incomplete leading UTF-8 characters.
 
 Background workers and the manager are unlinked to evals. Worker ancestry includes
@@ -46,4 +45,6 @@ Tests: `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-tools/_build mix test test/nano/to
 
 Listings, find and grep also cap aggregate inspected item bytes at 16KB (`max_bytes`), with `offset`/`next_offset` for exact continuation. A single oversized item errors. Tail can be continued by `read(path, offset: 1)` or increasing `limit`/`max_bytes`; full output remains at path.
 
-Manager failure loses tracking/notifications; jobs are not durable across manager/node failure. Optional `Nano.Background.start_link/1` supports an application's supervisor; do not add it after lazy start without coordinating the existing manager. Tail reports total_lines `:unknown` when the EOF window does not cover the whole file.
+Manager failure loses tracking/notifications; jobs are not durable across manager/node failure. Optional `Nano.Background.start_link/1` supports an application's supervisor; it adopts/links an existing lazy manager when added to an application supervisor. Tail reports total_lines `:unknown` when the EOF window does not cover the whole file.
+
+Read is streaming even for oversized lines, retains at most max_bytes pending text plus an 8KB input chunk, and counts the whole file for exact EOF/continuation metadata. Large-file scans can still take time. Grep still reads each searched file into memory.
