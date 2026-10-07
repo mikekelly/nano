@@ -305,8 +305,8 @@ One image, based on the official Elixir image, running the app from source with 
 | `SYSTEM_PROMPT_FILE` | `priv/system_prompt.txt` | Default prompt template for new agents, read at each agent start |
 | `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |
-| `AGENT_MAX_TURNS` | 50 | Model calls per agent before halting; 0 means no limit |
-| `AGENT_MAX_TOKENS` | 3000000 | Total tokens per agent before halting (prompt + completion, summed over every model call); 0 means no limit |
+| `AGENT_MAX_TURNS` | 500 | Model calls per agent before halting; 0 means no limit |
+| `AGENT_MAX_TOKENS` | 30000000 | Total tokens per agent before halting (prompt + completion, summed over every model call); 0 means no limit |
 | `AGENT_MAX_CONTEXT` | 1000000 | Size of one agent's conversation, in tokens, at which it is halted; 0 means no limit (the model's own limit then applies) |
 | `EVAL_TIMEOUT_MS` | 30000 | Per-eval timeout |
 | `RESULT_MAX_BYTES` | 16000 | Truncation limit for tool results and events |

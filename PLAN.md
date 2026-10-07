@@ -50,8 +50,7 @@ and say so.
     cumulative spend, not context size. Because the whole transcript is re-sent each turn, 50
     turns with the context growing ~2k tokens a turn is ~2.5M tokens, hence the
     `AGENT_MAX_TOKENS` default of 3,000,000 (raised from the spec's original 500,000 at the
-    owner's request). Node-wide cap: `NODE_MAX_TOKENS_PER_HOUR` (default 15,000,000, i.e. five
-    full agent budgets), a rolling-hour counter in ETS; when hit,
+    owner's request). Node-wide cap: `NODE_MAX_TOKENS_PER_HOUR` (default 100,000,000), a rolling-hour counter in ETS; when hit,
     the agent logs `budget_exhausted` (scope `node`) and halts with `:node_budget`.
 11. **Lifecycle verbs.** `stop` terminates the child and deletes its store entry (the agent is
     gone). `restart` kills the process with reason `:operator_restart` so the supervisor brings

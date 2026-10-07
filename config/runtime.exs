@@ -27,10 +27,10 @@ config :nano,
   system_prompt_file: env.("SYSTEM_PROMPT_FILE", "priv/system_prompt.txt"),
   # Model reasoning ("thinking") effort for new agents: off, minimal, low, medium, high, xhigh or max.
   reasoning: env.("REASONING", "off"),
-  agent_max_turns: int.("AGENT_MAX_TURNS", "50"),
-  agent_max_tokens: int.("AGENT_MAX_TOKENS", "3000000"),
+  agent_max_turns: int.("AGENT_MAX_TURNS", "500"),
+  agent_max_tokens: int.("AGENT_MAX_TOKENS", "30000000"),
   agent_max_context: int.("AGENT_MAX_CONTEXT", "1000000"),
-  node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "15000000"),
+  node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "100000000"),
   eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
   result_max_bytes: int.("RESULT_MAX_BYTES", "16000"),
   # Eval variables are saved for restarts up to this many bytes in total; the largest are left out.

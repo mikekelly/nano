@@ -198,7 +198,7 @@ Worth knowing while you run them:
   this endpoint and cannot be disabled"; the agent's timeline shows the `model_error`), so
   start such agents with a level.
 - **Three limits per agent, each settable at start, each 0 for no limit.** `max_turns`
-  (default 50) counts model calls. `max_tokens` (default 3,000,000) is cumulative: prompt
+  (default 500) counts model calls. `max_tokens` (default 30,000,000) is cumulative: prompt
   plus completion tokens over every call, with the whole transcript re-sent each turn.
   `max_context` (default 1,000,000) is the size of the conversation itself; nothing trims
   it, so this is where an otherwise unlimited agent stops. With turns and tokens unlimited,

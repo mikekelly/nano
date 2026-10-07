@@ -44,9 +44,9 @@ open http://localhost:4000
 ```
 
 Everything else has a default: the model is `deepseek/deepseek-v4.1-flash`
-(`DEFAULT_MODEL`), reasoning is off (`REASONING`), agents get 50 turns, 3,000,000 tokens
+(`DEFAULT_MODEL`), reasoning is off (`REASONING`), agents get 500 turns, 30,000,000 tokens
 and a 1,000,000-token context (`AGENT_MAX_TURNS`, `AGENT_MAX_TOKENS`, `AGENT_MAX_CONTEXT`;
-0 means no limit), and the node is capped at 15,000,000 tokens an hour
+0 means no limit), and the node is capped at 100,000,000 tokens an hour
 (`NODE_MAX_TOKENS_PER_HOUR`). `.env.example` lists them all.
 
 The container mounts a **dedicated checkout** of this repo as `/app` (default

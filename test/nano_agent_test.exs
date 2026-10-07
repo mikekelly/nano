@@ -763,7 +763,7 @@ defmodule NanoAgentTest do
     ctx_max = Application.get_env(:nano, :agent_max_context)
 
     assert prompt =~
-             "Your limits: 50\nturns, #{max} tokens in total, and a context of #{ctx_max}\ntokens."
+             "Your limits: 500\nturns, #{max} tokens in total, and a context of #{ctx_max}\ntokens."
 
     assert prompt =~ inspect(pid)
     assert await(id, :agent_started)["system_prompt"] == prompt
@@ -1479,7 +1479,7 @@ defmodule NanoAgentTest do
     ctx_max = Application.get_env(:nano, :agent_max_context)
 
     line =
-      "<harness>Used so far: 0 of 50 turns, 0 of #{max} tokens, context 0 of #{ctx_max} tokens.</harness>"
+      "<harness>Used so far: 0 of 500 turns, 0 of #{max} tokens, context 0 of #{ctx_max} tokens.</harness>"
 
     assert budget_line(List.last(body["messages"])) == line
     assert delivery(List.last(body["messages"])) =~ ":first"
@@ -1503,7 +1503,7 @@ defmodule NanoAgentTest do
     assert [_, _] = String.split(delivery(last), "\n")
 
     assert budget_line(last) ==
-             "<harness>Used so far: 3 of 50 turns, 330 of #{max} tokens, context 110 of #{ctx_max} tokens.</harness>"
+             "<harness>Used so far: 3 of 500 turns, 330 of #{max} tokens, context 110 of #{ctx_max} tokens.</harness>"
   end
 
   test "a delivery of harness notes alone also ends with the budget line", ctx do
@@ -1513,7 +1513,7 @@ defmodule NanoAgentTest do
     request!(ctx.model)
     last = List.last(request!(ctx.model)["messages"])
     assert delivery(last) =~ ~r/^<harness>No message arrived within 20 ms/
-    assert budget_line(last) =~ "Used so far: 1 of 50 turns, 110 of"
+    assert budget_line(last) =~ "Used so far: 1 of 500 turns, 110 of"
   end
 
   test "the default template file is the one in SPEC.md, and agents render it", ctx do
@@ -1596,7 +1596,7 @@ defmodule NanoAgentTest do
                "still 160 of 150 tokens, so I will halt you again after my next call to the model.</harness>"
 
     assert budget_line(last) ==
-             "<harness>Used so far: 2 of 50 turns, 270 of #{max} tokens, context 160 of 150 tokens.</harness>"
+             "<harness>Used so far: 2 of 500 turns, 270 of #{max} tokens, context 160 of 150 tokens.</harness>"
 
     # As it said: halted again after that call.
     await_nth(id, :budget_exhausted, 2)
