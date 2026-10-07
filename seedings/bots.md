@@ -18,6 +18,20 @@ this is the product on top.
   are not on this screen. The operator's dashboard still has all of it.
 - Messages render well: Markdown, code, files the bot produces, with safe handling of
   anything a model writes.
+- **Bots speak first when it is warranted.** A bot can post into a session it belongs to
+  without being asked — to report that something finished, to ask a question it cannot
+  answer alone, to flag that something needs the person — and the person is told, with
+  browser notifications when they have allowed them, so a bot's message reaches them
+  even when the page is not in front of them. Which sessions a bot may use for this, and
+  how often, is the bot's judgment within limits the person sets; a decision model is the
+  right tool for "does this need the person now?".
+- **Bots as the conduit for every other agent.** Operators' agents on this node (and
+  agents on other machines that talk to it) often need a human: a credential to set up, an
+  account balance to top up, a choice only a person can make. Rather than each of them
+  finding the person, they ask a bot, and the bot raises it in the right session as a
+  request the person can answer there, then passes the answer back. So a bot's inbox is an
+  interface other agents can rely on, with a documented message shape for "I need a human
+  for this", and the person sees one channel, not many.
 
 ## What that requires underneath
 
@@ -37,6 +51,10 @@ this is the product on top.
   never hits its context limit mid-conversation and never visibly "forgets" within a
   session. The seed has no compaction; the compaction mechanism the `reviewer` run found
   (rewrite the stored transcript, keep every tool call answered) is the starting point.
+- **Proactive messaging and notifications**: a bot that initiates must be able to post
+  into a session from its own process (not only in reply to a turn), the session must
+  update live for the person, and browser notifications need the page to ask permission
+  and a small service worker or the Notifications API from the LiveView page.
 - **Decision models, not only LLMs**: much of the above is classification and routing —
   which memories are relevant, whether a session needs compacting, what a message is
   about, which bot should answer, which path to take through the knowledge graph. Doing
@@ -62,7 +80,11 @@ this is the product on top.
 
 A person creates two bots, starts a session with one and a session with both, chats for
 long enough that compaction happens without them noticing, tells one bot something in
-one session and has it come up appropriately in another, and never sees an eval.
+one session and has it come up appropriately in another, and never sees an eval. Then,
+with the page in the background, another agent on the node asks a bot for something only
+the person can give; the bot posts the request in the right session, the browser
+notification brings the person back, they answer in the chat, and the asking agent
+receives the answer.
 
 ## Related
 
