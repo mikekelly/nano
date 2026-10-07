@@ -37,12 +37,15 @@ defmodule Nano.Search do
                  r["text"] || "",
                  Keyword.put(opts, :title, r["title"])
                ) do
-            {:ok, page} -> Map.put(compact(r), :page, page)
-            error -> %{id: r["id"], error: error}
+            {:ok, page} ->
+              Map.put(compact(r), :page, Map.take(page, [:id, :total_lines, :fetched_at]))
+
+            error ->
+              %{id: cut(r["id"], 256), error: error}
           end
         end)
 
-      {:ok, %{results: results, statuses: response["statuses"]}}
+      {:ok, %{results: results, statuses: bounded_statuses(response["statuses"])}}
     end
   end
 
@@ -56,7 +59,7 @@ defmodule Nano.Search do
            ) do
       {:ok,
        %{
-         answer: String.slice(response["answer"] || "", 0, 12_000),
+         answer: cut(response["answer"] || "", 12_000),
          citations: Enum.map(Enum.take(response["citations"] || [], 10), &compact/1)
        }}
     end
@@ -183,15 +186,34 @@ defmodule Nano.Search do
 
   defp compact(r),
     do: %{
-      id: r["id"],
-      url: r["url"],
-      title: cut(r["title"], 300),
-      highlights: Enum.map(Enum.take(r["highlights"] || [], 2), &cut(&1, 500)),
-      published_date: r["publishedDate"]
+      id: cut(r["id"], 256),
+      url: cut(r["url"], 768),
+      title: cut(r["title"], 256),
+      highlights: Enum.map(Enum.take(r["highlights"] || [], 2), &cut(&1, 384)),
+      published_date: cut(r["publishedDate"], 100)
     }
 
   defp cut(nil, _), do: nil
-  defp cut(s, n), do: String.slice(s, 0, n)
+
+  defp cut(s, n) when is_binary(s) do
+    if byte_size(s) <= n, do: s, else: valid_prefix(binary_part(s, 0, n))
+  end
+
+  defp cut(_, _), do: nil
+
+  defp valid_prefix(s) do
+    if String.valid?(s), do: s, else: valid_prefix(binary_part(s, 0, byte_size(s) - 1))
+  end
+
+  defp bounded_statuses(statuses) when is_list(statuses) do
+    statuses
+    |> Enum.take(10)
+    |> Enum.map(fn s ->
+      if is_map(s), do: %{id: cut(s["id"], 256), status: cut(s["status"], 100)}, else: cut(s, 100)
+    end)
+  end
+
+  defp bounded_statuses(_), do: nil
   defp key(opts), do: Keyword.get(opts, :api_key, System.get_env("EXA_API_KEY"))
 
   defp request(method, path, body, opts) do

@@ -100,7 +100,9 @@ defmodule Nano.WebSearchTest do
     assert {:ok, %{results: [%{page: p}]}} =
              Nano.Search.contents("https://a", opts ++ [api_key: "test", req_options: mock(r)])
 
-    assert p.text == "1: citation"
+    refute Map.has_key?(p, :text)
+    assert {:ok, full} = Nano.Web.read(p.id, opts)
+    assert full.text == "1: citation"
 
     assert {:ok, %{answer: "yes", citations: [%{url: "https://a"}]}} =
              Nano.Search.answer("q",
@@ -289,6 +291,40 @@ defmodule Nano.WebSearchTest do
 
     assert {:error, :timeout} =
              Nano.Lightpanda.fetch("https://example.org", executable: binary, timeout: 20)
+  end
+
+  test "aggregate contents and Unicode search/answer stay below harness cap", %{opts: opts} do
+    huge = String.duplicate("😀", 20_000)
+
+    results =
+      for _ <- 1..20,
+          do: %{
+            "id" => huge,
+            "url" => huge,
+            "title" => huge,
+            "highlights" => [huge, huge, huge],
+            "text" => String.duplicate("line\n", 10_000)
+          }
+
+    options =
+      opts ++ [api_key: "test", req_options: mock(%{"results" => results, "statuses" => results})]
+
+    assert {:ok, hits} = Nano.Search.search("q", options)
+    assert byte_size(Jason.encode!(hits)) < 30_000
+    assert Enum.all?(hits.results, &String.valid?(&1.title))
+    assert {:ok, pages} = Nano.Search.contents("url", options)
+    assert byte_size(Jason.encode!(pages)) < 35_000
+    assert Enum.all?(pages.results, fn r -> not Map.has_key?(r.page, :text) end)
+
+    assert {:ok, answer} =
+             Nano.Search.answer(
+               "q",
+               opts ++
+                 [api_key: "test", req_options: mock(%{"answer" => huge, "citations" => results})]
+             )
+
+    assert byte_size(Jason.encode!(answer)) < 35_000
+    assert String.valid?(answer.answer)
   end
 
   test "browser missing and shell-free URL validation" do

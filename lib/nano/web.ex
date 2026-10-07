@@ -173,8 +173,8 @@ defmodule Nano.Web do
     {:ok,
      %{
        id: p["id"],
-       url: p["url"],
-       title: p["title"],
+       url: metadata(p["url"], 2048),
+       title: metadata(p["title"], 512),
        fetched_at: p["fetched_at"],
        text:
          taken
@@ -186,6 +186,16 @@ defmodule Nano.Web do
        total_lines: length(lines),
        truncated: next != nil
      }}
+  end
+
+  defp metadata(nil, _), do: nil
+
+  defp metadata(s, n) do
+    if byte_size(s) <= n, do: s, else: valid_metadata(binary_part(s, 0, n))
+  end
+
+  defp valid_metadata(s) do
+    if String.valid?(s), do: s, else: valid_metadata(binary_part(s, 0, byte_size(s) - 1))
   end
 
   defp bounded_sink(cap) do
