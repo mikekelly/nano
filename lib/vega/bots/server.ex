@@ -56,7 +56,16 @@ defmodule Vega.Bots.Server do
   def handle_call(:topic, _, s), do: {:reply, {:ok, s.topic}, s}
 
   def handle_call(command, _, s) do
-    case mutate(command, s.data) do
+    command =
+      case command do
+        {:message, sid, author, text, opts} ->
+          {:message, sid, author, text, Keyword.put(opts, :root, s.root)}
+
+        other ->
+          other
+      end
+
+    case safe_mutate(command, s.data) do
       {:ok, result, next, event} ->
         case persist(s, next) do
           :ok ->
@@ -71,6 +80,12 @@ defmodule Vega.Bots.Server do
       {:error, _} = error ->
         {:reply, error, s}
     end
+  end
+
+  defp safe_mutate(command, data) do
+    mutate(command, data)
+  rescue
+    _ -> {:error, :invalid_command}
   end
 
   defp mutate({:create_bot, name, opts}, d) do
@@ -161,14 +176,18 @@ defmodule Vega.Bots.Server do
   defp mutate({:message, sid, author, text, opts}, d) do
     with {:ok, session} <- find(d, "sessions", sid),
          true <- author == "person" or author in session["bot_ids"],
-         true <- text?(text, 32_000) or (text == "" and opts[:images] not in [nil, []]),
-         {:ok, images} <- validate_images(opts[:images] || []) do
+         true <-
+           text?(text, 32_000) or
+             (text == "" and (opts[:images] not in [nil, []] or opts[:files] not in [nil, []])),
+         {:ok, images} <- validate_images(opts[:images] || []),
+         {:ok, files} <- Vega.Bots.Files.validate(opts[:files] || [], opts[:root]) do
       message = %{
         "id" => id(),
         "author_id" => author,
         "text" => text,
         "at" => Store.now(),
-        "images" => images
+        "images" => images,
+        "files" => files
       }
 
       next = append(d, session, message)

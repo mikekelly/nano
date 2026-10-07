@@ -11,7 +11,7 @@ defmodule Vega.Bots do
       Vega.Bots.send_message(chat["id"], "Help me plan tomorrow")
 
   Agents MUST post through eval, not final prose:
-  `Vega.Bots.post(session_id, bot_id, "**Hello**")`. Use `remember/4` for durable
+  `Vega.Bots.post(session_id, bot_id, "**Hello**")`. Use `remember/3` for durable
   facts, not every utterance. `request_human/3` requires `requester: "stable-agent-name"`;
   answers arrive as `{:vega_human_answer, request_id, answer}`. Acknowledge with
   `acknowledge_answer/2` (requester: same name) after recording/handling the answer.
@@ -61,6 +61,14 @@ defmodule Vega.Bots do
     with {:ok, topic} <- call(:topic, opts),
          :ok <- Phoenix.PubSub.subscribe(Nano.PubSub, topic),
          do: {:ok, topic}
+  end
+
+  def attach_file(path, opts \\ []) do
+    with {:ok, root} <- call(:root, opts), do: Vega.Bots.Files.import(path, root)
+  end
+
+  def download_file(id, opts \\ []) do
+    with {:ok, root} <- call(:root, opts), do: Vega.Bots.Files.fetch(id, root)
   end
 
   def agent_name(bot, session), do: "bot." <> bot <> "." <> session
