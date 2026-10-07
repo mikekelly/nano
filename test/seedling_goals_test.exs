@@ -92,6 +92,24 @@ defmodule Seedling.GoalsTest do
     assert File.read!(path) == "invalid"
   end
 
+  test "early base64-named goal files survive upgrade and migrate on update", %{dir: dir} do
+    {:ok, goal} = Goals.add("upgrade", "Keep old goal", why: "State must survive deploys")
+    [hashed] = File.ls!(dir)
+    legacy = Base.url_encode64("upgrade", padding: false) <> ".json"
+    File.rename!(Path.join(dir, hashed), Path.join(dir, legacy))
+    assert {:ok, [^goal]} = Goals.list("upgrade")
+    assert {:ok, %{open: 1}} = Goals.review("upgrade")
+    assert {:ok, [^goal]} = Goals.migrate_legacy("upgrade")
+    assert {:ok, completed} = Goals.complete("upgrade", goal["id"])
+    assert File.exists?(Path.join(dir, hashed))
+    assert {:ok, [^completed]} = Goals.list("upgrade")
+    assert completed["status"] == "done"
+    assert {:ok, [^completed]} = Goals.migrate_legacy("upgrade")
+    File.write!(Path.join(dir, hashed), "invalid")
+    assert {:error, :corrupt_storage} = Goals.migrate_legacy("upgrade")
+    assert File.read!(Path.join(dir, legacy)) =~ "Keep old goal"
+  end
+
   test "storage failures are returned", %{dir: dir} do
     File.write!(dir, "not a directory")
     assert {:error, {:storage, _}} = Goals.add("a", "Title")

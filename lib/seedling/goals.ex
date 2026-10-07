@@ -9,7 +9,7 @@ defmodule Seedling.Goals do
   @closed ~w(done cancelled)
 
   def list(agent, opts \\ []) do
-    with {:ok, path} <- path(agent), {:ok, goals} <- read(path) do
+    with {:ok, path} <- path(agent), {:ok, goals} <- read_agent(path, agent) do
       {:ok,
        if(Keyword.get(opts, :open, false),
          do: Enum.reject(goals, &(&1["status"] in @closed)),
@@ -26,6 +26,9 @@ defmodule Seedling.Goals do
       end
     end
   end
+
+  @doc "Save legacy base64-named goals under the current filename; existing current files take precedence."
+  def migrate_legacy(agent), do: mutate(agent, fn goals -> {:ok, goals, goals} end)
 
   @doc "Create a goal with optional :parent, :why, :status. Returns {:ok, goal}."
   def add(agent, title, opts \\ []) do
@@ -144,6 +147,16 @@ defmodule Seedling.Goals do
 
   defp path(_), do: {:error, :invalid_agent}
 
+  # Legacy live-loaded versions used base64 names; upgrade on the next update.
+  defp read_agent(path, agent) do
+    if File.exists?(path) or byte_size(agent) > 180 do
+      read(path)
+    else
+      legacy = Path.join(Path.dirname(path), Base.url_encode64(agent, padding: false) <> ".json")
+      read(legacy)
+    end
+  end
+
   defp read(path) do
     case File.read(path) do
       {:error, :enoent} ->
@@ -171,7 +184,7 @@ defmodule Seedling.Goals do
       :global.trans(
         {{__MODULE__, path}, self()},
         fn ->
-          with {:ok, goals} <- read(path),
+          with {:ok, goals} <- read_agent(path, agent),
                {:ok, next, result} <- fun.(goals),
                :ok <- write(path, next) do
             {:ok, result}

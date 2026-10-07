@@ -68,3 +68,13 @@ load the module with `Code.compile_file("lib/seedling/goals.ex")`, write a goal,
 and review it from a separate task. Actual node/container restart is not performed
 on a shared running workbench; persistence follows from direct disk reads with
 no in-memory cache.
+
+### Early workbench upgrade
+
+Early live-loaded versions used base64 filenames. Reads fall back to those files
+only when the current SHA256 filename is absent; the next update saves the new
+path. `Seedling.Goals.migrate_legacy(name)` explicitly saves the validated goals
+without changing them. An existing current file always takes precedence (including
+corrupt files, which return an error); legacy data is never merged or overwritten.
+Legacy files remain on disk as an audit copy. Never run old and new module versions
+as simultaneous writers during migration.
