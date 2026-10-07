@@ -23,14 +23,17 @@ defmodule Nano.Bots do
     do: call(opts[:server] || __MODULE__, {:session, ids, opts})
 
   def say(sid, text, server \\ __MODULE__), do: call(server, {:say, sid, text})
-  def post(sid, bid, text, server \\ __MODULE__), do: call(server, {:post, sid, bid, text})
+
+  def post(sid, bid, text, server \\ __MODULE__),
+    do: call(server, {:post, sid, bid, text, caller_agent()})
+
   def remember(bid, text, opts \\ []), do: call(opts[:server] || __MODULE__, {:memory, bid, text})
 
   def ask_human(bid, question, opts \\ []),
     do:
       call(
         opts[:server] || __MODULE__,
-        {:ask, bid, question, Keyword.put_new(opts, :reply_to, self())}
+        {:ask, bid, question, Keyword.put_new(opts, :reply_to, caller_agent() || self())}
       )
 
   def answer(rid, text, server \\ __MODULE__), do: call(server, {:answer, rid, text})
@@ -43,7 +46,28 @@ defmodule Nano.Bots do
     GenServer.call(server, msg, 30_000)
   end
 
-  defp id, do: Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  @doc "Stable registered agent identity from an eval task's caller chain, or nil."
+  def caller_agent do
+    Enum.find_value([self() | Process.get(:"$callers", [])], fn pid ->
+      if Process.whereis(Nano.Registry) do
+        Enum.find_value(Registry.keys(Nano.Registry, pid), fn
+          {:agent, name} -> name
+          _ -> nil
+        end)
+      end
+    end)
+  end
+
+  defp current_actor?(nil, _, _, _), do: true
+
+  defp current_actor?("bot-" <> _ = actor, bid, sid, generation),
+    do: actor == "bot-#{bid}-#{sid}-#{generation}"
+
+  defp current_actor?(_, _, _, _), do: true
+
+  defp id,
+    do: Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+
   defp now, do: System.system_time(:millisecond)
   defp valid?(s), do: is_binary(s) and String.trim(s) != "" and byte_size(s) <= 32_000
   @impl true
@@ -65,7 +89,8 @@ defmodule Nano.Bots do
        path: path,
        runner: opts[:runner] || (&Nano.Bots.Runtime.deliver/4),
        decision: opts[:decision] || (&Nano.Bots.Decision.decide/2),
-       last_notification: 0
+       last_notification: 0,
+       group_budget: %{}
      }}
   end
 
@@ -121,7 +146,7 @@ defmodule Nano.Bots do
         :ok ->
           for bid <- chat.bots, do: send(self(), {:deliver, sid, bid, text})
           broadcast(%{session: sid})
-          {:reply, :ok, %{s | data: data}}
+          {:reply, :ok, %{s | data: data, group_budget: Map.put(s.group_budget, sid, 2)}}
 
         e ->
           {:reply, e, s}
@@ -131,10 +156,11 @@ defmodule Nano.Bots do
     end
   end
 
-  def handle_call({:post, sid, bid, text}, _, s) do
+  def handle_call({:post, sid, bid, text, actor}, _, s) do
     with true <- valid?(text),
          %{bots: bots} = chat <- s.data.sessions[sid],
-         true <- bid in bots do
+         true <- bid in bots,
+         true <- current_actor?(actor, bid, sid, chat.generation) do
       chat = append(chat, bid, text) |> put_in([:status, bid], :idle)
 
       commit(s, put_in(s.data, [:sessions, sid], chat), :ok, %{session: sid, bot: bid, text: text})
@@ -226,7 +252,7 @@ defmodule Nano.Bots do
           e -> {:error, Exception.message(e)}
         end
 
-      send(parent, {:delivery_result, sid, bid, result})
+      send(parent, {:delivery_result, sid, bid, chat.generation, result})
     end)
 
     data = put_in(s.data, [:sessions, sid, :status, bid], :thinking)
@@ -234,18 +260,63 @@ defmodule Nano.Bots do
     {:noreply, %{s | data: data}}
   end
 
-  def handle_info({:delivery_result, sid, bid, result}, s) do
-    status =
-      case result do
-        {:ok, _} -> :thinking
-        :ok -> :thinking
-        _ -> :unavailable
-      end
+  def handle_info({:delivery_result, sid, bid, generation, result}, s) do
+    if s.data.sessions[sid].generation != generation or
+         s.data.sessions[sid].status[bid] != :thinking do
+      {:noreply, s}
+    else
+      status =
+        case result do
+          {:ok, _} -> :thinking
+          :ok -> :thinking
+          _ -> :unavailable
+        end
 
-    data = put_in(s.data, [:sessions, sid, :status, bid], status)
-    persist(s.path, data)
-    broadcast(%{session: sid})
-    {:noreply, %{s | data: data}}
+      data = put_in(s.data, [:sessions, sid, :status, bid], status)
+      persist(s.path, data)
+      broadcast(%{session: sid})
+      {:noreply, %{s | data: data}}
+    end
+  end
+
+  def handle_info({:route_group, sid, source, text}, s) do
+    chat = s.data.sessions[sid]
+
+    if Map.get(s.group_budget, sid, 0) > 0 and length(chat.bots) > 1 do
+      parent = self()
+
+      for bid <- chat.bots -- [source] do
+        bot = s.data.bots[bid]
+
+        spawn(fn ->
+          respond =
+            decide(
+              s.decision,
+              :respond,
+              %{
+                bot: Map.take(bot, [:name, :description]),
+                source: s.data.bots[source].name,
+                message: text,
+                recent: Enum.take(chat.messages, -6)
+              },
+              false
+            )
+
+          send(parent, {:group_decision, sid, bid, source, text, chat.generation, respond})
+        end)
+      end
+    end
+
+    {:noreply, s}
+  end
+
+  def handle_info({:group_decision, sid, bid, source, text, generation, true}, s) do
+    if Map.get(s.group_budget, sid, 0) > 0 and s.data.sessions[sid].generation == generation do
+      send(self(), {:deliver, sid, bid, "Peer bot #{s.data.bots[source].name} said: #{text}"})
+      {:noreply, %{s | group_budget: Map.update!(s.group_budget, sid, &(&1 - 1))}}
+    else
+      {:noreply, s}
+    end
   end
 
   def handle_info(_, s), do: {:noreply, s}
@@ -288,7 +359,17 @@ defmodule Nano.Bots do
 
   defp compact(chat, decision) do
     if chat.context_bytes > 24_000 or runtime_needs_compaction?(chat) or
-         decide(decision, :compact, %{bytes: chat.context_bytes}, false) == true do
+         decide(
+           decision,
+           :compact,
+           %{
+             bytes: chat.context_bytes,
+             context: runtime_context(chat),
+             recent: Enum.take(chat.messages, -8),
+             brief: chat.brief
+           },
+           false
+         ) == true do
       recent = chat.messages |> Enum.take(-20) |> Enum.map_join("\n", &"#{&1.who}: #{&1.text}")
       brief = decide(decision, :summary, %{previous: chat.brief, recent: recent}, nil)
 
@@ -301,6 +382,15 @@ defmodule Nano.Bots do
     else
       chat
     end
+  end
+
+  defp runtime_context(chat) do
+    Enum.map(chat.bots, fn bid ->
+      case NanoAgent.info("bot-#{bid}-#{chat.id}-#{chat.generation}") do
+        %{budget: budget} -> Map.take(budget, [:max_context, :context_used])
+        _ -> %{max_context: nil, context_used: nil}
+      end
+    end)
   end
 
   defp runtime_needs_compaction?(chat) do
@@ -321,8 +411,18 @@ defmodule Nano.Bots do
 
   defp decide(fun, task, state, fallback) do
     case fun.(task, state) do
-      {:ok, result} -> result
-      _ -> fallback
+      {:ok, %{value: value, probability: probability, confidence: confidence}}
+      when probability >= 0.6 and confidence >= 0.6 ->
+        value
+
+      {:ok, %{value: _}} ->
+        fallback
+
+      {:ok, result} ->
+        result
+
+      _ ->
+        fallback
     end
   rescue
     _ -> fallback
@@ -336,6 +436,9 @@ defmodule Nano.Bots do
             now() - s.last_notification > 60_000
 
         broadcast(Map.put(event, :notify, notify?))
+
+        if event[:bot] && event[:text] && !event[:request],
+          do: send(self(), {:route_group, event.session, event.bot, event.text})
 
         {:reply, reply,
          %{s | data: data, last_notification: if(notify?, do: now(), else: s.last_notification)}}
