@@ -50,8 +50,8 @@ What the person sees:
 - Sessions get long. Compaction has to happen automatically and keep what matters
   (decisions, commitments, open questions, what the person likes), so a bot never hits its
   context limit mid-conversation and never visibly forgets within a session. The seed has
-  no compaction; the `reviewer` run found the mechanism that works here (rewrite the
-  stored transcript from outside, keeping every tool call answered).
+  no compaction; one mechanism that works here is to rewrite the stored transcript from
+  outside, keeping every tool call answered.
 - Much of the above is classification and routing: which memories are relevant, whether a
   session needs compacting, what a message is about, which bot should answer, whether a
   message needs the person now, which path to take through the knowledge graph. The big

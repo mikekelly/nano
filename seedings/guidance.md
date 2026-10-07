@@ -117,5 +117,4 @@ did not work and why. The next agent starts from there.
 ## Related
 
 - The seedings these principles apply to: [README.md](README.md) lists them. Each links back here.
-- Evidence: [RUNS.md](RUNS.md) — `porter` built a library and did not use it (why "use what you build" is here); `reviewer` built `Nano.Tools` and did, found a harness bug, and lost its sub-agents to small budgets (why delegation needs a protocol and reporting); `gardener` built a utility layer first and everything else on it.
 - The seed's own rules: [AGENTS.md](../AGENTS.md) (main stays minimal; seedlings never merge), [SPEC.md](../SPEC.md) (the thesis; simplicity).

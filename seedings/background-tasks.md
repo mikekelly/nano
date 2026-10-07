@@ -24,6 +24,5 @@ going, and the completion message still arrives.
 
 - Claude Code's `run_in_background` and pi's bash tool.
 - Elixir ports and `Task.Supervisor`; `erlexec` on Hex if port handling gets in the way.
-- `gardener` built this first, with a drainer process owning the port ([RUNS.md](RUNS.md)).
 
 How you build it is yours to decide.

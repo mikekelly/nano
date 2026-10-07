@@ -24,8 +24,8 @@ works, or if you conclude it can't be done, send a message to the sender_pid of 
 message saying what you built and how to use it.
 ```
 
-Record the run in [`RUNS.md`](RUNS.md) (which seeding, which model, what grew, cost), push the
-seedling branch, and reset the checkout to `main` for the next run.
+Record the run in `RUNS.md` on the `runs` branch, not here (which seeding, which model, what
+grew, cost), push the seedling branch, and reset the checkout to `main` for the next run.
 
 ## Seedings
 
@@ -40,9 +40,6 @@ seedling branch, and reset the checkout to `main` for the next run.
 | [`goals.md`](goals.md) | Set, keep and review goals across turns, restarts and agents |
 | [`background-tasks.md`](background-tasks.md) | Run shell commands in the background and be told when they finish |
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
-
-Older, advice-style seedings and tasks are kept under `tasks/` and as
-`utilities-and-delegation.md` because `RUNS.md` refers to them.
 
 Some seedings need something only the operators can supply, and say so at the top: an API
 key in `.env` (`EXA_API_KEY`), or a service started next to the node (Langfuse). Keep every

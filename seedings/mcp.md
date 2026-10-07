@@ -29,7 +29,5 @@ in its timeline on the dashboard. Subscriptions survive the agent's restart.
 - The MCP specification and its reference servers (github.com/modelcontextprotocol).
 - Existing Elixir MCP clients and servers on Hex, for what the protocol looks like in
   this language.
-- `gardener`'s run built a client to revision 2025-06-18 and tested it against the
-  reference filesystem server ([RUNS.md](RUNS.md)).
 
 How you build it is yours to decide.

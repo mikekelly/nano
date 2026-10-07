@@ -30,7 +30,5 @@ and a page that needs JavaScript to render is as readable as one that does not.
   readability fallbacks, a one-hour bounded cache, ~30,000-character slices and 30-second
   timeouts. A good shape to learn from; not a requirement to copy.
 - Mozilla Readability for extraction; Markdown as the reading format for a model.
-- Earlier runs: `porter` ported pi's file tools and fetched source by `curl` and `git clone`;
-  `gardener` built fetching with Readability and a paged cache ([RUNS.md](RUNS.md)).
 
 How you build it is yours to decide.

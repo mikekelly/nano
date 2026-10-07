@@ -44,9 +44,6 @@ sub-agent by name, and to find the message shapes it needs without being told.
 
 - How coding agents delegate: Claude Code's sub-agents (a brief, an isolated context, a
   report back), pi's sessions; the common shape is one message in, one summary out.
-- Earlier runs: `reviewer` (no reports from its sub-agents; recovered their work from
-  `git diff`) and `gardener` (a watcher that reports a child's budget or death on its
-  behalf), in [RUNS.md](RUNS.md).
 
 How you build it is yours to decide. Record the choices and the message shapes where the
 next agent will find them.
