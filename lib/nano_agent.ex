@@ -18,6 +18,9 @@ defmodule NanoAgent do
 
   @log_failed "I could not write the harness log, the durable record of what you do"
 
+  # The largest summary (in bytes) `compact/3` accepts; a compaction should be small.
+  @compact_max_summary 64_000
+
   @tools [
     %{
       type: "function",
@@ -112,6 +115,42 @@ defmodule NanoAgent do
         else
           {:error, reason} -> {:error, {:system_prompt_file, reason}}
         end
+    end
+  end
+
+  @doc """
+  Replaces the agent's conversation history with a compact `summary` of it, so its context
+  starts again from a small, valid transcript. Call it when the conversation is approaching the
+  context budget: the summary should keep decisions, commitments, open questions and anything
+  needed to carry on, and must not invent facts.
+
+  Runs only while the agent is idle: `{:error, :busy}` if a model request or eval is in flight
+  (or its tool calls are still being handled), in which case call again later. As the call is
+  serialized by the GenServer, an agent that accepts it is not running anything else.
+
+  What is preserved exactly: the log (the durable record) and every runtime fact and counter —
+  id, name, model, reasoning, system prompt and its source, pid and start, restart count, cost,
+  turns/tokens/cache and *budgets*, call and event sequence numbers, variable bindings, spawned
+  processes, and any events already received but not yet delivered (their text is kept verbatim
+  and delivered at the start of the next turn). Only the transcript and the derived
+  `context_used` are rewritten; a summary is appended as the first user message, so the model
+  keeps the thread, and the transcript stays valid (every recorded tool call keeps its result).
+
+  Pass `expected_transcript_hash: :erlang.phash2(snapshot.transcript)` to reject a stale
+  summary. Summaries must be nonblank UTF-8, at most 64,000 bytes. Options are a keyword
+  list accepting that hash and optional `retained:` metadata (a list). The durable
+  `:compacted` log entry must succeed before history is changed; original logs are untouched.
+  Halt reasons are not cleared, and no turn is started by compaction.
+
+  Returns `{:ok, info}` or `{:error, reason}` where reason is `:not_found`, `:busy`,
+  `:stale`, `:invalid_summary`, `:invalid_option`, `:unanswered_tools`, or `:log_failed`.
+  """
+  def compact(name, summary, opts \\ []) do
+    with :ok <- validate_compaction(summary, opts) do
+      case whereis(name) do
+        nil -> {:error, :not_found}
+        pid -> GenServer.call(pid, {:compact, summary, opts}, :infinity)
+      end
     end
   end
 
@@ -551,7 +590,38 @@ defmodule NanoAgent do
   # Not internal either: a stray cast or call is relayed exactly as it arrived.
   def handle_cast(msg, s), do: noreply(event(s, {:"$gen_cast", msg}))
 
+  # Compaction: only while nothing is running, so it cannot race a model request, an eval, or
+  # the tool calls of a response being handled. Anything else is :busy and the caller tries later.
   @impl true
+  def handle_call({:compact, summary, opts}, _from, s) do
+    result = validate_compaction(summary, opts)
+
+    cond do
+      result != :ok ->
+        {:reply, result, s}
+
+      s.status != :idle or s.task != nil or s.calls != [] ->
+        {:reply, {:error, :busy}, s}
+
+      opts[:expected_transcript_hash] != nil and
+          opts[:expected_transcript_hash] != hash_transcript(s.transcript) ->
+        {:reply, {:error, :stale}, s}
+
+      not paired_transcript?(s.transcript) ->
+        {:reply, {:error, :unanswered_tools}, s}
+
+      true ->
+        case do_compact(s, summary, opts) do
+          {:ok, next} ->
+            next = save(next)
+            {:reply, {:ok, info(next.name)}, next}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, s}
+        end
+    end
+  end
+
   def handle_call(msg, from, s), do: noreply(event(s, {:"$gen_call", from, msg}))
 
   @impl true
@@ -675,7 +745,7 @@ defmodule NanoAgent do
         s = if new_turn?, do: %{append(s, user) | pending: []}, else: s
         messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
         id = s.request_id + 1
-        size = div(byte_size(Jason.encode!(messages)), 4)
+        size = approx_tokens(messages)
         fields = %{request_id: id, model: s.model, message_count: length(messages)}
         fields = if new_turn?, do: Map.put(fields, :budget_note, line), else: fields
 
@@ -946,6 +1016,154 @@ defmodule NanoAgent do
     id
   end
 
+  ## Compaction
+
+  @doc """
+  The current transcript's hash, as `compact/3` takes it for `expected_transcript_hash:`.
+  Read it, summarize, then compact with the guard: if the agent's history changed in between,
+  the compaction returns `{:error, :stale}` instead of overwriting the newer history.
+  """
+  def transcript_hash(name)
+
+  def transcript_hash(name) when is_binary(name) do
+    case Nano.StateStore.get(name) do
+      %{transcript: transcript} -> hash_transcript(transcript)
+      _ -> nil
+    end
+  end
+
+  def transcript_hash(%{transcript: transcript}), do: hash_transcript(transcript)
+
+  defp hash_transcript(transcript) when is_list(transcript), do: :erlang.phash2(transcript)
+
+  defp validate_compaction(summary, opts) do
+    cond do
+      not is_binary(summary) ->
+        {:error, :invalid_summary}
+
+      byte_size(summary) not in 1..@compact_max_summary ->
+        {:error, :invalid_summary}
+
+      not String.valid?(summary) or String.trim(summary) == "" ->
+        {:error, :invalid_summary}
+
+      not is_list(opts) ->
+        {:error, :invalid_option}
+
+      not Keyword.keyword?(opts) ->
+        {:error, :invalid_option}
+
+      Enum.any?(opts, fn {k, v} ->
+        case k do
+          :expected_transcript_hash -> not (is_integer(v) and v >= 0 and v < 134_217_728)
+          :retained -> not is_list(v)
+          _ -> true
+        end
+      end) ->
+        {:error, :invalid_option}
+
+      true ->
+        :ok
+    end
+  end
+
+  # Check identities, ordering and uniqueness, not merely equal counts.
+  defp paired_transcript?(transcript) do
+    Enum.reduce_while(transcript, {MapSet.new(), MapSet.new()}, fn message, {pending, seen} ->
+      case message do
+        %{"role" => "assistant", "tool_calls" => calls} when is_list(calls) ->
+          ids =
+            Enum.map(calls, fn
+              %{"id" => id} -> id
+              _ -> nil
+            end)
+
+          if MapSet.size(pending) == 0 and Enum.all?(ids, &is_binary/1) and
+               length(ids) == MapSet.size(MapSet.new(ids)) and
+               Enum.all?(ids, &(not MapSet.member?(seen, &1))) do
+            {:cont, {MapSet.new(ids), MapSet.union(seen, MapSet.new(ids))}}
+          else
+            {:halt, :invalid}
+          end
+
+        %{"role" => "tool", "tool_call_id" => id} ->
+          if MapSet.member?(pending, id),
+            do: {:cont, {MapSet.delete(pending, id), seen}},
+            else: {:halt, :invalid}
+
+        _ ->
+          if MapSet.size(pending) == 0, do: {:cont, {pending, seen}}, else: {:halt, :invalid}
+      end
+    end)
+    |> case do
+      {pending, _} -> MapSet.size(pending) == 0
+      _ -> false
+    end
+  end
+
+  # Rewrites the transcript to a single summary message, keeping everything else. The summary
+  # is the first user message of the new history and is treated as a normal delivery from then
+  # on; the next turn's notes and events, if any, follow it. Logged as its own entry so the
+  # durable record shows that and why the history was rewritten; tool calls in the old
+  # transcript are kept as a count in the log, and no call is left unanswered.
+  defp do_compact(s, summary, opts) do
+    {calls, results} = count_calls(s.transcript)
+    before = length(s.transcript)
+
+    # A valid transcript: the summary stands in for the conversation the model no longer sees.
+    # Every recorded tool call already had its result (checked below); the new history has none,
+    # so pairing cannot break. The events received but not yet delivered are left in :pending.
+    text =
+      "<harness>Earlier in this conversation, an operator compacted your history to keep within " <>
+        "the context budget. The summary that replaced it:</harness>\n\n" <> summary
+
+    logged =
+      log(s, :compacted, %{
+        summary: summary,
+        transcript_hash_before: hash_transcript(s.transcript),
+        transcript_before: before,
+        transcript_after: 1,
+        tool_calls: calls,
+        tool_results: results,
+        context_used_before: budget(s).context_used,
+        pending_events: length(s.pending),
+        retained: Keyword.get(opts, :retained, []),
+        approx_input_tokens: div(byte_size(s.system_prompt) + byte_size(summary) + 64, 4)
+      })
+
+    # The provider measures the context from the prompt it is sent; with a one-message history
+    # the size is the system prompt plus this message (approximated at 4 bytes per token, as
+    # the request path does), so the budget check is honest about the new, small context.
+    # The provider measures the context from the prompt it is sent; the next request is the
+    # system prompt plus this one message, so the budget reflects the new, small history.
+    messages = [
+      %{"role" => "system", "content" => s.system_prompt},
+      %{"role" => "user", "content" => text}
+    ]
+
+    context = approx_tokens(messages)
+
+    if logged == :ok do
+      {:ok, %{s | transcript: [%{"role" => "user", "content" => text}], context_used: context}}
+    else
+      {:error, :log_failed}
+    end
+  end
+
+  # Counts assistant tool calls and tool results in the transcript, so the log can show that
+  # the compaction kept every call paired. `unanswered/1` already finds a dangling call (the
+  # case a crash leaves behind); compaction is idle-only, so none should remain.
+  defp count_calls(transcript) do
+    {calls, results} =
+      Enum.reduce(transcript, {0, 0}, fn
+        %{"tool_calls" => calls}, {c, r} when is_list(calls) -> {c + length(calls), r}
+        %{"role" => "tool"}, {c, r} -> {c, r + 1}
+        _, acc -> acc
+      end)
+
+    {calls, results}
+  end
+
   defp end_turn(s, reason) do
     log(s, :turn_ended, %{reason: reason})
     maybe_start_turn(%{s | status: :idle, calls: [], idle_called: false})
@@ -1131,6 +1349,10 @@ defmodule NanoAgent do
   ## Helpers
 
   defp append(s, message), do: %{s | transcript: s.transcript ++ [message]}
+  # The request-size estimate the harness uses throughout: bytes of the encoded messages at
+  # ~4 bytes per token. Used for a request's logged approx_input_tokens and for the context a
+  # compaction leaves.
+  defp approx_tokens(messages), do: div(byte_size(Jason.encode!(messages)), 4)
 
   # The most of an event or result that is printed and kept in a spill file.
   @ceiling 8_388_608

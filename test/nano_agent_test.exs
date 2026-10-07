@@ -2042,4 +2042,100 @@ defmodule NanoAgentTest do
     assert List.last(tool_texts(request!(ctx.model))) == "42"
     refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
   end
+
+  test "compact retains runtime and pending events and rejects stale summaries", ctx do
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "x = 42", idle: nil])
+    send(pid, :go)
+    request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    :sys.replace_state(pid, &%{&1 | halted: :context})
+    send(pid, :pending)
+    before = :sys.get_state(pid)
+    logs = Nano.Log.read(id)
+    hash = :erlang.phash2(before.transcript)
+    assert {:ok, _} = NanoAgent.compact(ctx.name, "Keep x", expected_transcript_hash: hash)
+    next = :sys.get_state(pid)
+
+    assert Map.drop(next, [:transcript, :context_used]) ==
+             Map.drop(before, [:transcript, :context_used])
+
+    assert next.bindings[:x] == 42
+    assert [%{"role" => "user"}] = next.transcript
+    assert Enum.take(Nano.Log.read(id), length(logs)) == logs
+    assert List.last(Nano.Log.read(id))["type"] == "compacted"
+    assert {:error, :stale} = NanoAgent.compact(ctx.name, "old", expected_transcript_hash: hash)
+    assert :sys.get_state(pid) == next
+    Fake.push(ctx.model, text: "done")
+    NanoAgent.unhalt(ctx.name)
+    body = request!(ctx.model)
+    assert text(List.last(body["messages"])) =~ ":pending"
+  end
+
+  test "compact validates inputs and active requests without mutation", ctx do
+    {pid, _} = start!(ctx)
+    before = :sys.get_state(pid)
+
+    for summary <- [nil, 1, "", "  ", <<255>>, String.duplicate("x", 64_001)] do
+      assert {:error, :invalid_summary} = NanoAgent.compact(ctx.name, summary)
+    end
+
+    for opts <- [
+          nil,
+          %{},
+          [:bad],
+          [unknown: true],
+          [expected_transcript_hash: "bad"],
+          [retained: 1]
+        ] do
+      assert {:error, :invalid_option} = NanoAgent.compact(ctx.name, "valid", opts)
+      assert {:error, :invalid_option} = GenServer.call(pid, {:compact, "valid", opts})
+    end
+
+    assert :sys.get_state(pid) == before
+    send(pid, :go)
+    request!(ctx.model)
+    before = :sys.get_state(pid)
+    assert {:error, :busy} = NanoAgent.compact(ctx.name, "valid")
+    assert :sys.get_state(pid) == before
+
+    for fields <- [%{status: :idle}, %{status: :idle, task: nil, calls: [:queued]}] do
+      :sys.replace_state(pid, &Map.merge(&1, fields))
+      assert {:error, :busy} = NanoAgent.compact(ctx.name, "valid")
+    end
+
+    :sys.replace_state(pid, fn _ -> before end)
+  end
+
+  test "compact verifies pairs and refuses failed logging", ctx do
+    {pid, _} = start!(ctx)
+    before = :sys.get_state(pid)
+    assistant = %{"role" => "assistant", "tool_calls" => [%{"id" => "one"}]}
+
+    for transcript <- [
+          [assistant],
+          [assistant, %{"role" => "tool", "tool_call_id" => "other"}],
+          [%{"role" => "tool", "tool_call_id" => "one"}]
+        ] do
+      :sys.replace_state(pid, &%{&1 | transcript: transcript})
+      state = :sys.get_state(pid)
+      assert {:error, :unanswered_tools} = NanoAgent.compact(ctx.name, "valid")
+      assert :sys.get_state(pid) == state
+    end
+
+    :sys.replace_state(pid, fn _ -> before end)
+    dir = Application.fetch_env!(:nano, :log_dir)
+    file = Path.join(System.tmp_dir!(), "compact-block-#{System.unique_integer([:positive])}")
+    File.write!(file, "not a directory")
+
+    try do
+      Application.put_env(:nano, :log_dir, file)
+      assert {:error, :log_failed} = NanoAgent.compact(ctx.name, "valid")
+      assert :sys.get_state(pid) == before
+    after
+      Application.put_env(:nano, :log_dir, dir)
+      File.rm!(file)
+    end
+  end
 end
