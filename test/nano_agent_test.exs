@@ -2027,11 +2027,13 @@ defmodule NanoAgentTest do
 
     # Saved when 0 meant no limit: the window, 1,000,000 here, becomes the limit.
     old_state_file(ctx, &%{&1 | max_context: 0})
-    Fake.push(ctx.model, text: "back")
     node_restart(ctx, id)
 
     assert %{context_window: 1_000_000, budget: %{max_context: 1_000_000, context_used: 3_210}} =
              NanoAgent.info(ctx.name)
+
+    # Only now, or on a busy machine the reply could land before the check above.
+    Fake.push(ctx.model, text: "back")
 
     # What was measured is the conversation up to the last response, so the estimate is
     # that measure plus the note delivered since.
