@@ -51,3 +51,14 @@ They cover onboarding, filtering/chips/group, durable sends, PubSub authors/Mark
 answer cards, notification preferences, mobile semantic panes, and draft failure retention.
 Browser OS notification permission delivery, actual mobile layout and real model compaction
 require integration/browser evidence; unit/LiveView success is not such evidence.
+
+## Bounded history
+
+Sidebar snapshots carry at most the last preview message for each conversation, not
+unopened transcripts. The selected conversation is fetched separately (latest 80).
+Load earlier messages fetches 80 before the earliest-message cursor, deduplicates and
+prepends, retaining at most 400 messages on the LiveView. At that cap the older button
+is disabled; Show latest messages resets to 80. PubSub merges only selected-chat history
+with its recent page, never copies another transcript. Own follow hook preserves the
+viewport when messages are prepended; Show latest explicitly returns to bottom.
+Pagination is tested with 410 durable messages and an unopened second conversation.

@@ -221,4 +221,56 @@ defmodule NanoWeb.BotsLiveTest do
     assert has_element?(view, "a[download]", file["filename"])
     refute render(view) =~ "<script>"
   end
+
+  test "history is fetched only for selected chat and paged in a bounded window", ctx do
+    {:ok, bot} = Vega.Bots.create_bot("Muse", ctx.opts)
+    {:ok, chat} = Vega.Bots.create_session([bot["id"]], ctx.opts ++ [title: "Long chat"])
+    {:ok, unopened} = Vega.Bots.create_session([bot["id"]], ctx.opts ++ [title: "Other"])
+
+    for i <- 1..410,
+        do:
+          assert(
+            match?({:ok, _}, Vega.Bots.post(chat["id"], bot["id"], "History item #{i}", ctx.opts))
+          )
+
+    {:ok, _} = Vega.Bots.post(unopened["id"], bot["id"], "Unopened transcript", ctx.opts)
+    {:ok, snapshot} = Vega.Bots.snapshot(ctx.opts)
+    assert Enum.all?(snapshot["sessions"], &(length(&1["messages"] || []) <= 1))
+    {:ok, view, _} = open(ctx.conn)
+
+    view
+    |> element("button[phx-value-id='#{chat["id"]}'][phx-click='open-session']")
+    |> render_click()
+
+    assert has_element?(view, "#messages", "History item 410")
+    refute has_element?(view, "#messages", "History item 1")
+    refute has_element?(view, "#messages", "Unopened transcript")
+
+    assert length(
+             LazyHTML.from_document(render(view))
+             |> LazyHTML.query("#messages article")
+             |> LazyHTML.to_tree()
+           ) == 80
+
+    view |> element("button", "Load earlier messages") |> render_click()
+    assert has_element?(view, "#messages", "History item 251")
+    for _ <- 1..3, do: view |> element("button", "Load earlier messages") |> render_click()
+    assert has_element?(view, "button[phx-click='load-earlier'][disabled]")
+
+    assert length(
+             LazyHTML.from_document(render(view))
+             |> LazyHTML.query("#messages article")
+             |> LazyHTML.to_tree()
+           ) == 400
+
+    view |> element("button", "Show latest messages") |> render_click()
+
+    assert length(
+             LazyHTML.from_document(render(view))
+             |> LazyHTML.query("#messages article")
+             |> LazyHTML.to_tree()
+           ) == 80
+
+    assert has_element?(view, "#messages", "History item 410")
+  end
 end

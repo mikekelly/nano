@@ -22,6 +22,8 @@ defmodule NanoWeb.BotsLive do
         requests: [],
         settings: %{},
         selected: nil,
+        current_chat: nil,
+        history_loaded: false,
         pane: "list",
         creating: false,
         bot_form: false,
@@ -50,15 +52,52 @@ defmodule NanoWeb.BotsLive do
   defp refresh(socket) do
     case Vega.Bots.snapshot(socket.assigns.opts) do
       {:ok, data} ->
-        assign(socket,
-          bots: data["bots"] || [],
-          sessions: Enum.sort_by(data["sessions"] || [], & &1["updated_at"], :desc),
-          requests: data["requests"] || [],
-          settings: data["settings"] || %{}
-        )
+        socket =
+          assign(socket,
+            bots: data["bots"] || [],
+            sessions: Enum.sort_by(data["sessions"] || [], & &1["updated_at"], :desc),
+            requests: data["requests"] || [],
+            settings: data["settings"] || %{}
+          )
+
+        load_chat(socket)
 
       {:error, _} ->
         assign(socket, error: "Could not load your chats. Please retry.")
+    end
+  end
+
+  defp load_chat(socket, reset \\ false) do
+    id = socket.assigns.selected
+
+    if is_nil(id) do
+      assign(socket, current_chat: nil, history_loaded: false)
+    else
+      case Vega.Bots.get_session(id, socket.assigns.opts) do
+        {:ok, chat} ->
+          old = socket.assigns.current_chat
+
+          if not reset and socket.assigns.history_loaded and not is_nil(old) and old["id"] == id do
+            messages =
+              Enum.uniq_by((old["messages"] || []) ++ (chat["messages"] || []), & &1["id"])
+              |> Enum.take(-400)
+
+            history =
+              Map.merge(chat["history"] || %{}, %{
+                "has_more" => (old["history"] || %{})["has_more"],
+                "next_before" => (List.first(messages) || %{})["id"]
+              })
+
+            assign(socket,
+              current_chat: Map.merge(chat, %{"messages" => messages, "history" => history})
+            )
+          else
+            assign(socket, current_chat: chat, history_loaded: false)
+          end
+
+        {:error, _} ->
+          assign(socket, error: "Could not load this conversation. Please retry.")
+      end
     end
   end
 
@@ -90,6 +129,44 @@ defmodule NanoWeb.BotsLive do
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
+
+  def handle_event("load-earlier", _, socket) do
+    chat = socket.assigns.current_chat
+
+    if chat && length(chat["messages"] || []) < 400 do
+      cursor = (chat["history"] || %{})["next_before"]
+
+      case Vega.Bots.get_session(
+             socket.assigns.selected,
+             socket.assigns.opts ++ [before: cursor, limit: 80]
+           ) do
+        {:ok, page} ->
+          messages =
+            Enum.uniq_by((page["messages"] || []) ++ (chat["messages"] || []), & &1["id"])
+
+          {:noreply,
+           socket
+           |> assign(
+             current_chat:
+               Map.merge(chat, %{
+                 "messages" => Enum.take(messages, -400),
+                 "history" => page["history"] || %{}
+               }),
+             history_loaded: true
+           )
+           |> push_event("bots-history-prepended", %{})}
+
+        {:error, _} ->
+          {:noreply, assign(socket, error: "Could not load earlier messages. Please retry.")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("latest-messages", _, socket),
+    do: {:noreply, socket |> load_chat(true) |> push_event("bots-show-latest", %{})}
+
   def handle_event("retry", _, socket), do: {:noreply, refresh(assign(socket, error: nil))}
 
   def handle_event("search", %{"search" => value}, socket),
@@ -116,14 +193,16 @@ defmodule NanoWeb.BotsLive do
       socket = save_draft(socket)
 
       {:noreply,
-       assign(socket,
+       socket
+       |> assign(
          selected: id,
          creating: false,
          pane: "chat",
          draft: Map.get(socket.assigns.drafts, id, ""),
          pending_images: Map.get(socket.assigns.image_drafts, id, []),
          error: nil
-       )}
+       )
+       |> load_chat(true)}
     else
       {:noreply, socket}
     end
@@ -168,7 +247,8 @@ defmodule NanoWeb.BotsLive do
                    draft: "",
                    pending_images: [],
                    error: nil
-                 )}
+                 )
+                 |> load_chat(true)}
 
               {:error, _} ->
                 {:noreply, assign(socket, error: "Could not start chat. Please retry.")}
@@ -242,7 +322,8 @@ defmodule NanoWeb.BotsLive do
            draft: "",
            pending_images: [],
            error: nil
-         )}
+         )
+         |> load_chat(true)}
 
       {:error, _} ->
         {:noreply,
@@ -391,7 +472,6 @@ defmodule NanoWeb.BotsLive do
   end
 
   defp bot(bots, id), do: Enum.find(bots, &(&1["id"] == id)) || %{"id" => id, "name" => "Bot"}
-  defp session(sessions, id), do: Enum.find(sessions, &(&1["id"] == id))
 
   defp matching(bots, query, ids),
     do: Enum.filter(bots, &(&1["id"] not in ids and contains?(&1["name"], query)))
@@ -419,7 +499,7 @@ defmodule NanoWeb.BotsLive do
   def render(assigns) do
     assigns =
       assign(assigns,
-        chat: session(assigns.sessions, assigns.selected),
+        chat: assigns.current_chat,
         available: matching(assigns.bots, assigns.query, assigns.recipients)
       )
 
@@ -635,6 +715,18 @@ defmodule NanoWeb.BotsLive do
             role="log"
             aria-label="Messages"
           >
+            <div class="history-controls">
+              <button
+                :if={(@chat["history"] || %{})["has_more"] == true}
+                type="button"
+                phx-click="load-earlier"
+                disabled={length(@chat["messages"] || []) >= 400}
+              >Load earlier messages</button>
+              <button :if={@history_loaded} type="button" phx-click="latest-messages">Show latest messages</button>
+              <p :if={length(@chat["messages"] || []) >= 400} role="status">
+                Showing a bounded window of 400 messages. Return to latest to continue.
+              </p>
+            </div>
             <p :if={(@chat["messages"] || []) == []} class="empty-state">
               Say hello to {names(@bots, @chat["bot_ids"])}.
             </p>
