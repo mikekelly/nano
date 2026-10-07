@@ -23,6 +23,19 @@ defmodule Nano.Background do
   keeps running if the agent restarts; the handle and the completion message still work, and
   `recover/1` re-sends a completion event that was missed across a node restart.
   Data: one `.log` and one `.meta` file per task under `/data/tasks` (`NANO_DATA_DIR`).
+  ## Known limitation: a command that compiles Mix
+
+  A command that makes Mix **compile** the project (mix test, mix run, mix compile) is killed
+  within about half a second when started here, with exit status 137 (SIGKILL) and no output. Plain
+  shell commands, elixir -e, network fetches and mix --version all work, and the same mix test
+  works in the foreground (Nano.Util.sh/2), so this is a property of a Mix compilation under this
+  module, not of Mix or of the container. The drainer does not exit (a monitor never fires), so the
+  kill comes from outside the task's own machinery; the likely cause is a process-group signal
+  reaching the child BEAM that Mix starts to compile, but that was not proved. Workaround until it
+  is: run compiles and test suites in the foreground with Nano.Util.sh/2 (with a timeout:), or
+  detach them with setsid. Every other long command — builds, downloads, servers, watch loops —
+  is unaffected.
+
   """
 
   use GenServer
@@ -147,6 +160,30 @@ defmodule Nano.Background do
       :sent
     end)
     |> Enum.count()
+  end
+
+  @doc """
+  Reaps tasks whose record says `:running` but whose process is gone: the OS process outlived its
+  owner, so it is killed and the record finalised as `:killed`. Called at boot. Returns how many.
+  """
+  def reap do
+    for task <- list(:all), task.state == :running, whereis(task.id) == nil do
+      finalize_from_disk(task)
+    end
+    |> Enum.count()
+  end
+
+  # Kill the orphan and write the record, so a listing stops claiming it is running.
+  defp finalize_from_disk(task) do
+    if task[:os_pid] do
+      pid = to_string(task.os_pid)
+      Nano.Util.sh("kill -9 -" <> pid <> " 2>/dev/null; kill -9 " <> pid <> " 2>/dev/null")
+    end
+
+    done = %{task | state: :killed, exit_status: nil}
+    write_meta(done)
+    if task.agent, do: notify(done)
+    :reaped
   end
 
   @doc "Where task logs and meta files live (`<data>/tasks`)."
@@ -368,6 +405,7 @@ defmodule Nano.Background do
         state: state,
         exit_status: map["exit_status"],
         started_at: map["started_at"],
+        os_pid: map["os_pid"],
         ms: ended - map["started_at"],
         bytes: file_size(map["output"])
       }
@@ -394,6 +432,7 @@ defmodule Nano.Background do
         output: state.output,
         state: to_string(state.state),
         exit_status: state.exit_status,
+        os_pid: state.os_pid,
         started_at: state.started_at,
         ended_at: if(state.state == :running, do: nil, else: System.system_time(:millisecond))
       })

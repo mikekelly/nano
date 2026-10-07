@@ -33,8 +33,8 @@ Everything is Elixir callable from `eval`, from any agent, on any turn. Reads of
 
 [ok] util — Files, shell, search, node: read/write/edit, grep, find, run a shell command with bounded output, node status
      e.g. Nano.Util.read("/app/NOTES.md", max: 4000); Nano.Util.sh("git diff --stat")
-[ok] tasks — Background tasks: run a long command without holding an eval open; the completion arrives as a mailbox event
-     e.g. {:ok, id} = Nano.Background.start("mix test", timeout: 600_000); Nano.Background.tail(id, 40)
+[ok] tasks — Background tasks: run a long command without holding an eval open; the completion arrives as a mailbox event (limitation: a command that makes Mix compile, like `mix test`, is killed with SIGKILL — run those in the foreground with Nano.Util.sh/2)
+     e.g. {:ok, id} = Nano.Background.start("bin/long-build", timeout: 600_000); Nano.Background.tail(id, 40)
 [ok] goals — Goals: goals across turns, restarts and agents; a tree per agent, JSONL under /data/goals
      e.g. Nano.Goals.add("finish the seedings"); Nano.Goals.open(); Nano.Goals.done(id, "note")
 [ok] delegation — Sub-agents: start a sub-agent with a composed prompt, pre-reading, its own budget and optional worktree
@@ -46,6 +46,7 @@ Everything is Elixir callable from `eval`, from any agent, on any turn. Reads of
 
 ## Not possible here
 
+* `mix_compile_in_background` — a Mix compile (mix test/run) started through Nano.Background is killed with SIGKILL; run it in the foreground with Nano.Util.sh/2 — see the module doc for the evidence
 * `exa_research` — Exa retired the Research API (HTTP 410); Nano.Web.exa_answer/2 is the endpoint that exists
 * `video` — no vision model on this node; the seeding says to skip video
 * `tracing` — needs a Langfuse service the operators did not supply

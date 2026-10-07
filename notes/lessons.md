@@ -16,6 +16,40 @@ Rules that follow:
   starting a throwaway BEAM-with-config (not this node). Do not repoint the live node.
 * If something must be tested that needs node-wide config, say so and ask the operators first.
 
+## A capability can be "working" and still fail for the example that names it
+
+`Nano.Background` starts a shell command, leaves it running, and reports when it finishes — verified,
+and it does. But the seeding's own headline example is "a build or a long test run", and a command
+that makes Mix **compile** (`mix test`, `mix run`) is killed with SIGKILL within half a second when
+started that way, while `sleep`, `elixir -e`, `mix --version` and network fetches are fine, and the
+same `mix test` works in the foreground. Twenty turns of diagnosis did not prove the mechanism (the
+drainer does not exit; a process-group signal reaching Mix's compile-time child BEAM is the guess).
+It is now written at the top of `Nano.Background`'s moduledoc, with the workaround, and the module's
+claim is narrowed to what is true.
+
+Two lessons, both worth more than the fix would have been:
+
+* **Test the example the spec names, not a convenient instance of the category.** I tested `sleep`
+  and a download and called it done; "long test run" was in the spec and I never ran one in the
+  background until the operators read my report back to me.
+* **A documented limitation is a result.** Orbit-raising the last percent of a mechanism, at the cost
+  of the context needed to hand the work over, is a bad trade. Say what holds, say what does not, and
+  leave a precise pointer.
+
+## A background task can outlive its owner, and only someone looking will notice
+
+Seven tasks sat in `:running` state forever. Five were dead processes whose record was never
+finalised (nothing read their exit); two were real OS processes still running minutes later, their
+owner long gone. Nothing in the node complained: a task's own record said "running", so every
+listing agreed with it. The operators noticed in a backlog, not me — my own tests all passed.
+
+The hole in one sentence: the process that owns a task's port can die, and nothing reaps what it
+left. `Nano.Background.reap/0` now kills any OS process whose task process is gone and finalises the
+record, and it is called at boot. The lesson is the general one: **a lifecycle claim ("it survives
+your restart") needs a test for the failure it names — the thing that must be cleaned up is exactly
+the thing nobody looks at.** `Nano.Background.list/2` also de-duplicated nothing until a duplicate
+appeared in output I printed, which is how that one was found.
+
 ## A sub-agent may ignore a clear instruction; the protocol must not depend on obedience
 
 Three sub-agents told, in the first line of their brief, to call `report_to` before doing anything

@@ -49,6 +49,8 @@ defmodule Nano.Application do
       best_effort(fn ->
         Nano.StateStore.load()
         NanoAgent.revive(Nano.AgentSupervisor)
+        # A task whose owner died with the last node left an OS process behind; reap it.
+        Nano.Background.reap()
       end)
 
       {:ok, sup}
