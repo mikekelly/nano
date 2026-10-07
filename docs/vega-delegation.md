@@ -134,7 +134,7 @@ server was used here; a hook fixture was exercised end-to-end.
 
 ## Evidence
 
-12 focused tests exercise real harness child start, fake-provider HTTP response,
+14 focused tests exercise real harness child start, fake-provider HTTP response,
 eval report back to parent; budget halt; forced death/name restart; hashed inputs;
 real git worktree isolation; MCP hook; parent started_by; supervised watcher kill;
 persist/recovery; absent parent delivery; report bound; partial-start rollback.
