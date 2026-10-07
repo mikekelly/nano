@@ -288,7 +288,12 @@ defmodule Seedling.MCP.HTTPTest do
           |> Plug.Conn.put_resp_content_type("text/event-stream")
           |> Plug.Conn.send_chunked(200)
 
-        {:ok, conn} = Plug.Conn.chunk(conn, ": keepalive\n\n")
+        conn =
+          case Plug.Conn.chunk(conn, ": keepalive\n\n") do
+            {:ok, conn} -> conn
+            {:error, :closed} -> conn
+          end
+
         Process.sleep(1000)
         conn
       end)
