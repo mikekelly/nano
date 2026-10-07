@@ -1,4 +1,4 @@
-# Run with MIX_ENV=test mix run --no-start test/vision_smoke.exs /path/to/auth.json
+# Run with MIX_ENV=test mix run --no-start scripts/vega/vision_smoke.exs /path/to/auth.json
 # Only the isolated child VM reads credentials. No credential contents are printed.
 [source] = System.argv()
 
