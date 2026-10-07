@@ -1,12 +1,10 @@
-# Each run logs to a fresh directory: agent ids can repeat between runs, and a reused id
-# would otherwise read back the previous run's JSONL entries.
-run = Path.join(System.tmp_dir!(), "nano-test-#{System.os_time(:nanosecond)}")
-log_dir = Path.join(run, "logs")
-Application.put_env(:nano, :log_dir, log_dir)
-# Likewise agent state files.
-Application.put_env(:nano, :state_dir, Path.join(run, "state"))
-Application.put_env(:nano, :spill_dir, Path.join(run, "spill"))
-Application.put_env(:nano, :image_dir, Path.join(run, "images"))
+# config/runtime.exs gave this run a fresh directory, where the app writes its logs, state,
+# spills and images. Tests put their own files there too (Application.fetch_env!(:nano,
+# :test_dir)): other suites may be running at once, in this checkout or another.
+run = Application.fetch_env!(:nano, :test_dir)
+File.mkdir_p!(run)
+# A crash dump of this VM goes there as well: the image points ERL_CRASH_DUMP at /data.
+System.put_env("ERL_CRASH_DUMP", Path.join(run, "erl_crash.dump"))
 ExUnit.after_suite(fn _ -> File.rm_rf(run) end)
 
 ExUnit.start()

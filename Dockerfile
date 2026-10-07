@@ -2,8 +2,9 @@ FROM elixir:1.20.2-otp-29
 
 # The node runs as root: the container is the sandbox, and agents get all of it.
 # Deps and build output live outside /app, so a checkout mounted over /app hides nothing.
-# MIX_BUILD_ROOT, not MIX_BUILD_PATH: each MIX_ENV gets its own directory under it, so
-# `MIX_ENV=test mix test` on the node cannot overwrite the running node's prod build.
+# MIX_BUILD_ROOT, not MIX_BUILD_PATH: each MIX_ENV gets its own directory under it, so other
+# envs cannot overwrite the running node's prod build. Test builds skip it altogether (mix.exs
+# keeps them in each checkout), so suites in /app and in worktrees can run at once.
 # All deps are fetched, test ones too, so tests run on the node.
 # The app listens on loopback by default; a published port needs all interfaces.
 # A crash dump goes to the data volume, not into the checkout mounted at /app.

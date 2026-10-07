@@ -16,7 +16,12 @@ defmodule Nano.ImageTest do
     assert inspect(image) == "#Nano.Image<#{path}, #{byte_size(@png)} bytes>"
 
     # The same bytes from a file are the same image.
-    file = Path.join(System.tmp_dir!(), "nano-image-#{System.unique_integer([:positive])}.png")
+    file =
+      Path.join(
+        Application.fetch_env!(:nano, :test_dir),
+        "image-#{System.unique_integer([:positive])}.png"
+      )
+
     File.write!(file, @png)
     on_exit(fn -> File.rm(file) end)
     assert Nano.Image.new(file) == {:ok, image}

@@ -2,6 +2,11 @@ defmodule Nano.MixProject do
   use Mix.Project
 
   def project do
+    # Test builds go in each checkout's own _build/test, not under the image's MIX_BUILD_ROOT
+    # (which overrides :build_path): several suites run at once on the node, in /app and in
+    # worktrees, and each must compile and load its own checkout's code.
+    if Mix.env() == :test, do: System.delete_env("MIX_BUILD_ROOT")
+
     [
       app: :nano,
       version: "0.1.0",

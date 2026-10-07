@@ -152,7 +152,13 @@ defmodule NanoWeb.ApiControllerTest do
     test "say with images: base64 data or a path on the node; a refusal says why" do
       {name, user} = start_user()
       png = Base.decode64!(@png) <> "api-#{System.unique_integer([:positive])}"
-      file = Path.join(System.tmp_dir!(), "nano-api-#{System.unique_integer([:positive])}.png")
+
+      file =
+        Path.join(
+          Application.fetch_env!(:nano, :test_dir),
+          "api-#{System.unique_integer([:positive])}.png"
+        )
+
       File.write!(file, png <> "file")
       on_exit(fn -> File.rm(file) end)
       say = &post_json("/api/users/#{name}/say", %{to: inspect(self()), text: "look", images: &1})
@@ -382,8 +388,12 @@ defmodule NanoWeb.ApiControllerTest do
     end
 
     test "system_prompt_file is passed through; a missing file is 422 with the reason" do
-      file = "tmp/prompt_#{System.unique_integer([:positive])}.txt"
-      File.mkdir_p!("tmp")
+      file =
+        Path.join(
+          Application.fetch_env!(:nano, :test_dir),
+          "prompt_#{System.unique_integer([:positive])}.txt"
+        )
+
       File.write!(file, "You are {{name}}, read from a file.")
       on_exit(fn -> File.rm(file) end)
       name = unique("agent")

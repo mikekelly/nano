@@ -157,8 +157,12 @@ The node runs as root, so an agent can `apt-get install` anything else it needs 
 `poppler-utils`, …); such installs survive a container restart but not a rebuild.
 
 Deps live in `/opt/nano/deps` and builds under `/opt/nano/_build/<env>` (`MIX_BUILD_ROOT`),
-so `MIX_ENV=test mix test` in `/app` runs the suite on the node without touching the
-running node's prod build.
+except test builds, which `mix.exs` keeps in each checkout's own `_build/test`; so
+`MIX_ENV=test mix test` in `/app` or a worktree runs the suite on the node without touching
+the running node's prod build (the first run in a new checkout compiles the deps for it).
+The suite is safe to run several times at once, in one checkout or several, because several
+agents test at once on one machine: each run writes only under a temp directory of its own,
+never to `/data`, and listens on no fixed port. Tests you add should do the same.
 
 ## Seeing and undoing what agents changed
 

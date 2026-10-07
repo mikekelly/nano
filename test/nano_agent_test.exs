@@ -1264,7 +1264,7 @@ defmodule NanoAgentTest do
     path = Path.join(Application.get_env(:nano, :log_dir), id <> ".jsonl")
     File.rm!(path)
     File.mkdir_p!(path)
-    marker = Path.join(System.tmp_dir!(), "nano-should-not-exist-#{id}")
+    marker = Path.join(Application.fetch_env!(:nano, :test_dir), "should-not-exist-#{id}")
 
     ExUnit.CaptureLog.capture_log(fn ->
       Fake.push(ctx.model, calls: [eval: ~s|File.write!(#{inspect(marker)}, "x")|, eval: "1"])
@@ -1288,7 +1288,7 @@ defmodule NanoAgentTest do
   test "eval errors keep the model's frames and name the file of a compile error", ctx do
     {pid, _id} = start!(ctx)
     n = System.unique_integer([:positive])
-    file = Path.join(System.tmp_dir!(), "nano_bad_#{n}.exs")
+    file = Path.join(Application.fetch_env!(:nano, :test_dir), "bad_#{n}.exs")
     File.write!(file, "x = 1\nIO.puts(y)\n")
     on_exit(fn -> File.rm(file) end)
 
@@ -1819,7 +1819,12 @@ defmodule NanoAgentTest do
   ## The template file
 
   defp prompt_file(text) do
-    path = Path.join(System.tmp_dir!(), "nano_prompt_#{System.unique_integer([:positive])}.txt")
+    path =
+      Path.join(
+        Application.fetch_env!(:nano, :test_dir),
+        "prompt_#{System.unique_integer([:positive])}.txt"
+      )
+
     File.write!(path, text)
     on_exit(fn -> File.rm(path) end)
     path

@@ -256,8 +256,12 @@ defmodule NanoWeb.ProcessLiveTest do
   end
 
   test "the system prompt is default, file or custom: exactly one is shown and sent", ctx do
-    file = "tmp/prompt_#{System.unique_integer([:positive])}.txt"
-    File.mkdir_p!("tmp")
+    file =
+      Path.join(
+        Application.fetch_env!(:nano, :test_dir),
+        "prompt_#{System.unique_integer([:positive])}.txt"
+      )
+
     File.write!(file, "You are {{name}}, from the form's file.")
     on_exit(fn -> File.rm(file) end)
 

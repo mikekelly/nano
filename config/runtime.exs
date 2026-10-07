@@ -13,6 +13,25 @@ end
 
 int = fn name, default -> name |> env.(default) |> String.to_integer() end
 
+# Where the node writes its logs, state, spills and images: the data volume in the container,
+# tmp/ in a dev checkout. A test run gets a fresh directory of its own, which the app boots
+# from and test/test_helper.exs removes: several suites may run at once on one machine, in one
+# checkout or several, and agent ids repeat between runs.
+data =
+  case config_env() do
+    :prod ->
+      "/data"
+
+    :test ->
+      Path.join(
+        System.tmp_dir!(),
+        "nano-test-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    _ ->
+      "tmp"
+  end
+
 config :nano,
   # "Required", but only when an agent is started: the harness reports it then, so the node boots without.
   openrouter_api_key: env.("OPENROUTER_API_KEY", if(test?, do: "test-key")),
@@ -53,22 +72,15 @@ config :nano,
       "NETWORK_POLICY",
       "only the model providers, openrouter.ai, chatgpt.com and auth.openai.com"
     ),
-  log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs")),
+  log_dir: env.("LOG_DIR", Path.join(data, "logs")),
   # Tool results and events over RESULT_MAX_BYTES are cut, and the whole text written here.
-  spill_dir: env.("SPILL_DIR", if(config_env() == :prod, do: "/data/spill", else: "tmp/spill")),
+  spill_dir: env.("SPILL_DIR", Path.join(data, "spill")),
   # The image store: each image once, named by its SHA-256, never changed (Nano.Image).
-  image_dir: env.("IMAGE_DIR", if(config_env() == :prod, do: "/data/images", else: "tmp/images")),
+  image_dir: env.("IMAGE_DIR", Path.join(data, "images")),
   # Each agent's state is written here on every save and revived from here at boot.
-  state_dir:
-    env.(
-      "STATE_DIR",
-      case config_env() do
-        :prod -> "/data/state"
-        # Tests boot the app, which revives whatever is here, so keep dev nodes' state out.
-        :test -> "tmp/test_state"
-        _ -> "tmp/state"
-      end
-    )
+  state_dir: env.("STATE_DIR", Path.join(data, "state"))
+
+if test?, do: config(:nano, test_dir: data)
 
 # NODE_COOKIE is not read here: it is consumed by `elixir --cookie` before the app starts.
 
@@ -78,7 +90,8 @@ config :nano,
 {:ok, listen_ip} = "LISTEN_IP" |> env.("127.0.0.1") |> to_charlist() |> :inet.parse_address()
 
 config :nano, NanoWeb.Endpoint,
-  http: [ip: listen_ip, port: if(test?, do: 4002, else: int.("PORT", "4000"))],
+  # Tests start no server (one that needs a socket starts its own, on port 0).
+  http: [ip: listen_ip, port: if(test?, do: 0, else: int.("PORT", "4000"))],
   server: not test?,
   # No authentication, local use only: the secret only signs the session cookie that carries
   # the CSRF token, so a fresh one per boot is enough (open pages reload after a node restart).

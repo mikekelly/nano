@@ -55,8 +55,8 @@ defmodule Nano.LogTest do
 
     dir =
       Path.join([
-        System.tmp_dir!(),
-        "nano-log-test-#{System.unique_integer([:positive])}",
+        Application.fetch_env!(:nano, :test_dir),
+        "log-test-#{System.unique_integer([:positive])}",
         "logs"
       ])
 
