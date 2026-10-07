@@ -125,8 +125,11 @@ fresh with your notes, your plan and the job of reporting to whoever you report 
 itself work that needs room: a turn that reads what it must and writes the summary or the
 successor's brief, which can be long. Leave that room. So have the mechanism working long
 before you need it (delegation is the simplest one), keep the handoff cheap by keeping your
-notes and goals current as you go, and act on a threshold you set early, well short of the
-limit; around half full is a sensible default, and in the last quarter it is already risky.
+notes and goals current as you go, and act on a threshold you set early, short of the
+limit. Coding agents that compact automatically do it at around 70–80% full, keeping the
+last 20–30% for the compaction itself; that is a sensible default, and the bigger the
+handover you will need to read and write, the earlier you should act. Handing over at half
+full throws away context you could still have used.
 The budget line delivered with your events tells you where you are. Put the same rule into
 the prompts of the agents you start: an agent halted for its context cannot report what it
 found.
