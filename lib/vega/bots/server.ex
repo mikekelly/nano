@@ -257,27 +257,48 @@ defmodule Vega.Bots.Server do
            text?(text, 32_000) or
              (text == "" and (opts[:images] not in [nil, []] or opts[:files] not in [nil, []])),
          {:ok, images} <- validate_images(opts[:images] || []),
-         {:ok, files} <- Vega.Bots.Files.validate(opts[:files] || [], opts[:root]) do
-      message = %{
-        "id" => id(),
-        "author_id" => author,
-        "text" => text,
-        "at" => Store.now(),
-        "images" => images,
-        "files" => files
-      }
+         {:ok, files} <- Vega.Bots.Files.validate(opts[:files] || [], opts[:root]),
+         true <-
+           is_nil(opts[:reply_to]) or
+             (author != "person" and
+                Enum.any?(
+                  session["messages"],
+                  &(&1["id"] == opts[:reply_to] and &1["author_id"] == "person")
+                )) do
+      existing =
+        if opts[:reply_to],
+          do:
+            Enum.find(
+              session["messages"],
+              &(&1["author_id"] == author and &1["reply_to"] == opts[:reply_to])
+            ),
+          else: nil
 
-      next = append(d, session, message)
+      if existing do
+        {:ok, existing, d, event("message_existing", sid)}
+      else
+        message = %{
+          "id" => id(),
+          "author_id" => author,
+          "text" => text,
+          "at" => Store.now(),
+          "images" => images,
+          "files" => files,
+          "reply_to" => opts[:reply_to]
+        }
 
-      next =
-        if author == "person" do
-          queue(next, session, message)
-        else
-          next |> put_status(sid, author, "idle", "") |> acknowledge_input(sid, author, opts)
-        end
+        next = append(d, session, message)
 
-      {:ok, message, next,
-       Map.merge(event("message", sid), %{"message_id" => message["id"], "author_id" => author})}
+        next =
+          if author == "person" do
+            queue(next, session, message)
+          else
+            next |> put_status(sid, author, "idle", "") |> acknowledge_input(sid, author, opts)
+          end
+
+        {:ok, message, next,
+         Map.merge(event("message", sid), %{"message_id" => message["id"], "author_id" => author})}
+      end
     else
       false -> {:error, :invalid_message_or_author}
       error -> error
