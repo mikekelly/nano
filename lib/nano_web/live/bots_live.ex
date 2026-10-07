@@ -20,6 +20,8 @@ defmodule NanoWeb.BotsLive do
         bots: [],
         sessions: [],
         requests: [],
+        requests_truncated: false,
+        request_count: 0,
         settings: %{},
         selected: nil,
         current_chat: nil,
@@ -57,6 +59,8 @@ defmodule NanoWeb.BotsLive do
             bots: data["bots"] || [],
             sessions: Enum.sort_by(data["sessions"] || [], & &1["updated_at"], :desc),
             requests: data["requests"] || [],
+            requests_truncated: data["requests_truncated"] == true,
+            request_count: data["request_count"] || length(data["requests"] || []),
             settings: data["settings"] || %{}
           )
 
@@ -604,6 +608,9 @@ defmodule NanoWeb.BotsLive do
         <div :if={@error} class="error" role="alert">
           {@error}<button phx-click="retry">Retry loading</button>
         </div>
+        <p :if={@requests_truncated} class="notice" role="status">
+          Showing the most recent 200 of {@request_count} human requests, with unanswered requests first. Older request cards are not shown.
+        </p>
         <section :if={@creating or @bots == []} class="new-chat">
           <h2>{if @bots == [], do: "Create your first bot", else: "New conversation"}</h2>
           <p>A familiar face to think things through with. Choose one bot or bring a few together.</p>
