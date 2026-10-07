@@ -24,7 +24,41 @@ Seedling.Bots.settings(chat["id"], %{notifications: true, quiet: false})
 Subscribe with `Seedling.Bots.subscribe/0` (Phoenix PubSub `seedling:bots`);
 changes emit `:bots_updated`. Only explicitly posted chat messages are consumer-visible:
 operator logs, evals, harness notes and arbitrary final model responses are never streamed
-into the conversation. Content is rendered escaped; no model-supplied HTML executes.
+into the conversation.
+
+Messages render a deliberately small safe Markdown block subset: headings `#`/`##`/`###`,
+unindented unordered `-`/`*`/`+` lists, paragraphs (line breaks preserved), and backtick or
+tilde code fences of at least three markers. Fence language/info is ignored; an unclosed
+fence displays code through end of message. All text is escaped through fixed HEEx tags:
+links, images, inline HTML, emphasis and other unsupported syntax remain literal text.
+This is not full CommonMark, and no model-supplied HTML executes.
+
+## Produced-file downloads
+
+```elixir
+Seedling.Bots.attach(chat["id"], muse["id"], "/data/output/report.txt")
+# {:ok, message}; message["artifact"] includes opaque id, filename and size.
+```
+
+A participating bot can attach a regular local file up to 2 MiB. The service copies
+bounded bytes into an immutable artifact store before posting durable metadata; later
+source edits do not change the download. Files display as escaped filename/size links,
+not inline previews. `GET /bots/artifacts/:id` serves only artifacts registered in chat
+with attachment disposition, octet-stream, nosniff and no-store headers. Opaque IDs and
+fixed-origin URLs do not expose source paths. Invalid IDs, symlinks (including ancestor
+paths), directories, missing files and oversized reads reject. Configuration:
+`:nano, :bot_artifacts_root` defaults to `<:state_dir>/bot_artifacts`; back it up with
+`bots.json`. Attachment metadata and bytes are synced before rename, but directories
+are not fsynced: no power-loss rename-durability guarantee.
+
+This remains a trusted-local privileged node: there is no per-session authorization;
+any endpoint visitor who knows a registered artifact ID may download it. Attaching can
+copy any readable regular file; agents/operators must never attach secrets. Symlink
+checks and no-follow leaf opens reduce accidental unsafe reads, but concurrent privileged
+path-component replacement/FIFO swaps are outside a sandbox guarantee. A crash between
+copy and chat commit can leave orphan files; failure cleanup is best effort and there
+is no artifact GC. Downloads are bounded and buffered, not network-streamed. No rich
+file previews, upload workflow, VM isolation or independent bot browser is claimed.
 
 ## Human requests: one conduit for every agent
 
@@ -107,9 +141,8 @@ from backup. No retention/migration/multi-user access control is implemented.
 
 Configure session-agent provider with `:nano, :bots_model` (default node model), and
 `:bots_reasoning` (default "off"). Each agent has a 64k context limit and 1M total token
-budget. Compaction does not reset spending. No per-bot independent browser/computer,
-file attachment storage, push service worker or guaranteed background notification delivery
-is implemented. Use the Browser notifications button in a selected session: it requests permission on
+budget. Compaction does not reset spending. No per-bot independent browser/computer, push service worker or guaranteed background
+notification delivery is implemented. Use the Browser notifications button in a selected session: it requests permission on
 a user gesture and enables that session only if granted. Permission denial/unsupported
 browsers show a status; HTTPS or localhost is required. New bot posts and human-request
 questions notify while the open page is hidden or unfocused; focused chat, quiet mode,
@@ -130,3 +163,8 @@ browser (permission, dispatch, focus suppression, disable, unsupported and clean
 The fake-provider E2E drives real HTTP/model/eval/idle paths for two bots across private
 and shared sessions, memory writes/retrieval, human answer and compaction. This is not
 a live model quality evaluation or a real-browser notification smoke.
+
+Artifact tests: `MIX_ENV=test mix test test/bot_artifacts_test.exs`; they exercise
+immutable bytes, restart metadata, safe download headers, invalid membership/IDs,
+source/store/ancestor symlinks, size limits and persistence-failure cleanup.
+Safe block rendering tests: `test/nano_web/bot_message_test.exs`.
