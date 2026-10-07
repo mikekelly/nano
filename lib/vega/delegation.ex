@@ -43,7 +43,14 @@ defmodule Vega.Delegation do
              Keyword.take(opts, [:model, :reasoning, :max_turns, :max_tokens, :max_context]) ++
                [name: name, system_prompt: prompt, start_idle: true]
            ),
-         {:ok, _} <- Vega.Delegation.Watcher.start(name, parent, pid, opts[:poll_ms] || 250) do
+         {:ok, _} <-
+           attach_or_rollback(
+             name,
+             parent,
+             pid,
+             opts[:poll_ms] || 250,
+             opts[:state_dir] || state_dir()
+           ) do
       if opts[:message], do: tell(name, opts[:message])
 
       if not Keyword.get(opts, :start_idle, true) and not opts[:message],
@@ -57,6 +64,19 @@ defmodule Vega.Delegation do
          pre: Enum.map(pre, &Map.drop(&1, [:text])),
          prompt_bytes: byte_size(prompt)
        }}
+    end
+  end
+
+  defp attach_or_rollback(name, parent, pid, interval, dir) do
+    case Vega.Delegation.Watcher.start(name, parent, pid, interval, dir) do
+      {:ok, _} = ok ->
+        ok
+
+      error ->
+        DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+        NanoAgent.kill_tasks(pid)
+        Nano.StateStore.delete(name)
+        error
     end
   end
 
@@ -126,11 +146,63 @@ defmodule Vega.Delegation do
   end
 
   def report(name, result) when is_map(result) do
+    if :erlang.external_size(result) > 16_000 do
+      {:error, :result_too_large_use_artifact_path}
+    else
+      deliver_result(name, result)
+    end
+  end
+
+  defp deliver_result(name, result) do
     case :global.whereis_name({Vega.Delegation.Watcher, name}) do
       :undefined -> {:error, :not_watched}
       pid -> GenServer.call(pid, {:result, result})
     end
   end
+
+  @doc "Reattach monitoring to a saved child by name. Call from a fresh parent after node restart."
+  def watch(name, parent, opts \\ []) do
+    case NanoAgent.whereis(name) do
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        Vega.Delegation.Watcher.start(
+          name,
+          parent,
+          pid,
+          opts[:poll_ms] || 250,
+          opts[:state_dir] || state_dir()
+        )
+    end
+  end
+
+  @doc "Restore saved monitors from disk; completed jobs are not reactivated."
+  def restore(state_dir \\ state_dir()) do
+    Path.wildcard(Path.join(state_dir, "*.json"))
+    |> Enum.map(fn path ->
+      with {:ok, text} <- File.read(path), {:ok, record} <- Jason.decode(text) do
+        if record["done"] && record["pending"] in [nil, []],
+          do: {:ok, :completed},
+          else:
+            watch(record["name"], record["parent"],
+              state_dir: state_dir,
+              poll_ms: record["interval"]
+            )
+      end
+    end)
+  end
+
+  @doc "Stop monitoring (not the child). Removes persisted monitor state."
+  def unwatch(name) do
+    case :global.whereis_name({Vega.Delegation.Watcher, name}) do
+      :undefined -> {:error, :not_watched}
+      pid -> GenServer.call(pid, :unwatch)
+    end
+  end
+
+  defp state_dir,
+    do: Path.join(Application.get_env(:nano, :test_dir) || "/data", "vega-delegation/watchers")
 
   defp caller_name do
     callers = Process.get(:"$callers", [])
@@ -151,6 +223,12 @@ defmodule Vega.Delegation do
 
       Enum.any?([:model, :reasoning, :max_turns, :max_tokens, :max_context], &is_nil(opts[&1])) ->
         {:error, :explicit_model_and_limits_required}
+
+      not is_integer(opts[:poll_ms] || 250) or (opts[:poll_ms] || 250) < 10 ->
+        {:error, :poll_ms_must_be_at_least_10}
+
+      :global.whereis_name({Vega.Delegation.Watcher, name}) != :undefined ->
+        {:error, :already_watched}
 
       NanoAgent.whereis(name) != nil ->
         {:error, :already_started}
@@ -184,8 +262,15 @@ defmodule Vega.Delegation do
 
   defp cleanup(nil), do: :ok
 
-  defp cleanup(w),
-    do: System.cmd("git", ["-C", w.repo, "worktree", "remove", w.path], stderr_to_stdout: true)
+  defp cleanup(w) do
+    case System.cmd("git", ["-C", w.repo, "worktree", "remove", w.path], stderr_to_stdout: true) do
+      {_, 0} ->
+        System.cmd("git", ["-C", w.repo, "branch", "-D", w.branch], stderr_to_stdout: true)
+
+      error ->
+        error
+    end
+  end
 
   defp hook(nil), do: {:ok, nil}
 
@@ -198,42 +283,106 @@ defmodule Vega.Delegation do
   end
 end
 
+defmodule Vega.Delegation.Supervisor do
+  @moduledoc "Optional eager child: {Vega.Delegation.Supervisor, []}; lazy starts unlinked otherwise. Restore saved monitors explicitly with Vega.Delegation.restore(dir)."
+  use DynamicSupervisor
+  def start_link(opts), do: DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  def init(_), do: DynamicSupervisor.init(strategy: :one_for_one)
+
+  def ensure_started do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        case start_link([]) do
+          {:ok, pid} ->
+            Process.unlink(pid)
+            if leader = Process.whereis(:user), do: Process.group_leader(pid, leader)
+            :ok
+
+          {:error, {:already_started, _}} ->
+            :ok
+
+          error ->
+            error
+        end
+
+      _ ->
+        :ok
+    end
+  end
+end
+
 defmodule Vega.Delegation.Watcher do
   @moduledoc false
-  use GenServer
+  use GenServer, restart: :transient
 
-  def start(name, parent, pid, interval),
-    do:
-      GenServer.start(__MODULE__, {name, parent, pid, interval},
-        name: {:global, {__MODULE__, name}}
+  def start(name, parent, pid, interval, state_dir \\ nil) do
+    with :ok <- Vega.Delegation.Supervisor.ensure_started() do
+      DynamicSupervisor.start_child(
+        Vega.Delegation.Supervisor,
+        {__MODULE__, {name, parent, pid, interval, state_dir}}
       )
+    end
+  end
 
-  def init({name, parent, pid, interval}) do
-    Process.send_after(self(), :poll, interval)
+  def start_link({name, _, _, _, _} = args),
+    do: GenServer.start_link(__MODULE__, args, name: {:global, {__MODULE__, name}})
 
-    {:ok,
-     %{
-       name: name,
-       parent: parent,
-       ref: Process.monitor(pid),
-       interval: interval,
-       halt: nil,
-       done: false
-     }}
+  def init({name, parent, pid, interval, state_dir}) do
+    if leader = Process.whereis(:user), do: Process.group_leader(self(), leader)
+    path = if state_dir && is_binary(parent), do: Path.join(state_dir, name <> ".json")
+    saved = if path, do: load(path), else: %{}
+    pending = Enum.map(saved["pending"] || [], &decode/1)
+
+    s = %{
+      name: name,
+      parent: parent,
+      ref: Process.monitor(NanoAgent.whereis(name) || pid),
+      interval: interval,
+      halt: nil,
+      done: saved["done"] || false,
+      path: path,
+      pending: pending
+    }
+
+    case persist(s) do
+      :ok ->
+        Process.send_after(self(), :poll, interval)
+        {:ok, s}
+
+      {:error, reason} ->
+        {:stop, {:persistence_failed, reason}}
+    end
+  end
+
+  def handle_call(:unwatch, _from, s) do
+    if s.path, do: File.rm(s.path)
+    {:stop, :normal, :ok, s}
   end
 
   def handle_call({:result, result}, _from, s) do
     if s.done do
       {:reply, {:error, :already_reported}, s}
     else
-      emit(s, :result, result)
-      {:reply, :ok, %{s | done: true}}
+      case queue(%{s | done: true}, :result, result) do
+        {:ok, next} ->
+          Process.send_after(self(), :poll, s.interval)
+          {:reply, :ok, flush(next)}
+
+        error ->
+          {:reply, error, s}
+      end
     end
   end
 
   def handle_info({:DOWN, ref, :process, _, reason}, %{ref: ref} = s) do
-    unless s.done, do: emit(s, :down, %{reason: reason})
+    s = if s.done, do: s, else: enqueue(s, :down, %{reason: reason})
     {:noreply, %{s | ref: nil}}
+  end
+
+  def handle_info(:poll, %{done: true} = s) do
+    s = flush(s)
+    if s.pending != [], do: Process.send_after(self(), :poll, s.interval)
+    {:noreply, s}
   end
 
   def handle_info(:poll, s) do
@@ -241,17 +390,77 @@ defmodule Vega.Delegation.Watcher do
     s = if s.ref == nil && info && info.pid, do: %{s | ref: Process.monitor(info.pid)}, else: s
     halted = info && info.halted
 
-    if halted && halted != s.halt && not s.done,
-      do: emit(s, :halted, %{reason: halted, budget: info.budget})
+    s =
+      if halted && halted != s.halt,
+        do: enqueue(s, :halted, %{reason: halted, budget: info.budget}),
+        else: s
 
     Process.send_after(self(), :poll, s.interval)
-    {:noreply, %{s | halt: halted}}
+    {:noreply, flush(%{s | halt: halted})}
   end
 
   def handle_info(_, s), do: {:noreply, s}
 
-  defp emit(s, kind, result) do
-    event = %{delegation: kind, child: s.name, result: result}
-    if is_pid(s.parent), do: send(s.parent, event), else: NanoAgent.notify(s.parent, event)
+  defp enqueue(s, kind, result) do
+    case queue(s, kind, result) do
+      {:ok, next} -> flush(next)
+      _ -> s
+    end
+  end
+
+  defp queue(s, kind, result) do
+    event = %{
+      delegation: kind,
+      child: s.name,
+      result: result,
+      event_id: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    }
+
+    next = %{s | pending: Enum.take(s.pending ++ [event], -100)}
+    with :ok <- persist(next), do: {:ok, next}
+  end
+
+  defp flush(%{pending: []} = s), do: s
+
+  defp flush(s) do
+    pid =
+      if is_pid(s.parent),
+        do: if(Process.alive?(s.parent), do: s.parent),
+        else: NanoAgent.whereis(s.parent)
+
+    if pid do
+      Enum.each(s.pending, fn event ->
+        if is_pid(s.parent), do: send(pid, event), else: NanoAgent.notify(s.parent, event)
+      end)
+
+      next = %{s | pending: []}
+
+      case persist(next) do
+        :ok -> next
+        _ -> s
+      end
+    else
+      s
+    end
+  end
+
+  defp load(path) do
+    with {:ok, text} <- File.read(path),
+         {:ok, saved} <- Jason.decode(text),
+         do: saved,
+         else: (_ -> %{})
+  end
+
+  defp decode(text), do: text |> Base.decode64!() |> :erlang.binary_to_term([:safe])
+  defp persist(%{path: nil}), do: :ok
+
+  defp persist(s) do
+    saved =
+      Map.take(s, [:name, :parent, :interval, :done])
+      |> Map.put(:pending, Enum.map(s.pending, &Base.encode64(:erlang.term_to_binary(&1))))
+
+    with :ok <- File.mkdir_p(Path.dirname(s.path)),
+         :ok <- File.write(s.path <> ".tmp", Jason.encode!(saved)),
+         do: File.rename(s.path <> ".tmp", s.path)
   end
 end

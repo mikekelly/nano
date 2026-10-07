@@ -28,6 +28,11 @@ defmodule NanoWeb.AgentLive do
       |> assign(view: view(params))
       |> stream_configure(:entries, dom_id: &"e-#{&1["seq"]}")
       |> stream(:entries, [])
+      |> allow_upload(:images,
+        accept: ~w(.png .jpg .jpeg .gif .webp),
+        max_entries: 4,
+        max_file_size: 3_750_000
+      )
       |> mount_shared()
       |> sync()
 
@@ -72,6 +77,35 @@ defmodule NanoWeb.AgentLive do
   def handle_event(event, params, socket) when event in ~w(draft send clear_inbox),
     do: {:noreply, handle_shared(event, params, socket)}
 
+  def handle_event("validate_images", _, socket), do: {:noreply, socket}
+
+  def handle_event("send_images", %{"text" => text}, socket) do
+    results =
+      consume_uploaded_entries(socket, :images, fn %{path: path}, _entry ->
+        {:ok, Vega.Images.import_file(path)}
+      end)
+
+    case Enum.find(results, &match?({:error, _}, &1)) do
+      {:error, reason} ->
+        {:noreply, assign(socket, notice: {:error, reason})}
+
+      nil ->
+        refs = for {:ok, ref} <- results, do: ref
+        user = "dashboard"
+        pid = Nano.User.start(user)
+
+        result =
+          Nano.User.send_raw(user, socket.assigns.name, %{
+            sender_pid: pid,
+            message: text,
+            images: refs
+          })
+
+        notice = if result == :ok, do: {:ok, "sent images"}, else: {:error, inspect(result)}
+        {:noreply, assign(socket, notice: notice)}
+    end
+  end
+
   def handle_event("stop", _, socket),
     do: lifecycle(socket, Nano.Ops.stop_agent(socket.assigns.name), "stopped")
 
@@ -100,7 +134,7 @@ defmodule NanoWeb.AgentLive do
     name = socket.assigns.name
     agent = Nano.Ops.agent(name)
     spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
-    socket = assign(socket, agent: agent, spawned: spawned)
+    socket = assign(socket, agent: agent, spawned: spawned, goals: Vega.Goals.review(name))
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -265,6 +299,15 @@ defmodule NanoWeb.AgentLive do
           <pre>{@agent.system_prompt}</pre>
         </details>
 
+        <form :if={@agent} id="image-message" phx-change="validate_images" phx-submit="send_images">
+          <label>Message with images <input type="text" name="text" required /></label>
+          <.live_file_input upload={@uploads.images} />
+          <span :for={entry <- @uploads.images.entries}>{entry.client_name}</span>
+          <p :for={error <- upload_errors(@uploads.images)}>{inspect(error)}</p>
+          <button type="submit">Send images</button>
+        </form>
+        <Vega.GoalsView.panel review={@goals} />
+
         <nav class="views">
           <.link
             :for={{v, icon} <- [{"reading", "book"}, {"debug", "list"}]}
@@ -315,6 +358,7 @@ defmodule NanoWeb.AgentLive do
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
       <pre>{txt(@e["message"])}</pre>
+      <.images refs={@e["images"] || []} />
     </li>
     """
   end
@@ -486,12 +530,28 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <div class="result">
       <pre class={if !@result["ok"], do: "error"}>{txt(@result["result"])}</pre>
+      <.images refs={@result["images"] || []} />
       <div :if={@result["io"] not in [nil, ""]} class="io">
         <span class="dim">captured IO</span>
         <pre>{txt(@result["io"])}</pre>
       </div>
       <span :if={@result["truncated"]} class="dim">truncated for the model</span>
     </div>
+    """
+  end
+
+  attr :refs, :list, required: true
+
+  defp images(assigns) do
+    ~H"""
+    <a :for={ref <- @refs} href={"/api/images/#{ref["id"]}"} target="_blank" rel="noopener">
+      <img
+        src={"/api/images/#{ref["id"]}"}
+        alt="Image attachment"
+        loading="lazy"
+        style="max-width: 100%; max-height: 400px;"
+      />
+    </a>
     """
   end
 
@@ -505,6 +565,7 @@ defmodule NanoWeb.AgentLive do
     <li id={@id} class="r event">
       <div class="r-label">received <time>{time(@e["at"])}</time></div>
       <pre>{txt(@e["message"])}</pre>
+      <.images refs={@e["images"] || []} />
     </li>
     """
   end
