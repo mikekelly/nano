@@ -81,7 +81,7 @@ defmodule Vega.Browser do
     end
   end
 
-  @doc "Node selection: explicit option, exact string node setting, environment, stable data executable, PATH."
+  @doc "Node selection: explicit option, exact string node setting, environment, stable data executable, image node22, PATH."
   def node_runtime(opts \\ []) do
     case Keyword.fetch(opts, :node) do
       {:ok, value} ->
@@ -95,6 +95,10 @@ defmodule Vega.Browser do
           if(File.regular?(stable), do: stable) || System.find_executable("node")
     end
   end
+
+  @doc false
+  def runtime_fallback(stable, image, path),
+    do: if(File.regular?(stable), do: stable) || image || path
 
   defp nonempty_string(value) when is_binary(value) do
     if String.trim(value) == "", do: nil, else: value
