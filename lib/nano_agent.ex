@@ -147,35 +147,59 @@ defmodule NanoAgent do
   `:restart_brake`, `:start_failed` or `:log_failed`; `cache_hit_rate` is nil until the first
   response.
   """
-  def info(name) do
-    with %{} = s <- Nano.StateStore.get(name) do
-      pid = whereis(name)
+  # The fields every stored entry must have for a usable info map. A stand-in written before
+  # its fields were merged, or a stray entry, lacks them; info/1 returns nil for such an entry
+  # rather than raising, so one bad row cannot break the dashboard or the API.
+  @info_fields [
+    :id,
+    :name,
+    :model,
+    :status,
+    :halted,
+    :system_prompt,
+    :restart_count,
+    :cost,
+    :responses,
+    :cache_hits
+  ]
 
-      %{
-        id: s.id,
-        name: s.name,
-        pid: pid,
-        model: s.model,
-        status: s.status,
-        halted: s.halted,
-        suspended:
-          match?(
-            {:current_function, {:sys, :suspend_loop, _}},
-            pid && Process.info(pid, :current_function)
-          ),
-        system_prompt: s.system_prompt,
-        prompt_source: prompt_file(s) || "inline",
-        restart_count: s.restart_count,
-        cost: s.cost,
-        reasoning: Map.get(s, :reasoning, "off"),
-        cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
-        budget: budget(s)
-      }
+  def info(name) do
+    case Nano.StateStore.get(name) do
+      %{} = s when is_map(s) ->
+        if Enum.all?(@info_fields, &Map.has_key?(s, &1)), do: info_map(s), else: nil
+
+      _ ->
+        nil
     end
   end
 
-  @doc "Names of all agents in the state store, sorted."
-  def list, do: Nano.StateStore.all() |> Enum.map(& &1.name) |> Enum.sort()
+  defp info_map(s) do
+    pid = whereis(s.name)
+
+    %{
+      id: s.id,
+      name: s.name,
+      pid: pid,
+      model: s.model,
+      status: s.status,
+      halted: s.halted,
+      suspended:
+        match?(
+          {:current_function, {:sys, :suspend_loop, _}},
+          pid && Process.info(pid, :current_function)
+        ),
+      system_prompt: s.system_prompt,
+      prompt_source: prompt_file(s) || "inline",
+      restart_count: s.restart_count,
+      cost: s.cost,
+      reasoning: Map.get(s, :reasoning, "off"),
+      cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
+      budget: budget(s)
+    }
+  end
+
+  @doc "Names of all agents in the state store, sorted. Entries without a name are skipped."
+  def list, do: for(%{name: name} <- Nano.StateStore.all(), do: name) |> Enum.sort()
 
   @doc """
   Kills every task under `Nano.EvalSupervisor` (evals and model requests) started by the
@@ -282,9 +306,15 @@ defmodule NanoAgent do
       prompt_file: opts[:prompt_file],
       system_prompt: nil,
       transcript: [],
+      # Pending transcript messages, newest first (see append/2).
+      t_rev: [],
       bindings: [],
       status: :idle,
-      pending: [],
+      # Queued events/notes, newest first (a reversed list), so an append is a cons. It is
+      # reversed once, at the turn boundary; `pending_dropped` counts messages dropped by the
+      # cap while halted (see push_pending/2).
+      pending_rev: [],
+      pending_dropped: 0,
       halted: nil,
       max_turns: opts[:max_turns] || env(:agent_max_turns),
       max_tokens: opts[:max_tokens] || env(:agent_max_tokens),
@@ -573,12 +603,13 @@ defmodule NanoAgent do
     s = %{
       s
       | event_seq: seq,
-        wakeup: nil,
-        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
+        wakeup: nil
     }
 
+    s = push_pending(s, ~s(<event seq="#{seq}" at="#{at}">#{text}</event>))
+
     # queue_length: events waiting for the next turn, this one included.
-    queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
+    queued = Enum.count(pending(s), &String.starts_with?(&1, "<event"))
 
     log(s, :event_received, %{
       event_seq: seq,
@@ -593,7 +624,7 @@ defmodule NanoAgent do
   # Harness notes queue up with events, in the order things happened.
   defp note(s, text) do
     log(s, :harness_note, %{text: text})
-    %{s | pending: s.pending ++ ["<harness>#{text}</harness>"]}
+    push_pending(s, "<harness>#{text}</harness>")
   end
 
   defp halt(s, why, text) do
@@ -605,7 +636,10 @@ defmodule NanoAgent do
 
   ## The loop
 
-  defp maybe_start_turn(%{status: :idle, halted: nil, pending: [_ | _]} = s), do: request(s, true)
+  defp maybe_start_turn(%{status: :idle, halted: nil} = s) do
+    if pending(s) == [], do: s, else: request(s, true)
+  end
+
   defp maybe_start_turn(s), do: s
 
   defp request(s, new_turn?) do
@@ -634,9 +668,15 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        s = if new_turn?, do: %{append(s, user) | pending: []}, else: s
-        messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
+        user = %{"role" => "user", "content" => Enum.join(pending(s) ++ [line], "\n")}
+
+        s =
+          if new_turn?,
+            do: %{append(s, user) | pending_rev: [], pending_dropped: 0},
+            else: s
+
+        # The transcript the model is sent, with any buffered appends merged in.
+        messages = [%{"role" => "system", "content" => s.system_prompt} | transcript(s)]
         id = s.request_id + 1
         size = div(byte_size(Jason.encode!(messages)), 4)
         fields = %{request_id: id, model: s.model, message_count: length(messages)}
@@ -806,7 +846,7 @@ defmodule NanoAgent do
   defp run_calls(%{calls: []} = s) do
     cond do
       not s.idle_called -> request(s, false)
-      s.wakeup_after && s.pending == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")
+      s.wakeup_after && pending(s) == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")
       true -> end_turn(s, "idle")
     end
   end
@@ -1083,7 +1123,62 @@ defmodule NanoAgent do
 
   ## Helpers
 
-  defp append(s, message), do: %{s | transcript: s.transcript ++ [message]}
+  # Cons onto a reversed buffer, so appends in a burst are O(1) each; the buffer is merged
+  # into `transcript` (once) at a boundary: a request, or a save. `transcript` itself stays a
+  # normal, forward list whenever state leaves this process.
+  defp append(s, message), do: %{s | t_rev: [message | Map.get(s, :t_rev, [])]}
+
+  # The transcript as the model must see it, with any buffered messages merged in.
+  defp transcript(s), do: s.transcript ++ Enum.reverse(Map.get(s, :t_rev, []))
+
+  defp merge_transcript(s) do
+    case Map.get(s, :t_rev, []) do
+      [] -> s
+      rev -> %{s | transcript: s.transcript ++ Enum.reverse(rev), t_rev: []}
+    end
+  end
+
+  # While an agent is halted nothing will drain `pending_rev`, so a message that arrives then
+  # is capped: the oldest are dropped and counted, and a note about the drop is prepended to
+  # the next delivery. This bounds the queue for an agent that is never un-halted.
+  @pending_max 200
+
+  defp pending(s) do
+    rev =
+      case Map.get(s, :pending_rev) do
+        nil -> Enum.reverse(Map.get(s, :pending, []))
+        rev -> rev
+      end
+
+    dropped = Map.get(s, :pending_dropped, 0)
+
+    summary =
+      if dropped > 0,
+        do: [
+          "<harness>#{dropped} earlier message(s) were dropped: you are halted and the " <>
+            "queue grew past #{@pending_max}. Un-halt to resume.</harness>"
+        ],
+        else: []
+
+    summary ++ Enum.reverse(rev)
+  end
+
+  defp push_pending(s, text) do
+    rev = [text | Map.get(s, :pending_rev, [])]
+
+    if s.halted == nil do
+      %{s | pending_rev: rev}
+    else
+      # Bounded work: `rev` is at most @pending_max + 1 long here.
+      dropped = max(length(rev) - @pending_max, 0)
+
+      %{
+        s
+        | pending_rev: Enum.take(rev, @pending_max),
+          pending_dropped: Map.get(s, :pending_dropped, 0) + dropped
+      }
+    end
+  end
 
   defp truncate(text) do
     text = if String.valid?(text), do: text, else: inspect(text)
@@ -1121,9 +1216,31 @@ defmodule NanoAgent do
   end
 
   defp save(s) do
+    # The buffered transcript appends are merged here, so the stored state (and :sys.get_state)
+    # always shows a normal forward transcript; and a legacy `pending` key from state saved by
+    # an older version of this module is folded into `pending_rev`.
+    s =
+      s
+      |> merge_transcript()
+      |> normalize_pending()
+
     s = %{s | spawned: Enum.filter(s.spawned, &Process.alive?/1)}
     Nano.StateStore.put(s.name, s)
     s
+  end
+
+  defp normalize_pending(s) do
+    case Map.get(s, :pending_rev) do
+      nil ->
+        pending = Map.get(s, :pending, [])
+
+        s
+        |> Map.delete(:pending)
+        |> Map.merge(%{pending_rev: Enum.reverse(pending), pending_dropped: 0})
+
+      _ ->
+        s
+    end
   end
 
   defp noreply(s), do: {:noreply, save(s)}
