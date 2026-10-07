@@ -110,3 +110,20 @@ additionally caps conservative stage input without changing global settings. The
 provider window/output reserve still bounds it from above; accumulated digest and
 instructions count within this input cap. Invalid nonpositive caps are errors.
 Automatic harness calls retain the default `summarize/3` interface and policy.
+
+### Real multi-stage validation (2026-10-07)
+
+Parent loaded the reviewed streaming/tuning implementation. A real Codex-only
+`summarize/4` task processed 21,227 bytes of chronological inert planning history
+with `stage_input_tokens: 6_000`, agent window 24,000, and no settings changes.
+It returned **three completed stages**, summed usage **4,868 prompt + 503 completion
+ tokens**, and a final digest preserving the earliest final-report-path commitment
+(`/tmp/vega-compact-live/report.md`), provider-exchange boundary decision, and latest
+`validate_restart` unresolved question/no-deployment limitation. The provider did
+not supply cost. Evidence: `/tmp/vega-compact-live/staged-evidence.txt`.
+
+An initial larger 62,987-byte validation task completed, but its `Task.async_nolink`
+result was addressed to the expired eval caller and could not be recovered (node
+usage was booked). The corrected small test explicitly sent its result to the
+agent pid. Only the recovered three-stage run is claimed as passing evidence.
+No settings or credentials were changed, and no test task remains running.
