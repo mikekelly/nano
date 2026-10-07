@@ -44,8 +44,34 @@ all smoke agents/services stopped afterward. Earlier failed smoke surfaced Gemin
 HTTP-200 provider error acceptance and invalid memory argument types; provider
 validation and runtime plain-string API examples were fixed instead of hiding those
 failures. Lifetime budgets halt future calls after a provider response; a single
-response can take cumulative usage above the configured threshold. Final integrated
-rerun and bounded retrieval/lifecycle failure regressions remain pending.
+response can take cumulative usage above the configured threshold.
+
+Final integrated source `f2db23504be5474068df209098c1c7dd6f8e61f1` passed all
+377 tests with seeds `284731` and `912407`. The latter run also passed
+`MIX_ENV=test mix compile --warnings-as-errors`,
+`MIX_ENV=test mix format --check-formatted`, and `git diff --check`.
+Logs: `/tmp/nano-background/XScoqut4uwST69Fy.log` (first seed passed; the
+initial chained command timed out during its second seed) and
+`/tmp/nano-background/PrDlJzRZSJNoWSzZ.log` (complete second seed and checks,
+exit 0). Test logs include expected negative-path browser/retry errors and the
+pre-existing test-only warnings noted above.
+
+Final regressions cover byte-bounded history/checkpoint paging, context-policy
+hook invocation, fail-closed missing/corrupt archives, lifetime budget restoration,
+delivery worker exit/throw and persistence failures, bootstrap failure status,
+and durable delegation watcher restart/race handling. An independent full-suite
+run initially exposed stale infrastructure PID classification after StateStore
+restart; the final Ops fix resolves current direct supervisor child PIDs without
+hiding independently spawned eval tasks, with a dedicated restart/attribution
+regression. The actual running Bots service retained its existing one bot and one
+session; isolated smoke resources were stopped and no further service restart
+was performed for final status callback changes.
+
+Independent final acceptance of the same source commit also passed 377 tests
+with seed `284731`, warning-as-error compilation, formatting and diff checks.
+Its isolated logs are `/tmp/nova-final-audit-accept-2d2cc8fc727e/suite.log`,
+`compile.log` and `format.log`. The auditor made no external provider calls;
+live-service smoke evidence remains the implementation owners' reported runs.
 
 ## Security and honest scope
 
