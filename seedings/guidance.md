@@ -67,11 +67,23 @@ the ones before it, and each makes the next one cheaper, so it is a good default
      keeps the last 2,000 lines or 50 KB, and when it cuts, says which lines are shown and
      where the full output is. A timeout is optional, and a timed-out command says so and
      keeps what it printed.
-   - *grep* takes a regex or literal pattern, a glob filter, case-insensitivity and lines
-     of context, respects `.gitignore`, and returns matching lines with their paths and line numbers, at most 100
-     matches with each line cut to 500 characters. *find* globs (respecting `.gitignore`,
-     up to 1,000 paths); *ls* sorts, marks directories with `/`, includes dotfiles and
-     stops at 500 entries.
+   - *grep* searches file contents with ripgrep: a regex, or a literal string when asked,
+     optionally case-insensitive, within a directory or file and an optional glob
+     (`*.ex`, `**/*_test.exs`). It respects `.gitignore` but includes hidden files, so a
+     search of a project skips its build output and dependencies. Each match is one line,
+     `path:line: text`, with the path relative to where it searched; asked for context, it
+     adds the lines around each match as `path-line- text`. It stops at 100 matches (more if
+     asked) and 50 KB, and cuts a line at 500 characters, and every one of those is
+     announced: `[100 matches limit reached. Use limit=200 for more, or refine pattern.
+     Some lines truncated to 500 chars. Use read tool to see full lines]`. No match is a
+     plain `No matches found`, distinct from an error.
+   - *find* lists files by glob with fd, respecting `.gitignore`, as paths relative to where
+     it searched, directories ending in `/`. It stops at 1,000 results and says so
+     (`[1000 results limit reached]`); nothing found is `No files found matching pattern`.
+   - *ls* lists one directory, sorted, directories marked with `/`, dotfiles included, up to
+     500 entries, with `[500 entries limit reached. Use limit=1000 for more]` when cut; an
+     empty directory says `(empty directory)`, and a missing path or a file gives an error
+     that says which.
 
    What they share: every cut is announced in the result, together with the exact way to
    get the rest; every error says what to do next; and results are compact text that is
