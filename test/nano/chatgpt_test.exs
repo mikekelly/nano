@@ -266,7 +266,7 @@ defmodule Nano.ChatGPTTest do
   test "image references become Responses input_image only at the request edge" do
     connect!()
     model = Fake.model()
-    bytes = <<137, 80, 78, 71, 13, 10, 26, 10, 13::32, "IHDR", 1::32, 1::32, 8, 2, 0, 0, 0>>
+    bytes = Nano.ImageFixture.png(1, 1)
     {:ok, ref} = Vega.Images.import_bytes(bytes)
 
     messages = [

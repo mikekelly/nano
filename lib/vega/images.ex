@@ -33,6 +33,7 @@ defmodule Vega.Images do
          true <- w > 0 and h > 0 and w <= @max_side and h <= @max_side,
          id = digest(bytes),
          :ok <- File.mkdir_p(root()),
+         :ok <- verify_pixels(bytes, id, mime, w, h),
          :ok <- store(id, bytes) do
       {:ok,
        %{
@@ -59,9 +60,12 @@ defmodule Vega.Images do
          true <- stat.type == :regular and stat.size <= @max_bytes,
          {:ok, bytes} <- File.read(path),
          true <- digest(bytes) == id,
-         {:ok, mime, _, _} <- dimensions(bytes) do
+         {:ok, mime, w, h} <- dimensions(bytes),
+         true <- w > 0 and h > 0 and w <= @max_side and h <= @max_side,
+         :ok <- verify_pixels(bytes, id, mime, w, h) do
       {:ok, bytes, mime}
     else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
       _ -> {:error, "image missing or corrupt"}
     end
   end
@@ -140,7 +144,15 @@ defmodule Vega.Images do
         end
 
       {:error, reason} ->
-        raise ArgumentError, reason
+        # Legacy header-only refs can be invalid. Never send them to a provider forever;
+        # leave the stored transcript immutable and send an explicit inability notice.
+        text =
+          "Image attachment #{id} unavailable: #{reason}. No image contents were provided; do not guess."
+
+        case provider do
+          :openrouter -> %{"type" => "text", "text" => text}
+          :responses -> %{type: "input_text", text: text}
+        end
     end
   end
 
@@ -149,7 +161,89 @@ defmodule Vega.Images do
 
   defp part(p, _), do: p
 
+  # Cache verified immutable byte hashes across turns/restarts, not per caller-supplied ref.
+  # Bump the marker schema whenever decoder admission rules change.
+  defp verify_pixels(bytes, id, mime, w, h) do
+    marker = Path.join(root(), ".verified-v2-" <> id)
+    expected = "#{mime}:#{w}:#{h}"
+
+    case File.read(marker) do
+      {:ok, ^expected} ->
+        :ok
+
+      {:ok, "invalid"} ->
+        {:error, "invalid image pixels; re-import a valid image file"}
+
+      _ ->
+        case decode_pixels(bytes, mime, w, h) do
+          :ok ->
+            File.write(marker, expected, [:exclusive])
+            :ok
+
+          {:error, :invalid} ->
+            File.write(marker, "invalid", [:exclusive])
+            {:error, "invalid image pixels; use a complete static PNG, JPEG, GIF or WebP"}
+
+          error ->
+            error
+        end
+    end
+  end
+
+  defp decode_pixels(bytes, mime, w, h) do
+    python = Application.get_env(:nano, :image_decoder_python, "/usr/bin/python3")
+    helper = Path.join(to_string(:code.priv_dir(:nano)), "vega/verify_image.py")
+    timeout = System.find_executable("timeout")
+
+    if not is_binary(timeout) or not File.regular?(python) or not File.regular?(helper) do
+      {:error, "image decoder unavailable; install python3-pil and GNU timeout"}
+    else
+      dir = Path.join(root(), ".validate-" <> Base.encode16(:crypto.strong_rand_bytes(16)))
+
+      case File.mkdir(dir) do
+        :ok ->
+          try do
+            path = Path.join(dir, "input")
+
+            with :ok <- File.chmod(dir, 0o700),
+                 :ok <- File.write(path, bytes, [:binary, :exclusive]),
+                 :ok <- File.chmod(path, 0o600) do
+              {output, status} =
+                System.cmd(timeout, ["--signal=KILL", "5s", python, "-I", "-B", helper, path],
+                  stderr_to_stdout: true
+                )
+
+              case {status, Jason.decode(output)} do
+                {0, {:ok, %{"mime" => ^mime, "width" => ^w, "height" => ^h}}} ->
+                  :ok
+
+                {2, {:ok, %{"error" => "decoder_unavailable"}}} ->
+                  {:error, "image decoder unavailable; install python3-pil"}
+
+                {1, {:ok, %{"error" => reason}}}
+                when reason in ["invalid_image", "animated_image"] ->
+                  {:error, :invalid}
+
+                _ ->
+                  {:error, "image decoder failed or exceeded its 5 second resource limit"}
+              end
+            else
+              _ -> {:error, "could not create private image validation file"}
+            end
+          rescue
+            _ -> {:error, "image decoder could not run"}
+          after
+            File.rm_rf(dir)
+          end
+
+        _ ->
+          {:error, "could not create private image validation directory"}
+      end
+    end
+  end
+
   defp root, do: Path.join(Application.fetch_env!(:nano, :state_dir), "images")
+
   defp digest(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
 
   defp store(id, bytes) do

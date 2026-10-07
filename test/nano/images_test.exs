@@ -2,8 +2,7 @@ defmodule Vega.ImagesTest do
   use ExUnit.Case, async: true
   alias Vega.Images
 
-  defp png(w, h),
-    do: <<137, 80, 78, 71, 13, 10, 26, 10, 13::32, "IHDR", w::32, h::32, 8, 2, 0, 0, 0>>
+  defp png(w, h), do: Nano.ImageFixture.png(w, h)
 
   test "imports byte-detected image, returns no payload, survives source mutation" do
     path =
@@ -86,6 +85,49 @@ defmodule Vega.ImagesTest do
   test "redacts payloads in nested provider error bodies" do
     error = %{"nested" => ["echo data:image/png;base64,aGVsbG8= end"]}
     assert Vega.Images.redact(error) == %{"nested" => ["echo [image data redacted] end"]}
+  end
+
+  test "full static PNG JPEG GIF WebP pixels decode, while truncated header-valid files never enter storage" do
+    for extension <- ~w(png jpeg gif webp) do
+      bytes = File.read!(Path.join([__DIR__, "../fixtures/images", "valid." <> extension]))
+      assert {:ok, ref} = Images.import_bytes(bytes)
+      assert ref["mime"] == "image/" <> extension
+      assert {:ok, ^bytes, _} = Images.fetch(ref["id"])
+      # Shortest prefix carrying dimensions is not a complete compressed picture.
+      truncated =
+        Enum.find_value(1..byte_size(bytes), fn n ->
+          prefix = binary_part(bytes, 0, n)
+          if match?({:ok, _, _, _}, Images.dimensions(prefix)), do: prefix
+        end)
+
+      assert {:ok, _, 12, 8} = Images.dimensions(truncated)
+      assert {:error, reason} = Images.import_bytes(truncated)
+      assert reason =~ "invalid image pixels"
+      id = Base.encode16(:crypto.hash(:sha256, truncated), case: :lower)
+      refute File.exists?(Path.join([Application.fetch_env!(:nano, :state_dir), "images", id]))
+    end
+  end
+
+  test "animations are rejected without decoding an unbounded frame sequence" do
+    bytes = File.read!(Path.join([__DIR__, "../fixtures/images", "animated.gif"]))
+    assert {:error, reason} = Images.import_bytes(bytes)
+    assert reason =~ "static"
+  end
+
+  test "legacy invalid references become explicit provider text, never a poisoned request" do
+    bytes = <<137, 80, 78, 71, 13, 10, 26, 10, 13::32, "IHDR", 23::32, 11::32, 8, 2, 0, 0, 0>>
+    id = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+    path = Path.join([Application.fetch_env!(:nano, :state_dir), "images", id])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, bytes)
+    ref = %{"type" => "image_ref", "id" => id}
+    [m] = Images.openrouter([%{"role" => "user", "content" => [ref]}])
+    assert [%{"type" => "text", "text" => notice}] = m["content"]
+    assert notice =~ id
+    assert notice =~ "unavailable"
+    refute notice =~ "data:image"
+    assert [%{type: "input_text", text: notice2}] = Images.responses_content([ref])
+    assert notice2 =~ "unavailable"
   end
 
   test "JPEG GIF and WebP dimensions" do
