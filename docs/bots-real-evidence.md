@@ -60,13 +60,29 @@ Asked after compaction what preference to still remember; at21:53:09 it posted:
 real Codex-provider-backed and retained the person's preference across continued chat.
 The UI wasn't needed for test mechanics; no eval/tool traffic belongs in consumer messages.
 
+## Real native vision attachments
+
+Generated an8x8 blue PNG (73 bytes) and imported immutable ref
+`92b9adcd9752e7e651ea8c1a23b301efa3c292bbba52e9cc8a8645e65a31f520`.
+Message4b3457f64d16695c5f51 at21:58:42 attached it through public send_message(images:refs)
+and asked each bot for the main colour, without mentioning the expected answer.
+Saved model modalities are text+image. Dot at21:58:48 and Muse at21:58:54 independently
+posted “The main colour is blue.” Native image events and provider hydration were used,
+not a filename pretending to be vision. Source PNG remains under immutable Images
+storage and message metadata only; transcript/log image bytes aren't copied into chat.
+Both group agents returned idle, no halt.
+
 ## Separate automated/browser evidence and limits
+
 
 Backend tests exercise actual NanoAgent with scripted provider separately from these real
 calls. Tests cover pair isolation, compaction, restart, bounded memory judgments,
 durable input/answer acknowledgement, nonblocking ETS snapshots/page reads, immutable
-file/image validation and malicious Markdown. Focused backend11 plus safe-download1
-pass; frontend initially11 tests pass, bounded-history followup pending.
+file/image validation and malicious Markdown. Focused backend11 plus safe-download1 passed, frontend12 tests passed including
+bounded/sliding history. A full compile --warnings-as-errors + suite checkpoint
+passed342 tests after sliding fix; cheap routing and detached-scroll followups rerun
+separately before final report. Existing seed-test-only warnings were disclosed.
+Reproducible mocked JS test lives test/js/bots_hooks_test.js; run node on it.
 ARM Node syntax check and VM-mocked hooks pass permission/background/rate/dedupe,
 keyboard recipient shortcuts and Enter/Shift+Enter composer. **Real browser layout,
 mobile gestures and OS notification permission/popups remain untested.** No closed-tab

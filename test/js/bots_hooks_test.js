@@ -1,0 +1,22 @@
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+let store = {}, notices = [], clicks = 0, handler;
+function Notification(title, opts) { notices.push({title, opts}); this.close = () => {}; }
+Notification.permission = 'granted';
+const document = {hidden:true, readyState:'loading', addEventListener(){}, querySelectorAll(){return [{disabled:false, dataset:{shortcut:'1'}, click(){clicks++}, setAttribute(){}, scrollIntoView(){}}]}};
+const context = {window:{Notification}, document, Notification, navigator:{}, localStorage:{getItem(k){return store[k]},setItem(k,v){store[k]=v}}, console};
+vm.createContext(context); vm.runInContext(fs.readFileSync(require('path').join(__dirname, '../../priv/static/bots.js'),'utf8'), context);
+const hooks = context.window.BotsHooks;
+const n = Object.assign({pushEvent(){}}, hooks.BotsNotifications);
+const data = {event:{id:'one',session_id:'s',type:'request'},settings:{enabled:true,min_interval_seconds:0,max_per_hour:2},session_title:'Secret',text:'Private'};
+n.notify(data); assert.equal(notices.length,1); assert.equal(notices[0].title,'Bots'); assert(!notices[0].opts.body.includes('Private'));
+n.notify(data); assert.equal(notices.length,1);
+document.hidden=false; n.notify({...data,event:{id:'two',type:'request'}}); assert.equal(notices.length,1);
+document.hidden=true; n.notify({...data,event:{id:'two',type:'request'}}); assert.equal(notices.length,2);
+n.notify({...data,event:{id:'three',type:'request'}}); assert.equal(notices.length,2);
+store={}; n.notify({...data,settings:{enabled:'true'}}); assert.equal(notices.length,2);
+n.notify({...data,settings:{enabled:true,max_per_hour:0}}); assert.equal(notices.length,2);
+const recipient = Object.assign({el:{addEventListener(_,f){handler=f},removeAttribute(){},setAttribute(){}},pushEvent(){}},hooks.BotsRecipients);
+recipient.mounted(); handler({key:'1',ctrlKey:true,preventDefault(){}}); assert.equal(clicks,1);
+let submitted=0; const composer = Object.assign({el:{addEventListener(_,f){handler=f},closest(){return {querySelector(){return {disabled:false}},requestSubmit(){submitted++}}}}},hooks.BotsComposer);
+composer.mounted(); handler({key:'Enter',preventDefault(){}}); handler({key:'Enter',shiftKey:true}); assert.equal(submitted,1);
+console.log('PASS: generic notification preview, dedupe, background gate, hourly cap, strict enabled, invalid cap, recipient shortcut, composer Enter/Shift+Enter');
