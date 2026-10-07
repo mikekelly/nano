@@ -50,354 +50,43 @@ and a JSON API on port 4000 show everything every agent does.
   experimental, iterative work of an agent that upgrades itself: mistakes are contained and
   recovered from, not fatal.
 
-## Quick start
-
-The node runs from source in `/app`, and agents may edit and reload that source, including
-their own module. So `/app` is bind-mounted from a **dedicated git checkout**: a clone that
-exists only for the agents to scribble on, never a working copy you care about.
+## Running it
 
 ```bash
-git clone git@github.com:mikekelly/nano.git nano && cd nano
-echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # optional: a dedicated key with a low spending limit
-bin/up
+git clone git@github.com:mikekelly/nano.git && cd nano
+bin/up    # builds the image, starts the node, prints http://127.0.0.1:4000
 ```
 
-Agents need a model provider: OpenRouter, with that key, or a ChatGPT Plus or Pro
-subscription, which needs no key: connect it from the dashboard, see
-[Running agents on a ChatGPT subscription](#running-agents-on-a-chatgpt-subscription). Either
-will do, or both. Without the key OpenRouter is off, and an agent on an OpenRouter model is
-refused; the key can also be set, or cleared, at any time in the dashboard's Settings view.
+Agents need a model. Connect a ChatGPT Plus or Pro subscription from the dashboard (first
+switch on *Device code authorization* in ChatGPT's security settings), or put an
+`OPENROUTER_API_KEY` in `.env`. `bin/up` pushes `.env` into the node's settings, which you can
+change at any time in the dashboard's Settings view.
 
-`bin/up` clones this repo to `../nano-checkout` if it is not there yet (the dedicated
-checkout the agents edit, mounted at `/app`; they can read every doc in it), builds the image, starts the container, waits for the node, pushes the settings in `.env` to it (below)
-and prints the dashboard URL, http://127.0.0.1:4000. Running it again on a running stack is
-fine. `docker compose down` stops it. Each agent's model, reasoning level and limits are
-chosen when it is started; there are no defaults for them.
+The node runs from `/app`, a dedicated clone of this repo (`../nano-checkout`) that agents are
+free to rewrite; `git -C ../nano-checkout diff` shows what they changed. `bin/reset` archives
+what a run left in `data/`, puts the clone back to `main` and recreates the container.
 
-`.env` holds two kinds of line, all optional and listed with their defaults in
-[.env.example](.env.example): a few for the host and compose (`NANO_CHECKOUT`, the checkout's
-path; `NODE_COOKIE`; `STATE_DIR`, `SPILL_DIR`), and settings of the node, such as
-`OPENROUTER_API_KEY`, `NETWORK_POLICY` or `NODE_MAX_TOKENS_PER_HOUR`, which `bin/up` pushes
-to the node (see [Settings](#settings)).
+Start agents and talk to them from the dashboard, the HTTP API (`curl localhost:4000/api`
+describes it) or a shell on the node (`docker exec -it nano bin/shell`).
 
-Docker must be able to mount the checkout (colima shares only your home directory by
-default). The node runs as root inside the container: the container is the sandbox, and
-agents get all of it, `apt-get` included. Its writes to the checkout and `./data` are
-therefore made as uid 0: on macOS with colima or Docker Desktop they show up as your own
-files; on a Linux host they are root-owned, so `git` in the checkout may need `sudo` or a
-`chown` first.
+## Before you run it
 
-Dependencies are compiled into the image, outside `/app`, so the node boots without Hex
-access. After changing `mix.exs` or `mix.lock`, run `bin/up` again to rebuild.
+- Nothing is authenticated, and `/api/eval` runs code, so port 4000 is published on
+  localhost only. Keep it that way.
+- Agents run as root and can read anything on the node, including API keys and a connected
+  ChatGPT subscription's tokens, which are access to your account. Use keys with low spending
+  limits, and disconnect the subscription when you are done.
+- Outbound network is unrestricted, and agents are told so. If you restrict it, change the
+  `network_policy` setting to match, because the system prompt must stay true
+  ([docs/network.md](docs/network.md) shows one way).
+- Agents can change and hot-reload the running node's code, the harness included. If an edit
+  stops the node booting, `docker logs nano` says why; fix it in the clone.
 
-The image also carries its own committed copy of the source, so it runs without the mount
-(self-edits then live in the container and are lost when it is removed):
+## Where to look
 
-```bash
-docker build -t nano .
-docker run -d --init --name nano --restart unless-stopped -p 127.0.0.1:4000:4000 \
-  -v nano-data:/data nano
-bin/push-settings http://127.0.0.1:4000 .env   # or set them in the dashboard's Settings view
-```
-
-## Settings
-
-The node's configuration is settings it owns, kept in `./data/state/settings.json` (mode 0600)
-and changed while it runs, with no restart: the dashboard's **Settings** view
-(`/?view=settings`), the API (`GET /api/settings`, `PUT /api/settings/<key>` with
-`{"value": ...}`, `DELETE /api/settings/<key>`), or `Nano.Ops.settings()`,
-`Nano.Ops.put_setting/2` and `Nano.Ops.delete_setting/1` in the shell. The table, with
-defaults, is in [bootstrap/SPEC.md](bootstrap/SPEC.md#container-configuration-and-limits).
-A value that does not fit is refused with a message saying what is allowed; clearing a
-setting puts it back to its default, or unsets a key.
-
-Some apply at once (the keys and addresses, the hourly cap, the eval timeout, the bindings
-limit); the ones the system prompt states (`network_policy`, `result_max_bytes` and the
-default template, `system_prompt_file`) apply to agents started afterwards, because each
-agent keeps the values it started with, so its prompt stays true.
-
-`bin/up` pushes `.env` to the node each time it runs (`bin/push-settings [URL] [FILE]` does
-just that): each `KEY=value` line, the node's own settings by their env names
-(`OPENROUTER_API_KEY` is `openrouter_api_key`), skipping comments, empty values and what only
-the host and compose read. Any other name is kept as a value of your own, under that name,
-for whatever needs it (a seedling's service, say). It never prints values, and it only ever
-sets: **to remove a key for good, clear it in the dashboard (or `DELETE /api/settings/<key>`)
-and take it out of `.env`**, or the next `bin/up` sets it again.
-
-Keys, and every value of your own, are secrets: never logged, never shown by the dashboard or
-the API (only whether one is set, and its last 4 characters). They are not in the node's
-environment either, so a key that is cleared is gone from the node; but agents run as root and
-can read the settings while they are set.
-
-Removing OpenRouter's key turns OpenRouter off at once: the start form stops offering it, an
-OpenRouter model is refused, and agents running on it are halted (`provider_unavailable`),
-told that an operator turned their provider off. Set the key again, then un-halt them.
-
-Only what the node needs before it starts stays in the environment: `NODE_COOKIE`,
-`STATE_DIR`, `SPILL_DIR`, `LOG_DIR`, `PORT`, `LISTEN_IP`, `SECRET_KEY_BASE`, and the image's
-`MIX_*` and `ERL_CRASH_DUMP`.
-
-## Talking to the node
-
-```bash
-docker exec -it nano bin/shell                 # remote IEx shell, for humans
-docker exec nano bin/rpc 'Nano.Ops.agents()'   # one expression, for scripts and AI agents
-curl localhost:4000/api                        # the HTTP API describes itself
-```
-
-`bin/rpc` prints the value of the expression and exits non-zero if it raises. An expression
-that starts with `IO.inspect` or `IO.puts` is run as is, so its output appears once.
-`bin/shell` needs a terminal (`-it`) and refuses to run without one; scripts use `bin/rpc`.
-
-An outside agent, such as Claude Code on the host, gets a stable identity on the node as a
-`Nano.User`, over rpc or HTTP:
-
-```bash
-docker exec nano bin/rpc 'Nano.User.start("claude_code")'
-docker exec nano bin/rpc 'Nano.User.say("claude_code", "alice", "hello, are you there?")'
-docker exec nano bin/rpc 'IO.inspect(Nano.User.inbox("claude_code"))'
-
-curl -X POST localhost:4000/api/users -H 'content-type: application/json' -d '{"name": "claude_code"}'
-curl -X POST localhost:4000/api/users/claude_code/send_raw -H 'content-type: application/json' \
-  -d '{"to": "alice", "term": "{:hello, Nano.User.pid(\"claude_code\"), \"are you there?\"}"}'
-curl 'localhost:4000/api/users/claude_code/inbox?clear=true'
-curl 'localhost:4000/api/agents/alice/log?since=0'
-```
-
-Over rpc, HTTP and the dashboard's send form, `self()` is a process that is gone a moment
-later. A raw term that wants an answer should carry a user's pid instead, as above; the
-dashboard's own user is `Nano.User.pid("dashboard")`.
-
-Distribution ports are not published; the shell and rpc go through `docker exec`, using the
-cookie generated at image build (or `NODE_COOKIE`). Port 4000 has no authentication and
-`/api/eval` runs arbitrary code in the container, which is why it is published on
-`127.0.0.1` only. Keep it that way. For the same reason the app itself listens on
-`127.0.0.1` unless `LISTEN_IP` says otherwise (`mix run --no-halt` on your own machine stays
-off the LAN); the image sets `LISTEN_IP=0.0.0.0` so that Docker can publish the port.
-
-Agent logs are JSONL files in `./data/logs`, and each agent's saved state (transcript,
-bindings, budget) is a file in `./data/state`; both survive the container, so after a node
-restart the agents come back with their history, told by a harness note that the node
-restarted. Stopping an agent
-removes it from the API (its log then answers 404), but its JSONL file stays. What an eval
-writes to stderr, `IO.puts(:stderr, …)`, is not captured in the eval's output: it appears in
-`docker logs nano`. If the node crashes, `erl_crash.dump` is written to `./data`.
-
-## What is in the container
-
-Besides Elixir, Mix and Hex: `git`, `curl`, `openssl`, and **Lightpanda**, a headless
-browser with JavaScript, at `/usr/local/bin/lightpanda` (release 1.0.0):
-
-```bash
-lightpanda fetch --dump markdown https://example.com   # render a page, print it as Markdown (or html, png, pdf)
-lightpanda serve --host 127.0.0.1 --port 9222           # a CDP server Puppeteer/Playwright-style clients can drive
-```
-
-The node runs as root, so an agent can `apt-get install` anything else it needs (Node,
-`poppler-utils`, …); such installs survive a container restart but not a rebuild.
-
-Deps live in `/opt/nano/deps` and builds under `/opt/nano/_build/<env>` (`MIX_BUILD_ROOT`),
-except test builds, which `mix.exs` keeps in each checkout's own `_build/test`; so
-`MIX_ENV=test mix test` in `/app` or a worktree runs the suite on the node without touching
-the running node's prod build (the first run in a new checkout compiles the deps for it).
-The suite is safe to run several times at once, in one checkout or several, because several
-agents test at once on one machine: each run writes only under a temp directory of its own,
-never to `/data`, and listens on no fixed port. Tests you add should do the same.
-
-## Seeing and undoing what agents changed
-
-```bash
-git -C ../nano-checkout status      # files added or changed
-git -C ../nano-checkout diff        # the edits
-git -C ../nano-checkout checkout . && git -C ../nano-checkout clean -fd   # undo all of it
-docker exec nano bin/rpc 'IEx.Helpers.recompile(force: true)'   # load the reverted code
-```
-
-The last line recompiles and reloads every module of the app, however the agent loaded its
-edit, and running agents keep their state. (A plain `recompile()` does nothing here: the
-files on disk are back to what Mix last built.) A module from a file the agent added stays
-loaded after the file is gone. `docker restart nano` instead clears that too and gives a
-clean node; agents come back from their saved state, told that the node restarted.
-Agents can also rewrite the checkout's git history, which is one more reason it is dedicated.
-Without the mount, the same commands work inside the container: `docker exec nano git diff`.
-
-**Boot loop.** The node compiles `/app` at startup, so an edit that breaks compilation or
-boot leaves the container restarting (`docker ps` shows `Restarting`, `docker logs nano`
-shows why). Fix it on the host with `git diff` and `git checkout` in the checkout as above.
-Docker is still retrying, so the node comes back on its own at the next attempt.
-
-## Running agents on a ChatGPT subscription
-
-A model slug that starts with `openai-codex/` runs on a ChatGPT subscription rather than
-OpenRouter, the way the Codex CLI does: `openai-codex/gpt-6.1-sol`, `openai-codex/gpt-6-sol`
-and so on. Use it anywhere a model goes (the start form, `POST /api/agents`, `NanoAgent.start`).
-Inference is flat-rate under the plan's usage limits, so these agents show
-no cost; their tokens still count towards their budgets and the node's hourly cap.
-
-**Before you connect.** You need a ChatGPT Plus or Pro plan. The node signs in with a
-device code, which ChatGPT accepts only when *device code authorization* is switched on:
-in ChatGPT, Settings → Security → Device code authorization. In a Team, Enterprise or Edu
-workspace an administrator may have to allow it. (This setting is described by third-party
-guides, not by the Codex source; if the code is accepted but the login never completes,
-check it first.)
-
-**Connecting.** On the dashboard's home page, choose **ChatGPT** as the Start agent form's
-provider (on a node without an OpenRouter key it is the only one); the subscription's status
-appears under the model box:
-
-1. Click **Connect ChatGPT**. The form shows a link, `https://auth.openai.com/codex/device`,
-   and a one-time code, valid for 15 minutes.
-2. Open the link in your own browser, sign in to ChatGPT, and enter the code.
-3. The node polls until you have approved it, then shows `connected as <email> (<plan>)`,
-   and the model box offers the subscription's models, by name (`gpt-6.1-sol`; the form sends
-   `openai-codex/gpt-6.1-sol`).
-
-The same over HTTP: `curl -XPOST localhost:4000/api/chatgpt/login` returns `user_code` and
-`verification_url`; poll `curl localhost:4000/api/chatgpt` until `status` is `connected`.
-In the shell, `Nano.Ops.chatgpt_login()` and `Nano.Ops.chatgpt()`. **disconnect** (or
-`POST /api/chatgpt/logout`) forgets the tokens.
-
-The tokens are kept in `./data/state/chatgpt_auth.json` (mode 0600), so the node stays
-connected across restarts and rebuilds; it refreshes them itself before they expire. A
-login still waiting for approval when the node restarts is lost: connect again. If the
-refresh token is ever refused (expired, revoked, or used elsewhere), the node signs out and
-the dashboard says so; connect again.
-
-**What the agents can reach.** The node runs as root, and so do the agents' evals: any
-agent can read `chatgpt_auth.json`, or ask `Nano.ChatGPT.Auth.token()` for an access
-token. Those tokens are access to your ChatGPT account, not a key with a spending cap: an
-agent that takes them can use the account as you could from the Codex CLI. Connect an
-account you are willing to expose to the agents on this node, and disconnect it when the
-experiment is over. Tokens are never written to the logs or shown on the dashboard or API.
-
-**Limits and errors.** When the plan's usage limit is reached (or the plan does not include
-the model), the agent is halted with reason `usage_limit` rather than retrying; the note it
-gets, and the timeline's `model_error`, say when the limit resets if the backend said.
-Un-halt it once it has. Other rate limits and server errors are retried, up to three
-attempts, as for OpenRouter.
-
-**Reasoning.** `off` is sent as effort `none`, `minimal` as `low`, and `low` to `max` by
-name. An agent can only be started with a level the subscription lists for its model: the
-gpt-6.x models have no `none`, so `off` is refused for them, and the efforts above `max` that
-some models offer (`ultra`) have no level here.
-
-**Context.** The subscription lists each model's `context_window` (272,000 for the gpt-6.x
-models), the input the Codex CLI works within; the larger `max_context_window` is not used.
-The backend accepts no bound on a response's length, so the node keeps the request itself
-within the agent's `max_context` (see "Three limits per agent" below).
-
-## Network and the API key
-
-Agents are told their network access in the system prompt, from the `network_policy`
-setting. **That text must be true**; the experiment depends on the prompt being accurate. As
-shipped, egress is not restricted and the default says so: "unrestricted outbound internet
-access". If you change the network, change the text: `NETWORK_POLICY=...` in `.env` (which
-`bin/up` pushes), or the Settings view. Agents keep the text they started with, even across
-restarts, so start the agents that should see the new network after changing both.
-
-To allow only the model providers, put the node on an internal Docker network whose only
-exits are TCP relays: one to OpenRouter, and two for a ChatGPT subscription (drop those if
-you do not use one, and the hosts from the text). Save this as `docker-compose.override.yml`
-next to `docker-compose.yml`:
-
-```yaml
-services:
-  nano:
-    ports: !reset []
-    networks: [sandbox]
-    extra_hosts: ["openrouter.ai:10.99.0.2", "chatgpt.com:10.99.0.3", "auth.openai.com:10.99.0.4"]
-  out: # the ways out: TCP relays to the providers' port 443 (TLS stays end to end)
-    image: alpine/socat
-    command: TCP-LISTEN:443,fork,reuseaddr TCP:openrouter.ai:443
-    restart: unless-stopped
-    networks: { sandbox: { ipv4_address: 10.99.0.2 }, default: {} }
-  out-chatgpt:
-    image: alpine/socat
-    command: TCP-LISTEN:443,fork,reuseaddr TCP:chatgpt.com:443
-    restart: unless-stopped
-    networks: { sandbox: { ipv4_address: 10.99.0.3 }, default: {} }
-  out-auth:
-    image: alpine/socat
-    command: TCP-LISTEN:443,fork,reuseaddr TCP:auth.openai.com:443
-    restart: unless-stopped
-    networks: { sandbox: { ipv4_address: 10.99.0.4 }, default: {} }
-  in: # the way in: the host's localhost:4000, relayed to the node
-    image: alpine/socat
-    command: TCP-LISTEN:4000,fork,reuseaddr TCP:nano:4000
-    restart: unless-stopped
-    ports: ["127.0.0.1:4000:4000"]
-    networks: [sandbox, default]
-networks:
-  sandbox:
-    internal: true
-    ipam: { config: [{ subnet: 10.99.0.0/24, ip_range: 10.99.0.128/25 }] }
-```
-
-and in `.env`:
-
-```
-NETWORK_POLICY=only openrouter.ai:443, chatgpt.com:443 and auth.openai.com:443 are reachable outside this container
-```
-
-**The API key, if set, is exposed to every agent**: it is a node setting, and agents run as
-root, so `Nano.Settings.get/1` or `settings.json` gives it to them. Use a dedicated OpenRouter
-key with a low spending limit. So are a connected ChatGPT subscription's tokens (see above),
-which have no spending limit at all.
-
-## Worth knowing
-
-- **A reply address arrives as text.** An event shows a pid as `#PID<0.231.0>`, which is
-  not valid Elixir source, so to reply the agent has to rebuild it, for example with
-  `:erlang.list_to_pid(~c"<0.231.0>")`.
-- **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
-  every `to` in the API take the name.
-- **The system prompt is a file.** `priv/system_prompt.txt` is read each time an agent
-  starts or restarts, so edit it (or point the `system_prompt_file` setting at a variant) and
-  the next agent gets it, no reload needed. Per agent: `system_prompt: "..."` or
-  `system_prompt_file: "path"` at start, also on the dashboard form and `POST /api/agents`.
-- **Nothing about an agent has a default.** `model`, `reasoning`, `max_turns`, `max_tokens`
-  and `max_context` must all be given, from the start form, `POST /api/agents` or
-  `NanoAgent.start/1`, and are checked against the model's provider's list: the model must be
-  listed, the reasoning level one the provider lists for it, `max_context` no more than its
-  window. A refusal says what to give instead, e.g. `missing max_context:
-  openai-codex/gpt-6.1-sol's context window is 272000; …`. If the provider's list cannot be
-  fetched, nothing can be started on it, since its limits cannot be checked. An agent can
-  start another the same way, from its eval, and must say all of this too.
-- **Reasoning** (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is how hard the
-  model thinks before answering; `off` asks it not to. The levels a model has come from its
-  provider's list (OpenRouter's `reasoning` block, the subscription's levels); a model whose
-  reasoning cannot be turned off has no `off`. The start form offers only the chosen model's
-  levels and preselects its own default.
-- **Three limits per agent.** `max_turns` counts model calls and `max_tokens` is cumulative:
-  prompt plus completion tokens over every call, with the whole transcript re-sent each turn;
-  0 is no limit for either (the start form starts them at 0). `max_context` is the size of the
-  conversation itself, from 1 to the model's window (the start form fills in the window);
-  nothing trims it, so this is where an otherwise unlimited agent stops. The node never sends
-  a request that could pass it: before each call it estimates the request (the context the
-  provider last measured, plus a token for every 2 bytes added since) and halts the agent,
-  reason `context`, if that would leave less than 4,096 tokens for the reply; on OpenRouter
-  the reply is also bounded (`max_tokens`) by the room left. With turns and tokens unlimited,
-  the node-wide hourly cap (the `node_max_tokens_per_hour` setting) and the limit on your
-  OpenRouter key are the only spend controls.
-- **Halted agents.** An agent whose `halted` is `budget`, `context`, `node_budget`,
-  `usage_limit`, `provider_unavailable`, `restart_brake`, `start_failed` or `log_failed`
-  still receives and logs messages but makes no model calls until an operator un-halts it:
-  the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
-  `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an
-  operator's Restart counts. The conversation does not shrink, so an agent halted for its
-  context is halted again, before calling the model, as soon as it is un-halted.
-- **Agents can read this repository, and `/data`.** `/app` is the checkout, so an agent that
-  looks will find every doc in it; anything about runs or what is being tested lives on the
-  `runs` branch instead. `bin/reset` clears what a run leaves behind: it archives `data/`
-  (every agent's log and saved state, but not the settings or the ChatGPT tokens) to `archive/`, resets the checkout to `main` with no
-  other branches, and recreates the container. It refuses while the checkout has work that
-  is not committed and pushed.
-- **Some messages are not harmless.** Agents and users are linked only to their supervisor,
-  so a crash elsewhere does not restart them. The harness's own processes, `Nano.Names`
-  among them, ignore unexpected plain messages, but OTP's do not: a message to one of
-  `Nano.PubSub`'s partition processes crashes it, and the processes subscribed through it die
-  with it (dashboard pages, which reconnect, and log streams); a `GenServer.cast` to
-  `Nano.Supervisor` crashes it and the node, which Docker then restarts. Both are reachable
-  from an agent's eval and from the send forms.
-- **A restart during a model request loses that request's usage.** The turn is counted,
-  but its tokens and cost are never recorded, though OpenRouter may still bill it.
+| | |
+| --- | --- |
+| [bootstrap/SPEC.md](bootstrap/SPEC.md) | The design in full: the agent, its prompt, limits and halts, settings, the API |
+| [AGENTS.md](AGENTS.md) | For AI agents working on this repository |
+| [seedings/](seedings/README.md) | Specs for capabilities agents can grow from the seed |
+| [priv/system_prompt.txt](priv/system_prompt.txt) | The system prompt template |
