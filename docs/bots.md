@@ -35,8 +35,10 @@ Vega.Bots.remember(bot["id"], "Person prefers window seats",
 ```
 
 Memory identity is `bot:<id>` via sibling Vega.Memory, retrieved at most four entries
-and 5000 JSON bytes per human turn. This currently inherits lexical retrieval, not
-semantic reasoning. Explicit remember avoids turning every utterance into a fact.
+and 5000 JSON bytes per human turn. With TYPESAFE_API_KEY configured, a bounded
+Vega.Decision Jev judgment selects relevant memories from at most 20 recent candidates
+(12KB). Missing key/service failure falls back to disclosed lexical retrieval; no
+big-model judgment loop. Candidates outside this recent window are a retrieval limit. Explicit remember avoids turning every utterance into a fact.
 The shared harness compaction must be merged and active for real long bot sessions;
 bot prompt adds personal preferences, decisions, commitments, open questions and
 handled input IDs to the summary priorities. No copied compaction implementation.
@@ -61,15 +63,15 @@ Without explicit session, newest session involving the bot is used, or one is cr
 
 ## Evidence and current limits
 
-`MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-bots-build mix test test/vega/bots_test.exs`:
-6/6 passing isolated backend tests (no real provider spend). Frontend pending separate
+`MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-bots-build mix test test/vega/bots_test.exs test/vega/bots_relevance_test.exs`:
+7/7 passing isolated backend tests (no real provider spend). Frontend pending separate
 subagent. No modules loaded into the running node. Real Codex bot and compaction tests
 wait for parent integration/fixed compaction and authorization.
 
-Initial state snapshot uses Vega.Store's 4MB per-file cap. At cap a new message returns
-`:store_too_large`, never discards old chat; partitioned/archived history is a future
+Initial state snapshot uses owned Vega.Bots.Persistence atomic JSON with a 32MB cap. At cap a new message returns
+`:invalid_or_oversized_store`, never discards old chat; partitioned/archived history is a future
 scaling improvement. Snapshots currently return full chat history and are intended for
-modest local use. File attachment support waits for sibling immutable Images validation
-and hook; arbitrary file paths fail closed. Notifications planned for background open
+modest local use. Images are canonicalized with Vega.Images.validate_refs; arbitrary image paths fail
+closed. Native vision delivery awaits sibling harness hook integration. Notifications planned for background open
 browser tabs, not closed-tab push. Node remains unauthenticated like existing operator
 API; this is not a multi-user authorization boundary.

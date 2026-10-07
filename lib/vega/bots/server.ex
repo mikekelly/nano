@@ -19,9 +19,9 @@ defmodule Vega.Bots.Server do
   def init(opts) do
     root = Keyword.get(opts, :root, "/data/vega")
 
-    with {:ok, entries} <- Store.read("bots", "state", root: root) do
+    with {:ok, saved} <- Vega.Bots.Persistence.load(root) do
       data =
-        List.first(entries) ||
+        saved ||
           %{
             "bots" => [],
             "sessions" => [],
@@ -162,13 +162,13 @@ defmodule Vega.Bots.Server do
     with {:ok, session} <- find(d, "sessions", sid),
          true <- author == "person" or author in session["bot_ids"],
          true <- text?(text, 32_000) or (text == "" and opts[:images] not in [nil, []]),
-         :ok <- validate_images(opts[:images] || []) do
+         {:ok, images} <- validate_images(opts[:images] || []) do
       message = %{
         "id" => id(),
         "author_id" => author,
         "text" => text,
         "at" => Store.now(),
-        "images" => opts[:images] || []
+        "images" => images
       }
 
       next = append(d, session, message)
@@ -353,25 +353,9 @@ defmodule Vega.Bots.Server do
     if valid, do: :ok, else: {:error, :explicit_identity_model_and_limits_required}
   end
 
-  defp validate_images(xs) when is_list(xs) and length(xs) <= 4 do
-    if xs == [] do
-      :ok
-    else
-      if Code.ensure_loaded?(Vega.Images) and function_exported?(Vega.Images, :validate_ref, 1) do
-        Enum.reduce_while(xs, :ok, fn x, _ ->
-          case apply(Vega.Images, :validate_ref, [x]) do
-            :ok -> {:cont, :ok}
-            {:ok, _} -> {:cont, :ok}
-            _ -> {:halt, {:error, :invalid_image}}
-          end
-        end)
-      else
-        {:error, :images_unavailable}
-      end
-    end
-  end
-
+  defp validate_images(xs) when is_list(xs) and length(xs) <= 4, do: Vega.Images.validate_refs(xs)
   defp validate_images(_), do: {:error, :invalid_images}
+
   defp text?(s, cap), do: Store.text?(s, cap) and String.trim(s) != ""
   defp id, do: Base.encode16(:crypto.strong_rand_bytes(10), case: :lower)
   defp event(type, sid \\ nil), do: %{"type" => type, "session_id" => sid}
@@ -428,12 +412,7 @@ defmodule Vega.Bots.Server do
     Enum.reduce(session["bot_ids"], next, &put_status(&2, session["id"], &1, "thinking", ""))
   end
 
-  defp persist(s, data) do
-    case Store.transact("bots", "state", [root: s.root], fn _ -> {:ok, :saved, [data]} end) do
-      {:ok, _} -> :ok
-      error -> error
-    end
-  end
+  defp persist(s, data), do: Vega.Bots.Persistence.save(s.root, data)
 
   @impl true
   def handle_info(:tick, s) do
