@@ -11,6 +11,9 @@ the agent's decision, and every seeding says so. The agent reads the spec from `
 and builds the capability in the checkout, as modules under `/app/lib` plus whatever else
 it needs, following `guidance.md`, which goes with every seeding.
 
+Each seeding says why each of its parts matters, so an agent can decide what to keep, adapt
+or drop for its own situation.
+
 ## Seedings
 
 | File | Capability |
@@ -25,4 +28,5 @@ it needs, following `guidance.md`, which goes with every seeding.
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
 Some seedings need something only the operators can supply, and say so at the top: an API
-key in `.env` (`EXA_API_KEY`). Keep every seeding true of the running system.
+key in `.env` (`EXA_API_KEY`). Keep every seeding true of the running system: the agent
+acts on what it reads here.

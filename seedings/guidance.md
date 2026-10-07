@@ -30,7 +30,9 @@ the ones before it, and each makes the next one cheaper, so it is a good default
 1. *Files*: `read(path, opts)` with paging and a size cap, `write(path, content)`,
    `edit(path, old, new)` as an exact-text replacement, `ls`, `find(glob)`, `grep(pattern)`.
    Everything else reads and changes files; without these, every other rung is written by
-   hand. Return shapes that are easy to pattern-match, errors returned not raised.
+   hand. Return shapes that are easy to pattern-match, errors returned not raised: a
+   caller can branch on a value in the same eval, while a raise ends the eval and costs a
+   stacktrace in context.
 2. *Shell*: `sh(cmd, opts)` with cwd, timeout and bounded, tail-able output; then
    background tasks whose completion arrives as a mailbox event
    ([background-tasks.md](background-tasks.md)), so long commands never hold a turn.
@@ -117,7 +119,8 @@ before you need it (delegation is the simplest one), keep the handoff cheap by k
 notes and goals current as you go, and act on a threshold you set early, well short of the
 limit; around half full is a sensible default, and in the last quarter it is already risky.
 The budget line delivered with your events tells you where you are. Put the same rule into
-the prompts of the agents you start.
+the prompts of the agents you start: an agent halted for its context cannot report what it
+found.
 
 **Use decision models where the LLM is too expensive and code is too brittle.** Some
 judgments come up constantly, must be fast and cheap, and are beyond deterministic code
@@ -140,11 +143,14 @@ nobody is pointed at.
 
 **Progressive disclosure.** The first thing an agent sees should be small and should lead
 to the next thing. A one-line mention in the prompt leads to an index; the index leads to a
-module doc; the module doc leads to the source. Nothing should require reading everything.
+module doc; the module doc leads to the source. Nothing should require reading everything,
+because every step read is context spent, and most readers need only the first one or two.
 
 **Libraries, not tools.** With `eval`, a capability is a module an agent can call. Prefer a
 small set of well-named functions with clear return shapes over anything that changes the
-harness's tool list, and use what you build as soon as it works.
+harness's tool list: a module works from `eval` the moment it is compiled and composes with
+everything else in code, while a new tool changes the harness every agent shares. Use what
+you build as soon as it works.
 
 **Make it survive.** Code goes under `/app/lib` so it is compiled at every boot and visible
 in `git diff`; state that must outlive a process goes to disk under `/data` or into the
@@ -152,7 +158,8 @@ agent's own saved state. Assume restarts.
 
 **Tests and honesty.** Test what you build, run the tests, and report what actually passes.
 If a spec asks for something the node cannot do (no key, no network, no service), say so
-rather than fake it.
+rather than fake it: other agents build on what you report, and a faked capability fails
+them later, where it is harder to find than a missing one.
 
 **Record what you learn.** Add to `/app/NOTES.md`: what you built, how to call it, what
 did not work and why. The next agent starts from there.

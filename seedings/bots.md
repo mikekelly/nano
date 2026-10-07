@@ -5,9 +5,11 @@
 A consumer-grade way to live with agents, in the style of Grok's Bot, Muse and OpenAI's
 Dots: the system presents itself as a few named **bots**, each an agent with its own
 computer, and the person talks to them in chat sessions. The dashboard stays for
-operators; this is the product on top, built inside this node's existing Phoenix app as
-LiveView pages at their own path (for example `/bots`), sharing its endpoint, PubSub and
-the plain functions underneath.
+operators, who need its evals and harness traffic; this is the product on top, for a
+person who should need none of that. It is built inside this node's existing Phoenix app
+as LiveView pages at their own path (for example `/bots`), sharing its endpoint, PubSub
+and the plain functions underneath: there is no second server to run, live updates come
+from the PubSub the agents already publish to, and the two surfaces cannot drift apart.
 
 When this is done, a person creates two bots, starts a session with one and a session
 with both, chats for long enough that compaction happens without them noticing, tells one
@@ -17,7 +19,8 @@ something only the person can give; the bot posts the request in the right sessi
 browser notification brings the person back, they answer in the chat, and the asking
 agent receives the answer.
 
-The surface is a messaging app, laid out like Grok's Bot app (and iMessage):
+The surface is a messaging app, laid out like Grok's Bot app (and iMessage), so a person
+already knows how to use it:
 
 - **Left column.** At the top, a search button and a new-chat (+) button. Below them, the
   person's main bot, shown large: its face and name, the one to talk to by default. Then
@@ -44,38 +47,46 @@ The surface is a messaging app, laid out like Grok's Bot app (and iMessage):
 What the person gets:
 
 - chat sessions they have started, each involving one or more bots; a session with
-  several bots is one shared conversation in which each bot speaks as itself;
+  several bots is one shared conversation in which each bot speaks as itself, so the
+  person can bring several to one problem and always knows who said what;
 - bots with identity — a name, a face or colour, a short self-description, a voice that
   stays consistent across sessions; a bot is something the person comes back to, not a
-  fresh agent per chat;
+  fresh agent per chat, and a consistent one is what they learn to rely on;
 - a clean surface: the bot shows that it is thinking, and may show a short summary of what
-  it is doing, but evals, tool calls and harness traffic stay on the operator dashboard;
+  it is doing, so a silence never looks like a failure, but evals, tool calls and harness
+  traffic stay on the operator dashboard, where they do not bury the conversation;
 - messages that render well (Markdown, code, files the bot produces), with safe handling
-  of anything a model writes;
+  of anything a model writes: it is untrusted text, and script that runs in the page runs
+  on the same unauthenticated origin as `/api/eval`, which runs any code on the node;
 - bots that speak first when warranted — something finished, a question they cannot
   answer alone, something that needs the person — with browser notifications when
-  allowed, within limits the person sets;
+  allowed, within limits the person sets, because interruptions they cannot bound get
+  muted;
 - bots as the conduit for every other agent that needs a human (a credential to set up, a
   balance to top up, a choice only a person can make): the agent asks a bot, the bot
   raises it in the right session as an answerable request and passes the answer back, so
-  the person sees one channel.
+  the person sees one channel and a request is not lost in a log nobody reads.
 
 ## Considerations
 
 - Identity is a layer above agent state: a bot must be restored, not recreated, after
-  restarts (the seed restores an agent's history; identity, sessions and memory are yours).
+  restarts, or the person comes back to a stranger (the seed restores an agent's history;
+  identity, sessions and memory are yours).
 - Each session must be its own conversation for each bot in it, so sessions do not leak
   into each other through the context window. One agent per bot-and-session, or one per
   bot with a session switch — each costs something in context and in isolation; decide
   and say why.
 - What a bot learns in one session should be available in others: a memory kept per bot,
-  retrieved into a session in small, relevant amounts, not dumped. A knowledge graph of
-  people, things, facts and events with links is one shape for it.
+  retrieved into a session in small, relevant amounts, not dumped, since every memory
+  loaded costs context for the rest of the session and an irrelevant one misleads. A
+  knowledge graph of people, things, facts and events with links is one shape for it.
 - Sessions get long. Compaction has to happen automatically and keep what matters
   (decisions, commitments, open questions, what the person likes), so a bot never hits its
-  context limit mid-conversation and never visibly forgets within a session. The seed has
-  no compaction; one mechanism that works here is to rewrite the stored transcript from
-  outside, keeping every tool call answered.
+  context limit mid-conversation (the harness halts an agent before a call that would not
+  fit, so the session simply stops) and never visibly forgets within a session. The seed
+  has no compaction; one mechanism that works here is to rewrite the stored transcript from
+  outside, keeping every tool call answered, since providers refuse a conversation with a
+  tool call that has no result.
 - Much of the above is classification and routing: which memories are relevant, whether a
   session needs compacting, what a message is about, which bot should answer, whether a
   message needs the person now, which path to take through the knowledge graph. The big
@@ -85,7 +96,7 @@ What the person gets:
   browser notifications (permission, the Notifications API, perhaps a small service
   worker) are the mechanics of "speaking first".
 - Every other agent needs a documented way to ask a bot for a human ("I need a person for
-  this"), and a way to get the answer back.
+  this"), and a way to get the answer back; without one, each invents its own or stalls.
 
 ## Inspiration
 
