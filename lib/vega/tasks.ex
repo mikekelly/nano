@@ -172,47 +172,65 @@ defmodule Vega.Tasks do
         "; exec /bin/sh -c " <>
         quote_sh(command) <> " > " <> quote_sh(record.output_path) <> " 2>&1"
 
-    try do
-      port =
-        Port.open({:spawn_executable, executable}, [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          args: ["--wait", "/bin/sh", "-c", script],
-          cd: Keyword.get(opts, :cwd, File.cwd!()),
-          env:
-            Enum.map(Keyword.get(opts, :env, []), fn {k, v} ->
-              {String.to_charlist(k), if(v == nil, do: false, else: String.to_charlist(v))}
-            end)
-        ])
+    # Only the guardian ever signals the group. It acknowledges cleanup and
+    # persists completion before retiring, independently of notification retries.
+    Process.put(:vega_task_guardian, guardian)
 
-      timeout = Keyword.get(opts, :timeout, :infinity)
-      timer = if timeout != :infinity, do: Process.send_after(self(), :timeout, timeout)
-      record = %{record | status: :running}
-      persist(record)
-      {state, code} = wait(port, record.agent)
-      if timer, do: Process.cancel_timer(timer)
-      cleanup(record.dir)
-
+    {finished, state, code, port} =
       try do
-        Port.close(port)
+        port =
+          Port.open({:spawn_executable, executable}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: ["--wait", "/bin/sh", "-c", script],
+            cd: Keyword.get(opts, :cwd, File.cwd!()),
+            env:
+              Enum.map(Keyword.get(opts, :env, []), fn {k, v} ->
+                {String.to_charlist(k), if(v == nil, do: false, else: String.to_charlist(v))}
+              end)
+          ])
+
+        timeout = Keyword.get(opts, :timeout, :infinity)
+        timer = if timeout != :infinity, do: Process.send_after(self(), :timeout, timeout)
+        running = %{record | status: :running}
+        persist(running)
+        {state, code} = wait(port, record.agent)
+        if timer, do: Process.cancel_timer(timer)
+        {running, state, code, port}
       catch
-        _, _ -> :ok
+        kind, reason ->
+          {Map.put(record, :error, Exception.format_banner(kind, reason)), :failed, nil, nil}
       end
 
-      complete(record, state, code, opts)
-    catch
-      kind, reason ->
-        cleanup(record.dir)
+    ref = Process.monitor(guardian)
+    send(guardian, {:finish, self(), finished, state, code})
 
-        complete(
-          Map.put(record, :error, Exception.format_banner(kind, reason)),
-          :failed,
-          nil,
-          opts
-        )
-    after
-      send(guardian, :finished)
+    receive do
+      {:cleaned, ^guardian, completed} ->
+        Process.demonitor(ref, [:flush])
+
+        if port do
+          try do
+            Port.close(port)
+          catch
+            _, _ -> :ok
+          end
+        end
+
+        deliver(completed, Keyword.get(opts, :notify))
+
+      {:DOWN, ^ref, :process, ^guardian, reason} ->
+        # Never retry a group signal: the guardian may have signalled before
+        # failing, and the numeric group id could already have been reused.
+        completed =
+          save_completion(
+            Map.put(finished, :error, "cleanup guardian died: #{inspect(reason)}"),
+            :failed,
+            nil
+          )
+
+        deliver(completed, Keyword.get(opts, :notify))
     end
   end
 
@@ -231,7 +249,7 @@ defmodule Vega.Tasks do
     end
   end
 
-  defp complete(record, state, code, opts) do
+  defp save_completion(record, state, code) do
     bytes =
       case File.stat(record.output_path) do
         {:ok, s} -> s.size
@@ -247,7 +265,7 @@ defmodule Vega.Tasks do
     }
 
     persist(record)
-    deliver(record, Keyword.get(opts, :notify))
+    record
   end
 
   defp deliver(record, notify) do
@@ -283,17 +301,24 @@ defmodule Vega.Tasks do
     attribute(record.agent)
 
     receive do
-      :finished ->
+      {:finish, ^worker, finished, state, code} ->
+        cleanup(record.dir)
+        completed = save_completion(finished, state, code)
+        Process.demonitor(ref, [:flush])
+        send(worker, {:cleaned, self(), completed})
+        # Retire now: notification can wait for an absent name indefinitely.
         :ok
 
       {:DOWN, ^ref, :process, ^worker, reason} ->
-        # The child can write pgid just after its controller dies during startup.
-        Process.sleep(100)
+        # cleanup waits for the startup pgid handshake if necessary.
         cleanup(record.dir)
 
         case status(record) do
           {:ok, %{status: state} = saved} when state in [:starting, :running] ->
-            complete(Map.put(saved, :error, inspect(reason)), :failed, nil, opts)
+            completed = save_completion(Map.put(saved, :error, inspect(reason)), :failed, nil)
+            # This process may become a delivery worker, but is permanently
+            # disarmed: no monitor loop and no path back to cleanup/1.
+            deliver(completed, Keyword.get(opts, :notify))
 
           _ ->
             :ok

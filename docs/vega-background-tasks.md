@@ -44,7 +44,7 @@ a successful notify attempt, not a durable recipient acknowledgment.
 
 Named recipients are resolved each time, so normal agent restart neither kills
 the OS command nor loses its later completion. A completed task whose name is
-absent keeps retrying every 250 ms. This holds two small BEAM processes until the
+absent keeps retrying every 250 ms. This holds one small delivery process until the
 name returns. Permanently removed names need operator cleanup; there is no
 expiry policy. Notification is a GenServer cast: a restart in the tiny interval
 between sending and the agent saving its pending message can lose that event.
@@ -70,8 +70,8 @@ the group-id handshake. Tests check real `/proc` child states, accepting zombies
 as terminated (reaping belongs to the OS init, not the task controller).
 
 Deliberately daemonized children that escape the group with `setsid` are outside
-the cleanup guarantee. Simultaneously killing controller and guardian defeats
-the fallback. No disk quota or output rotation is imposed: callers/operators
+the cleanup guarantee. Killing the guardian defeats the cleanup guarantee; it is not a supported
+operator control. Stop the controller or use `stop/1` instead. No disk quota or output rotation is imposed: callers/operators
 must manage saved artifacts. Readers are capped at 50,000 bytes per call (16,000
 default), use byte rather than line offsets, and may split UTF-8 characters.
 Reading active output is a snapshot; call again for bytes appended later.
@@ -79,7 +79,7 @@ Reading active output is a snapshot; call again for bytes appended later.
 ## Evidence
 
 `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-background-build mix test test/vega_tasks_test.exs`
-passes 12 tests: cwd/env, merged output and nonzero exit, large output paging,
+passes 13 tests: cwd/env, merged output and nonzero exit, large output paging,
 stop/timeout/normal-exit/controller-kill descendant cleanup, eval death survival,
 actual NanoAgent restart plus dashboard ownership plus named completion,
 absent-name retry/replay, ten immediate-stop startup races, relative artifact
@@ -94,3 +94,26 @@ A real live-node task also ran `printf; sleep 1; printf`, returned immediately,
 showed `{:spawned_by, "vega-background"}` in Nano.Ops, and delivered the expected
 named completion event with exit 0 and 25 bytes, readable from its saved path.
 Only the owned Vega.Tasks module was loaded; no Nano module was reloaded.
+
+## Guardian lifecycle review fix
+
+The guardian is now the sole process-group signaling authority. On normal
+completion/stop/timeout/launch failure, the controller requests finalization.
+The guardian signals once, persists completion, acknowledges it, and **exits
+before named-delivery retries**. A controller killed mid-command still causes
+the guardian to signal once and record failure; any subsequent guardian
+delivery retry is permanently disarmed (no monitor loop or cleanup path).
+The controller never retries an uncertain signal if the guardian crashes.
+
+A deterministic gate-controlled regression traces the real cleanup function,
+observes exactly one signal path and guardian exit, then kills the completed
+controller while its named recipient is absent. No second cleanup occurs.
+This does not force PID reuse, alter kernel settings, or reload live modules.
+The 13 focused tests pass, including active-controller-kill descendant cleanup.
+
+Residual Unix limitation: process groups are addressed by numeric ids, not
+pidfds/session handles. The short interval between shell exit (or unexpected
+controller death) and the first cleanup can still permit numeric group-id
+reuse in principle. This patch eliminates indefinitely delayed **second**
+signals after delivery waits; it does not claim to remove all Unix numeric-id
+races, escaped sessions, or externally killed guardians.
