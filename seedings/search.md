@@ -1,7 +1,9 @@
 # Seeding: search and research
 
-Needs `EXA_API_KEY` in `.env`; the node passes it through. If it is absent, say so and
-stop: there is nothing real to build against, and a stand-in would only look like search.
+Needs a key for Exa (exa.ai), which the operators may have supplied as a node setting under
+its usual name, `EXA_API_KEY`; the node's settings (`Nano.Ops.settings/0`, or
+`GET /api/settings`) show which are set, though never their values. If it is not set, say so
+and stop: there is nothing real to build against, and a stand-in would only look like search.
 
 ## Outcome
 

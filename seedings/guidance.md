@@ -44,9 +44,9 @@ the ones before it, and each makes the next one cheaper, so it is a good default
    nothing is lost; a search caps the number of matches (say 100) and the length of each
    matching line (say 500 characters); a listing caps entries (hundreds, not thousands).
    Cap by lines as well as bytes where lines are the natural unit, so results stay
-   predictable in tokens. The harness's own cap on an eval result is 50 KB
-   (`RESULT_MAX_BYTES`) with the rest spilled to a file; your utilities should bound output
-   well below that, so the cap is never what shapes a result.
+   predictable in tokens. The harness's own cap on an eval result is the one your system
+   prompt states (50 KB by default), with the rest spilled to a file; your utilities should
+   bound output well below that, so the cap is never what shapes a result.
 
    How the core tools of a mature coding agent (pi) behave, as a reference for yours:
    - *read* pages by line (`offset`, `limit`) and stops at 2,000 lines or 50 KB. When it
@@ -84,8 +84,9 @@ the ones before it, and each makes the next one cheaper, so it is a good default
    large is a sub-agent's job and your context stays at the level of the plan. Build it
    early, while you have plenty of context left.
 5. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
-   search, when a key for a search service is present (`EXA_API_KEY`;
-   [search.md](search.md)); and the browser that is already in the image — Lightpanda at
+   search, when the operators have supplied a key for a search service such as Exa
+   (exa.ai), as a node setting under its usual name (`EXA_API_KEY`; the node's settings,
+   `Nano.Ops.settings/0` or `GET /api/settings`, show which are set; [search.md](search.md)); and the browser that is already in the image — Lightpanda at
    `/usr/local/bin/lightpanda`, a headless browser with JavaScript: `lightpanda fetch
    --dump markdown URL` renders a page and prints it as Markdown, and `lightpanda serve
    --host 127.0.0.1 --port 9222` runs a CDP server that Puppeteer- or Playwright-style

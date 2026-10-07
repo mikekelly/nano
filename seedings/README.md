@@ -29,5 +29,6 @@ or drop for its own situation.
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
 Some seedings need something only the operators can supply, and say so at the top: an API
-key in `.env` (`EXA_API_KEY`). Keep every seeding true of the running system: the agent
+key, which the operators supply as a node setting under its usual name (`EXA_API_KEY`). The
+node's settings (`Nano.Ops.settings/0`, or `GET /api/settings`) show which are set. Keep every seeding true of the running system: the agent
 acts on what it reads here.

@@ -16,8 +16,8 @@ pages fetched without it are an empty shell that looks like a successful fetch.
   the image (`lightpanda fetch --dump markdown URL` renders a page with JavaScript, and
   `lightpanda serve` exposes a CDP server on 9222 that Puppeteer- or Playwright-style
   clients can drive for clicks and forms).
-- Search needs a provider. With `EXA_API_KEY` present, Exa is available
-  ([search.md](search.md)); without a key, say plainly what is and isn't possible rather
+- Search needs a provider. With an `EXA_API_KEY` among the node's settings, Exa is
+  available ([search.md](search.md)); without a key, say plainly what is and isn't possible rather
   than scraping a search engine that will rate-limit the node, and every agent on it.
 - Bounding output is the whole game: a page is often larger than everything else in a
   task, so slice long content and page it; cache what was fetched so a second look is free;

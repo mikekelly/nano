@@ -69,8 +69,8 @@ defmodule NanoAgent do
 
   Optional: `start_idle:` (boolean, default true), `system_prompt:` (a template string
   replacing the default; same `{{placeholders}}`), `system_prompt_file:` (a template file,
-  instead of the `system_prompt_file` setting). Returns the supervisor's result, or `{:error, message}`
-  saying what was missing or wrong and what to give instead.
+  instead of the `system_prompt_file` setting). Returns the supervisor's result, or
+  `{:error, message}` saying what was missing or wrong and what to give instead.
   """
   def start(opts) do
     name = opts[:name]
@@ -188,9 +188,10 @@ defmodule NanoAgent do
   @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
   while the agent is busy or suspended. `halted` is nil, `:budget`, `:context`, `:node_budget`,
-  `:usage_limit`, `:provider_unavailable`, `:restart_brake`, `:start_failed` or `:log_failed`; `context_window` is the
-  model's, as its provider listed it at start (nil if it could not be had for an agent saved
-  before it was recorded); `cache_hit_rate` is nil until the first response.
+  `:usage_limit`, `:provider_unavailable`, `:restart_brake`, `:start_failed` or
+  `:log_failed`; `context_window` is the model's, as its provider listed it at start (nil if it
+  could not be had for an agent saved before it was recorded); `cache_hit_rate` is nil until
+  the first response.
   """
   def info(name) do
     with %{} = s <- Nano.StateStore.get(name) do

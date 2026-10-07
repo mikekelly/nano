@@ -65,20 +65,20 @@ bin/up
 Agents need a model provider: OpenRouter, with that key, or a ChatGPT Plus or Pro
 subscription, which needs no key: connect it from the dashboard, see
 [Running agents on a ChatGPT subscription](#running-agents-on-a-chatgpt-subscription). Either
-will do, or both. Without the key OpenRouter is not offered, and an agent on an OpenRouter
-model is refused.
+will do, or both. Without the key OpenRouter is off, and an agent on an OpenRouter model is
+refused; the key can also be set, or cleared, at any time in the dashboard's Settings view.
 
 `bin/up` clones this repo to `../nano-checkout` if it is not there yet (the dedicated
-checkout the agents edit, mounted at `/app`; they can read every doc in it), builds the image, starts the container, waits for the node and prints the dashboard
-URL, http://127.0.0.1:4000. Running it again on a running stack is fine. `docker compose
-down` stops it. Each agent's model, reasoning level and limits are chosen when it is started;
-there are no defaults for them.
+checkout the agents edit, mounted at `/app`; they can read every doc in it), builds the image, starts the container, waits for the node, pushes the settings in `.env` to it (below)
+and prints the dashboard URL, http://127.0.0.1:4000. Running it again on a running stack is
+fine. `docker compose down` stops it. Each agent's model, reasoning level and limits are
+chosen when it is started; there are no defaults for them.
 
-`.env` can also hold, all optional and listed with their defaults in [.env.example](.env.example):
-`NANO_CHECKOUT` (the checkout's path), `SYSTEM_PROMPT_FILE` (the system prompt template,
-`priv/system_prompt.txt`), `STATE_DIR`, the node-wide hourly token cap and the timeout and
-size limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL`, `CHATGPT_BASE_URL`, `CHATGPT_AUTH_URL`,
-`CHATGPT_CLIENT_VERSION` and `NETWORK_POLICY`.
+`.env` holds two kinds of line, all optional and listed with their defaults in
+[.env.example](.env.example): a few for the host and compose (`NANO_CHECKOUT`, the checkout's
+path; `NODE_COOKIE`; `STATE_DIR`, `SPILL_DIR`), and settings of the node, such as
+`OPENROUTER_API_KEY`, `NETWORK_POLICY` or `NODE_MAX_TOKENS_PER_HOUR`, which `bin/up` pushes
+to the node (see [Settings](#settings)).
 
 Docker must be able to mount the checkout (colima shares only your home directory by
 default). The node runs as root inside the container: the container is the sandbox, and
@@ -96,11 +96,46 @@ The image also carries its own committed copy of the source, so it runs without 
 ```bash
 docker build -t nano .
 docker run -d --init --name nano --restart unless-stopped -p 127.0.0.1:4000:4000 \
-  -v nano-data:/data -e OPENROUTER_API_KEY nano
+  -v nano-data:/data nano
+bin/push-settings http://127.0.0.1:4000 .env   # or set them in the dashboard's Settings view
 ```
 
-Every setting is an environment variable; the table is in
-[bootstrap/SPEC.md](bootstrap/SPEC.md#container-configuration-and-limits) and `.env.example` lists them.
+## Settings
+
+The node's configuration is settings it owns, kept in `./data/state/settings.json` (mode 0600)
+and changed while it runs, with no restart: the dashboard's **Settings** view
+(`/?view=settings`), the API (`GET /api/settings`, `PUT /api/settings/<key>` with
+`{"value": ...}`, `DELETE /api/settings/<key>`), or `Nano.Ops.settings()`,
+`Nano.Ops.put_setting/2` and `Nano.Ops.delete_setting/1` in the shell. The table, with
+defaults, is in [bootstrap/SPEC.md](bootstrap/SPEC.md#container-configuration-and-limits).
+A value that does not fit is refused with a message saying what is allowed; clearing a
+setting puts it back to its default, or unsets a key.
+
+Some apply at once (the keys and addresses, the hourly cap, the eval timeout, the bindings
+limit); the ones the system prompt states (`network_policy`, `result_max_bytes` and the
+default template, `system_prompt_file`) apply to agents started afterwards, because each
+agent keeps the values it started with, so its prompt stays true.
+
+`bin/up` pushes `.env` to the node each time it runs (`bin/push-settings [URL] [FILE]` does
+just that): each `KEY=value` line, the node's own settings by their env names
+(`OPENROUTER_API_KEY` is `openrouter_api_key`), skipping comments, empty values and what only
+the host and compose read. Any other name is kept as a value of your own, under that name,
+for whatever needs it (a seedling's service, say). It never prints values, and it only ever
+sets: **to remove a key for good, clear it in the dashboard (or `DELETE /api/settings/<key>`)
+and take it out of `.env`**, or the next `bin/up` sets it again.
+
+Keys, and every value of your own, are secrets: never logged, never shown by the dashboard or
+the API (only whether one is set, and its last 4 characters). They are not in the node's
+environment either, so a key that is cleared is gone from the node; but agents run as root and
+can read the settings while they are set.
+
+Removing OpenRouter's key turns OpenRouter off at once: the start form stops offering it, an
+OpenRouter model is refused, and agents running on it are halted (`provider_unavailable`),
+told that an operator turned their provider off. Set the key again, then un-halt them.
+
+Only what the node needs before it starts stays in the environment: `NODE_COOKIE`,
+`STATE_DIR`, `SPILL_DIR`, `LOG_DIR`, `PORT`, `LISTEN_IP`, `SECRET_KEY_BASE`, and the image's
+`MIX_*` and `ERL_CRASH_DUMP`.
 
 ## Talking to the node
 
@@ -253,11 +288,12 @@ within the agent's `max_context` (see "Three limits per agent" below).
 
 ## Network and the API key
 
-Agents are told their network access in the system prompt, from `NETWORK_POLICY`. **That
-text must be true**; the experiment depends on the prompt being accurate. As shipped,
-egress is not restricted and `docker-compose.yml` says so by default: "unrestricted outbound
-internet access". If you change the network, change the text: set `NETWORK_POLICY` in `.env`,
-or in the same override file that changes the network, as below.
+Agents are told their network access in the system prompt, from the `network_policy`
+setting. **That text must be true**; the experiment depends on the prompt being accurate. As
+shipped, egress is not restricted and the default says so: "unrestricted outbound internet
+access". If you change the network, change the text: `NETWORK_POLICY=...` in `.env` (which
+`bin/up` pushes), or the Settings view. Agents keep the text they started with, even across
+restarts, so start the agents that should see the new network after changing both.
 
 To allow only the model providers, put the node on an internal Docker network whose only
 exits are TCP relays: one to OpenRouter, and two for a ChatGPT subscription (drop those if
@@ -270,8 +306,6 @@ services:
     ports: !reset []
     networks: [sandbox]
     extra_hosts: ["openrouter.ai:10.99.0.2", "chatgpt.com:10.99.0.3", "auth.openai.com:10.99.0.4"]
-    environment:
-      NETWORK_POLICY: "only openrouter.ai:443, chatgpt.com:443 and auth.openai.com:443 are reachable outside this container"
   out: # the ways out: TCP relays to the providers' port 443 (TLS stays end to end)
     image: alpine/socat
     command: TCP-LISTEN:443,fork,reuseaddr TCP:openrouter.ai:443
@@ -299,9 +333,16 @@ networks:
     ipam: { config: [{ subnet: 10.99.0.0/24, ip_range: 10.99.0.128/25 }] }
 ```
 
-**The API key, if set, is exposed to every agent**: it is in the node's environment, and
-`System.get_env/1` reads it. Use a dedicated OpenRouter key with a low spending limit. So
-are a connected ChatGPT subscription's tokens (see above), which have no spending limit at all.
+and in `.env`:
+
+```
+NETWORK_POLICY=only openrouter.ai:443, chatgpt.com:443 and auth.openai.com:443 are reachable outside this container
+```
+
+**The API key, if set, is exposed to every agent**: it is a node setting, and agents run as
+root, so `Nano.Settings.get/1` or `settings.json` gives it to them. Use a dedicated OpenRouter
+key with a low spending limit. So are a connected ChatGPT subscription's tokens (see above),
+which have no spending limit at all.
 
 ## Worth knowing
 
@@ -311,8 +352,8 @@ are a connected ChatGPT subscription's tokens (see above), which have no spendin
 - **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
   every `to` in the API take the name.
 - **The system prompt is a file.** `priv/system_prompt.txt` is read each time an agent
-  starts or restarts, so edit it (or point `SYSTEM_PROMPT_FILE` at a variant) and the next
-  agent gets it, no reload needed. Per agent: `system_prompt: "..."` or
+  starts or restarts, so edit it (or point the `system_prompt_file` setting at a variant) and
+  the next agent gets it, no reload needed. Per agent: `system_prompt: "..."` or
   `system_prompt_file: "path"` at start, also on the dashboard form and `POST /api/agents`.
 - **Nothing about an agent has a default.** `model`, `reasoning`, `max_turns`, `max_tokens`
   and `max_context` must all be given, from the start form, `POST /api/agents` or
@@ -336,10 +377,10 @@ are a connected ChatGPT subscription's tokens (see above), which have no spendin
   provider last measured, plus a token for every 2 bytes added since) and halts the agent,
   reason `context`, if that would leave less than 4,096 tokens for the reply; on OpenRouter
   the reply is also bounded (`max_tokens`) by the room left. With turns and tokens unlimited,
-  the node-wide hourly cap (`NODE_MAX_TOKENS_PER_HOUR`) and the limit on your OpenRouter key
-  are the only spend controls.
+  the node-wide hourly cap (the `node_max_tokens_per_hour` setting) and the limit on your
+  OpenRouter key are the only spend controls.
 - **Halted agents.** An agent whose `halted` is `budget`, `context`, `node_budget`,
-  `usage_limit`, `restart_brake`, `start_failed` or `log_failed`
+  `usage_limit`, `provider_unavailable`, `restart_brake`, `start_failed` or `log_failed`
   still receives and logs messages but makes no model calls until an operator un-halts it:
   the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
   `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an
@@ -348,7 +389,7 @@ are a connected ChatGPT subscription's tokens (see above), which have no spendin
 - **Agents can read this repository, and `/data`.** `/app` is the checkout, so an agent that
   looks will find every doc in it; anything about runs or what is being tested lives on the
   `runs` branch instead. `bin/reset` clears what a run leaves behind: it archives `data/`
-  (every agent's log and saved state) to `archive/`, resets the checkout to `main` with no
+  (every agent's log and saved state, but not the settings or the ChatGPT tokens) to `archive/`, resets the checkout to `main` with no
   other branches, and recreates the container. It refuses while the checkout has work that
   is not committed and pushed.
 - **Some messages are not harmless.** The harness's own processes ignore unexpected

@@ -39,13 +39,16 @@ Requirements: Docker, and a model provider: an OpenRouter key in a `.env` in thi
 or a ChatGPT subscription connected from the dashboard (below), or both.
 
 ```bash
-echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # optional; without it OpenRouter is not offered
-bin/up                        # creates ../nano-checkout, builds, starts, prints the URL
+echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # optional; without it OpenRouter is off
+bin/up                        # creates ../nano-checkout, builds, starts, pushes .env's settings, prints the URL
 open http://localhost:4000
 ```
 
-The node's settings have defaults (`.env.example` lists them; the node is capped at
-100,000,000 tokens an hour, `NODE_MAX_TOKENS_PER_HOUR`). Agents have none: each is started
+The node's settings have defaults and change while it runs, from the dashboard's Settings
+view, `/api/settings` or `Nano.Ops.put_setting/2` (README, "Settings"; the node is capped at
+100,000,000 tokens an hour, `node_max_tokens_per_hour`). `.env` still works: `bin/up` pushes
+its `KEY=value` lines to the node once it answers, and only ever sets, so to remove a key for
+good clear it on the node and take it out of `.env`. Agents have none: each is started
 with its model, reasoning level and limits spelled out (below), checked against the model's
 provider's list, and refused with a message saying what to give if anything is missing or
 does not fit the model.
@@ -54,8 +57,10 @@ The container mounts a **dedicated checkout** of this repo as `/app` (default
 `../nano-checkout`, made for you by `bin/up`). Agents edit that checkout, not this one.
 `git -C ../nano-checkout diff` shows what they changed; `git checkout .` there reverts it.
 
-Use a dedicated OpenRouter key with a low spending limit: agents can read it from their
-environment, and with turns and tokens set to 0 the key's limit is the only hard stop.
+Use a dedicated OpenRouter key with a low spending limit: agents can read it (it is a node
+setting, and they run as root), and with turns and tokens set to 0 the key's limit is the only
+hard stop. Clearing the key turns OpenRouter off at once and halts the agents on it
+(`provider_unavailable`).
 
 Or run agents on a ChatGPT Plus/Pro subscription, with or without the key: models
 `openai-codex/<model>`, connected
@@ -118,8 +123,8 @@ Nano.Ops.agents()             # every agent's info map
 ```
 
 **Prompts.** The default template is `priv/system_prompt.txt`, read from disk each time an
-agent starts, so edit it and the next agent gets it; `SYSTEM_PROMPT_FILE` points the whole
-node at a variant. Per agent, `system_prompt` (a string) or `system_prompt_file` (a path).
+agent starts, so edit it and the next agent gets it; the `system_prompt_file` setting points
+new agents at a variant. Per agent, `system_prompt` (a string) or `system_prompt_file` (a path).
 The template's `{{placeholders}}` are listed in bootstrap/SPEC.md. Keep anything you add to a prompt
 *true of the running system*: the harness's value as an experiment depends on it.
 
@@ -163,7 +168,9 @@ seeding, which model, what grew, cost), then `bin/reset` for a clean node.
   spec's template block must stay byte-identical.
 - Prefer removing code to adding it. Anything that is not needed to make a sentence of the
   spec true should be questioned.
-- Config is read once at boot (`config/runtime.exs`). After changing it, restart the
-  container; a hot reload will not pick it up.
+- The node's settings (`Nano.Settings`) change while it runs; what the system prompt states
+  (`network_policy`, `result_max_bytes`, the template file) is fixed per agent at its start.
+  The little that stays in the environment (`config/runtime.exs`: directories, port, cookie)
+  is read once at boot: after changing it, restart the container.
 - Live model calls cost money. Use the fake in tests; when something needs a real model,
   say so, use a cheap model, and keep budgets small.
