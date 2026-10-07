@@ -347,6 +347,64 @@ defmodule Nano.ChatGPTTest do
     refute log =~ tokens["refresh_token"]
   end
 
+  test "images: input_image items in the user message and in the function_call_output" do
+    connect!()
+    # The fake lists no input_modalities, which the Codex CLI reads as text and images.
+    {model, name, id} = start_agent!()
+    assert NanoAgent.info(name).images
+
+    png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC"
+      )
+
+    {:ok, a} = Nano.Image.new(png <> "chatgpt-a")
+    {:ok, b} = Nano.Image.new(png <> "chatgpt-b")
+    url = &("data:image/png;base64," <> Base.encode64(File.read!(&1.path)))
+
+    Fake.push(model, calls: [eval: ~s|Nano.Image.new("#{b.path}")|])
+    Fake.push(model, text: "seen")
+    Nano.User.start("cg")
+    :ok = Nano.User.say("cg", name, "look", [a])
+
+    {first, _} = request!(model)
+
+    assert [
+             %{
+               "role" => "user",
+               "content" => [
+                 %{"type" => "input_text", "text" => delivery},
+                 %{"type" => "input_text", "text" => label},
+                 %{"type" => "input_image", "image_url" => image, "detail" => "high"}
+               ]
+             }
+           ] = first["input"]
+
+    assert delivery =~ inspect(a)
+    assert label == inspect(a)
+    assert image == url.(a)
+
+    {second, _} = request!(model)
+    # The prefix is the same request, bytes and all.
+    assert hd(second["input"]) == hd(first["input"])
+
+    assert %{"type" => "function_call_output", "output" => output} = List.last(second["input"])
+
+    assert [
+             %{"type" => "input_text", "text" => "{:ok," <> _},
+             %{"type" => "input_text", "text" => label},
+             %{"type" => "input_image", "image_url" => image, "detail" => "high"}
+           ] = output
+
+    assert label == inspect(b)
+    assert image == url.(b)
+    await(id, "turn_ended")
+    log = File.read!(Path.join(Application.fetch_env!(:nano, :log_dir), id <> ".jsonl"))
+    refute log =~ Base.encode64(png)
+    assert [%{"images" => [%{"sha" => sha}]}] = entries(id, "tool_result")
+    assert sha == b.sha
+  end
+
   test "reasoning levels map to the backend's efforts" do
     connect!()
 
@@ -439,6 +497,7 @@ defmodule Nano.ChatGPTTest do
       },
       %{
         "slug" => "gpt-y",
+        "input_modalities" => ["text"],
         "supported_reasoning_levels" => efforts.(~w(none low medium)),
         "default_reasoning_level" => "none"
       },
@@ -450,6 +509,7 @@ defmodule Nano.ChatGPTTest do
                id: "gpt-x",
                name: "GPT-X",
                context_length: 1000,
+               images: true,
                reasoning_levels: ~w(low medium high xhigh max),
                default_reasoning: "low"
              },
@@ -457,6 +517,7 @@ defmodule Nano.ChatGPTTest do
                id: "gpt-y",
                name: "gpt-y",
                context_length: nil,
+               images: false,
                reasoning_levels: ~w(off low medium),
                default_reasoning: "off"
              }

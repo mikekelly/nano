@@ -17,7 +17,8 @@ defmodule Nano.OpenRouterTest do
         "name" => "Two",
         "context_length" => 1000,
         "top_provider" => %{"context_length" => 1000, "max_completion_tokens" => 400},
-        "pricing" => %{"prompt" => "0.000002", "completion" => "0"}
+        "pricing" => %{"prompt" => "0.000002", "completion" => "0"},
+        "architecture" => %{"input_modalities" => ["text", "image"]}
       },
       %{"id" => "a/one", "name" => "One", "context_length" => 2000, "pricing" => %{}}
     ])
@@ -27,6 +28,7 @@ defmodule Nano.OpenRouterTest do
                id: "a/one",
                name: "One",
                context_length: 2000,
+               images: false,
                max_output: nil,
                prompt_price: nil,
                completion_price: nil
@@ -35,6 +37,7 @@ defmodule Nano.OpenRouterTest do
                id: "b/two",
                name: "Two",
                context_length: 1000,
+               images: true,
                max_output: 400,
                prompt_price: two,
                completion_price: zero

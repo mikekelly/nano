@@ -56,6 +56,8 @@ config :nano,
   log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs")),
   # Tool results and events over RESULT_MAX_BYTES are cut, and the whole text written here.
   spill_dir: env.("SPILL_DIR", if(config_env() == :prod, do: "/data/spill", else: "tmp/spill")),
+  # The image store: each image once, named by its SHA-256, never changed (Nano.Image).
+  image_dir: env.("IMAGE_DIR", if(config_env() == :prod, do: "/data/images", else: "tmp/images")),
   # Each agent's state is written here on every save and revived from here at boot.
   state_dir:
     env.(

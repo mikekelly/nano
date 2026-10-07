@@ -55,11 +55,18 @@ defmodule NanoWeb.ApiController do
        "Honours Last-Event-ID."},
     {"POST", "/api/users", "Start a user, or find it if already started. Body: name."},
     {"POST", "/api/users/:name/say",
-     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text."},
+     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text; " <>
+       "optional images, a list of {data: base64, mime: optional} or {path: a file on the " <>
+       "node}: PNG, JPEG, GIF or WebP, at most 3750000 bytes each. They are stored as " <>
+       "%Nano.Image{} values and the message carries them as images: [...]; an agent whose " <>
+       "model can see images is shown them. A 422 says why an image was refused."},
     {"POST", "/api/users/:name/send_raw",
      "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
     {"GET", "/api/users/:name/inbox?clear=true",
      "Messages the user has received, oldest first: at, term."},
+    {"GET", "/api/images/:file",
+     "An image from the image store, by its file name, <sha256>.<ext>, as a %Nano.Image{} " <>
+       "prints its path."},
     {"POST", "/api/eval",
      "Evaluate Elixir on the node, like bin/rpc. Body: code. Returns result (inspected) and output (printed IO)."},
     {"GET", "/api/chatgpt",
@@ -234,9 +241,57 @@ defmodule NanoWeb.ApiController do
   end
 
   def say(conn, %{"name" => name} = params) do
-    case strings(params, ["to", "text"]) do
-      {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
+    with {:ok, [to, text]} <- strings(params, ["to", "text"]),
+         {:ok, images} <- images(params["images"] || []) do
+      sent(conn, name, to, User.say(name, to, text, images))
+    else
+      {:error, {:images, message}} -> error(conn, 422, "could not take an image", message)
       {:error, field} -> missing(conn, field)
+    end
+  end
+
+  defp images(list) when is_list(list) do
+    Enum.reduce_while(list, {:ok, []}, fn item, {:ok, acc} ->
+      case image(item) do
+        {:ok, image} -> {:cont, {:ok, acc ++ [image]}}
+        {:error, message} -> {:halt, {:error, {:images, message}}}
+      end
+    end)
+  end
+
+  defp images(_), do: {:error, {:images, "images must be a list"}}
+
+  defp image(%{"path" => path}) when is_binary(path), do: Nano.Image.new(path)
+
+  # Text is never image data: Nano.Image.new/1 would take it for a path.
+  defp image(%{"data" => data} = item) when is_binary(data) do
+    with {:ok, bytes} <- Base.decode64(data, ignore: :whitespace),
+         false <- String.printable?(bytes),
+         {:ok, image} <- Nano.Image.new(bytes) do
+      if item["mime"] in [nil, image.mime],
+        do: {:ok, image},
+        else: {:error, "mime is #{item["mime"]}, but the data is #{image.mime}"}
+    else
+      :error -> {:error, "data is not base64"}
+      true -> {:error, "data is text, not an image"}
+      error -> error
+    end
+  end
+
+  defp image(_),
+    do: {:error, ~s(each image is {"data": base64, "mime": optional} or {"path": path})}
+
+  # An image from the store, by its file name (`<sha>.<ext>`, as `Nano.Image` prints its path),
+  # so the dashboard can show it. Nothing else is served.
+  def image(conn, %{"file" => file}) do
+    with [_, ext] <- Regex.run(~r/^[0-9a-f]{64}\.(png|jpg|gif|webp)$/, file),
+         {:ok, data} <- File.read(Nano.Image.path(file)) do
+      conn
+      |> put_resp_content_type(MIME.type(ext), nil)
+      |> put_resp_header("cache-control", "public, max-age=31536000, immutable")
+      |> send_resp(200, data)
+    else
+      _ -> error(conn, 404, "no such image: #{file}")
     end
   end
 

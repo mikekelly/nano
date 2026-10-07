@@ -90,6 +90,8 @@ curl -s -XPOST localhost:4000/api/agents -H 'content-type: application/json' -d 
 curl -s -XPOST localhost:4000/api/users -H 'content-type: application/json' -d '{"name":"me"}'
 curl -s -XPOST localhost:4000/api/users/me/say -H 'content-type: application/json' \
   -d '{"to":"alice","text":"are you there?"}'           # arrives as %{message: ..., sender_pid: ...}
+# with "images": [{"path": "/data/shot.png"}] or [{"data": "<base64>"}] it also carries images
+# as %Nano.Image{} values, which an agent on a model that takes images is shown
 curl -s -XPOST localhost:4000/api/users/me/send_raw -H 'content-type: application/json' \
   -d '{"to":"alice","term":"{:hello, Nano.User.pid(\"me\"), \"are you there?\"}"}'
 

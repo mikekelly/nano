@@ -298,6 +298,16 @@ are a connected ChatGPT subscription's tokens (see above), which have no spendin
 - **A reply address arrives as text.** An event shows a pid as `#PID<0.231.0>`, which is
   not valid Elixir source, so to reply the agent has to rebuild it, for example with
   `:erlang.list_to_pid(~c"<0.231.0>")`.
+- **Images.** An agent on a model that takes image input (OpenRouter's `input_modalities`,
+  the subscription's list) sees the `%Nano.Image{}` values in its messages and eval results,
+  up to 8 from each; it looks at a file with `Nano.Image.new("/path/shot.png")` in eval. A
+  person sends one from the agent page's Send message box (the image button),
+  `Nano.User.say("me", "alice", "what is this?", [image])`, or the API:
+  `curl -XPOST localhost:4000/api/users/me/say -H 'content-type: application/json' -d
+  '{"to": "alice", "text": "what is this?", "images": [{"path": "/data/shot.png"}]}'` (or
+  `{"data": "<base64>"}`). PNG, JPEG, GIF or WebP, at most 3,750,000 bytes. Images are kept
+  once each in `./data/images`; the log and saved state hold only their hashes. On a model
+  without image input the agent is told what it was not shown.
 - **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
   every `to` in the API take the name.
 - **The system prompt is a file.** `priv/system_prompt.txt` is read each time an agent

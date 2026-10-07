@@ -42,8 +42,22 @@ defmodule NanoWeb.Components do
   def handle_shared("draft", params, socket),
     do: assign(socket, draft: Map.merge(socket.assigns.draft, Map.take(params, ~w(text term))))
 
-  def handle_shared("send", %{"to" => to, "text" => text}, socket) do
-    sent = result(Nano.User.say(@user, to, text), "said #{inspect(text)} to #{to}")
+  def handle_shared("send", %{"to" => to, "text" => text} = params, socket) do
+    images = params["images"] || []
+
+    with_images =
+      case length(images) do
+        0 -> ""
+        1 -> " with 1 image"
+        n -> " with #{n} images"
+      end
+
+    sent =
+      result(
+        Nano.User.say(@user, to, text, images),
+        "said #{inspect(text)}#{with_images} to #{to}"
+      )
+
     sent(socket, sent, "text")
   end
 
@@ -104,7 +118,9 @@ defmodule NanoWeb.Components do
       ~s|<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>|,
     "bot" =>
       ~s|<rect x="4" y="7.5" width="16" height="12" rx="3"/><path d="M12 3.5v4M9 12.5v1.5M15 12.5v1.5"/>|,
-    "plus" => ~s|<path d="M12 5v14M5 12h14"/>|
+    "plus" => ~s|<path d="M12 5v14M5 12h14"/>|,
+    "image" =>
+      ~s|<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 9"/>|
   }
 
   attr :name, :string, required: true
@@ -135,8 +151,12 @@ defmodule NanoWeb.Components do
   attr :draft, :map, required: true
   attr :sent, :any, required: true
   attr :boxes, :list, default: ~w(text term), doc: "which boxes to show"
+  attr :upload, :any, default: nil, doc: "an upload for images to attach to the text"
 
-  @doc "The send form: a plain-text box (`say/3`) and an Elixir term box (`send_raw/3`)."
+  @doc """
+  The send form: a plain-text box (`say/4`, with any images attached from `upload`) and an
+  Elixir term box (`send_raw/3`).
+  """
   def send_form(assigns) do
     ~H"""
     <div class="send" id={@id}>
@@ -149,8 +169,22 @@ defmodule NanoWeb.Components do
           placeholder="plain text, sent as %{sender_pid: dashboard, message: text}"
           autocomplete="off"
         />
+        <label :if={@upload} class="button attach" title="attach images (PNG, JPEG, GIF, WebP)">
+          <.icon name="image" /> {length(@upload.entries)}<.live_file_input upload={@upload} />
+        </label>
         <button><.icon name="send" /> send</button>
       </form>
+      <p :if={@upload && @upload.entries != []} class="dim">
+        attached: {Enum.map_join(@upload.entries, ", ", & &1.client_name)}
+        <span
+          :for={
+            e <- upload_errors(@upload) ++ Enum.flat_map(@upload.entries, &upload_errors(@upload, &1))
+          }
+          class="error"
+        >
+          · {upload_error(e)}
+        </span>
+      </p>
       <form :if={"term" in @boxes} id={@id <> "-term"} phx-change="draft" phx-submit="send">
         <input type="hidden" name="to" value={@to} />
         <input
@@ -169,6 +203,28 @@ defmodule NanoWeb.Components do
     </div>
     """
   end
+
+  defp upload_error(:too_large), do: "an image is over 3750000 bytes"
+  defp upload_error(:too_many_files), do: "at most 8 images"
+  defp upload_error(:not_accepted), do: "only PNG, JPEG, GIF and WebP"
+  defp upload_error(other), do: inspect(other)
+
+  attr :refs, :any, required: true, doc: "image references from a log entry"
+  attr :note, :any, default: nil, doc: "what the model was not shown, if anything"
+
+  @doc "Thumbnails of the images a log entry references, served from the image store."
+  def thumbs(assigns) do
+    ~H"""
+    <div :if={is_list(@refs) and @refs != []} class="thumbs">
+      <a :for={src <- Enum.map(@refs, &image_src/1)} href={src} target="_blank">
+        <img src={src} alt="image" loading="lazy" />
+      </a>
+      <span :if={@note} class="dim">{txt(@note)}</span>
+    </div>
+    """
+  end
+
+  defp image_src(ref), do: "/api/images/" <> Path.basename(Nano.Image.from_ref(ref).path)
 
   attr :inbox, :any, required: true
   attr :pid, :any, required: true

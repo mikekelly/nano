@@ -6,6 +6,9 @@ defmodule NanoWeb.ApiControllerTest do
 
   @endpoint NanoWeb.Endpoint
 
+  # A 1x1 PNG, as base64.
+  @png "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
   defp unique(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
 
   defp post_json(path, body) do
@@ -144,6 +147,39 @@ defmodule NanoWeb.ApiControllerTest do
 
       assert term == inspect(%{sender_pid: user, message: "hello"})
       assert {:ok, _, 0} = DateTime.from_iso8601(at)
+    end
+
+    test "say with images: base64 data or a path on the node; a refusal says why" do
+      {name, user} = start_user()
+      png = Base.decode64!(@png) <> "api-#{System.unique_integer([:positive])}"
+      file = Path.join(System.tmp_dir!(), "nano-api-#{System.unique_integer([:positive])}.png")
+      File.write!(file, png <> "file")
+      on_exit(fn -> File.rm(file) end)
+      say = &post_json("/api/users/#{name}/say", %{to: inspect(self()), text: "look", images: &1})
+
+      images = [%{data: Base.encode64(png), mime: "image/png"}, %{path: file}]
+      assert %{"ok" => true} = say.(images) |> json_response(200)
+      {:ok, a} = Nano.Image.new(png)
+      {:ok, b} = Nano.Image.new(png <> "file")
+      assert_receive %{sender_pid: ^user, message: "look", images: [^a, ^b]}
+
+      for {images, why} <- [
+            {[%{data: "not base64!"}], "data is not base64"},
+            {[%{data: Base.encode64("hello")}], "data is text, not an image"},
+            {[%{data: Base.encode64(<<0, 1, 2>>)}], "not a PNG, JPEG, GIF or WebP image"},
+            {[%{data: Base.encode64(png), mime: "image/gif"}],
+             "mime is image/gif, but the data is image/png"},
+            {[%{path: "/no/such.png"}], "cannot read /no/such.png: no such file or directory"},
+            {[%{url: "http://x"}], ~s(each image is {"data": base64)},
+            {"x", "images must be a list"}
+          ] do
+        assert %{"error" => "could not take an image", "message" => message} =
+                 say.(images) |> json_response(422)
+
+        assert String.starts_with?(message, why)
+      end
+
+      refute_received %{message: "look"}
     end
 
     test "say to a pid string" do

@@ -45,6 +45,8 @@ defmodule NanoWeb.Router do
     post "/users/:name/send_raw", ApiController, :send_raw
     get "/users/:name/inbox", ApiController, :inbox
 
+    get "/images/:file", ApiController, :image
+
     post "/eval", ApiController, :eval
 
     get "/chatgpt", ApiController, :chatgpt

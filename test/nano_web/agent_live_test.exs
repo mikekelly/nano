@@ -623,4 +623,63 @@ defmodule NanoWeb.AgentLiveTest do
     await(:model_request)
     check.(2)
   end
+
+  @png Base.decode64!(
+         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+       )
+
+  test "images: attached to Send message, shown as thumbnails in both views", ctx do
+    model = Fake.model(%{"architecture" => %{"input_modalities" => ["text", "image"]}})
+    ctx = %{ctx | model: model}
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
+    Fake.push(ctx.model, calls: [idle: nil])
+    png = @png <> "dashboard-#{System.unique_integer([:positive])}"
+    file = %{name: "shot.png", content: png, type: "image/png"}
+    upload = file_input(view, "#send-text", :images, [file])
+    assert render_upload(upload, "shot.png") =~ "attached: shot.png"
+    view |> element("#send-text") |> render_submit(%{text: "what is this?"})
+    assert has_element?(view, ".controls .sent.ok", ~s|said "what is this?" with 1 image|)
+
+    {:ok, image} = Nano.Image.new(png)
+    src = "/api/images/#{image.sha}.png"
+    entry = await(:event_received)
+    assert entry.message =~ "images: [#{inspect(image)}]"
+    assert entry.images == [Nano.Image.ref(image)]
+    eventually(fn -> has_element?(view, ~s|#timeline li.event .thumbs img[src="#{src}"]|) end)
+
+    # The thumbnail route serves the stored image, and nothing else.
+    conn = get(build_conn(), src)
+    assert conn.resp_body == png
+    assert Plug.Conn.get_resp_header(conn, "content-type") == ["image/png"]
+    assert get(build_conn(), "/api/images/#{String.duplicate("0", 64)}.png").status == 404
+    assert get(build_conn(), "/api/images/..%2F..%2Fmix.exs").status == 404
+
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert has_element?(view, ~s|#timeline li.r.event .thumbs img[src="#{src}"]|)
+  end
+
+  test "an eval result's images show under it; an attachment that is not an image is refused",
+       ctx do
+    start!(ctx)
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    {:ok, image} = Nano.Image.new(@png <> "result-#{System.unique_integer([:positive])}")
+    Fake.push(ctx.model, calls: [eval: ~s|Nano.Image.new("#{image.path}")|])
+    Fake.push(ctx.model, calls: [idle: nil])
+    NanoAgent.notify(ctx.name, :go)
+    await(:turn_ended)
+    src = "/api/images/#{image.sha}.png"
+    eventually(fn -> has_element?(view, ~s|li.r.eval .result .thumbs img[src="#{src}"]|) end)
+    # This model cannot see images, and the page says it was not shown them.
+    note = "1 image not shown: this model cannot see images"
+    assert has_element?(view, "li.r.eval .thumbs", note)
+
+    # A file that is not an image, whatever it is called, is not sent.
+    file = %{name: "x.png", content: "text", type: "image/png"}
+    upload = file_input(view, "#send-text", :images, [file])
+    render_upload(upload, "x.png")
+    html = view |> element("#send-text") |> render_submit(%{text: "look"})
+    assert html =~ ~s(class="sent error")
+    assert html =~ "not a PNG, JPEG, GIF or WebP image"
+  end
 end
