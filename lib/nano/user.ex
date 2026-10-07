@@ -29,11 +29,13 @@ defmodule Nano.User do
   @doc """
   Received messages as `%{at: DateTime, term: term}`, oldest first. `clear: true` empties the
   inbox. `say/3`, `send_raw/3` and `inbox/2` return `{:error, :unknown_user}` for a user that is
-  not running and `{:error, :unresponsive}` for one that does not answer within a second. The
-  request is then still in the user's mailbox and is carried out if the user resumes: a send
+  not running and `{:error, :unresponsive}` for one that does not answer within a second (the
+  default; `timeout:` lowers it, as the dashboard does so a slow user cannot stall a render).
+  The request is then still in the user's mailbox and is carried out if the user resumes: a send
   goes out late, so retrying it would deliver it twice.
   """
-  def inbox(name, opts \\ []), do: call(name, {:inbox, Keyword.get(opts, :clear, false)})
+  def inbox(name, opts \\ []),
+    do: call(name, {:inbox, Keyword.get(opts, :clear, false)}, Keyword.get(opts, :timeout, 1_000))
 
   @doc "The user's pid, or nil."
   def pid(name) do
@@ -55,10 +57,10 @@ defmodule Nano.User do
 
   # Anyone can suspend or flood a user (agents are handed its pid), so a call that gets no
   # answer within a second is an error, not a crash in the caller. The request stays queued.
-  defp call(name, request) do
+  defp call(name, request, timeout \\ 1_000) do
     case pid(name) do
       nil -> {:error, :unknown_user}
-      pid -> GenServer.call(pid, request, 1_000)
+      pid -> GenServer.call(pid, request, timeout)
     end
   catch
     :exit, _ -> {:error, :unresponsive}

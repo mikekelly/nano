@@ -509,4 +509,69 @@ defmodule NanoWeb.ProcessLiveTest do
     view |> element("#{row(hpid)} button", "Un-halt") |> render_click()
     eventually(fn -> Nano.Ops.agent(halted).halted == nil end)
   end
+
+  # M2: a suspended/flooded dashboard user must not stall the render. The mount reads the inbox
+  # with a short timeout (INBOX_TIMEOUT_MS, 200 ms in test), not the one-second call timeout.
+  test "mounting with a suspended dashboard user returns well under the one-second timeout",
+       ctx do
+    user = Nano.User.pid("dashboard")
+    :sys.suspend(user)
+    on_exit(fn -> :sys.resume(user) end)
+
+    {micros, {:ok, view, html}} = :timer.tc(fn -> live(ctx.conn, "/") end)
+
+    assert html =~ "The dashboard user is not responding"
+    # The old path blocked for the full 1_000 ms `GenServer.call` timeout.
+    assert micros < 600_000, "mount took #{micros} us, expected the short bounded read"
+    assert is_pid(view.pid)
+    _ = ctx
+  end
+
+  # M2: every `{:nano_user, _}` broadcast triggered a blocking inbox read. It is now a task
+  # under Nano.EvalSupervisor applied as a message, so the render never waits for the user.
+  test "a broadcast to a suspended dashboard user does not block the render", ctx do
+    {:ok, view, _} = live(ctx.conn, "/")
+    user = Nano.User.pid("dashboard")
+    :sys.suspend(user)
+    on_exit(fn -> :sys.resume(user) end)
+
+    # A real message for the user, delivered straight to its mailbox: while suspended it is
+    # queued, and an inbox read will not see it until the user runs.
+    send(user, :pending)
+
+    # The view processes the broadcast (and re-renders) before this returns; if refresh_inbox
+    # still called the user inline, this would take the call timeout (~1_000 ms).
+    {micros, _} =
+      :timer.tc(fn ->
+        send(view.pid, {:nano_user, %{dir: :received, term: :pending}})
+        render(view)
+      end)
+
+    assert micros < 500_000, "the broadcast stalled the render for #{micros} us"
+
+    # The result still arrives once the user answers: no message was lost. The user's queued
+    # message drains on resume; a later broadcast re-reads and shows it.
+    :sys.resume(user)
+
+    eventually(fn ->
+      send(view.pid, {:nano_user, %{dir: :received, term: :again}})
+      :timer.sleep(60)
+      render(view) =~ ":pending"
+    end)
+
+    _ = ctx
+  end
+
+  test "the inbox refresh is applied from the task, newest first", ctx do
+    {:ok, view, html} = live(ctx.conn, "/")
+    assert html =~ "Nothing received yet"
+    user = Nano.User.pid("dashboard")
+
+    # Two broadcasts in quick succession: only the newest read is applied, and it is current.
+    send(user, :one)
+    send(user, :two)
+    eventually(fn -> render(view) =~ ":two" end)
+    assert render(view) =~ ":one"
+    _ = ctx
+  end
 end

@@ -1851,4 +1851,91 @@ defmodule NanoAgentTest do
     assert log =~ "#{ctx.name}: could not save state to /dev/null/state/#{ctx.name}.term"
     assert %{halted: nil, status: :thinking} = NanoAgent.info(ctx.name)
   end
+
+  ## M3: queued events and the transcript must not grow quadratically, and a halted agent
+  ## must not queue without bound.
+
+  test "a burst of events to a busy agent is queued newest-first, one cons per event", ctx do
+    {pid, id} = start!(ctx)
+    # First event starts a turn; no response is pushed, so the agent stays busy (thinking).
+    send(pid, :open)
+    request!(ctx.model)
+    :sys.get_state(pid)
+
+    # A burst arrives while it is busy; each is a separate event/2 callback.
+    n = 5_000
+    for i <- 1..n, do: send(pid, {:burst, i})
+    assert await(id, :event_received, &(&1["message"] == ~s({:burst, #{n}})))
+    state = :sys.get_state(pid)
+
+    # The internal queue is a reversed list (newest first): an append is a cons, not `++`.
+    assert length(state.pending_rev) == n
+    assert hd(state.pending_rev) =~ ":burst, #{n}"
+    assert List.last(state.pending_rev) =~ ":burst, 1"
+
+    # The forward view the model is given is in arrival order.
+    assert pending_first(state) =~ ":burst, 1"
+    assert pending_last(state) =~ ":burst, #{n}"
+  end
+
+  test "a halted agent caps its queue and summarizes what was dropped", ctx do
+    {pid, id} = start!(ctx, max_turns: 1)
+    Fake.push(ctx.model, text: "last")
+    send(pid, :go)
+    request!(ctx.model)
+    assert %{"scope" => "agent"} = await(id, :budget_exhausted)
+    # :sys.get_state/1 waits for the callback that saves the halt to finish.
+    :sys.get_state(pid)
+    assert %{halted: :budget, status: :idle} = NanoAgent.info(ctx.name)
+
+    # Nothing drains the queue while halted: 300 arrive, the newest 200 are kept.
+    n = 300
+    for i <- 1..n, do: send(pid, {:flood, i})
+    assert await(id, :event_received, &(&1["message"] == ~s({:flood, #{n}})))
+    state = :sys.get_state(pid)
+
+    # seq 1 was :go, consumed by the turn above; the 300 floods are seqs 2..301.
+    assert length(state.pending_rev) == 200
+    assert hd(state.pending_rev) =~ ":flood, #{n}"
+    assert List.last(state.pending_rev) =~ ":flood, 101"
+
+    # Un-halting delivers what is left, with a note naming the count that was dropped.
+    Fake.push(ctx.model, text: "ok")
+    NanoAgent.unhalt(ctx.name)
+    body = request!(ctx.model)
+    delivered = delivery(List.last(body["messages"]))
+
+    assert delivered =~ "<harness>101 earlier message(s) were dropped"
+    assert delivered =~ ":flood, 101"
+    assert delivered =~ ":flood, #{n}"
+    refute delivered =~ ":flood, 100<"
+    assert delivered =~ "An operator un-halted you."
+    # The drop is delivered once; a later turn carries no stale summary.
+    assert %{halted: nil} = NanoAgent.info(ctx.name)
+    assert :sys.get_state(pid).pending_dropped == 0
+  end
+
+  test "transcript appends within a callback are merged once and stay a forward list", ctx do
+    {pid, _id} = start!(ctx)
+    # Many tool results in a single response: one callback, many appends.
+    calls = for i <- 1..500, do: {:eval, "#{i}"}
+    Fake.push(ctx.model, calls: calls)
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+    state = :sys.get_state(pid)
+
+    # The stored transcript is a normal forward list, with one tool message per call, in order.
+    assert state.t_rev == []
+    tools = Enum.filter(state.transcript, &(&1["role"] == "tool"))
+    assert length(tools) == 500
+    assert Enum.map(tools, & &1["content"]) == Enum.map(1..500, &Integer.to_string/1)
+    assert Nano.StateStore.get(ctx.name).transcript == state.transcript
+  end
+
+  # The forward (arrival-order) pending view, as request/2 sends it.
+  defp pending_first(state), do: state |> pending_texts() |> List.first()
+  defp pending_last(state), do: state |> pending_texts() |> List.last()
+  defp pending_texts(state), do: Enum.reverse(state.pending_rev)
 end

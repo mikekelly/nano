@@ -53,6 +53,36 @@ defmodule Nano.StateStoreTest do
     assert StateStore.node_tokens_last_hour() >= before + 123
   end
 
+  test "a repeat watch of a live pid does not block the store", %{name: name} do
+    alive = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> Process.exit(alive, :kill) end)
+    StateStore.put(name, %{name: name, pid: alive})
+    :ok = StateStore.watch(name, alive)
+
+    # The same name watched again while its pid is still alive must return at once: no :DOWN
+    # is coming, so waiting would stall the store for the whole timeout and could time out
+    # the caller (an agent's init, or a :resave).
+    # Well under the 5 s call timeout the default wait used to consume, so this can never
+    # time out the caller (an agent's init, or a :resave on store restart).
+    t0 = System.monotonic_time(:millisecond)
+    assert GenServer.call(StateStore, {:watch, name, alive}, 5_000) == :ok
+    assert System.monotonic_time(:millisecond) - t0 < 1_000
+
+    # The store answered other callers throughout.
+    assert StateStore.get(name) == %{name: name, pid: alive}
+  end
+
+  test "a watch after the predecessor died still records its exit reason", %{name: name} do
+    pid = spawn(fn -> receive do: (:stop -> exit(:boom)) end)
+    StateStore.put(name, %{name: name, pid: pid})
+    :ok = StateStore.watch(name, pid)
+    send(pid, :stop)
+
+    # The restarted agent's watch waits for the pending :DOWN, so the reason is there.
+    :ok = StateStore.watch(name, self())
+    assert StateStore.exit_reason(name, pid) == :boom
+  end
+
   test "stray messages, casts and calls are ignored, not fatal", %{name: name} do
     store = Process.whereis(StateStore)
     StateStore.put(name, %{name: name})

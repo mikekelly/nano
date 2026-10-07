@@ -32,6 +32,9 @@ config :nano,
   agent_max_context: int.("AGENT_MAX_CONTEXT", "1000000"),
   node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "15000000"),
   eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
+  # How long the dashboard waits inline for the dashboard user's inbox on mount; a suspended
+  # user then costs this much, not the one-second call timeout. Later reads are non-blocking.
+  inbox_timeout_ms: int.("INBOX_TIMEOUT_MS", "200"),
   result_max_bytes: int.("RESULT_MAX_BYTES", "16000"),
   network_policy: env.("NETWORK_POLICY", "openrouter-only"),
   log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs")),

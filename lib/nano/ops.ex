@@ -121,6 +121,12 @@ defmodule Nano.Ops do
 
   ## Processes
 
+  # The keys a listed row needs, and the keys a process's kind needs. Both are read from the
+  # same Process.info/2 call, so `processes/0` walks Process.list/0 once and inspects each
+  # process once.
+  @row_keys [:registered_name, :current_function, :message_queue_len, :memory, :reductions]
+  @chain_keys [:parent, {:dictionary, :"$callers"}, {:dictionary, :"$ancestors"}]
+
   @doc """
   Live processes outside the standard set, agents first. Each is a map with `pid`, `name`
   (agent or user name, or registered name), `kind` (`:agent`, `:user`, `{:spawned_by, agent_name}`
@@ -138,9 +144,7 @@ defmodule Nano.Ops do
     ctx = context()
 
     Process.list()
-    |> Enum.map(&{&1, kind(&1, ctx)})
-    |> Enum.reject(fn {_, kind} -> kind == :standard end)
-    |> Enum.flat_map(fn {pid, kind} -> List.wrap(row(pid, kind, ctx)) end)
+    |> Enum.flat_map(&row(&1, ctx))
     |> Enum.sort_by(&if(&1.kind == :agent, do: {0, &1.name}, else: {1, nil}))
   end
 
@@ -152,23 +156,58 @@ defmodule Nano.Ops do
     end
   end
 
-  defp row(pid, kind, ctx) do
-    keys = [:registered_name, :current_function, :message_queue_len, :memory, :reductions]
+  # One process per walk: `row/2` inspects a process once and either drops it (standard) or
+  # returns its row. The one Process.info/2 call carries both the chain keys (`kind`) and the
+  # row keys, so a listed process is never inspected twice.
+  defp row(pid, ctx) do
+    case Process.info(pid, @row_keys ++ @chain_keys) do
+      nil ->
+        []
 
-    with info when is_list(info) <- Process.info(pid, keys) do
-      name = with {_, name} <- ctx.names[pid], do: name
-      registered = if info[:registered_name] != [], do: info[:registered_name]
-
-      info
-      |> Map.new()
-      |> Map.delete(:registered_name)
-      |> Map.merge(%{
-        pid: pid,
-        name: name || registered,
-        kind: kind,
-        agent: if(kind == :agent, do: NanoAgent.info(name))
-      })
+      info ->
+        case kind_from(info, pid, ctx) do
+          :standard -> []
+          kind -> [to_row(pid, kind, info, ctx)]
+        end
     end
+  end
+
+  defp kind_from(info, pid, ctx) do
+    case ctx.names[pid] do
+      {:agent, _} -> :agent
+      {:user, _} -> :user
+      _ -> unnamed_kind(pid, chain_links(info), ctx)
+    end
+  end
+
+  # A row, built from the single Process.info/2 call `kind_from/3` already judged. `info` is
+  # the list `Process.info/2` returned.
+  defp to_row(pid, kind, info, ctx) do
+    name = with {_, name} <- ctx.names[pid], do: name
+    registered = if info[:registered_name] != [], do: info[:registered_name]
+
+    info
+    |> Map.new()
+    |> Map.take(@row_keys)
+    |> Map.delete(:registered_name)
+    |> Map.merge(%{
+      pid: pid,
+      name: name || registered,
+      kind: kind,
+      agent: if(kind == :agent, do: NanoAgent.info(name))
+    })
+  end
+
+  # The links from a process's own info: parent, then the `$callers` (Task) and `$ancestors`
+  # (proc_lib) chains, registered names resolved to pids. `info` is the list Process.info/2
+  # returned, where a dictionary entry's key is the whole `{:dictionary, name}` tuple.
+  defp chain_links(info) do
+    parent = with {_, parent} <- List.keyfind(info, :parent, 0), do: parent
+    callers = with {_, callers} <- List.keyfind(info, {:dictionary, :"$callers"}, 0), do: callers
+    ancestors = with {_, a} <- List.keyfind(info, {:dictionary, :"$ancestors"}, 0), do: a
+
+    for link <- [parent | List.wrap(callers) ++ List.wrap(ancestors)],
+        do: if(is_atom(link), do: Process.whereis(link), else: link)
   end
 
   defp context do
@@ -200,12 +239,14 @@ defmodule Nano.Ops do
     case ctx.names[pid] do
       {:agent, _} -> :agent
       {:user, _} -> :user
-      _ -> unnamed_kind(pid, ctx)
+      _ -> unnamed_kind(pid, chain(pid), ctx)
     end
   end
 
-  defp unnamed_kind(pid, ctx) do
-    chain = [pid | chain(pid)]
+  # `links` is the process's chain (see `chain_links/1`, `chain/1`); the pid itself is
+  # prepended, because an agent's own model request is matched against `owned` too.
+  defp unnamed_kind(pid, links, ctx) do
+    chain = [pid | links]
 
     cond do
       MapSet.member?(ctx.boot, pid) or pid in ctx.model_requests -> :standard
@@ -219,7 +260,7 @@ defmodule Nano.Ops do
   # Who started the process: its parent, then the `$callers` (Task) and `$ancestors`
   # (proc_lib) chains from its dictionary, registered names resolved to pids.
   defp chain(pid) do
-    case Process.info(pid, [:parent, {:dictionary, :"$callers"}, {:dictionary, :"$ancestors"}]) do
+    case Process.info(pid, @chain_keys) do
       [{:parent, parent}, {_, callers}, {_, ancestors}] ->
         for link <- [parent | List.wrap(callers) ++ List.wrap(ancestors)],
             do: if(is_atom(link), do: Process.whereis(link), else: link)
@@ -280,11 +321,30 @@ defmodule Nano.Ops do
     end
   end
 
-  @doc "Parses and evaluates Elixir source to a term, as the send forms do: `{:ok, term}` or `{:error, message}`."
+  @doc """
+  Parses and evaluates Elixir source to a term, as the send forms do: `{:ok, term}` or
+  `{:error, message}`. The code runs in a task under `Nano.EvalSupervisor`, killed after
+  `EVAL_TIMEOUT_MS`, so a term cannot take the calling process (a LiveView, an API
+  connection) down with it and cannot run forever.
+  """
   def term(code) do
-    {value, _binding} = code |> Code.string_to_quoted!() |> Code.eval_quoted()
-    {:ok, value}
-  catch
-    kind, reason -> {:error, Exception.format_banner(kind, reason, __STACKTRACE__)}
+    timeout = Application.fetch_env!(:nano, :eval_timeout_ms)
+
+    task =
+      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+        # Format inside the task, so the message holds no harness or Task frames.
+        try do
+          {value, _binding} = code |> Code.string_to_quoted!() |> Code.eval_quoted()
+          {:ok, value}
+        catch
+          kind, reason -> {:error, Exception.format_banner(kind, reason)}
+        end
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, Exception.format_banner(:exit, reason)}
+      nil -> {:error, "timed out after #{timeout} ms"}
+    end
   end
 end

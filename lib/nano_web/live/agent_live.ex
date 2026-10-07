@@ -47,6 +47,12 @@ defmodule NanoWeb.AgentLive do
   def handle_info(:refresh, socket), do: {:noreply, sync(socket)}
   def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_inbox(socket)}
 
+  def handle_info({ref, {:nano_inbox, _}} = reply, socket) when is_reference(ref),
+    do: {:noreply, handle_inbox(reply, socket)}
+
+  def handle_info({:DOWN, ref, :process, _, _} = down, socket) when is_reference(ref),
+    do: {:noreply, handle_inbox(down, socket)}
+
   def handle_info({:nano_log, %{agent_id: id, seq: seq} = entry}, socket)
       when id == socket.assigns.id and seq > socket.assigns.last_seq do
     entry = entry |> Jason.encode!() |> Jason.decode!()

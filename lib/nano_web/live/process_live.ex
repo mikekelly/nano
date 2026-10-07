@@ -27,6 +27,12 @@ defmodule NanoWeb.ProcessLive do
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
   def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_inbox(socket)}
 
+  def handle_info({ref, {:nano_inbox, _}} = reply, socket) when is_reference(ref),
+    do: {:noreply, handle_inbox(reply, socket)}
+
+  def handle_info({:DOWN, ref, :process, _, _} = down, socket) when is_reference(ref),
+    do: {:noreply, handle_inbox(down, socket)}
+
   def handle_event(event, params, socket) when event in ~w(draft send clear_inbox),
     do: {:noreply, handle_shared(event, params, socket)}
 

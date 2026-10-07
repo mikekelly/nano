@@ -1,0 +1,998 @@
+diff --git i/config/runtime.exs w/config/runtime.exs
+index 9a34d2d..56d0694 100644
+--- i/config/runtime.exs
++++ w/config/runtime.exs
+@@ -32,6 +32,9 @@ config :nano,
+   agent_max_context: int.("AGENT_MAX_CONTEXT", "1000000"),
+   node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "15000000"),
+   eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
++  # How long the dashboard waits inline for the dashboard user's inbox on mount; a suspended
++  # user then costs this much, not the one-second call timeout. Later reads are non-blocking.
++  inbox_timeout_ms: int.("INBOX_TIMEOUT_MS", "200"),
+   result_max_bytes: int.("RESULT_MAX_BYTES", "16000"),
+   network_policy: env.("NETWORK_POLICY", "openrouter-only"),
+   log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs")),
+diff --git i/lib/nano/log.ex w/lib/nano/log.ex
+index 398d4d1..1e6a4b2 100644
+--- i/lib/nano/log.ex
++++ w/lib/nano/log.ex
+@@ -63,9 +63,12 @@ defmodule Nano.Log do
+ 
+     if File.exists?(path) do
+       # A line being appended concurrently may be incomplete; it is skipped until it is whole.
++      # `seq` is the last field of every line, so the raw text tells us whether a line is past
++      # `since` without decoding it: a `\"seq\":\" number` at or below `since` is skipped cheaply.
++      # This is what makes polling `log?since=<last seq>` cheap on a long log.
+       for line <- File.stream!(path),
+-          {:ok, entry} <- [Jason.decode(line)],
+-          entry["seq"] > since do
++          past?(line, since),
++          {:ok, entry} <- [Jason.decode(line)] do
+         entry
+       end
+       |> Enum.sort_by(& &1["seq"])
+@@ -74,6 +77,19 @@ defmodule Nano.Log do
+     end
+   end
+ 
++  # Whether a JSONL line's seq is greater than `since`, judged from the raw text alone. A line
++  # that cannot be judged (no seq field, a non-integer value, malformed JSON) is passed on, so
++  # decoding and the caller still see it exactly as before.
++  @seq ~r/"seq":(\d+)/
++  defp past?(_line, 0), do: true
++
++  defp past?(line, since) do
++    case Regex.run(@seq, line) do
++      [_, digits] -> String.to_integer(digits) > since
++      nil -> true
++    end
++  end
++
+   @doc "Subscribes the caller to `{:nano_log, entry}` messages for an agent id."
+   def subscribe(id), do: Phoenix.PubSub.subscribe(Nano.PubSub, "agent:" <> id)
+ 
+diff --git i/lib/nano/ops.ex w/lib/nano/ops.ex
+index 1cebf41..1d66c1b 100644
+--- i/lib/nano/ops.ex
++++ w/lib/nano/ops.ex
+@@ -121,6 +121,12 @@ defmodule Nano.Ops do
+ 
+   ## Processes
+ 
++  # The keys a listed row needs, and the keys a process's kind needs. Both are read from the
++  # same Process.info/2 call, so `processes/0` walks Process.list/0 once and inspects each
++  # process once.
++  @row_keys [:registered_name, :current_function, :message_queue_len, :memory, :reductions]
++  @chain_keys [:parent, {:dictionary, :"$callers"}, {:dictionary, :"$ancestors"}]
++
+   @doc """
+   Live processes outside the standard set, agents first. Each is a map with `pid`, `name`
+   (agent or user name, or registered name), `kind` (`:agent`, `:user`, `{:spawned_by, agent_name}`
+@@ -138,9 +144,7 @@ defmodule Nano.Ops do
+     ctx = context()
+ 
+     Process.list()
+-    |> Enum.map(&{&1, kind(&1, ctx)})
+-    |> Enum.reject(fn {_, kind} -> kind == :standard end)
+-    |> Enum.flat_map(fn {pid, kind} -> List.wrap(row(pid, kind, ctx)) end)
++    |> Enum.flat_map(&row(&1, ctx))
+     |> Enum.sort_by(&if(&1.kind == :agent, do: {0, &1.name}, else: {1, nil}))
+   end
+ 
+@@ -152,25 +156,60 @@ defmodule Nano.Ops do
+     end
+   end
+ 
+-  defp row(pid, kind, ctx) do
+-    keys = [:registered_name, :current_function, :message_queue_len, :memory, :reductions]
+-
+-    with info when is_list(info) <- Process.info(pid, keys) do
+-      name = with {_, name} <- ctx.names[pid], do: name
+-      registered = if info[:registered_name] != [], do: info[:registered_name]
+-
+-      info
+-      |> Map.new()
+-      |> Map.delete(:registered_name)
+-      |> Map.merge(%{
+-        pid: pid,
+-        name: name || registered,
+-        kind: kind,
+-        agent: if(kind == :agent, do: NanoAgent.info(name))
+-      })
++  # One process per walk: `row/2` inspects a process once and either drops it (standard) or
++  # returns its row. The one Process.info/2 call carries both the chain keys (`kind`) and the
++  # row keys, so a listed process is never inspected twice.
++  defp row(pid, ctx) do
++    case Process.info(pid, @row_keys ++ @chain_keys) do
++      nil ->
++        []
++
++      info ->
++        case kind_from(info, pid, ctx) do
++          :standard -> []
++          kind -> [to_row(pid, kind, info, ctx)]
++        end
++    end
++  end
++
++  defp kind_from(info, pid, ctx) do
++    case ctx.names[pid] do
++      {:agent, _} -> :agent
++      {:user, _} -> :user
++      _ -> unnamed_kind(pid, chain_links(info), ctx)
+     end
+   end
+ 
++  # A row, built from the single Process.info/2 call `kind_from/3` already judged. `info` is
++  # the list `Process.info/2` returned.
++  defp to_row(pid, kind, info, ctx) do
++    name = with {_, name} <- ctx.names[pid], do: name
++    registered = if info[:registered_name] != [], do: info[:registered_name]
++
++    info
++    |> Map.new()
++    |> Map.take(@row_keys)
++    |> Map.delete(:registered_name)
++    |> Map.merge(%{
++      pid: pid,
++      name: name || registered,
++      kind: kind,
++      agent: if(kind == :agent, do: NanoAgent.info(name))
++    })
++  end
++
++  # The links from a process's own info: parent, then the `$callers` (Task) and `$ancestors`
++  # (proc_lib) chains, registered names resolved to pids. `info` is the list Process.info/2
++  # returned, where a dictionary entry's key is the whole `{:dictionary, name}` tuple.
++  defp chain_links(info) do
++    parent = with {_, parent} <- List.keyfind(info, :parent, 0), do: parent
++    callers = with {_, callers} <- List.keyfind(info, {:dictionary, :"$callers"}, 0), do: callers
++    ancestors = with {_, a} <- List.keyfind(info, {:dictionary, :"$ancestors"}, 0), do: a
++
++    for link <- [parent | List.wrap(callers) ++ List.wrap(ancestors)],
++        do: if(is_atom(link), do: Process.whereis(link), else: link)
++  end
++
+   defp context do
+     # pid => {:agent, name} | {:user, name}
+     names =
+@@ -200,12 +239,14 @@ defmodule Nano.Ops do
+     case ctx.names[pid] do
+       {:agent, _} -> :agent
+       {:user, _} -> :user
+-      _ -> unnamed_kind(pid, ctx)
++      _ -> unnamed_kind(pid, chain(pid), ctx)
+     end
+   end
+ 
+-  defp unnamed_kind(pid, ctx) do
+-    chain = [pid | chain(pid)]
++  # `links` is the process's chain (see `chain_links/1`, `chain/1`); the pid itself is
++  # prepended, because an agent's own model request is matched against `owned` too.
++  defp unnamed_kind(pid, links, ctx) do
++    chain = [pid | links]
+ 
+     cond do
+       MapSet.member?(ctx.boot, pid) or pid in ctx.model_requests -> :standard
+@@ -219,7 +260,7 @@ defmodule Nano.Ops do
+   # Who started the process: its parent, then the `$callers` (Task) and `$ancestors`
+   # (proc_lib) chains from its dictionary, registered names resolved to pids.
+   defp chain(pid) do
+-    case Process.info(pid, [:parent, {:dictionary, :"$callers"}, {:dictionary, :"$ancestors"}]) do
++    case Process.info(pid, @chain_keys) do
+       [{:parent, parent}, {_, callers}, {_, ancestors}] ->
+         for link <- [parent | List.wrap(callers) ++ List.wrap(ancestors)],
+             do: if(is_atom(link), do: Process.whereis(link), else: link)
+@@ -280,11 +321,30 @@ defmodule Nano.Ops do
+     end
+   end
+ 
+-  @doc "Parses and evaluates Elixir source to a term, as the send forms do: `{:ok, term}` or `{:error, message}`."
++  @doc """
++  Parses and evaluates Elixir source to a term, as the send forms do: `{:ok, term}` or
++  `{:error, message}`. The code runs in a task under `Nano.EvalSupervisor`, killed after
++  `EVAL_TIMEOUT_MS`, so a term cannot take the calling process (a LiveView, an API
++  connection) down with it and cannot run forever.
++  """
+   def term(code) do
+-    {value, _binding} = code |> Code.string_to_quoted!() |> Code.eval_quoted()
+-    {:ok, value}
+-  catch
+-    kind, reason -> {:error, Exception.format_banner(kind, reason, __STACKTRACE__)}
++    timeout = Application.fetch_env!(:nano, :eval_timeout_ms)
++
++    task =
++      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
++        # Format inside the task, so the message holds no harness or Task frames.
++        try do
++          {value, _binding} = code |> Code.string_to_quoted!() |> Code.eval_quoted()
++          {:ok, value}
++        catch
++          kind, reason -> {:error, Exception.format_banner(kind, reason)}
++        end
++      end)
++
++    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
++      {:ok, result} -> result
++      {:exit, reason} -> {:error, Exception.format_banner(:exit, reason)}
++      nil -> {:error, "timed out after #{timeout} ms"}
++    end
+   end
+ end
+diff --git i/lib/nano/state_store.ex w/lib/nano/state_store.ex
+index 3dca935..b8ac088 100644
+--- i/lib/nano/state_store.ex
++++ w/lib/nano/state_store.ex
+@@ -177,14 +177,18 @@ defmodule Nano.StateStore do
+     _, _ -> {:noreply, watched}
+   end
+ 
++  # How long a repeat watch waits for an earlier pid's :DOWN: long enough that a restart which
++  # follows the exit immediately still finds the reason, short enough that a watch of a pid that
++  # is genuinely still running does not hold up the store (and never the 5 s call timeout).
++  @down_wait_ms 50
++
+   @impl true
+   def handle_call({:watch, name, pid}, _from, watched) do
+     with %{^name => {ref, old}} <- watched do
+-      receive do
+-        {:DOWN, ^ref, :process, _, reason} -> record(name, old, reason)
+-      after
+-        5_000 -> Process.demonitor(ref, [:flush])
+-      end
++      # Wait for the earlier pid's :DOWN for as long as that exit is expected, so a
++      # restarted agent's init finds its predecessor's reason. A pid still running gets at
++      # most a short cap, so a repeat watch never stalls the store or the caller's timeout.
++      wait_for_down(name, old, ref, System.monotonic_time(:millisecond) + @down_wait_ms)
+     end
+ 
+     {:reply, :ok, Map.put(watched, name, {Process.monitor(pid), pid})}
+@@ -218,6 +222,22 @@ defmodule Nano.StateStore do
+     {:noreply, watched}
+   end
+ 
++  # Waits for `ref`'s :DOWN until `deadline`; records the reason if it arrives, and gives up
++  # (dropping the monitor) if it does not.
++  defp wait_for_down(name, old, ref, deadline) do
++    case max(deadline - System.monotonic_time(:millisecond), 0) do
++      0 ->
++        Process.demonitor(ref, [:flush])
++
++      ms ->
++        receive do
++          {:DOWN, ^ref, :process, _, reason} -> record(name, old, reason)
++        after
++          ms -> wait_for_down(name, old, ref, deadline)
++        end
++    end
++  end
++
+   # Only for the process the entry belongs to: a stand-in that came up after a failed restore
+   # (halted :start_failed) keeps the entry as it was, so the exit it stands in for is kept.
+   defp record(name, pid, reason) do
+diff --git i/lib/nano/user.ex w/lib/nano/user.ex
+index 514cf27..469e58d 100644
+--- i/lib/nano/user.ex
++++ w/lib/nano/user.ex
+@@ -29,11 +29,13 @@ defmodule Nano.User do
+   @doc """
+   Received messages as `%{at: DateTime, term: term}`, oldest first. `clear: true` empties the
+   inbox. `say/3`, `send_raw/3` and `inbox/2` return `{:error, :unknown_user}` for a user that is
+-  not running and `{:error, :unresponsive}` for one that does not answer within a second. The
+-  request is then still in the user's mailbox and is carried out if the user resumes: a send
++  not running and `{:error, :unresponsive}` for one that does not answer within a second (the
++  default; `timeout:` lowers it, as the dashboard does so a slow user cannot stall a render).
++  The request is then still in the user's mailbox and is carried out if the user resumes: a send
+   goes out late, so retrying it would deliver it twice.
+   """
+-  def inbox(name, opts \\ []), do: call(name, {:inbox, Keyword.get(opts, :clear, false)})
++  def inbox(name, opts \\ []),
++    do: call(name, {:inbox, Keyword.get(opts, :clear, false)}, Keyword.get(opts, :timeout, 1_000))
+ 
+   @doc "The user's pid, or nil."
+   def pid(name) do
+@@ -55,10 +57,10 @@ defmodule Nano.User do
+ 
+   # Anyone can suspend or flood a user (agents are handed its pid), so a call that gets no
+   # answer within a second is an error, not a crash in the caller. The request stays queued.
+-  defp call(name, request) do
++  defp call(name, request, timeout \\ 1_000) do
+     case pid(name) do
+       nil -> {:error, :unknown_user}
+-      pid -> GenServer.call(pid, request, 1_000)
++      pid -> GenServer.call(pid, request, timeout)
+     end
+   catch
+     :exit, _ -> {:error, :unresponsive}
+diff --git i/lib/nano_agent.ex w/lib/nano_agent.ex
+index 63caffa..563d7dd 100644
+--- i/lib/nano_agent.ex
++++ w/lib/nano_agent.ex
+@@ -147,35 +147,59 @@ defmodule NanoAgent do
+   `:restart_brake`, `:start_failed` or `:log_failed`; `cache_hit_rate` is nil until the first
+   response.
+   """
++  # The fields every stored entry must have for a usable info map. A stand-in written before
++  # its fields were merged, or a stray entry, lacks them; info/1 returns nil for such an entry
++  # rather than raising, so one bad row cannot break the dashboard or the API.
++  @info_fields [
++    :id,
++    :name,
++    :model,
++    :status,
++    :halted,
++    :system_prompt,
++    :restart_count,
++    :cost,
++    :responses,
++    :cache_hits
++  ]
++
+   def info(name) do
+-    with %{} = s <- Nano.StateStore.get(name) do
+-      pid = whereis(name)
++    case Nano.StateStore.get(name) do
++      %{} = s when is_map(s) ->
++        if Enum.all?(@info_fields, &Map.has_key?(s, &1)), do: info_map(s), else: nil
+ 
+-      %{
+-        id: s.id,
+-        name: s.name,
+-        pid: pid,
+-        model: s.model,
+-        status: s.status,
+-        halted: s.halted,
+-        suspended:
+-          match?(
+-            {:current_function, {:sys, :suspend_loop, _}},
+-            pid && Process.info(pid, :current_function)
+-          ),
+-        system_prompt: s.system_prompt,
+-        prompt_source: prompt_file(s) || "inline",
+-        restart_count: s.restart_count,
+-        cost: s.cost,
+-        reasoning: Map.get(s, :reasoning, "off"),
+-        cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
+-        budget: budget(s)
+-      }
++      _ ->
++        nil
+     end
+   end
+ 
+-  @doc "Names of all agents in the state store, sorted."
+-  def list, do: Nano.StateStore.all() |> Enum.map(& &1.name) |> Enum.sort()
++  defp info_map(s) do
++    pid = whereis(s.name)
++
++    %{
++      id: s.id,
++      name: s.name,
++      pid: pid,
++      model: s.model,
++      status: s.status,
++      halted: s.halted,
++      suspended:
++        match?(
++          {:current_function, {:sys, :suspend_loop, _}},
++          pid && Process.info(pid, :current_function)
++        ),
++      system_prompt: s.system_prompt,
++      prompt_source: prompt_file(s) || "inline",
++      restart_count: s.restart_count,
++      cost: s.cost,
++      reasoning: Map.get(s, :reasoning, "off"),
++      cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
++      budget: budget(s)
++    }
++  end
++
++  @doc "Names of all agents in the state store, sorted. Entries without a name are skipped."
++  def list, do: for(%{name: name} <- Nano.StateStore.all(), do: name) |> Enum.sort()
+ 
+   @doc """
+   Kills every task under `Nano.EvalSupervisor` (evals and model requests) started by the
+@@ -282,9 +306,15 @@ defmodule NanoAgent do
+       prompt_file: opts[:prompt_file],
+       system_prompt: nil,
+       transcript: [],
++      # Pending transcript messages, newest first (see append/2).
++      t_rev: [],
+       bindings: [],
+       status: :idle,
+-      pending: [],
++      # Queued events/notes, newest first (a reversed list), so an append is a cons. It is
++      # reversed once, at the turn boundary; `pending_dropped` counts messages dropped by the
++      # cap while halted (see push_pending/2).
++      pending_rev: [],
++      pending_dropped: 0,
+       halted: nil,
+       max_turns: opts[:max_turns] || env(:agent_max_turns),
+       max_tokens: opts[:max_tokens] || env(:agent_max_tokens),
+@@ -573,12 +603,13 @@ defmodule NanoAgent do
+     s = %{
+       s
+       | event_seq: seq,
+-        wakeup: nil,
+-        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
++        wakeup: nil
+     }
+ 
++    s = push_pending(s, ~s(<event seq="#{seq}" at="#{at}">#{text}</event>))
++
+     # queue_length: events waiting for the next turn, this one included.
+-    queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
++    queued = Enum.count(pending(s), &String.starts_with?(&1, "<event"))
+ 
+     log(s, :event_received, %{
+       event_seq: seq,
+@@ -593,7 +624,7 @@ defmodule NanoAgent do
+   # Harness notes queue up with events, in the order things happened.
+   defp note(s, text) do
+     log(s, :harness_note, %{text: text})
+-    %{s | pending: s.pending ++ ["<harness>#{text}</harness>"]}
++    push_pending(s, "<harness>#{text}</harness>")
+   end
+ 
+   defp halt(s, why, text) do
+@@ -605,7 +636,10 @@ defmodule NanoAgent do
+ 
+   ## The loop
+ 
+-  defp maybe_start_turn(%{status: :idle, halted: nil, pending: [_ | _]} = s), do: request(s, true)
++  defp maybe_start_turn(%{status: :idle, halted: nil} = s) do
++    if pending(s) == [], do: s, else: request(s, true)
++  end
++
+   defp maybe_start_turn(s), do: s
+ 
+   defp request(s, new_turn?) do
+@@ -634,9 +668,15 @@ defmodule NanoAgent do
+             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
+             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
+ 
+-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
+-        s = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+-        messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
++        user = %{"role" => "user", "content" => Enum.join(pending(s) ++ [line], "\n")}
++
++        s =
++          if new_turn?,
++            do: %{append(s, user) | pending_rev: [], pending_dropped: 0},
++            else: s
++
++        # The transcript the model is sent, with any buffered appends merged in.
++        messages = [%{"role" => "system", "content" => s.system_prompt} | transcript(s)]
+         id = s.request_id + 1
+         size = div(byte_size(Jason.encode!(messages)), 4)
+         fields = %{request_id: id, model: s.model, message_count: length(messages)}
+@@ -806,7 +846,7 @@ defmodule NanoAgent do
+   defp run_calls(%{calls: []} = s) do
+     cond do
+       not s.idle_called -> request(s, false)
+-      s.wakeup_after && s.pending == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")
++      s.wakeup_after && pending(s) == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")
+       true -> end_turn(s, "idle")
+     end
+   end
+@@ -1083,7 +1123,62 @@ defmodule NanoAgent do
+ 
+   ## Helpers
+ 
+-  defp append(s, message), do: %{s | transcript: s.transcript ++ [message]}
++  # Cons onto a reversed buffer, so appends in a burst are O(1) each; the buffer is merged
++  # into `transcript` (once) at a boundary: a request, or a save. `transcript` itself stays a
++  # normal, forward list whenever state leaves this process.
++  defp append(s, message), do: %{s | t_rev: [message | Map.get(s, :t_rev, [])]}
++
++  # The transcript as the model must see it, with any buffered messages merged in.
++  defp transcript(s), do: s.transcript ++ Enum.reverse(Map.get(s, :t_rev, []))
++
++  defp merge_transcript(s) do
++    case Map.get(s, :t_rev, []) do
++      [] -> s
++      rev -> %{s | transcript: s.transcript ++ Enum.reverse(rev), t_rev: []}
++    end
++  end
++
++  # While an agent is halted nothing will drain `pending_rev`, so a message that arrives then
++  # is capped: the oldest are dropped and counted, and a note about the drop is prepended to
++  # the next delivery. This bounds the queue for an agent that is never un-halted.
++  @pending_max 200
++
++  defp pending(s) do
++    rev =
++      case Map.get(s, :pending_rev) do
++        nil -> Enum.reverse(Map.get(s, :pending, []))
++        rev -> rev
++      end
++
++    dropped = Map.get(s, :pending_dropped, 0)
++
++    summary =
++      if dropped > 0,
++        do: [
++          "<harness>#{dropped} earlier message(s) were dropped: you are halted and the " <>
++            "queue grew past #{@pending_max}. Un-halt to resume.</harness>"
++        ],
++        else: []
++
++    summary ++ Enum.reverse(rev)
++  end
++
++  defp push_pending(s, text) do
++    rev = [text | Map.get(s, :pending_rev, [])]
++
++    if s.halted == nil do
++      %{s | pending_rev: rev}
++    else
++      # Bounded work: `rev` is at most @pending_max + 1 long here.
++      dropped = max(length(rev) - @pending_max, 0)
++
++      %{
++        s
++        | pending_rev: Enum.take(rev, @pending_max),
++          pending_dropped: Map.get(s, :pending_dropped, 0) + dropped
++      }
++    end
++  end
+ 
+   defp truncate(text) do
+     text = if String.valid?(text), do: text, else: inspect(text)
+@@ -1121,11 +1216,30 @@ defmodule NanoAgent do
+   end
+ 
+   defp save(s) do
++    # The buffered transcript appends are merged here, so the stored state (and :sys.get_state)
++    # always shows a normal forward transcript; and a legacy `pending` key from state saved by
++    # an older version of this module is folded into `pending_rev`.
++    s =
++      s
++      |> merge_transcript()
++      |> normalize_pending()
++
+     s = %{s | spawned: Enum.filter(s.spawned, &Process.alive?/1)}
+     Nano.StateStore.put(s.name, s)
+     s
+   end
+ 
++  defp normalize_pending(s) do
++    case Map.get(s, :pending_rev) do
++      nil ->
++        pending = Map.get(s, :pending, [])
++        %{Map.delete(s, :pending) | pending_rev: Enum.reverse(pending), pending_dropped: 0}
++
++      _ ->
++        s
++    end
++  end
++
+   defp noreply(s), do: {:noreply, save(s)}
+ 
+   defp env(key), do: Application.fetch_env!(:nano, key)
+diff --git i/lib/nano_web/live/agent_live.ex w/lib/nano_web/live/agent_live.ex
+index a7e7b95..787cf8b 100644
+--- i/lib/nano_web/live/agent_live.ex
++++ w/lib/nano_web/live/agent_live.ex
+@@ -47,6 +47,12 @@ defmodule NanoWeb.AgentLive do
+   def handle_info(:refresh, socket), do: {:noreply, sync(socket)}
+   def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_inbox(socket)}
+ 
++  def handle_info({ref, {:nano_inbox, _}} = reply, socket) when is_reference(ref),
++    do: {:noreply, handle_inbox(reply, socket)}
++
++  def handle_info({:DOWN, ref, :process, _, _} = down, socket) when is_reference(ref),
++    do: {:noreply, handle_inbox(down, socket)}
++
+   def handle_info({:nano_log, %{agent_id: id, seq: seq} = entry}, socket)
+       when id == socket.assigns.id and seq > socket.assigns.last_seq do
+     entry = entry |> Jason.encode!() |> Jason.decode!()
+diff --git i/lib/nano_web/live/components.ex w/lib/nano_web/live/components.ex
+index 40426ed..b9c955c 100644
+--- i/lib/nano_web/live/components.ex
++++ w/lib/nano_web/live/components.ex
+@@ -19,14 +19,16 @@ defmodule NanoWeb.Components do
+       do: Phoenix.PubSub.subscribe(Nano.PubSub, "user:" <> @user)
+ 
+     socket
+-    |> assign(draft: %{"text" => "", "term" => ""}, sent: nil)
+-    |> refresh_inbox()
++    |> assign(draft: %{"text" => "", "term" => ""}, sent: nil, inbox_task: nil)
++    |> read_inbox()
+   end
+ 
+-  @doc "Re-reads the dashboard user's inbox (newest first; nil if the user is not running or not answering)."
+-  def refresh_inbox(socket) do
++  # The first paint reads the inbox inline, but with a short timeout (INBOX_TIMEOUT_MS) so a
++  # suspended or flooded user costs the mount that much, not the one-second call timeout: the
++  # render proceeds with `nil` ("not responding") when the user does not answer in time.
++  defp read_inbox(socket) do
+     inbox =
+-      case Nano.User.inbox(@user) do
++      case Nano.User.inbox(@user, timeout: inbox_timeout_ms()) do
+         messages when is_list(messages) -> Enum.reverse(messages)
+         {:error, _} -> nil
+       end
+@@ -34,6 +36,59 @@ defmodule NanoWeb.Components do
+     assign(socket, inbox: inbox, inbox_pid: Nano.User.pid(@user))
+   end
+ 
++  @doc """
++  Re-reads the dashboard user's inbox without blocking the render (newest first; nil if the
++  user is not running or not answering). The read happens in a task under `Nano.EvalSupervisor`
++  and its result arrives as `{:nano_inbox, ref, result}`; the socket keeps the last known inbox
++  until then. This is what every `{:nano_user, _}` broadcast triggers, so a suspended or flooded
++  user cannot stall each render for the call timeout.
++  """
++  def refresh_inbox(socket) do
++    # Drop the previous read: a flooded user would otherwise pile up one pending call per
++    # broadcast, and only the newest result matters.
++    if task = socket.assigns[:inbox_task], do: Task.shutdown(task, :brutal_kill)
++
++    task =
++      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
++        {:nano_inbox, Nano.User.inbox(@user)}
++      end)
++
++    assign(socket, inbox_task: task, inbox_pid: Nano.User.pid(@user))
++  end
++
++  @doc """
++  Applies an inbox read started by `refresh_inbox/1` and clears the pending task. A task's
++  result arrives as `{ref, {:nano_inbox, result}}`; `:DOWN` arrives from a crashed task. Both
++  are ignored when the ref is not the current task's, so a superseded read cannot overwrite a
++  newer one.
++  """
++  def handle_inbox({ref, result}, socket) when is_reference(ref) do
++    case socket.assigns[:inbox_task] do
++      %Task{ref: ^ref} -> apply_inbox(socket, unwrap(result))
++      _ -> socket
++    end
++  end
++
++  def handle_inbox({:DOWN, ref, :process, _pid, _reason}, socket) when is_reference(ref) do
++    case socket.assigns[:inbox_task] do
++      %Task{ref: ^ref} -> apply_inbox(socket, {:error, :unresponsive})
++      _ -> socket
++    end
++  end
++
++  defp unwrap({:nano_inbox, result}), do: result
++  defp unwrap(other), do: other
++
++  # A result that is not a list is the user being unknown or unresponsive: the render shows that.
++  defp apply_inbox(socket, result) do
++    inbox = if is_list(result), do: Enum.reverse(result), else: nil
++    assign(socket, inbox: inbox, inbox_pid: Nano.User.pid(@user), inbox_task: nil)
++  end
++
++  # How long the mount waits for the dashboard user: short, so a suspended user does not stall
++  # the page. Configurable as INBOX_TIMEOUT_MS (config/runtime.exs).
++  defp inbox_timeout_ms, do: Application.get_env(:nano, :inbox_timeout_ms, 200)
++
+   @doc """
+   Handles the shared events: `"draft"` (a send form changed), `"send"` (the text box goes
+   through `Nano.User.say/3`, the term box through `Nano.Ops.term/1` and `Nano.User.send_raw/3`),
+@@ -61,8 +116,17 @@ defmodule NanoWeb.Components do
+   end
+ 
+   def handle_shared("clear_inbox", _params, socket) do
+-    Nano.User.inbox(@user, clear: true)
+-    refresh_inbox(socket)
++    # The clear is a write, so it goes in the task; the read that follows returns the emptied
++    # inbox and is applied the same way as any other refresh, leaving the render unblocked.
++    if task = socket.assigns[:inbox_task], do: Task.shutdown(task, :brutal_kill)
++
++    task =
++      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
++        Nano.User.inbox(@user, clear: true)
++        {:nano_inbox, Nano.User.inbox(@user)}
++      end)
++
++    assign(socket, inbox_task: task, inbox_pid: Nano.User.pid(@user))
+   end
+ 
+   # A successful send empties its box; a failed one keeps it for fixing.
+diff --git i/lib/nano_web/live/process_live.ex w/lib/nano_web/live/process_live.ex
+index 2870905..a8313af 100644
+--- i/lib/nano_web/live/process_live.ex
++++ w/lib/nano_web/live/process_live.ex
+@@ -27,6 +27,12 @@ defmodule NanoWeb.ProcessLive do
+   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
+   def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_inbox(socket)}
+ 
++  def handle_info({ref, {:nano_inbox, _}} = reply, socket) when is_reference(ref),
++    do: {:noreply, handle_inbox(reply, socket)}
++
++  def handle_info({:DOWN, ref, :process, _, _} = down, socket) when is_reference(ref),
++    do: {:noreply, handle_inbox(down, socket)}
++
+   def handle_event(event, params, socket) when event in ~w(draft send clear_inbox),
+     do: {:noreply, handle_shared(event, params, socket)}
+ 
+diff --git i/test/nano/log_test.exs w/test/nano/log_test.exs
+index 8b01a8b..00a5916 100644
+--- i/test/nano/log_test.exs
++++ w/test/nano/log_test.exs
+@@ -90,4 +90,26 @@ defmodule Nano.LogTest do
+     assert_receive {:nano_log, %{seq: 2, log_error: _}}
+     assert log =~ "log-test (#{id}): could not write turn_ended to the log: :eisdir"
+   end
++
++  test "read/2 skips entries it can rule out from the raw line, without decoding them", %{
++    agent: agent,
++    id: id
++  } do
++    for n <- 1..5, do: Nano.Log.write(agent, :turn_ended, %{reason: "n" <> Integer.to_string(n)})
++    path = Path.join(Application.fetch_env!(:nano, :log_dir), id <> ".jsonl")
++    File.write!(path, File.read!(path) <> "not json at all\n")
++
++    assert Enum.map(Nano.Log.read(id, 3), & &1["seq"]) == [4, 5]
++    assert Enum.map(Nano.Log.read(id), & &1["seq"]) == [1, 2, 3, 4, 5]
++    assert Nano.Log.read(id, 0) == Nano.Log.read(id)
++  end
++
++  test "read/2 does not decode a line the raw text already rules out", %{id: id} do
++    path = Path.join(Application.fetch_env!(:nano, :log_dir), id <> ".jsonl")
++    File.mkdir_p!(Path.dirname(path))
++    File.write!(path, "{\"seq\":1, this is not json}\n")
++
++    assert Nano.Log.read(id, 1) == []
++    assert Nano.Log.read(id, 0) == []
++  end
+ end
+diff --git i/test/nano/ops_test.exs w/test/nano/ops_test.exs
+index b8a7fa6..d6e2e19 100644
+--- i/test/nano/ops_test.exs
++++ w/test/nano/ops_test.exs
+@@ -365,6 +365,39 @@ defmodule Nano.OpsTest do
+     end
+   end
+ 
++  test "term/1 cannot take the caller down" do
++    # A term is evaluated in a supervised task, so an expression that would kill the calling
++    # process (a LiveView, an API connection) comes back as an error instead.
++    parent = self()
++
++    task =
++      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
++        Ops.term("Process.exit(self(), :kill)")
++      end)
++
++    assert {:ok, {:error, message}} = Task.yield(task, 2_000)
++    assert message =~ "killed"
++    assert Process.alive?(parent)
++
++    # A raise is reported with no harness or Task frames, as before.
++    assert {:error, "** (RuntimeError) boom"} = Ops.term(~s|raise "boom"|)
++    assert {:error, "** (TokenMissingError)" <> _} = Ops.term("{")
++    assert {:ok, {:ping, 42}} = Ops.term("{:ping, 42}")
++  end
++
++  test "a malformed store entry does not crash the listing" do
++    name = unique("malformed")
++    on_exit(fn -> Nano.StateStore.delete(name) end)
++    # An entry without the fields an agent's map has: a stand-in written before its fields
++    # were merged, or a stray put.
++    Nano.StateStore.put(name, %{name: name, pid: self()})
++
++    assert NanoAgent.info(name) == nil
++    assert name in NanoAgent.list()
++    refute Enum.any?(Ops.agents(), &(&1.name == name))
++    assert is_list(Ops.processes())
++  end
++
+   defp wait_for(fun, tries \\ 100) do
+     case fun.() do
+       falsy when falsy in [nil, false] and tries > 0 ->
+diff --git i/test/nano/state_store_test.exs w/test/nano/state_store_test.exs
+index 70e1605..748ec91 100644
+--- i/test/nano/state_store_test.exs
++++ w/test/nano/state_store_test.exs
+@@ -53,6 +53,36 @@ defmodule Nano.StateStoreTest do
+     assert StateStore.node_tokens_last_hour() >= before + 123
+   end
+ 
++  test "a repeat watch of a live pid does not block the store", %{name: name} do
++    alive = spawn(fn -> Process.sleep(:infinity) end)
++    on_exit(fn -> Process.exit(alive, :kill) end)
++    StateStore.put(name, %{name: name, pid: alive})
++    :ok = StateStore.watch(name, alive)
++
++    # The same name watched again while its pid is still alive must return at once: no :DOWN
++    # is coming, so waiting would stall the store for the whole timeout and could time out
++    # the caller (an agent's init, or a :resave).
++    # Well under the 5 s call timeout the default wait used to consume, so this can never
++    # time out the caller (an agent's init, or a :resave on store restart).
++    t0 = System.monotonic_time(:millisecond)
++    assert GenServer.call(StateStore, {:watch, name, alive}, 5_000) == :ok
++    assert System.monotonic_time(:millisecond) - t0 < 1_000
++
++    # The store answered other callers throughout.
++    assert StateStore.get(name) == %{name: name, pid: alive}
++  end
++
++  test "a watch after the predecessor died still records its exit reason", %{name: name} do
++    pid = spawn(fn -> receive do: (:stop -> exit(:boom)) end)
++    StateStore.put(name, %{name: name, pid: pid})
++    :ok = StateStore.watch(name, pid)
++    send(pid, :stop)
++
++    # The restarted agent's watch waits for the pending :DOWN, so the reason is there.
++    :ok = StateStore.watch(name, self())
++    assert StateStore.exit_reason(name, pid) == :boom
++  end
++
+   test "stray messages, casts and calls are ignored, not fatal", %{name: name} do
+     store = Process.whereis(StateStore)
+     StateStore.put(name, %{name: name})
+diff --git i/test/nano_agent_test.exs w/test/nano_agent_test.exs
+index 54d5412..fddb5bb 100644
+--- i/test/nano_agent_test.exs
++++ w/test/nano_agent_test.exs
+@@ -1851,4 +1851,91 @@ defmodule NanoAgentTest do
+     assert log =~ "#{ctx.name}: could not save state to /dev/null/state/#{ctx.name}.term"
+     assert %{halted: nil, status: :thinking} = NanoAgent.info(ctx.name)
+   end
++
++  ## M3: queued events and the transcript must not grow quadratically, and a halted agent
++  ## must not queue without bound.
++
++  test "a burst of events to a busy agent is queued newest-first, one cons per event", ctx do
++    {pid, id} = start!(ctx)
++    # First event starts a turn; no response is pushed, so the agent stays busy (thinking).
++    send(pid, :open)
++    request!(ctx.model)
++    :sys.get_state(pid)
++
++    # A burst arrives while it is busy; each is a separate event/2 callback.
++    n = 5_000
++    for i <- 1..n, do: send(pid, {:burst, i})
++    assert await(id, :event_received, &(&1["message"] == ~s({:burst, #{n}})))
++    state = :sys.get_state(pid)
++
++    # The internal queue is a reversed list (newest first): an append is a cons, not `++`.
++    assert length(state.pending_rev) == n
++    assert hd(state.pending_rev) =~ ":burst, #{n}"
++    assert List.last(state.pending_rev) =~ ":burst, 1"
++
++    # The forward view the model is given is in arrival order.
++    assert pending_first(state) =~ ":burst, 1"
++    assert pending_last(state) =~ ":burst, #{n}"
++  end
++
++  test "a halted agent caps its queue and summarizes what was dropped", ctx do
++    {pid, id} = start!(ctx, max_turns: 1)
++    Fake.push(ctx.model, text: "last")
++    send(pid, :go)
++    request!(ctx.model)
++    assert %{"scope" => "agent"} = await(id, :budget_exhausted)
++    # :sys.get_state/1 waits for the callback that saves the halt to finish.
++    :sys.get_state(pid)
++    assert %{halted: :budget, status: :idle} = NanoAgent.info(ctx.name)
++
++    # Nothing drains the queue while halted: 300 arrive, the newest 200 are kept.
++    n = 300
++    for i <- 1..n, do: send(pid, {:flood, i})
++    assert await(id, :event_received, &(&1["message"] == ~s({:flood, #{n}})))
++    state = :sys.get_state(pid)
++
++    # seq 1 was :go, consumed by the turn above; the 300 floods are seqs 2..301.
++    assert length(state.pending_rev) == 200
++    assert hd(state.pending_rev) =~ ":flood, #{n}"
++    assert List.last(state.pending_rev) =~ ":flood, 101"
++
++    # Un-halting delivers what is left, with a note naming the count that was dropped.
++    Fake.push(ctx.model, text: "ok")
++    NanoAgent.unhalt(ctx.name)
++    body = request!(ctx.model)
++    delivered = delivery(List.last(body["messages"]))
++
++    assert delivered =~ "<harness>101 earlier message(s) were dropped"
++    assert delivered =~ ":flood, 101"
++    assert delivered =~ ":flood, #{n}"
++    refute delivered =~ ":flood, 100<"
++    assert delivered =~ "An operator un-halted you."
++    # The drop is delivered once; a later turn carries no stale summary.
++    assert %{halted: nil} = NanoAgent.info(ctx.name)
++    assert :sys.get_state(pid).pending_dropped == 0
++  end
++
++  test "transcript appends within a callback are merged once and stay a forward list", ctx do
++    {pid, _id} = start!(ctx)
++    # Many tool results in a single response: one callback, many appends.
++    calls = for i <- 1..500, do: {:eval, "#{i}"}
++    Fake.push(ctx.model, calls: calls)
++    Fake.push(ctx.model, text: "ok")
++    send(pid, :go)
++    request!(ctx.model)
++    request!(ctx.model)
++    state = :sys.get_state(pid)
++
++    # The stored transcript is a normal forward list, with one tool message per call, in order.
++    assert state.t_rev == []
++    tools = Enum.filter(state.transcript, &(&1["role"] == "tool"))
++    assert length(tools) == 500
++    assert Enum.map(tools, & &1["content"]) == Enum.map(1..500, &Integer.to_string/1)
++    assert Nano.StateStore.get(ctx.name).transcript == state.transcript
++  end
++
++  # The forward (arrival-order) pending view, as request/2 sends it.
++  defp pending_first(state), do: state |> pending_texts() |> List.first()
++  defp pending_last(state), do: state |> pending_texts() |> List.last()
++  defp pending_texts(state), do: Enum.reverse(state.pending_rev)
+ end
+diff --git i/test/nano_web/process_live_test.exs w/test/nano_web/process_live_test.exs
+index e5e73b6..bf44564 100644
+--- i/test/nano_web/process_live_test.exs
++++ w/test/nano_web/process_live_test.exs
+@@ -509,4 +509,69 @@ defmodule NanoWeb.ProcessLiveTest do
+     view |> element("#{row(hpid)} button", "Un-halt") |> render_click()
+     eventually(fn -> Nano.Ops.agent(halted).halted == nil end)
+   end
++
++  # M2: a suspended/flooded dashboard user must not stall the render. The mount reads the inbox
++  # with a short timeout (INBOX_TIMEOUT_MS, 200 ms in test), not the one-second call timeout.
++  test "mounting with a suspended dashboard user returns well under the one-second timeout",
++       ctx do
++    user = Nano.User.pid("dashboard")
++    :sys.suspend(user)
++    on_exit(fn -> :sys.resume(user) end)
++
++    {micros, {:ok, view, html}} = :timer.tc(fn -> live(ctx.conn, "/") end)
++
++    assert html =~ "The dashboard user is not responding"
++    # The old path blocked for the full 1_000 ms `GenServer.call` timeout.
++    assert micros < 600_000, "mount took #{micros} us, expected the short bounded read"
++    assert is_pid(view.pid)
++    _ = ctx
++  end
++
++  # M2: every `{:nano_user, _}` broadcast triggered a blocking inbox read. It is now a task
++  # under Nano.EvalSupervisor applied as a message, so the render never waits for the user.
++  test "a broadcast to a suspended dashboard user does not block the render", ctx do
++    {:ok, view, _} = live(ctx.conn, "/")
++    user = Nano.User.pid("dashboard")
++    :sys.suspend(user)
++    on_exit(fn -> :sys.resume(user) end)
++
++    # A real message for the user, delivered straight to its mailbox: while suspended it is
++    # queued, and an inbox read will not see it until the user runs.
++    send(user, :pending)
++
++    # The view processes the broadcast (and re-renders) before this returns; if refresh_inbox
++    # still called the user inline, this would take the call timeout (~1_000 ms).
++    {micros, _} =
++      :timer.tc(fn ->
++        send(view.pid, {:nano_user, %{dir: :received, term: :pending}})
++        render(view)
++      end)
++
++    assert micros < 500_000, "the broadcast stalled the render for #{micros} us"
++
++    # The result still arrives once the user answers: no message was lost. The user's queued
++    # message drains on resume; a later broadcast re-reads and shows it.
++    :sys.resume(user)
++
++    eventually(fn ->
++      send(view.pid, {:nano_user, %{dir: :received, term: :again}})
++      :timer.sleep(60)
++      render(view) =~ ":pending"
++    end)
++
++    _ = ctx
++  end
++
++  test "the inbox refresh is applied from the task, newest first", ctx do
++    {:ok, view, html} = live(ctx.conn, "/")
++    assert html =~ "Nothing received yet"
++    user = Nano.User.pid("dashboard")
++
++    # Two broadcasts in quick succession: only the newest read is applied, and it is current.
++    send(user, :one)
++    send(user, :two)
++    eventually(fn -> render(view) =~ ":two" end)
++    assert render(view) =~ ":one"
++    _ = ctx
++  end
+ end

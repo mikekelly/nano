@@ -19,20 +19,75 @@ defmodule NanoWeb.Components do
       do: Phoenix.PubSub.subscribe(Nano.PubSub, "user:" <> @user)
 
     socket
-    |> assign(draft: %{"text" => "", "term" => ""}, sent: nil)
-    |> refresh_inbox()
+    |> assign(draft: %{"text" => "", "term" => ""}, sent: nil, inbox_task: nil)
+    |> read_inbox()
   end
 
-  @doc "Re-reads the dashboard user's inbox (newest first; nil if the user is not running or not answering)."
-  def refresh_inbox(socket) do
+  # The first paint reads the inbox inline, but with a short timeout (INBOX_TIMEOUT_MS) so a
+  # suspended or flooded user costs the mount that much, not the one-second call timeout: the
+  # render proceeds with `nil` ("not responding") when the user does not answer in time.
+  defp read_inbox(socket) do
     inbox =
-      case Nano.User.inbox(@user) do
+      case Nano.User.inbox(@user, timeout: inbox_timeout_ms()) do
         messages when is_list(messages) -> Enum.reverse(messages)
         {:error, _} -> nil
       end
 
     assign(socket, inbox: inbox, inbox_pid: Nano.User.pid(@user))
   end
+
+  @doc """
+  Re-reads the dashboard user's inbox without blocking the render (newest first; nil if the
+  user is not running or not answering). The read happens in a task under `Nano.EvalSupervisor`
+  and its result arrives as `{:nano_inbox, ref, result}`; the socket keeps the last known inbox
+  until then. This is what every `{:nano_user, _}` broadcast triggers, so a suspended or flooded
+  user cannot stall each render for the call timeout.
+  """
+  def refresh_inbox(socket) do
+    # Drop the previous read: a flooded user would otherwise pile up one pending call per
+    # broadcast, and only the newest result matters.
+    if task = socket.assigns[:inbox_task], do: Task.shutdown(task, :brutal_kill)
+
+    task =
+      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+        {:nano_inbox, Nano.User.inbox(@user)}
+      end)
+
+    assign(socket, inbox_task: task, inbox_pid: Nano.User.pid(@user))
+  end
+
+  @doc """
+  Applies an inbox read started by `refresh_inbox/1` and clears the pending task. A task's
+  result arrives as `{ref, {:nano_inbox, result}}`; `:DOWN` arrives from a crashed task. Both
+  are ignored when the ref is not the current task's, so a superseded read cannot overwrite a
+  newer one.
+  """
+  def handle_inbox({ref, result}, socket) when is_reference(ref) do
+    case socket.assigns[:inbox_task] do
+      %Task{ref: ^ref} -> apply_inbox(socket, unwrap(result))
+      _ -> socket
+    end
+  end
+
+  def handle_inbox({:DOWN, ref, :process, _pid, _reason}, socket) when is_reference(ref) do
+    case socket.assigns[:inbox_task] do
+      %Task{ref: ^ref} -> apply_inbox(socket, {:error, :unresponsive})
+      _ -> socket
+    end
+  end
+
+  defp unwrap({:nano_inbox, result}), do: result
+  defp unwrap(other), do: other
+
+  # A result that is not a list is the user being unknown or unresponsive: the render shows that.
+  defp apply_inbox(socket, result) do
+    inbox = if is_list(result), do: Enum.reverse(result), else: nil
+    assign(socket, inbox: inbox, inbox_pid: Nano.User.pid(@user), inbox_task: nil)
+  end
+
+  # How long the mount waits for the dashboard user: short, so a suspended user does not stall
+  # the page. Configurable as INBOX_TIMEOUT_MS (config/runtime.exs).
+  defp inbox_timeout_ms, do: Application.get_env(:nano, :inbox_timeout_ms, 200)
 
   @doc """
   Handles the shared events: `"draft"` (a send form changed), `"send"` (the text box goes
@@ -61,8 +116,17 @@ defmodule NanoWeb.Components do
   end
 
   def handle_shared("clear_inbox", _params, socket) do
-    Nano.User.inbox(@user, clear: true)
-    refresh_inbox(socket)
+    # The clear is a write, so it goes in the task; the read that follows returns the emptied
+    # inbox and is applied the same way as any other refresh, leaving the render unblocked.
+    if task = socket.assigns[:inbox_task], do: Task.shutdown(task, :brutal_kill)
+
+    task =
+      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+        Nano.User.inbox(@user, clear: true)
+        {:nano_inbox, Nano.User.inbox(@user)}
+      end)
+
+    assign(socket, inbox_task: task, inbox_pid: Nano.User.pid(@user))
   end
 
   # A successful send empties its box; a failed one keeps it for fixing.

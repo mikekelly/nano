@@ -90,4 +90,26 @@ defmodule Nano.LogTest do
     assert_receive {:nano_log, %{seq: 2, log_error: _}}
     assert log =~ "log-test (#{id}): could not write turn_ended to the log: :eisdir"
   end
+
+  test "read/2 skips entries it can rule out from the raw line, without decoding them", %{
+    agent: agent,
+    id: id
+  } do
+    for n <- 1..5, do: Nano.Log.write(agent, :turn_ended, %{reason: "n" <> Integer.to_string(n)})
+    path = Path.join(Application.fetch_env!(:nano, :log_dir), id <> ".jsonl")
+    File.write!(path, File.read!(path) <> "not json at all\n")
+
+    assert Enum.map(Nano.Log.read(id, 3), & &1["seq"]) == [4, 5]
+    assert Enum.map(Nano.Log.read(id), & &1["seq"]) == [1, 2, 3, 4, 5]
+    assert Nano.Log.read(id, 0) == Nano.Log.read(id)
+  end
+
+  test "read/2 does not decode a line the raw text already rules out", %{id: id} do
+    path = Path.join(Application.fetch_env!(:nano, :log_dir), id <> ".jsonl")
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "{\"seq\":1, this is not json}\n")
+
+    assert Nano.Log.read(id, 1) == []
+    assert Nano.Log.read(id, 0) == []
+  end
 end

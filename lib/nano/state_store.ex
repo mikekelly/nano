@@ -177,14 +177,18 @@ defmodule Nano.StateStore do
     _, _ -> {:noreply, watched}
   end
 
+  # How long a repeat watch waits for an earlier pid's :DOWN: long enough that a restart which
+  # follows the exit immediately still finds the reason, short enough that a watch of a pid that
+  # is genuinely still running does not hold up the store (and never the 5 s call timeout).
+  @down_wait_ms 50
+
   @impl true
   def handle_call({:watch, name, pid}, _from, watched) do
     with %{^name => {ref, old}} <- watched do
-      receive do
-        {:DOWN, ^ref, :process, _, reason} -> record(name, old, reason)
-      after
-        5_000 -> Process.demonitor(ref, [:flush])
-      end
+      # Wait for the earlier pid's :DOWN for as long as that exit is expected, so a
+      # restarted agent's init finds its predecessor's reason. A pid still running gets at
+      # most a short cap, so a repeat watch never stalls the store or the caller's timeout.
+      wait_for_down(name, old, ref, System.monotonic_time(:millisecond) + @down_wait_ms)
     end
 
     {:reply, :ok, Map.put(watched, name, {Process.monitor(pid), pid})}
@@ -216,6 +220,22 @@ defmodule Nano.StateStore do
   defp ignore(msg, watched) do
     Logger.info("Nano.StateStore ignored #{inspect(msg, limit: 10, printable_limit: 200)}")
     {:noreply, watched}
+  end
+
+  # Waits for `ref`'s :DOWN until `deadline`; records the reason if it arrives, and gives up
+  # (dropping the monitor) if it does not.
+  defp wait_for_down(name, old, ref, deadline) do
+    case max(deadline - System.monotonic_time(:millisecond), 0) do
+      0 ->
+        Process.demonitor(ref, [:flush])
+
+      ms ->
+        receive do
+          {:DOWN, ^ref, :process, _, reason} -> record(name, old, reason)
+        after
+          ms -> wait_for_down(name, old, ref, deadline)
+        end
+    end
   end
 
   # Only for the process the entry belongs to: a stand-in that came up after a failed restore

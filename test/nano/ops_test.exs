@@ -365,6 +365,39 @@ defmodule Nano.OpsTest do
     end
   end
 
+  test "term/1 cannot take the caller down" do
+    # A term is evaluated in a supervised task, so an expression that would kill the calling
+    # process (a LiveView, an API connection) comes back as an error instead.
+    parent = self()
+
+    task =
+      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+        Ops.term("Process.exit(self(), :kill)")
+      end)
+
+    assert {:ok, {:error, message}} = Task.yield(task, 2_000)
+    assert message =~ "killed"
+    assert Process.alive?(parent)
+
+    # A raise is reported with no harness or Task frames, as before.
+    assert {:error, "** (RuntimeError) boom"} = Ops.term(~s|raise "boom"|)
+    assert {:error, "** (TokenMissingError)" <> _} = Ops.term("{")
+    assert {:ok, {:ping, 42}} = Ops.term("{:ping, 42}")
+  end
+
+  test "a malformed store entry does not crash the listing" do
+    name = unique("malformed")
+    on_exit(fn -> Nano.StateStore.delete(name) end)
+    # An entry without the fields an agent's map has: a stand-in written before its fields
+    # were merged, or a stray put.
+    Nano.StateStore.put(name, %{name: name, pid: self()})
+
+    assert NanoAgent.info(name) == nil
+    assert name in NanoAgent.list()
+    refute Enum.any?(Ops.agents(), &(&1.name == name))
+    assert is_list(Ops.processes())
+  end
+
   defp wait_for(fun, tries \\ 100) do
     case fun.() do
       falsy when falsy in [nil, false] and tries > 0 ->

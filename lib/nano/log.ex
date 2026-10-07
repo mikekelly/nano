@@ -63,14 +63,30 @@ defmodule Nano.Log do
 
     if File.exists?(path) do
       # A line being appended concurrently may be incomplete; it is skipped until it is whole.
+      # `seq` is the last field of every line, so the raw text tells us whether a line is past
+      # `since` without decoding it: a `\"seq\":\" number` at or below `since` is skipped cheaply.
+      # This is what makes polling `log?since=<last seq>` cheap on a long log.
       for line <- File.stream!(path),
-          {:ok, entry} <- [Jason.decode(line)],
-          entry["seq"] > since do
+          past?(line, since),
+          {:ok, entry} <- [Jason.decode(line)] do
         entry
       end
       |> Enum.sort_by(& &1["seq"])
     else
       []
+    end
+  end
+
+  # Whether a JSONL line's seq is greater than `since`, judged from the raw text alone. A line
+  # that cannot be judged (no seq field, a non-integer value, malformed JSON) is passed on, so
+  # decoding and the caller still see it exactly as before.
+  @seq ~r/"seq":(\d+)/
+  defp past?(_line, 0), do: true
+
+  defp past?(line, since) do
+    case Regex.run(@seq, line) do
+      [_, digits] -> String.to_integer(digits) > since
+      nil -> true
     end
   end
 
