@@ -55,6 +55,31 @@ defmodule NanoWeb.BotsLiveTest do
     refute has_element?(view, "#chat-messages script")
     refute has_element?(view, "#chat-messages img")
     assert has_element?(view, "#chat-messages", "hello")
+
+    assert has_element?(
+             view,
+             "#chat-messages .bot-message pre > code",
+             "<script>alert(1)</script>"
+           )
+
+    {:ok, _} =
+      Bots.post(
+        s["id"],
+        hd(ids),
+        "# Outline\n\n- Safe [link](javascript:evil)\n- ![image](x)\n\nPlain <b>text</b>"
+      )
+
+    render(view)
+    assert has_element?(view, "#chat-messages .bot-message h1", "Outline")
+
+    assert has_element?(
+             view,
+             "#chat-messages .bot-message ul > li",
+             "Safe [link](javascript:evil)"
+           )
+
+    assert has_element?(view, "#chat-messages .bot-message p", "Plain <b>text</b>")
+    refute has_element?(view, "#chat-messages a, #chat-messages img, #chat-messages b")
     GenServer.stop(view.pid)
   end
 

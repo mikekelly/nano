@@ -206,7 +206,7 @@ defmodule NanoWeb.BotsLive do
                 style="margin:1rem 0;padding:1rem;border:1px solid #888;border-radius:12px"
               >
                 <strong>{if msg["role"] == "human", do: "You", else: name(@bots, msg["bot_id"])}</strong>
-                <pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit">{msg["text"]}</pre>
+                <NanoWeb.BotMessage.message text={msg["text"]} />
                 <%= if msg["role"] == "bot" && msg["request_id"] do %>
                   <%= if answered?(@session["messages"], msg["request_id"]) do %>
                     <small>Answered</small>
