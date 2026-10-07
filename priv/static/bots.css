@@ -8,3 +8,5 @@
 .face-eyes{position:absolute;top:7px;left:0;right:0;text-align:center;font-size:15px;letter-spacing:5px;padding-left:5px;line-height:1}.face-smile{position:absolute;left:0;right:0;bottom:6px;text-align:center;font-size:17px;line-height:1}.face-small{width:32px;height:32px}.face-small .face-eyes{top:5px;font-size:12px}.face-small .face-smile{bottom:4px;font-size:14px}.face[data-colour=coral]{--face:#ffd9d2}
 
 .attachment img{max-width:180px;max-height:160px;object-fit:contain}
+
+.bots-icon{display:inline-block;flex-shrink:0;vertical-align:middle}.face-eyes{top:11px;left:12px;right:auto;width:4px;height:4px;padding:0;background:currentColor;border-radius:50%;box-shadow:12px 0 currentColor}.face-smile{left:50%;right:auto;bottom:8px;width:14px;height:7px;border:0;border-bottom:2px solid currentColor;border-radius:0 0 14px 14px;transform:translateX(-50%)}.face-small .face-eyes{top:8px;left:9px;width:3px;height:3px;box-shadow:9px 0 currentColor}.face-small .face-smile{bottom:6px;width:11px;height:6px}
