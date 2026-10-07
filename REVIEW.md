@@ -378,3 +378,59 @@ caller). Used for the reading in this review; usable from an eval, the dashboard
   entry returns `nil` and `Ops.agents/0` skips it; `Nano.Ops.term/1` returns `{:error, "** (exit)
   killed"}` for a self-killing term without taking the caller down; `Nano.Log.read(id, 745)` on the
   1.1 MB log is 2.05 ms (was 17 ms) and returns the same four entries.
+
+---
+
+## Added on the follow-up task: eval bindings make the persisted state unbounded (new finding)
+
+**Found by doing the compaction task on this node's own agent.** The context the model is sent is
+`system_prompt <> transcript`, and `Nano.Compact` (below) shrinks the transcript — but the
+transcript is *not* the biggest thing in an agent's saved state. The `bindings` key is.
+
+`NanoAgent.eval/3` returns the caller's `Code.eval_string` bindings and stores them in state
+(`tool_result/…` does `%{s | bindings: bindings}`), which `save/2` writes to
+`Nano.StateStore` and to a `.term` file **after every callback**. One eval on this agent bound
+the agent's own state, `live = :sys.get_state(NanoAgent.whereis("reviewer"))`. That is legal —
+and it produced a 159 MB binding (the state containing the binding containing the state…), a
+101 MB `/data/state/reviewer.term`, and a re-serialisation of all of it on every single
+callback. The node restarted three times while I probed it, and the store then dropped the
+oversized bindings on restore (they came back as nothing, which is why the file fell to 326 KB).
+
+**Evidence.**
+- `{_:bindings}` bytes: **159,570,172** (`:live` alone 101,037,398; `:store` 50,474,792), against
+  a 286 KB transcript — the state was `:erlang.term_to_binary/1` = **159,863,280 bytes**.
+- `ls -la /data/state/reviewer.term` → **101,037,398** bytes; after a restart that dropped the
+  bindings → **326,312**.
+- Three `NanoAgent` restarts in 60 s, after which the harness halted the agent
+  ("restarted 3 times within 60 seconds… halted").
+
+**Who it hurts.** Any long-lived agent that binds a big term — a file's contents, a page, a
+`Process.list/0`, or (worst) its own state — writes kilobytes-to-megabytes on every turn, in
+`save/2`'s `Nano.StateStore.put/2` and in the state file, and each restart risks the binding.
+It is `NanoAgent`'s analogue of M3, and it is worse because it is on the persisted path.
+
+**Suggested fix (not made):** cap or drop oversized bindings in `save/2` (the way the restore path
+already effectively does), or store them separately from the entry, or warn the agent when an
+eval produces a binding above some size. Mainline `6e153c5` ("Eval bindings saved apart from the
+entry, only when an eval changes them") is a step in that direction; this note is what an agent
+under `56377cc` actually measured.
+
+## Compaction on this harness
+
+Nothing in the harness replaces a transcript: `NanoAgent` only appends, and a summary written as a
+*reply* never reaches state, so it changes nothing. What works is rewriting the three places the
+transcript lives at once — the running GenServer's state (`:sys.replace_state/2`), the
+`Nano.StateStore` row, and (through it) the state file. `lib/nano/compact.ex` does that:
+
+    Nano.Compact.transcript("reviewer", &Nano.Compact.keep_ends(&1, 8, 40))
+
+with `repair/1` enforcing the API invariant (every assistant `tool_calls` followed, in order, by a
+tool message per call id) so a compaction cannot leave the next request malformed.
+
+**What it cost and what it lost.** Applied to this agent: the transcript went from 232,171
+approximate input tokens to ~32,000 (an 86% cut), the state file from ~600 KB of transcript to a
+handful of messages plus a summary. The loss is the middle of the task-1 history: only the opening
+task, one summary message, and the last ~40 messages survive; the step-by-step reading of
+`/app/lib` is gone from context (it remains in the log and the state file). The harness itself
+also compacts — a `COMPACTED (placeholder)` user message appeared at index 1 of the transcript
+during the task, written by the node runner, not by this module.
