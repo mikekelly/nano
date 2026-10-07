@@ -72,12 +72,17 @@ defmodule Nano.Web do
           [
             url: url,
             decode_body: false,
+            compressed: false,
+            into: bounded_sink(Keyword.get(opts, :max_download_bytes, 5_000_000)),
             receive_timeout: Keyword.get(opts, :timeout, 20_000),
             connect_options: [timeout: 5000],
             retry: false
           ] ++ Keyword.get(opts, :req_options, [])
 
         case Req.get(request) do
+          {:ok, %{private: %{nano_too_large: true}}} ->
+            {:error, :page_too_large}
+
           {:ok, %{status: s, body: body, headers: headers}}
           when s in 200..299 and is_binary(body) ->
             type = headers |> Map.get("content-type", []) |> Enum.join(";")
@@ -183,9 +188,21 @@ defmodule Nano.Web do
      }}
   end
 
+  defp bounded_sink(cap) do
+    fn {:data, data}, {req, resp} ->
+      if byte_size(resp.body) + byte_size(data) > cap do
+        {:halt, {req, %{resp | private: Map.put(resp.private, :nano_too_large, true)}}}
+      else
+        {:cont, {req, %{resp | body: resp.body <> data}}}
+      end
+    end
+  end
+
   defp atomic_write(file, data) do
-    temp = file <> ".6274.tmp"
-    result = with :ok <- File.write(temp, data), do: File.rename(temp, file)
+    temp =
+      file <> "." <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false) <> ".tmp"
+
+    result = with :ok <- File.write(temp, data, [:exclusive]), do: File.rename(temp, file)
     File.rm(temp)
     result
   end
