@@ -28,7 +28,7 @@ defmodule Nano.MCP.Transport do
       {:error, :executable_not_found}
     end
   rescue
-    error -> {:error, {:spawn, Exception.message(error)}}
+    _ -> {:error, :spawn_failed}
   end
 
   def open(%{"url" => url}, _owner, _generation) do
