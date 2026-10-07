@@ -21,6 +21,7 @@ defmodule Nano.Application do
           {Registry, keys: :unique, name: Nano.Registry},
           Nano.StateStore,
           {Task.Supervisor, name: Nano.EvalSupervisor},
+          Nano.Background,
           # Holds the ChatGPT subscription's tokens; its init cannot fail, so it cannot stop the boot.
           Nano.ChatGPT.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
@@ -42,6 +43,7 @@ defmodule Nano.Application do
       best_effort(fn ->
         Nano.StateStore.load()
         NanoAgent.revive(Nano.AgentSupervisor)
+        Nano.Delegation.restore()
       end)
 
       {:ok, sup}
