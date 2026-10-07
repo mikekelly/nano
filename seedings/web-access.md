@@ -29,8 +29,10 @@ at 30 seconds.
 - The four functions above as an Elixir module, with `fetch_content` and `web_search`
   first; use `EXA_API_KEY` from the environment for search when present (see `search.md`),
   and say clearly which providers are available on this node and which are not.
-- Readable extraction of HTML to text or Markdown done on the node; PDFs if a tool can be
-  installed in the container; skip video.
+- Readable extraction of HTML to text or Markdown done on the node; for pages that need
+  JavaScript, Lightpanda is in the image (`lightpanda fetch --dump markdown URL`, or its
+  CDP server on 9222 for interaction); PDFs if a tool can be installed in the container;
+  skip video.
 - The same caching, slicing and timeout behaviour, with the limits in one place.
 - Paged access to long content so an agent never has to pull a whole page into its context.
 

@@ -23,6 +23,38 @@ by hand after it has built its tools has wasted the building.
 prompt is paid for on every call, for the agent's whole life. A prompt should describe
 the agent's situation and name where to find more, not contain more. Put detail in files.
 
+**A ladder that compounds.** The order below is not a rule, but each rung is built out of
+the ones before it, and each makes the next one cheaper, so it is a good default. Check
+`/app/NOTES.md` first: on this node some rungs may already exist.
+
+1. *Files*: `read(path, opts)` with paging and a size cap, `write(path, content)`,
+   `edit(path, old, new)` as an exact-text replacement, `ls`, `find(glob)`, `grep(pattern)`.
+   Everything else reads and changes files; without these, every other rung is written by
+   hand. Return shapes that are easy to pattern-match, errors returned not raised.
+2. *Shell*: `sh(cmd, opts)` with cwd, timeout and bounded, tail-able output; then
+   background tasks whose completion arrives as a mailbox event
+   ([background-tasks.md](background-tasks.md)), so long commands never hold a turn.
+3. *Notes and an index*: a module that says what exists and how to call it, and writes
+   `/app/NOTES.md` from that table, so the next agent (or you after a restart) starts from
+   the index instead of from the source.
+4. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
+   and pre-reading, give it a task, get its result as a message. From here on, anything
+   large is a sub-agent's job and your context stays at the level of the plan.
+5. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
+   search, when a key for a search service is present (`EXA_API_KEY`;
+   [search.md](search.md)); and the browser that is already in the image — Lightpanda at
+   `/usr/local/bin/lightpanda`, a headless browser with JavaScript: `lightpanda fetch
+   --dump markdown URL` renders a page and prints it as Markdown, and `lightpanda serve
+   --host 127.0.0.1 --port 9222` runs a CDP server that Puppeteer- or Playwright-style
+   clients can drive for clicks and forms. Wrap it like any other tool.
+6. *Goals* ([goals.md](goals.md)) and *memory*: what you are trying to do and what you have
+   learned, on disk, reviewed cheaply at each wakeup.
+7. *Decision models* for the judgments that recur (below), and *MCP* ([mcp.md](mcp.md)) for
+   tools that other people have already built.
+
+By rung 4 a single eval can be `Delegation.subagent("scout", prompt: ..., pre: [...])`,
+where the same work at rung 0 was pages of code and a dozen turns of fixing it.
+
 **Know your role and level of abstraction, and defend your context with delegation.**
 Decide what level you are working at and keep your context for that level. An agent
 responsible for planning a large, multi-step piece of work should spend its context on
