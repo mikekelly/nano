@@ -22,6 +22,28 @@ defmodule NanoWeb.Router do
     live "/agents/:name", AgentLive
   end
 
+  pipeline :bots_browser do
+    plug :put_root_layout, html: {NanoWeb.BotsLayouts, :root}
+  end
+
+  scope "/bots", NanoWeb do
+    pipe_through [:browser, :bots_browser]
+    get "/files/:id", BotsFileController, :show
+    live "/", BotsLive
+  end
+
+  pipeline :bots_secret do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+  end
+
+  scope "/bots", NanoWeb do
+    pipe_through :bots_secret
+    post "/requests/:id/setting", BotsSettingController, :create, log: false
+  end
+
   # No pipeline: the API always answers JSON (or an event stream), whatever the Accept header.
   # Path params arrive URL-decoded, so `/api/processes/%23PID%3C0.231.0%3E` gives "#PID<0.231.0>".
   scope "/api", NanoWeb do
