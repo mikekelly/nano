@@ -1,4 +1,4 @@
-# Nano Agent Sandbox — Spec
+# Nano Agent — Spec
 
 ## Overview
 

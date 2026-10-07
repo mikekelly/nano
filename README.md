@@ -1,4 +1,4 @@
-# Nano Agent Sandbox
+# Nano Agent
 
 **A tiny agent that starts with nothing and builds its own harness.** Nano turns an Elixir
 process into an agent (a model, a mailbox and two tools) and then leaves it to build the

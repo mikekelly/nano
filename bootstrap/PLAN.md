@@ -1,4 +1,4 @@
-# Delivery plan — Nano Agent Sandbox
+# Delivery plan — Nano Agent
 
 Source of truth is `SPEC.md`. This plan adds only (a) decisions where the spec is silent,
 (b) the module contracts that let work proceed in parallel, and (c) the stages and their

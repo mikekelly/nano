@@ -1,4 +1,4 @@
-# Working on and with the Nano Agent Sandbox
+# Working on and with the Nano Agent
 
 This file is for AI agents (and people) working on this repository from the outside:
 Claude Code, pi, or anyone with a shell. Agents running *inside* the sandbox will also
