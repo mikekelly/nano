@@ -8,6 +8,8 @@ One Docker container runs one BEAM node, and each agent is a GenServer on it. A 
 and a JSON API on port 4000 show everything every agent does.
 [bootstrap/SPEC.md](bootstrap/SPEC.md) is the full design.
 
+![The dashboard: a start form, then a card per agent with its model, who started it, turns, tokens and context used, and what it is doing now](docs/dashboard.png)
+
 ## Design
 
 - **An embodied harness.** In the model's context, the "user" is the harness itself, not a
