@@ -100,7 +100,7 @@ defmodule NanoWeb.AgentLive do
     name = socket.assigns.name
     agent = Nano.Ops.agent(name)
     spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
-    socket = assign(socket, agent: agent, spawned: spawned)
+    socket = assign(socket, agent: agent, spawned: spawned, goals: Seedling.Goals.review(name))
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -264,6 +264,19 @@ defmodule NanoWeb.AgentLive do
           </summary>
           <pre>{@agent.system_prompt}</pre>
         </details>
+
+        <section id="agent-goals" class="goals">
+          <h3>Open goals</h3>
+          <%= case @goals do %>
+            <% {:ok, review} -> %>
+              <pre>{review.text}</pre>
+              <p :if={review.truncated} class="dim">
+                Review clipped; read Seedling.Goals.list/1 for the full tree.
+              </p>
+            <% {:error, reason} -> %>
+              <p class="dim">Goals unavailable: {inspect(reason)}</p>
+          <% end %>
+        </section>
 
         <nav class="views">
           <.link
