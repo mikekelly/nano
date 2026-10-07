@@ -37,14 +37,11 @@ defmodule Nano.User do
 
   @doc "The user's pid, or nil."
   def pid(name) do
-    case Registry.lookup(Nano.Registry, {:user, name}) do
-      [{pid, _}] -> pid
-      [] -> nil
-    end
+    with :undefined <- Nano.Names.whereis_name({:user, name}), do: nil
   end
 
   @doc "Names of all users."
-  def list, do: Registry.select(Nano.Registry, [{{{:user, :"$1"}, :_, :_}, [], [:"$1"]}])
+  def list, do: for({{:user, name}, _} <- Nano.Names.all(), do: name)
 
   defp deliver(name, to, message) do
     case Nano.Ops.resolve(to) do
@@ -64,7 +61,7 @@ defmodule Nano.User do
     :exit, _ -> {:error, :unresponsive}
   end
 
-  defp via(name), do: {:via, Registry, {Nano.Registry, {:user, name}}}
+  defp via(name), do: {:via, Nano.Names, {:user, name}}
 
   @impl true
   def init(name), do: {:ok, %{name: name, inbox: []}}

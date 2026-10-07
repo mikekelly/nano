@@ -392,10 +392,12 @@ which have no spending limit at all.
   (every agent's log and saved state, but not the settings or the ChatGPT tokens) to `archive/`, resets the checkout to `main` with no
   other branches, and recreates the container. It refuses while the checkout has work that
   is not committed and pushed.
-- **Some messages are not harmless.** The harness's own processes ignore unexpected
-  messages, but OTP's do not: a plain message to a `Registry` or `PubSub` partition process
-  crashes it, which restarts every agent (with history; three times in a minute trips the
-  restart brake), and a `GenServer.cast` to `Nano.Supervisor` crashes it and the node, which
-  Docker then restarts. Both are reachable from an agent's eval and from the send forms.
+- **Some messages are not harmless.** Agents and users are linked only to their supervisor,
+  so a crash elsewhere does not restart them. The harness's own processes, `Nano.Names`
+  among them, ignore unexpected plain messages, but OTP's do not: a message to one of
+  `Nano.PubSub`'s partition processes crashes it, and the processes subscribed through it die
+  with it (dashboard pages, which reconnect, and log streams); a `GenServer.cast` to
+  `Nano.Supervisor` crashes it and the node, which Docker then restarts. Both are reachable
+  from an agent's eval and from the send forms.
 - **A restart during a model request loses that request's usage.** The turn is counted,
   but its tokens and cost are never recorded, though OpenRouter may still bill it.

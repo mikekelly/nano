@@ -8,7 +8,7 @@ defmodule Nano.SmokeTest do
   test "the supervision tree is up and the boot set is recorded" do
     for name <- [
           Nano.PubSub,
-          Nano.Registry,
+          Nano.Names,
           Nano.Settings,
           Nano.StateStore,
           Nano.EvalSupervisor,

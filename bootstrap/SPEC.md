@@ -32,7 +32,7 @@ Agents talk to OpenRouter, or to a ChatGPT subscription, and publish every actio
 
 ## Agent GenServer
 
-Each agent is one `NanoAgent` GenServer under a `DynamicSupervisor`, registered in a `Registry` so the dashboard can tell agents apart from other processes. The harness does three things only: deliver mailbox messages as events, run the model's tool calls, and log everything.
+Each agent is one `NanoAgent` GenServer under a `DynamicSupervisor`, registered by name in `Nano.Names` so the dashboard can tell agents apart from other processes. `Nano.Names` is a small `:via` registry used instead of Elixir's `Registry`, which links to every process it names: it monitors them instead, ignores messages it does not expect, and keeps the names in an ETS table that outlives it, so neither a message sent to it nor its death touches an agent. The harness does three things only: deliver mailbox messages as events, run the model's tool calls, and log everything.
 
 **State**
 
@@ -95,6 +95,7 @@ Failures in the model's code are returned to the model as tool results; failures
 | Eval hangs | infinite loop | Killed after `eval_timeout_ms` (a setting); tool result reports the timeout |
 | Agent process dies | `Process.exit(me, :kill)` | Supervisor restarts it with history restored, then a harness note explains |
 | Restart loop | agent kills itself again after each restart | After 3 restarts in 60 s, the agent is restarted halted |
+| Stray message | `send/2` to `Nano.Names` or a `Nano.PubSub` partition | Allowed; `Nano.Names` ignores it; a partition crashes and restarts, ending only the processes subscribed through it (dashboard pages reconnect) |
 | Agent suspended | `:sys.suspend(me)` | Allowed; dashboard shows it as suspended and offers Resume |
 | Dashboard dies | agent kills the Phoenix endpoint | Allowed; supervisor may restart it, and JSONL logs remain |
 | Node dies | `System.halt()` | Docker restarts the container; logs and code edits survive; agents are revived from `/data/state` with their history, and a harness note says the node restarted |
@@ -249,7 +250,7 @@ The dashboard is a Phoenix LiveView app running in the same BEAM node, so it can
 | Column | Source |
 | --- | --- |
 | PID | `Process.list/0` |
-| Name | Registered name, or agent name from the `Registry` |
+| Name | Registered name, or agent or user name from `Nano.Names` |
 | Kind | Agent, spawned by an agent, or other |
 | Current function | `Process.info(pid, :current_function)` |
 | Message queue | `:message_queue_len` |

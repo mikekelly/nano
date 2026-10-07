@@ -233,8 +233,7 @@ defmodule Nano.StateStore do
 
   @impl true
   def handle_continue(:resave, watched) do
-    agents = Registry.select(Nano.Registry, [{{{:agent, :_}, :"$1", :_}, [], [:"$1"]}])
-    for pid <- agents, do: GenServer.cast(pid, :resave)
+    for {{:agent, _}, pid} <- Nano.Names.all(), do: GenServer.cast(pid, :resave)
     {:noreply, watched}
   catch
     _, _ -> {:noreply, watched}

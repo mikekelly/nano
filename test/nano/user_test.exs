@@ -19,7 +19,7 @@ defmodule Nano.UserTest do
 
     pid =
       spawn_link(fn ->
-        Registry.register(Nano.Registry, {:agent, name}, nil)
+        Nano.Names.register_name({:agent, name}, self())
         send(test, :registered)
         forward(test)
       end)

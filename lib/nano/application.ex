@@ -14,11 +14,14 @@ defmodule Nano.Application do
 
   @impl true
   def start(_type, _args) do
+    # Owned by this process, which lives as long as the application, so names outlive Nano.Names.
+    Nano.Names.create_table()
+
     children =
       Enum.map(
         [
           {Phoenix.PubSub, name: Nano.PubSub},
-          {Registry, keys: :unique, name: Nano.Registry},
+          Nano.Names,
           # The node's settings; its init cannot fail either.
           Nano.Settings,
           Nano.StateStore,
@@ -91,8 +94,8 @@ defmodule Nano.Application do
   end
 
   @doc """
-  Starts `Nano.UserSupervisor`. If it was killed (or gave up after `Nano.Registry` was), its
-  users died with it; the dashboard's own user is started again. Other users are not.
+  Starts `Nano.UserSupervisor`. If it was killed, its users died with it; the dashboard's
+  own user is started again. Other users are not.
   """
   def start_users do
     with {:ok, sup} <-

@@ -225,8 +225,7 @@ defmodule Nano.Ops do
 
   defp context do
     # pid => {:agent, name} | {:user, name}
-    names =
-      Map.new(Registry.select(Nano.Registry, [{{:"$1", :"$2", :_}, [], [{{:"$2", :"$1"}}]}]))
+    names = Map.new(Nano.Names.all(), fn {key, pid} -> {pid, key} end)
 
     agents = Nano.StateStore.all()
 

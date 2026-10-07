@@ -29,7 +29,7 @@ defmodule Nano.OpsTest do
 
     pid =
       spawn_link(fn ->
-        Registry.register(Nano.Registry, {:agent, name}, nil)
+        Nano.Names.register_name({:agent, name}, self())
         send(test, :registered)
         Process.sleep(:infinity)
       end)
@@ -306,7 +306,7 @@ defmodule Nano.OpsTest do
       assert Ops.stop_agent(name) == :ok
       refute Process.alive?(pid)
       assert Ops.agent(name) == nil
-      # The Registry drops a dead process asynchronously.
+      # Nano.Names drops a dead process's name asynchronously.
       wait_for(fn -> Ops.whereis(name) == nil end)
       refute name in NanoAgent.list()
     end

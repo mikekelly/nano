@@ -20,7 +20,7 @@ and say so.
    `phoenix_live_view.min.js` are served straight from the deps' `priv/static`, plus one
    hand-written `priv/static/app.css` and a few lines of inline JS to connect the LiveSocket.
    No Ecto, mailer, gettext, LiveDashboard, or telemetry boilerplate. Bandit as the server.
-3. **Agent identity.** `name` is unique and is the Registry key and the API handle.
+3. **Agent identity.** `name` is unique and is the `Nano.Names` key and the API handle.
    `id` is `"<name>-<6 hex>"`, generated when an agent is first started, stable across
    crash-restarts, new after stop + start or node restart. PubSub topic `agent:<id>`,
    log file `<LOG_DIR>/<id>.jsonl` (`LOG_DIR` defaults to `/data/logs`; `tmp/logs` in dev/test).
@@ -91,7 +91,7 @@ and say so.
 NanoAgent.start(opts)        # {:ok, pid} | {:error, reason}
                              # opts: name: (required), model: (DEFAULT_MODEL), start_idle: true,
                              #       system_prompt: (template override), max_turns:, max_tokens:
-NanoAgent.whereis(name)      # pid | nil            (Registry lookup; no call to the agent)
+NanoAgent.whereis(name)      # pid | nil            (Nano.Names lookup; no call to the agent)
 NanoAgent.notify(agent, term)# :ok                  (cast; agent is a pid or a name)
 NanoAgent.unhalt(agent)      # :ok                  (cast)
 NanoAgent.info(name)         # map | nil            (reads Nano.StateStore; no call to the agent)
@@ -118,7 +118,7 @@ Nano.OpenRouter.chat(model, messages, tools)  # {:ok, %{message, finish_reason, 
 #   one attempt; retry/backoff (3 attempts, transient errors only) and model_error logging live in NanoAgent
 #   or here — implementer's choice, but every attempt's failure is logged as model_error.
 
-# ── Nano.User (GenServer, registered by name in the same Registry) ────────────
+# ── Nano.User (GenServer, registered by name in Nano.Names too) ─────────────
 # exactly the table in SPEC.md "Nano.User". `to` may be a pid, an agent name, or a user name.
 # Everything sent/received is broadcast on topic "user:<name>" as {:nano_user, %{dir: :sent | :received, at, to, term}}.
 Nano.User.list()                      # [name]
@@ -139,8 +139,9 @@ resolve/1           # agent name | user name | registered name | "#PID<…>" str
 eval/1              # (code string) -> {:ok, inspected_result} | {:error, message}
 ```
 
-Registry: one `Registry` named `Nano.Registry`, keys `{:agent, name}` and `{:user, name}`.
-Supervision tree (in order): `Phoenix.PubSub` (`Nano.PubSub`), `Nano.Registry`, `Nano.StateStore`,
+Names: `Nano.Names`, a `:via` registry that monitors (not links) what it names, keys
+`{:agent, name}` and `{:user, name}`, in an ETS table owned by the application's start process.
+Supervision tree (in order): `Phoenix.PubSub` (`Nano.PubSub`), `Nano.Names`, `Nano.StateStore`,
 `Task.Supervisor` (`Nano.EvalSupervisor`), `DynamicSupervisor` (`Nano.AgentSupervisor`),
 `DynamicSupervisor` (`Nano.UserSupervisor`), `NanoWeb.Endpoint`. After the tree is up, the
 application records `Process.list()` in `:persistent_term` as the boot set, and starts the

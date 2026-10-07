@@ -97,7 +97,7 @@ defmodule NanoAgent do
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
           with [pid | _] <- Process.get(:"$callers"),
-               [{:agent, n}] <- Registry.keys(Nano.Registry, pid) do
+               [n | _] <- for({{:agent, n}, ^pid} <- Nano.Names.all(), do: n) do
             n
           else
             _ -> nil
@@ -156,18 +156,11 @@ defmodule NanoAgent do
   end
 
   @doc false
-  def start_link(opts),
-    do:
-      GenServer.start_link(__MODULE__, opts,
-        name: {:via, Registry, {Nano.Registry, {:agent, opts[:name]}}}
-      )
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: target(opts[:name]))
 
-  @doc "The agent's live pid, or nil (Registry lookup; no call to the agent)."
+  @doc "The agent's live pid, or nil (`Nano.Names` lookup; no call to the agent)."
   def whereis(name) do
-    case Registry.lookup(Nano.Registry, {:agent, name}) do
-      [{pid, _}] -> if Process.alive?(pid), do: pid
-      [] -> nil
-    end
+    with :undefined <- Nano.Names.whereis_name({:agent, name}), do: nil
   end
 
   @doc "Casts a term to an agent (pid or name); it arrives as an event, like a plain `send/2`."
@@ -253,7 +246,7 @@ defmodule NanoAgent do
   end
 
   defp target(pid) when is_pid(pid), do: pid
-  defp target(name), do: {:via, Registry, {Nano.Registry, {:agent, name}}}
+  defp target(name), do: {:via, Nano.Names, {:agent, name}}
 
   defp new_id(name), do: name <> "-" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
 
