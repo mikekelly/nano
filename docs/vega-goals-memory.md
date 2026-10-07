@@ -62,3 +62,12 @@ Review scans a capped disk document; it does not contact a service or wait for a
 Tests use random isolated roots and exercise fresh-process reads, concurrency, CRUD,
 validation, corruption and bounded retrieval; VM restart durability follows from disk-only
 state, rather than a full container restart test.
+
+## Dashboard integration
+
+`Vega.GoalsView.panel/1` renders a review result (escaped titles/why, status, relation,
+omitted count, graceful errors). `docs/vega-goals-agent-page.patch` adds two lines to
+AgentLive: read review during sync, render panel before navigation. Apply with
+`git apply docs/vega-goals-agent-page.patch` after integrating modules. Kept as a patch
+to avoid colliding with sibling image edits of AgentLive. Verified temporarily applied:
+all 43 goals/memory/decision/component and existing agent-page tests passed.
