@@ -222,7 +222,16 @@ defmodule Vega.BotsTest do
     opts = [server: pid]
     {:ok, _} = Bots.retry(s["id"], opts)
     assert_receive {:delivered, _, _, ^input}
-    {:ok, _} = Bots.post(s["id"], b["id"], "Here is the reply", opts ++ [reply_to: input["id"]])
+
+    {:ok, reply} =
+      Bots.post(s["id"], b["id"], "Here is the reply", opts ++ [reply_to: input["id"]])
+
+    assert {:ok, ^reply} =
+             Bots.post(s["id"], b["id"], "Here is the reply", opts ++ [reply_to: input["id"]])
+
+    assert {:error, :invalid_message_or_author} =
+             Bots.post(s["id"], b["id"], "bad", opts ++ [reply_to: "missing"])
+
     {:ok, saved} = Vega.Bots.Persistence.load(c.root)
     assert saved["outbox"] == []
   end
