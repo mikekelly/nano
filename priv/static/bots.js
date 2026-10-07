@@ -51,12 +51,16 @@
       this.click = e => { if (e.target.closest('#jump-latest')) this.jump(); };
       this.el.addEventListener('scroll', this.scroll, {passive:true});
       document.addEventListener('click', this.click);
+      this.handleEvent('bots-show-latest', () => this.jump());
       this.jump();
     },
-    beforeUpdate() { this.wasFollowing = this.follow; },
+    beforeUpdate() { this.wasFollowing = this.follow; this.firstMessage = this.el.querySelector('article[id]')?.id; this.oldHeight = this.el.scrollHeight; this.oldTop = this.el.scrollTop; },
     updated() {
       if (this.session !== (this.el.dataset.sessionId || this.el.dataset.session)) { this.session = (this.el.dataset.sessionId || this.el.dataset.session); this.wasFollowing = true; }
-      if (this.wasFollowing) this.jump(); else this.showJump(true);
+      const first = this.el.querySelector('article[id]')?.id;
+      if (this.firstMessage && first && first !== this.firstMessage && this.el.querySelector(`[id="${this.firstMessage}"]`)) {
+        this.follow = false; this.el.scrollTop = this.oldTop + this.el.scrollHeight - this.oldHeight;
+      } else if (this.wasFollowing) this.jump(); else this.showJump(true);
     },
     destroyed() { this.el.removeEventListener('scroll', this.scroll); document.removeEventListener('click', this.click); }
   };
