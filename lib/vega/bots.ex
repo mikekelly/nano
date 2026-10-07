@@ -18,7 +18,10 @@ defmodule Vega.Bots do
   Delivery retries by name survive process restarts; consumers must deduplicate IDs.
   """
   def start_link(opts \\ []), do: Vega.Bots.Server.start_link(opts)
-  def snapshot(opts \\ []), do: call(:snapshot, opts)
+
+  def snapshot(opts \\ []),
+    do: Vega.Bots.Server.snapshot(Keyword.get(opts, :server, Vega.Bots.Server))
+
   def bots(opts \\ []), do: select("bots", opts)
   def sessions(opts \\ []), do: select("sessions", opts)
 
@@ -28,7 +31,10 @@ defmodule Vega.Bots do
   end
 
   def get_bot(id, opts \\ []), do: get("bots", id, opts)
-  def get_session(id, opts \\ []), do: get("sessions", id, opts)
+
+  def get_session(id, opts \\ []),
+    do: Vega.Bots.Server.session(Keyword.get(opts, :server, Vega.Bots.Server), id, opts)
+
   def create_bot(name, opts \\ []), do: call({:create_bot, name, opts}, opts)
   def update_bot(id, attrs, opts \\ []), do: call({:update_bot, id, attrs}, opts)
   def create_session(ids, opts \\ []), do: call({:create_session, ids, opts}, opts)

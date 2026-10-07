@@ -227,6 +227,37 @@ defmodule Vega.BotsTest do
     assert saved["outbox"] == []
   end
 
+  test "snapshots exclude closed chat history and bounded latest reads stay nonblocking", c do
+    b = bot("Muse", c.opts)
+    {:ok, s} = Bots.create_session([b["id"]], c.opts)
+
+    Enum.each(1..95, fn n ->
+      {:ok, _} = Bots.post(s["id"], b["id"], "message #{n}", c.opts ++ [proactive: true])
+    end)
+
+    {:ok, snapshot} = Bots.snapshot(c.opts)
+    assert length(hd(snapshot["sessions"])["messages"]) == 1
+    assert hd(snapshot["sessions"])["message_count"] == 95
+    :sys.suspend(c.opts[:server])
+
+    try do
+      assert {:ok, _} = Bots.snapshot(c.opts)
+      assert {:ok, page} = Bots.get_session(s["id"], c.opts)
+      assert length(page["messages"]) == 80
+      assert page["history"]["has_more"]
+      assert page["history"]["start"] == 15
+    after
+      :sys.resume(c.opts[:server])
+    end
+
+    {:ok, page} = Bots.get_session(s["id"], c.opts)
+    {:ok, older} = Bots.get_session(s["id"], c.opts ++ [before: page["history"]["next_before"]])
+    assert length(older["messages"]) == 15
+    refute older["history"]["has_more"]
+    assert hd(older["messages"])["text"] == "message 1"
+    assert {:error, :invalid_cursor} = Bots.get_session(s["id"], c.opts ++ [before: "unknown"])
+  end
+
   test "notification settings validate person controlled bounds and attachments fail closed", c do
     assert {:error, :invalid_settings} =
              Bots.update_settings(%{notification_interval_seconds: 0}, c.opts)
