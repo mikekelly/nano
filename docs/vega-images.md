@@ -52,7 +52,7 @@ Real isolated Codex test (2026-10-07, gpt-6.1-sol, catalog text+image): a genera
 contain the colors or number. Returned: "The left is red, the right is blue, and the
 central panel shows 47." Reported usage 70 prompt / 22 completion (image accounted
 by backend); raw image 733B, immutable metadata148B, estimator4800 tokens.
-`test/vision_smoke.exs` reproduces the real test using a private temporary credential
+`scripts/vega/vision_smoke.exs` reproduces the real test using a private temporary credential
 copy removed in `after`; invoke explicitly via `mix run --no-start`, not ExUnit.
 
 Live harness confirmation (2026-10-07) after parent-approved reload:
