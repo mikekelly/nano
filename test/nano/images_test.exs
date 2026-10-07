@@ -65,6 +65,29 @@ defmodule Vega.ImagesTest do
     assert Images.vision_note(["text", "image"]) =~ "can see"
   end
 
+  test "concurrent imports are atomic and corruption is refused, not silently replaced" do
+    bytes = png(111, 112)
+
+    results =
+      1..20
+      |> Task.async_stream(fn _ -> Images.import_bytes(bytes) end, max_concurrency: 20)
+      |> Enum.to_list()
+
+    assert Enum.all?(results, &match?({:ok, {:ok, _}}, &1))
+    {:ok, {:ok, ref}} = hd(results)
+    path = Path.join([Application.fetch_env!(:nano, :state_dir), "images", ref["id"]])
+    File.chmod!(path, 0o644)
+    File.write!(path, "corrupt")
+    assert {:error, _} = Images.fetch(ref["id"])
+    assert {:error, "image store corruption"} = Images.import_bytes(bytes)
+    File.rm!(path)
+  end
+
+  test "redacts payloads in nested provider error bodies" do
+    error = %{"nested" => ["echo data:image/png;base64,aGVsbG8= end"]}
+    assert Vega.Images.redact(error) == %{"nested" => ["echo [image data redacted] end"]}
+  end
+
   test "JPEG GIF and WebP dimensions" do
     assert {:ok, "image/jpeg", 12, 8} =
              Images.dimensions(<<255, 216, 255, 192, 8::16, 8, 8::16, 12::16, 0>>)

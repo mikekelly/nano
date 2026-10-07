@@ -31,3 +31,37 @@ Estimation uses 4,800 tokens per image; provider usage corrects it on the next r
 
 Tests: `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-images/_build mix test` in this worktree
 (the project makes test builds checkout-local). Tests use run-unique temp state dirs.
+
+## Migration and verification
+
+Pre-image saved states that lack `input_modalities` look up the provider catalog once
+on upgrade, record the answer, and re-render the prompt without resetting history.
+If verification is unavailable they record text-only conservatively; they must be
+restarted as a new agent once the catalog works to acquire vision. Already recorded
+modalities never re-fetch at restart. Model-list cache keys include a schema marker so
+an in-memory pre-image catalog does not disable vision for fresh agents after reload.
+Active model calls finish with their existing request; no transcript/tool exchange is
+rewritten to inject images mid-flight.
+
+Full suite: 264 passing tests after migration, concurrent-store corruption tests, real
+LiveView file-upload -> vision wire -> timeline preview, API, eval, and Codex-format tests.
+Real isolated Codex test (2026-10-07, gpt-6.1-sol, catalog text+image): a generated
+192x128 PNG had colored backgrounds and bitmap digits. The input question did not
+contain the colors or number. Returned: "The left is red, the right is blue, and the
+central panel shows 47." Reported usage 70 prompt / 22 completion (image accounted
+by backend); raw image 733B, immutable metadata148B, estimator4800 tokens.
+`test/vision_smoke.exs` reproduces the real test using a private temporary credential
+copy removed in `after`; invoke explicitly via `mix run --no-start`, not ExUnit.
+
+Live harness confirmation (2026-10-07) after parent-approved reload:
+- Fresh `openai-codex/gpt-6.1-sol` agent, catalog modalities recorded text+image.
+- Agent called eval `Vega.Images.view` on randomly-named generated PNG; tool log kept
+  ref only; after image user-message it answered "The central panel shows 47, with
+  red on the left and blue on the right."
+- Actual HTTP upload `/api/images` and user `/say` sent a **different** image depicting
+  73. The same agent answered "The central panel shows 73, with red on the left and
+  blue on the right." Neither filename nor question disclosed the numbers/colors.
+- Three real calls, reported prompt/completion 342/41, 522/22, 757/22. Saved state and
+  logs checked for data URLs: none; operator timeline has both immutable image refs.
+- Disposable probe agent/user stopped; source PNG removed. Content-addressed image
+  files/log evidence retained as normal (no dangling persisted transcript cleanup).
