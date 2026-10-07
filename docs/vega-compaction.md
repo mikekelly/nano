@@ -103,3 +103,10 @@ The existing overall task timeout remains authoritative; operators can explicitl
 increase `:compaction_timeout_ms` for unusually slow/many-stage providers. A task
 killed by the harness timeout can have already booked node tokens but cannot return
 its unfinished aggregate to the agent; no summary is installed in that case.
+
+For per-invocation cost/latency tuning or inexpensive real multi-stage validation,
+`Vega.Compaction.summarize(model, old, agent_window, stage_input_tokens: 8_000)`
+additionally caps conservative stage input without changing global settings. The
+provider window/output reserve still bounds it from above; accumulated digest and
+instructions count within this input cap. Invalid nonpositive caps are errors.
+Automatic harness calls retain the default `summarize/3` interface and policy.
