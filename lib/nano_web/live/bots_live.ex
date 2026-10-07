@@ -134,6 +134,11 @@ defmodule NanoWeb.BotsLive do
 
   def handle_info(_, socket), do: {:noreply, socket}
 
+  def handle_event("reading-history", %{"reading" => true}, socket),
+    do: {:noreply, assign(socket, history_loaded: true)}
+
+  def handle_event("reading-history", _, socket), do: {:noreply, socket}
+
   def handle_event("load-earlier", _, socket) do
     chat = socket.assigns.current_chat
 
