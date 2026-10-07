@@ -209,7 +209,7 @@ defmodule Nano.BotsRuntimeTest do
         turns_used: 0,
         task: nil,
         calls: [],
-        pending: []
+        pending: [:undelivered]
     })
 
     :sys.replace_state(s, fn state ->

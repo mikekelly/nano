@@ -645,15 +645,24 @@ defmodule Nano.Bots do
 
   defp reconcile_status(s, sid, bid, name) do
     case Nano.StateStore.get(name) do
-      %{status: :idle, task: nil, calls: [], pending: [], turns_used: turns, halted: halted}
+      %{halted: :start_failed} ->
+        if s.data.sessions[sid].status[bid] == :unavailable do
+          s
+        else
+          data = put_in(s.data, [:sessions, sid, :status, bid], :unavailable)
+          persist(s.path, data)
+          broadcast(%{session: sid})
+          %{s | data: data}
+        end
+
+      %{status: :idle, task: nil, calls: [], pending: pending, turns_used: turns, halted: halted}
       when turns > 0 or halted != nil ->
         current = s.data.sessions[sid].status[bid]
 
         status =
           cond do
-            halted == :start_failed -> :unavailable
             halted != nil -> :paused
-            current == :thinking -> :no_reply
+            current == :thinking and pending == [] -> :no_reply
             true -> current
           end
 
