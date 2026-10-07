@@ -14,8 +14,10 @@ From an agent eval:
 ```
 
 Then use the harness **idle** tool. No parent polling/model turns are needed.
+When a result/failure arrives, persist/process it and call `Nano.Delegation.ack(event)`
+from the same eval; duplicate deliveries carry the same `event.receipt.delivery_id`.
 The returned handle contains only identity, addresses, workspace metadata, snapshot
-hashes, MCP public handles, watcher pid and prompt byte count — never a transcript.
+hashes, MCP public handles (not tool schemas), watcher pid and prompt byte count — never a transcript.
 Choose an actually available model with `Nano.Model` (the example is illustrative).
 Provider is selected by slug: `openai-codex/…` uses ChatGPT; other slugs OpenRouter.
 Explicit reasoning and all three limits are required. `max_context` must be >= 8192,
@@ -76,18 +78,18 @@ Address by stable name through NanoAgent, never a cached child/parent pid:
   child: child_name, message: term}`. First task additionally contains the handle.
   Omit `message:` to start idle; send later with `send_task(job, message)`.
 * Result: `%{delegation: :result, id: id, from: child_name, reply_to: parent_name,
-  result: summary}`. Child calls `reply(job, summary)` from eval and then idle.
+  result: summary, receipt: receipt}`. Child calls `reply(job, summary)` from eval and then idle.
   Prompt includes a minimal valid Elixir handle, so idle-started children can report too.
   Keep summary compact: outcome, commit hashes, tests, unresolved issues, relevant paths.
 * Failure: `%{delegation: :failure, id: id, from: child_name, reply_to: parent_name,
-  kind: :halted | :exit | :start, reason: reason}`.
+  kind: :halted | :exit | :start, reason: reason, receipt: receipt}`.
 
 Failures report a halted budget/context/node-budget/usage-limit/restart-brake/log-failed/
 start-failed condition, or process death. Death is a lifecycle report, not a claim that
 supervised restart failed: watcher re-resolves by name and watches the new pid. A halted
-reason is sent once per transition; unhalting permits a later repeat. The parent chooses
-whether to retry, unhalt or delegate a successor. Results terminate watchers but do not
-stop children, change limits or kill tasks. Protocol messages are cooperative, not
+reason is enqueued once per transition; unhalting permits a later repeat. The parent chooses
+whether to retry, unhalt or delegate a successor. Results mark watchers terminal but do not stop children, change limits or kill tasks.
+Watchers exit only after all pending deliveries are acknowledged. Protocol messages are cooperative, not
 cryptographic authentication; the harness is a shared trusted VM.
 
 `NanoAgent.start` executes in the **calling eval**, preserving harness `started_by`
@@ -99,11 +101,22 @@ compatible module for scripted no-spend tests, not a provider configuration.
 
 Independent unlinked watchers monitor deaths and poll `NanoAgent.info` every 250ms
 (`poll_ms:`); polling deterministic state is free of model turns. Durable compact handle
-manifests live under `<state_dir>/delegations` (`storage_dir:` override). Terminal reply
-removes its manifest and stops the watcher. **After node restart or watcher loss call
+manifests live under `<state_dir>/delegations` (`storage_dir:` override). Terminal reply synchronously
+persists its result before returning to the child's eval (so a subsequent child exit
+cannot race a false failure). Atomic same-directory rename replaces the manifest.
+**Results and lifecycle failures use a durable outbox**: they remain on disk until
+`ack(event)` succeeds. Delivery waits for the parent's stable name to exist; parent
+absence does not suppress later delivery. Retries every 5s (`retry_ms:`) reuse the
+same receipt, supporting deduplication. Receipt includes id/name/parent/storage_dir
+and delivery_id. Acknowledgment removes just that entry; a terminal watcher removes
+its manifest and exits once the queue is empty. Duplicate acknowledgments are safe. **After node restart or watcher loss call
 `Nano.Delegation.restore()`** (boot integration or a successor eval). `watch(job)` also
 resumes one watch idempotently. Restore does not call models or restart stopped children.
-No automatic boot hook is installed by this standalone module.
+Malformed manifest files return per-file errors without blocking other recoveries.
+No automatic boot hook is installed by this standalone module. Parent boot integration
+should invoke restore after StateStore/Registry initialization. Restarts may redeliver
+unacknowledged receipts (at-least-once, not exactly-once delivery); process results
+idempotently by receipt id and acknowledge only after recording them.
 
 Starts return `{:ok, handle}` or `{:error, reason}`. A provider start failure also sends
 `:start` failure to the named parent. If child starts but persistence/watch fails, the
@@ -113,12 +126,31 @@ workspace paths in start errors allow recovery.
 
 ## MCP
 
-Optional `mcp:` servers are prepared before the child receives its first task. The
-`mcp_setup:` callback accepts `(child_name, servers)` and must return
-`{:ok, public_handles}` or `{:error, reason}`. Use stable child-name subscriptions and
-return only public identifiers/capabilities, **never credentials or tokens**. No MCP
-connection is needed or touched when `mcp:` is absent. Direct Nano.MCP integration is
-being coordinated; the callback permits scripted tests without real network/processes.
+Optional `mcp:` servers are connected through Nano.MCP before the child is started:
+
+```elixir
+mcp: ["configured-files", {"custom", [config: %{"command" => "/path/server"},
+  subscribe: ["file:///brief.md"]]}]
+```
+
+Each entry is a configured server name (`/app/config/mcp.json`) or `{name, keyword_options}`.
+Connect options pass through to Nano.MCP, excluding `subscribe:` resource URIs. Connection
+uses `recipient: child_name`, then explicitly watches/subscribes the stable child name.
+Public capabilities and all paginated tool schemas enter the **child's prompt**; schemas
+are removed from the **parent's returned handle**. Child calls `Nano.MCP.call_tool` from
+eval; its prompt includes the named server and usage example, so discovery costs no turns.
+Credentials in connect config never enter the prompt, handle or delegation errors.
+Connections are shared named MCP resources; delegation deliberately does not disconnect
+shared servers on partial failures/completion. Parent/MCP owns their lifecycle.
+
+`mcp_max_bytes:` defaults to 32,768 for complete metadata. Oversized/spilled schema results
+fail setup rather than pretending the child knows the tools; pagination loops are refused.
+No MCP connection is touched when the option is absent. If Nano.MCP is unavailable and
+MCP was requested, setup returns a clear error. `mcp_adapter:` injects the MCP API for
+scripted no-spend tests. A `mcp_setup:` callback overrides direct integration, accepting
+`(child_name, servers)` and returning `{:ok, public_handles}` or `{:error, reason}`. Return
+only public identifiers/capabilities, **never credentials or tokens**. Callback authors
+are responsible for any discovery/setup before returning.
 
 ## Verification
 
@@ -126,4 +158,5 @@ being coordinated; the callback permits scripted tests without real network/proc
 uses scripted fake agents, unique run directories, no model calls or API spending.
 It verifies required settings, pre-read hash/change/cap behavior, shared composition,
 idle starts, MCP-before-start callback, lifecycle halt/death, named terminal reply,
-durable watcher recovery, and real local git worktree/build isolation.
+durable watcher/outbox recovery across absent parent/restart, duplicate receipts/ack,
+corrupt manifest isolation, and real local git worktree/build isolation.

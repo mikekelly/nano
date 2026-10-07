@@ -1,3 +1,35 @@
+defmodule Nano.DelegationTest.MCPAdapter do
+  def connect(name, opts) do
+    send(self(), {:mcp_connect, name, opts})
+    {:ok, self()}
+  end
+
+  def watch(server, child),
+    do:
+      (
+        send(self(), {:mcp_watch, server, child})
+        :ok
+      )
+
+  def status(_server), do: {:ok, %{capabilities: %{"tools" => %{}}}}
+  def tools("oversized", _opts), do: {:ok, %{spilled: true, path: "unused"}}
+
+  def tools(_server, opts) do
+    if opts[:cursor] do
+      {:ok, %{"tools" => [%{"name" => "second", "inputSchema" => %{}}]}}
+    else
+      {:ok, %{"tools" => [%{"name" => "first", "inputSchema" => %{}}], "nextCursor" => "next"}}
+    end
+  end
+
+  def subscribe(server, uri, child),
+    do:
+      (
+        send(self(), {:mcp_subscribe, server, uri, child})
+        :ok
+      )
+end
+
 defmodule Nano.DelegationTest.Adapter do
   def start(opts) do
     parent = self()
@@ -33,8 +65,14 @@ defmodule Nano.DelegationTest.Adapter do
 
   def whereis(name) do
     case Registry.lookup(Nano.Registry, {:delegation_test, name}) do
-      [{pid, _}] -> pid
-      [] -> nil
+      [{pid, _}] ->
+        pid
+
+      [] ->
+        case Registry.lookup(Nano.Registry, {:delegation_test_parent, name}) do
+          [{pid, _}] -> pid
+          [] -> nil
+        end
     end
   end
 
@@ -95,12 +133,112 @@ defmodule Nano.DelegationTest do
     assert Process.alive?(watcher)
     assert :ok = D.reply(h, %{summary: "done", commits: ["abc"], tests: "scripted"})
 
-    assert_receive {:"$gen_cast",
-                    {:notify, %{delegation: :result, from: name, result: %{summary: "done"}}}}
+    assert_receive %{delegation: :result, from: name, result: %{summary: "done"}} = event
+    assert :ok = D.ack(event)
 
     assert name == c.name
     assert D.restore(storage_dir: h.storage_dir, adapter: Adapter) == []
     send(h.pid, :stop)
+  end
+
+  test "default MCP integration prepares named watchers subscriptions and paginated schemas", c do
+    config = [config: %{"token" => "not-a-real-secret"}, subscribe: ["file:///brief"]]
+
+    assert {:ok, h} =
+             D.subagent(
+               c.name,
+               c.opts ++
+                 [mcp: [{"files", config}], mcp_adapter: Nano.DelegationTest.MCPAdapter]
+             )
+
+    assert_receive {:mcp_connect, "files", opts}
+    assert opts[:recipient] == c.name
+    refute Keyword.has_key?(opts, :subscribe)
+    assert_receive {:mcp_watch, "files", child}
+    assert child == c.name
+    assert_receive {:mcp_subscribe, "files", "file:///brief", ^child}
+    assert_receive {:started, _, start_opts}
+    assert start_opts[:system_prompt] =~ "second"
+    refute start_opts[:system_prompt] =~ "not-a-real-secret"
+    assert [%{name: "files"} = metadata] = h.mcp
+    refute Map.has_key?(metadata, :tools)
+    send(h.watcher, :complete)
+    send(h.pid, :stop)
+
+    assert {:error, _} =
+             D.subagent(
+               c.name <> "-fail",
+               c.opts ++
+                 [mcp: ["oversized"], mcp_adapter: Nano.DelegationTest.MCPAdapter]
+             )
+  end
+
+  test "halt and death outbox survives absent parent and watcher restart", c do
+    Registry.unregister(Nano.Registry, {:delegation_test_parent, c.parent})
+    assert {:ok, h} = D.subagent(c.name, c.opts)
+    send(h.pid, {:halt, :budget})
+    Process.sleep(40)
+    refute_receive %{delegation: :failure}, 20
+    Process.exit(h.watcher, :kill)
+    Process.sleep(10)
+
+    assert [{_, {:ok, watcher}}] =
+             D.restore(storage_dir: h.storage_dir, adapter: Adapter, poll_ms: 10)
+
+    Registry.register(Nano.Registry, {:delegation_test_parent, c.parent}, nil)
+    assert_receive %{delegation: :failure, reason: :budget} = halted, 1000
+    assert :ok = D.ack(halted)
+    Registry.unregister(Nano.Registry, {:delegation_test_parent, c.parent})
+    Process.exit(h.pid, :kill)
+    Process.sleep(40)
+    Registry.register(Nano.Registry, {:delegation_test_parent, c.parent}, nil)
+    assert_receive %{delegation: :failure, kind: :exit} = exited, 1000
+    assert :ok = D.ack(exited)
+    send(watcher, :complete)
+  end
+
+  test "terminal result persists while parent absent, retries same receipt until acknowledged",
+       c do
+    Registry.unregister(Nano.Registry, {:delegation_test_parent, c.parent})
+    assert {:ok, h} = D.subagent(c.name, c.opts ++ [retry_ms: 20])
+    assert :ok = D.reply(h, "durable result")
+    send(h.pid, :stop)
+    Process.sleep(40)
+    refute_receive %{delegation: :failure}, 20
+    Process.exit(h.watcher, :kill)
+    Process.sleep(10)
+
+    assert [{_, {:ok, watcher}}] =
+             D.restore(storage_dir: h.storage_dir, adapter: Adapter, poll_ms: 10, retry_ms: 20)
+
+    Registry.register(Nano.Registry, {:delegation_test_parent, c.parent}, nil)
+    assert_receive %{delegation: :result, result: "durable result"} = event, 1000
+    assert_receive %{delegation: :result, receipt: receipt}, 1000
+    assert receipt == event.receipt
+    refute_receive %{delegation: :failure}, 30
+    assert File.exists?(Path.join(h.storage_dir, h.id <> ".term"))
+    assert :ok = D.ack(event)
+    assert :ok = D.ack(event)
+    refute Process.alive?(watcher)
+    assert D.restore(storage_dir: h.storage_dir, adapter: Adapter) == []
+  end
+
+  test "corrupt manifests are isolated during restore", c do
+    assert {:ok, h} = D.subagent(c.name, c.opts)
+    File.write!(Path.join(h.storage_dir, "bad.term"), "not an erlang term")
+    restored = D.restore(storage_dir: h.storage_dir, adapter: Adapter)
+    assert Enum.any?(restored, &match?({_, {:error, :invalid_manifest}}, &1))
+    assert Enum.any?(restored, &match?({_, {:ok, _}}, &1))
+    send(h.watcher, :complete)
+    send(h.pid, :stop)
+  end
+
+  test "minimal documented handles normalize storage directory", c do
+    minimal = %{id: "minimal-#{c.name}", name: c.name, parent: c.parent}
+    assert {:ok, watcher} = D.watch(minimal, adapter: Adapter, storage_dir: c.dir, poll_ms: 10000)
+    state = :sys.get_state(watcher)
+    assert state.handle.storage_dir == c.dir
+    send(watcher, :complete)
   end
 
   test "explicit settings fail before starting", c do
