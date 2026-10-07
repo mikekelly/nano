@@ -137,6 +137,14 @@ defmodule NanoWeb.BotsLive do
   def handle_event("reading-history", %{"reading" => true}, socket),
     do: {:noreply, assign(socket, history_loaded: true)}
 
+  def handle_event("reading-history", %{"reading" => false}, socket) do
+    if socket.assigns.history_loaded do
+      {:noreply, socket |> load_chat(true) |> push_event("bots-show-latest", %{})}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_event("reading-history", _, socket), do: {:noreply, socket}
 
   def handle_event("load-earlier", _, socket) do
@@ -806,7 +814,7 @@ defmodule NanoWeb.BotsLive do
               >Retry reply</button>
             </div>
           </div>
-          <button id="jump-latest" type="button" hidden>New messages ↓</button>
+          <button id="jump-latest" type="button" hidden>Jump to latest ↓</button>
           <form id="composer" class="composer" phx-change="draft" phx-submit="send">
             <label for="message-text" class="sr-only">Message {names(@bots, @chat["bot_ids"])}</label><textarea
               id="message-text"

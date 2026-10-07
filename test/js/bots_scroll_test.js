@@ -1,0 +1,14 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const document={readyState:'loading',addEventListener(){},removeEventListener(){},getElementById(){return {hidden:true}}};
+const ctx={window:{},document,console}; vm.createContext(ctx); vm.runInContext(fs.readFileSync(require('path').join(__dirname, '../../priv/static/bots.js'),'utf8'),ctx);
+let first='m-old', top=-500, events=[], callbacks={};
+const anchor={id:'m-old',getBoundingClientRect(){return {top}}};
+const el={dataset:{session:'s1'},scrollTop:800,scrollHeight:1000,clientHeight:200,addEventListener(){},removeEventListener(){},querySelector(selector){return selector==='article[id]'?{id:first,getBoundingClientRect(){return {top}}}:anchor;}};
+const hook=Object.assign({el,pushEvent(type,value){events.push({type,value})},handleEvent(type,fn){callbacks[type]=fn}},ctx.window.BotsHooks.BotsFollow);
+hook.mounted(); el.scrollTop=500; hook.scroll(); hook.scroll();
+assert.equal(events.filter(e=>e.type==='reading-history'&&e.value.reading).length,1,'detachment emitted only once');
+hook.beforeUpdate(); first='m-new'; top=-300; hook.updated();
+assert.equal(el.scrollTop,700,'same-height sliding window retains anchor offset');
+hook.click({target:{closest(){return true}}}); assert.equal(events.at(-1).type,'latest-messages');
+callbacks['bots-show-latest'](); assert.equal(el.scrollTop,1000); assert.equal(hook.follow,true);
+console.log('PASS: detached state dedupe, sliding cap anchor delta, server latest jump');
