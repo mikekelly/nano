@@ -110,7 +110,33 @@ defmodule Nano.BackgroundTest do
     assert File.read!(job.path) == "retained"
   end
 
+  test "dashboard-style worker kill also kills OS descendants" do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "nano-bg-guard-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    {:ok, job} =
+      Nano.Background.start("sleep 30 & echo $! > child.pid; wait", cwd: dir, notify: self())
+
+    Process.sleep(100)
+    pid = File.read!(Path.join(dir, "child.pid")) |> String.trim()
+    Process.exit(job.pid, :kill)
+    assert_receive {:nano_background, _, %{state: :failed}}, 3000
+    Process.sleep(100)
+
+    case File.read("/proc/#{pid}/stat") do
+      {:error, :enoent} -> :ok
+      {:ok, stat} -> assert Regex.match?(~r/\) Z /, stat), "child still running: #{stat}"
+    end
+  end
+
   test "invalid options
+
 
  and await deadline" do
     assert {:error, _} = Nano.Background.start("echo", timeout: -1)

@@ -319,6 +319,20 @@ defmodule Nano.Background do
             nil -> nil
           end
 
+        worker = self()
+        callers = Process.get(:"$callers", [])
+
+        spawn(fn ->
+          Process.put(:"$ancestors", callers)
+          Process.put(:"$callers", callers)
+          ref = Process.monitor(worker)
+
+          receive do
+            {:DOWN, ^ref, :process, ^worker, :normal} -> :ok
+            {:DOWN, ^ref, :process, ^worker, _} -> terminate_group(os_pid, path, 20)
+          end
+        end)
+
         timer = Process.send_after(self(), :timeout, Keyword.get(opts, :timeout, 30_000))
         result = wait(port, os_pid, path)
         Process.cancel_timer(timer)
@@ -347,6 +361,21 @@ defmodule Nano.Background do
     end
   end
 
+  defp terminate_group(os_pid, path, attempts) do
+    case File.read(path <> ".pid") do
+      {:ok, p} ->
+        System.cmd("/bin/kill", ["-KILL", "--", "-#{String.trim(p)}"], stderr_to_stdout: true)
+
+      _ when attempts > 0 ->
+        Process.sleep(5)
+        terminate_group(os_pid, path, attempts - 1)
+
+      _ ->
+        if os_pid,
+          do: System.cmd("/bin/kill", ["-KILL", "--", "-#{os_pid}"], stderr_to_stdout: true)
+    end
+  end
+
   defp wait(port, os_pid, path) do
     receive do
       {^port, {:exit_status, status}} ->
@@ -356,14 +385,7 @@ defmodule Nano.Background do
         wait(port, os_pid, path)
 
       reason when reason in [:kill, :timeout] ->
-        group =
-          case File.read(path <> ".pid") do
-            {:ok, p} -> String.trim(p)
-            _ -> if(os_pid, do: Integer.to_string(os_pid), else: nil)
-          end
-
-        if group,
-          do: System.cmd("/bin/kill", ["-KILL", "--", "-#{group}"], stderr_to_stdout: true)
+        terminate_group(os_pid, path, 20)
 
         try do
           Port.close(port)

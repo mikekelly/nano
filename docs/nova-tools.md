@@ -50,3 +50,5 @@ Manager restarts recover metadata from a node-local persistent_term snapshot and
 Read is streaming even for oversized lines, retains at most max_bytes pending text plus an 8KB input chunk, and counts the whole file for exact EOF/continuation metadata. Large-file scans can still take time. Grep still reads each searched file into memory.
 
 Manager snapshots are small node-local metadata maps, updated at job start/completion/prune (not output chunks). Persistent-term writes copy the retained map; prune completed jobs in long-lived busy nodes. Notification delivery is best-effort/at-least-once around manager failure; use job id to deduplicate. Recovery test kills only the test node's manager, serially after async tests.
+
+An independent attributed guard monitors each port worker; abnormal BEAM-worker death (including dashboard kill) SIGKILLs its session group so killing the displayed worker does not orphan the shell command.
