@@ -114,3 +114,85 @@ Full isolated checkout suite: **321 passed**, 25.0 seconds (seed 156198),
 exit 0. Existing seed-suite unused-variable/default warnings and intentional
 retry_start termination are not failures. Subsequent focused run includes
 stronger PNG chunk/decompression checks above.
+
+## Optional Chromium CSS/keyboard backend
+
+```elixir
+{:ok, b} = Vega.Browser.start(backend: :chromium, binary: "/usr/bin/chromium",
+  node: "/tmp/vega-browser-tools/node", agent: "vega")
+Vega.Browser.navigate(b, "http://127.0.0.1:4000/bots")
+Vega.Browser.viewport(b, 1280, 800)
+Vega.Browser.viewport(b, 390, 844, mobile: true)
+Vega.Browser.evaluate(b, "document.querySelector('textarea').focus(); true")
+Vega.Browser.press(b, "Tab")
+Vega.Browser.press(b, "Enter")
+Vega.Browser.screenshot(b) # {:ok, %{image: Images_ref, rendering: :css_pixels}}
+Vega.Browser.command(b, "Browser.grantPermissions",
+  %{origin: "http://127.0.0.1:4000", permissions: ["notifications"]}, browser_scope: true)
+Vega.Browser.stop(b)
+```
+
+Default backend remains **:lightpanda**, with truthful :lightpanda_text_layout
+label. Chromium uses the identical task-guarded bridge/API, unique loopback CDP
+port, a fresh task-local profile, --headless=new, and **--no-sandbox** (required
+for this root container). It is not a security sandbox, and page scripts execute
+as root: use only in the trusted agent environment. Chromium profile persists
+under session directory for diagnosis, not shared with another session.
+
+`command/4` exposes bounded generic CDP to avoid inventing separate wrappers for
+every protocol operation. Default attaches target session; `browser_scope: true`
+uses the browser endpoint for Browser.* methods. Unsupported CDP commands return
+honest backend errors. This is powerful: command calls can alter this session's
+state and permissions, not the node's shared settings. External CDP attach is not
+implemented (we deliberately own and clean only our task's browser).
+
+`viewport/4` sets CSS dimensions 1..2000, scale 1, optional `mobile: true`.
+`press/3` generates CDP keyDown/keyUp with printable text, Enter/Tab/Escape,
+Backspace/Delete/arrow keys; optional `modifiers:` follows CDP bitmask
+(Alt=1,Ctrl=2,Meta=4,Shift=8). Focus first. The fixture validates `isTrusted`
+keyboard events and native implicit Enter form submission. Click/fill retain
+DOM semantics above; for trusted coordinate clicks use command Input.dispatchMouseEvent
+with evaluated bounding boxes. No automatic mouse or app-readiness assumptions.
+
+Notifications: Browser.grantPermissions grants **this isolated origin/session**
+permission; this tests the actual Notification constructor/permission state.
+Headless environments may not deliver OS notifications or show events. Do not
+claim desktop popup, click delivery, service worker push, or reboot persistence
+from granted permission alone. GUI QA can intercept window.Notification while
+preserving the real constructor to inspect options without claiming OS delivery.
+
+### Chromium verification actually performed
+
+Installed Debian ARM64 Chromium **154.0.8037.92** (apt); native Node v22.21.1.
+Four focused tests passed (seed 366004, 0.9 sec): original Lightpanda tests plus
+real Chromium fixture. CSS media breakpoint changed green desktop1000x700 to
+red mobile390x700, real CSS PNG hashes/dimensions differed; trusted key A + Enter
+submitted the native form. Browser.grantPermissions yielded granted; actual
+Notification constructor succeeded and `onshow` fired **true** after500ms.
+This does not establish a visible OS desktop popup or clicked notification.
+
+Opt-in `priv/vega_browser_qa.exs` also drove the **live** consumer `/bots` via
+Chromium on this container. It is a standalone `mix run --no-start` script,
+not a test that silently targets a production server. Defaults localhost4000,
+override `VEGA_BROWSER_QA_URL`. It sends no chat, creates no bot/session, does
+not alter notification settings checkboxes; only opens views/forms and grants
+permissions inside its disposable browser profile.
+
+Actual live QA: desktop1280x800 three chat rows/six message nodes, no horizontal
+overflow or operator timeline nodes; real Ctrl+1 twice selected Muse+Dot chips.
+Mobile390x844 CSS scrollWidth390 and hidden sidebar while inchat; Escape closed
+the popover, ArrowDown+Enter opened an **unsaved** create-bot form, Back returned
+to chat list. Real notification permission button UI displayed enabled/granted;
+window errors array empty. Six PNGs preserved for visual review under unique
+`/tmp/vega-browser-tools/qa/...` dirs; actual sample
+`/tmp/vega-browser-tools/qa/Xb0LtGotxrY/desktop-conversation.png` (96,198 bytes)
+and `mobile-two-chips.png` (37,210 bytes). QA evidence is DOM/CSS/events/PNG bytes;
+this agent did not claim human visual inspection. Parent can view with Images.
+No Nano modules or node settings were loaded/changed by this followup. Apt
+installed browser/dependencies; browser/session processes all task-group owned.
+
+Full isolated followup suite: **322 passed**, 26.2 seconds (seed 853860),
+exit0. A temporary QA filename warning was removed by moving the opt-in
+script from test/ to priv/; existing seed-suite warnings/retry_start are not
+failures. Live QA was repeated with strict no-overflow/no-timeline/error-free
+assertions, also exit0; latest artifacts `/tmp/vega-browser-tools/qa/UFWmxObuXgc`.

@@ -1,6 +1,6 @@
 defmodule Vega.Browser do
   @moduledoc """
-  Stateful Lightpanda CDP automation via a dependency-free Node >=22 bridge.
+  Stateful Lightpanda (default) or Chromium CDP automation via Node >=22 bridge.
 
       {:ok, browser} = Vega.Browser.start(node: "/path/to/node", agent: "vega")
       {:ok, _} = Vega.Browser.navigate(browser, "https://example.com")
@@ -23,7 +23,17 @@ defmodule Vega.Browser do
         System.get_env("VEGA_BROWSER_NODE") || System.find_executable("node")
       )
 
-    lightpanda = Keyword.get(opts, :lightpanda, "/usr/local/bin/lightpanda")
+    backend = Keyword.get(opts, :backend, :lightpanda)
+
+    binary =
+      Keyword.get(
+        opts,
+        :binary,
+        if(backend == :chromium,
+          do: "/usr/bin/chromium",
+          else: Keyword.get(opts, :lightpanda, "/usr/local/bin/lightpanda")
+        )
+      )
 
     dir =
       Path.join(
@@ -32,10 +42,19 @@ defmodule Vega.Browser do
       )
 
     token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-    config = %{lightpanda: lightpanda, token: token, ready: Path.join(dir, "ready.json")}
+
+    config = %{
+      backend: backend,
+      binary: binary,
+      profile: Path.join(dir, "profile"),
+      token: token,
+      ready: Path.join(dir, "ready.json")
+    }
+
     script = Keyword.get(opts, :script, Path.join(:code.priv_dir(:nano), "vega_browser.mjs"))
 
-    if is_binary(node) and File.regular?(node) and File.regular?(lightpanda) do
+    if backend in [:lightpanda, :chromium] and is_binary(node) and File.regular?(node) and
+         File.regular?(binary) do
       with :ok <- File.mkdir_p(dir),
            :ok <- File.chmod(dir, 0o700),
            :ok <- Vega.Files.write(Path.join(dir, "config.json"), Jason.encode!(config)),
@@ -59,7 +78,11 @@ defmodule Vega.Browser do
         end
       end
     else
-      {:error, :node_22_and_lightpanda_required}
+      {:error,
+       if(backend == :chromium,
+         do: :node_22_and_chromium_required,
+         else: :node_22_and_lightpanda_required
+       )}
     end
   end
 
@@ -75,6 +98,7 @@ defmodule Vega.Browser do
          dir: dir,
          port: ready["port"],
          token: config["token"],
+         backend: if(config["backend"] == "chromium", do: :chromium, else: :lightpanda),
          task: :erlang.binary_to_term(task, [:safe])
        }}
     end
@@ -135,18 +159,82 @@ defmodule Vega.Browser do
         opts
       )
 
-  @doc "Imports backend PNG with Images. Lightpanda renders text layout, NOT CSS pixels."
+  @doc "Imports backend PNG via Images; labels Lightpanda text-layout or Chromium CSS pixels."
   def screenshot(browser, opts \\ []) do
     with {:ok, %{"data" => data}} <- request(browser, %{op: "screenshot"}, opts),
          {:ok, bytes} <- Base.decode64(data),
          {:ok, "image/png", _, _} <- Vega.Images.dimensions(bytes) do
       with {:ok, image} <- Vega.Images.import_bytes(bytes),
-           do: {:ok, %{image: image, rendering: :lightpanda_text_layout}}
+           do:
+             {:ok,
+              %{
+                image: image,
+                rendering:
+                  if(Map.get(browser, :backend) == :chromium,
+                    do: :css_pixels,
+                    else: :lightpanda_text_layout
+                  )
+              }}
     else
       {:ok, _} -> {:error, :unsupported_screenshot_no_png}
       {:error, _} = error -> error
       _ -> {:error, :invalid_screenshot_png}
     end
+  end
+
+  @doc "Bounded generic CDP. browser_scope: true sends without target sessionId."
+  def command(browser, method, params \\ %{}, opts \\ [])
+      when is_binary(method) and is_map(params),
+      do:
+        request(
+          browser,
+          %{
+            op: "command",
+            method: method,
+            params: params,
+            browser_scope: Keyword.get(opts, :browser_scope, false)
+          },
+          opts
+        )
+
+  @doc "Sets CSS viewport dimensions (1..2000), device scale 1; Chromium supported."
+  def viewport(browser, width, height, opts \\ []) do
+    if is_integer(width) and width in 1..2000 and is_integer(height) and height in 1..2000,
+      do:
+        command(
+          browser,
+          "Emulation.setDeviceMetricsOverride",
+          %{
+            width: width,
+            height: height,
+            deviceScaleFactor: 1,
+            mobile: Keyword.get(opts, :mobile, false)
+          },
+          opts
+        ),
+      else: {:error, :invalid_viewport}
+  end
+
+  @doc "CDP keyDown/keyUp for named keys or one character; modifiers CDP bitmask."
+  def press(browser, key, opts \\ []) when is_binary(key) do
+    if key in [
+         "Enter",
+         "Tab",
+         "Escape",
+         "Backspace",
+         "Delete",
+         "ArrowLeft",
+         "ArrowRight",
+         "ArrowUp",
+         "ArrowDown"
+       ] or String.length(key) == 1,
+       do:
+         request(
+           browser,
+           %{op: "press", key: key, modifiers: Keyword.get(opts, :modifiers, 0)},
+           opts
+         ),
+       else: {:error, :invalid_key}
   end
 
   defp element_action(browser, selector, action, opts) when is_binary(selector),

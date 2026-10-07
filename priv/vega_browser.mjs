@@ -9,13 +9,21 @@ const reserve = net.createServer();
 await new Promise(r => reserve.listen(0, '127.0.0.1', r));
 const port = reserve.address().port;
 await new Promise(r => reserve.close(r));
-const child = spawn(cfg.lightpanda, ['serve', '--host', '127.0.0.1', '--port', String(port)], {stdio: ['ignore', 'inherit', 'inherit']});
+const args = cfg.backend==='chromium'
+  ? ['--headless=new','--no-sandbox','--disable-dev-shm-usage','--no-first-run','--no-default-browser-check',`--user-data-dir=${cfg.profile}`, '--remote-debugging-address=127.0.0.1',`--remote-debugging-port=${port}`,'about:blank']
+  : ['serve','--host','127.0.0.1','--port',String(port)];
+const child = spawn(cfg.binary, args, {stdio: ['ignore', 'inherit', 'inherit']});
 child.on('error', e => { console.error(e.message); process.exit(1); });
 child.on('exit', () => process.exit(1));
 let ws;
 for (let i=0;i<100;i++) {
   try {
-    ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+    let endpoint=`ws://127.0.0.1:${port}/`;
+    if(cfg.backend==='chromium') {
+      const response=await fetch(`http://127.0.0.1:${port}/json/version`);
+      endpoint=(await response.json()).webSocketDebuggerUrl;
+    }
+    ws = new WebSocket(endpoint);
     await new Promise((resolve,reject) => { ws.onopen=resolve; ws.onerror=reject; });
     break;
   } catch { await sleep(50); }
@@ -61,6 +69,15 @@ async function run(q) {
       throw {kind:'timeout',method:'navigate'};
     }
     case 'evaluate': return await evaluate(q.expression);
+    case 'command': return await cdp(q.method,q.params || {},!q.browser_scope);
+    case 'press': {
+      const codes={Enter:13,Tab:9,Escape:27,Backspace:8,Delete:46,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40};
+      const code=codes[q.key] || (q.key.length===1?q.key.toUpperCase().charCodeAt(0):0);
+      const text=q.key==='Enter'?'\r':q.key.length===1?q.key:'';
+      await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:q.key,windowsVirtualKeyCode:code,text,modifiers:q.modifiers || 0});
+      await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:q.key,windowsVirtualKeyCode:code,modifiers:q.modifiers || 0});
+      return true;
+    }
     case 'screenshot': {
       try {return await cdp('Page.captureScreenshot',{format:'png'});}
       catch(e) {if(e.kind==='cdp' && (e.code===-32601 || /not supported|unsupported|not implemented|unknown method/i.test(e.message))) throw {...e,kind:'unsupported',feature:'screenshot'};throw e;}
