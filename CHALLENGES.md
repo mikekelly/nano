@@ -141,7 +141,7 @@ near. The harness tells it the context used on every delivery.
 briefed by message, edits to `lib/nano_agent.ex` adding compaction. Any of these is a
 harness-level capability the agent gave itself.
 
-**So far.** One run (the `utilities-and-delegation` seed, harness-review task, then the
+**So far.** One run (the `utilities-and-delegation` seeding, harness-review task, then the
 `compact-and-delegate` follow-up). First attempt: at ~100k context the model spontaneously
 wrote a Claude Code-style compaction summary as a plain reply, citing an instruction nobody
 had sent; nothing changed, its turn ended, and it sat idle until poked. Second attempt,
@@ -170,13 +170,13 @@ yet been asked of a successor.
 the mailbox for results.
 
 **Run.** A task with obvious parallel parts (port three tools; survey three subsystems), and
-a seed that says other agents can be started and addressed by name.
+a seeding that says other agents can be started and addressed by name.
 
 **Watch for.** A protocol: how it names helpers, what it puts in messages, whether it waits
 with `idle` and a wakeup, how it collects results, and whether budgets stop a two-agent
 loop (spec experiment 4). Processes it spawns show on the dashboard tagged with its name.
 
-**So far.** With the seed's one sentence about delegation and a splittable task, the agent
+**So far.** With the seeding's one sentence about delegation and a splittable task, the agent
 did not delegate at all (0 `NanoAgent.start` calls in 192 turns). Asked explicitly, it
 started three sub-agents (`fix-low`, `fix-m2`, `fix-m3`), briefed each by message with a
 finding to fix, and left them the default 50-turn budget. None reported back: all three
@@ -184,15 +184,16 @@ ran out of turns first. It recovered their work from `git diff`, integrated thre
 with tests, and recorded the lesson itself: "rely on the filesystem, not a sub-agent's
 report". A second try, un-halting one and telling it to report first, failed the same way.
 
-## 11. Seed prompts
+## 11. Seedings
 
-**Goal.** Which framings produce the most interesting building behaviour?
+**Goal.** Which seedings (framings planted before a task) produce the most interesting
+building behaviour?
 
-**Run.** Same task, different seeds, one agent each on a clean node. Seeds and tasks live
-in `seeds/` (see `seeds/README.md`); the first pairing is `utilities-and-delegation` with
-`tasks/review-the-harness`. Put the seed either as a paragraph after the factual prompt ("The people who run
+**Run.** Same task, different seedings, one agent each on a clean node. Seedings and tasks
+live in `seedings/` (see `seedings/README.md`); the first pairing is `utilities-and-delegation` with
+`tasks/review-the-harness`. Put the seeding either as a paragraph after the factual prompt ("The people who run
 this node would like you to…", via `system_prompt_file`) or as the first message from an
-operator user; make that a variable too. Candidate seeds:
+operator user; make that a variable too. Candidate seedings:
 
 - *Baseline*: the factual prompt only.
 - *Library builder*: prefer reusable modules in `/app/lib`; check what exists first; leave a
@@ -207,7 +208,7 @@ operator user; make that a variable too. Candidate seeds:
 started, messages between processes, `git diff`, anything written for successors, and
 whether the task was done.
 
-**So far.** First pairing run once. The seed worked on tool use: the agent built
+**So far.** First pairing run once. The seeding worked on tool use: the agent built
 `lib/nano/tools.ex` a third of the way in and used it in 79 of its remaining 123 evals,
 against a baseline (challenge 4) that used its library almost only in tests. It did not
 delegate until told to (challenge 10) and its first compaction was a reflex from training

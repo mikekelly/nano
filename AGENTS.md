@@ -25,6 +25,7 @@ truthfully.
 | [SPEC.md](SPEC.md) | The design. Source of truth; nearly every sentence is a requirement. Includes the system prompt and the first experiments. |
 | [README.md](README.md) | Running it: quick start, shell and HTTP usage, reverting agent edits, limits, gotchas. |
 | [CHALLENGES.md](CHALLENGES.md) | Experiments to run, with what happened when we ran them. |
+| `seedings/` | Advice planted in an agent before a task, and the tasks, kept for the record. |
 | [PLAN.md](PLAN.md) | How it was delivered: decisions taken where the spec was silent, module contracts. |
 | `priv/system_prompt.txt` | The prompt template, read from disk at every agent start. |
 | `lib/nano_agent.ex` | The harness. The agent's own module; agents can read and change it. |
