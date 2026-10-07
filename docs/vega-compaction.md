@@ -82,3 +82,24 @@ inspected evidence: `/tmp/vega-compact-live/evidence.txt`. The test agent and it
 tasks were stopped afterwards. No node settings or credentials were changed/logged.
 Live provider returned no price, so cost remains unknown, not claimed free.
 The isolated implementation suite passed all 254 tests after the Codex follow-up.
+
+### Full-window histories
+
+The old serialized prefix is streamed through bounded UTF-8 data slices if it cannot
+fit conservatively in a single summary input. Each tool-free call receives the
+previous capped cumulative digest plus the next chronological slice; the final
+capped digest replaces the prefix. Slice boundaries may bisect data records, but
+never provider tool exchanges: those records are inert text in a user message.
+Every byte of the old prefix is covered exactly once. The actual kept transcript
+still cuts only at complete exchanges. Input selection includes JSON escaping,
+system instructions and prior digest, plus output cap and 512-token headroom.
+The cap also respects the summarizer's own window/output limit.
+
+`:compaction_max_stages` defaults to 32 to bound pathological work. Ordinary full
+272k contexts generally require only a few calls. All completed stages (including
+a rejected response) add node tokens once; summed usage and cost are returned for
+agent-budget accounting. A later failure keeps the agent's original history intact.
+The existing overall task timeout remains authoritative; operators can explicitly
+increase `:compaction_timeout_ms` for unusually slow/many-stage providers. A task
+killed by the harness timeout can have already booked node tokens but cannot return
+its unfinished aggregate to the agent; no summary is installed in that case.
