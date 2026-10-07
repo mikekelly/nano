@@ -106,3 +106,13 @@ file/reference is persisted; animated GIF rejected; bad legacy refs hydrate to e
 text; missing dependency/stalled subprocess fail closed and leave no temp bytes;
 concurrent imports and verified cache reuse are covered. No real malformed-provider
 request was made (would waste budget and poison a growing transcript).
+
+## Composing existing references
+
+`Vega.Images.view(ref)` validates/canonicalizes an existing image reference and queues
+it exactly like `view(path)`, without exporting bytes, base64 or intermediate source
+files. For example, `{:ok, %{image: ref}} = Vega.Browser.screenshot(browser);`
+`Vega.Images.view(ref)` lets a vision agent see a browser screenshot directly. A wrapper
+result map is not a reference: pass its `image` field. Invalid maps/types return errors
+and queue nothing. When eval tool calls share a response, all images appear together
+in a user message after **all** tool outputs, regardless of path-versus-ref source.
