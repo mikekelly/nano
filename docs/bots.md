@@ -10,7 +10,10 @@ Parent application integration: add `{Vega.Bots.Server, root: "/data/vega"}` **a
 PubSub, StateStore and AgentSupervisor. No lazy eval-linked processes. Tests start
 supervised instances with a unique root and `name:`; callers pass `server: pid`.
 All service records have string keys. Mutations persist before broadcast/dispatch.
-The durable outbox retries failures and requester-name answers; duplicate requests and
+The durable outbox retries failures and retains inputs until a visible bot reply
+acknowledges delivery (`reply_to: message_id`; compatibility default oldest input).
+Unsolicited updates use `proactive: true` to avoid acknowledging inputs. A cast alone
+is not treated as receipt. Requester-name human answers also retry; duplicate requests and
 answers are idempotent by request ID. Agent delivery is at-least-once; bot prompts
 instruct message-ID deduplication. Bot-to-bot posts do not automatically fan out.
 
@@ -64,14 +67,21 @@ Without explicit session, newest session involving the bot is used, or one is cr
 ## Evidence and current limits
 
 `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-bots-build mix test test/vega/bots_test.exs test/vega/bots_relevance_test.exs`:
-7/7 passing isolated backend tests (no real provider spend). Frontend pending separate
+11/11 passing isolated backend tests (no real provider spend). Frontend pending separate
 subagent. No modules loaded into the running node. Real Codex bot and compaction tests
 wait for parent integration/fixed compaction and authorization.
 
 Initial state snapshot uses owned Vega.Bots.Persistence atomic JSON with a 32MB cap. At cap a new message returns
 `:invalid_or_oversized_store`, never discards old chat; partitioned/archived history is a future
-scaling improvement. Snapshots currently return full chat history and are intended for
-modest local use. Images are canonicalized with Vega.Images.validate_refs; arbitrary image paths fail
+scaling improvement. Snapshots contain session metadata and only a512-character last-message preview.
+Snapshot and latest80-message reads use service-owned ETS and remain nonblocking even
+while the service is busy/suspended. get_session returns a bounded page with history
+total/start/has_more/next_before; pass before: next_before to read older pages (max200).
+The UI must fetch only the opened session and offers exact older-history continuation.
+Snapshot requests prioritize pending requests and cap200 with explicit truncation/count;
+backend durable answer/ack lookup remains complete. Snapshot metadata still lists all
+bots/sessions. Disk writes rewrite single snapshot32MB; modest-local scaling limit
+remains explicit, with partitioning a future improvement. Images are canonicalized with Vega.Images.validate_refs; arbitrary image paths fail
 closed. Native vision delivery awaits sibling harness hook integration. Notifications planned for background open
 browser tabs, not closed-tab push. Node remains unauthenticated like existing operator
 API; this is not a multi-user authorization boundary.
