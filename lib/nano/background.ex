@@ -180,7 +180,7 @@ defmodule Nano.Background do
       Nano.Util.sh("kill -9 -" <> pid <> " 2>/dev/null; kill -9 " <> pid <> " 2>/dev/null")
     end
 
-    done = %{task | state: :killed, exit_status: nil}
+    done = Map.merge(task, %{state: :killed, exit_status: nil, reaped: true})
     write_meta(done)
     if task.agent, do: notify(done)
     :reaped
@@ -293,7 +293,7 @@ defmodule Nano.Background do
 
   @impl true
   def handle_cast(:kill, state) do
-    state = kill_drainer(state)
+    state = %{kill_drainer(state) | killed_by: true}
     {:stop, :normal, finish(state, :killed, nil)}
   end
 
@@ -345,6 +345,13 @@ defmodule Nano.Background do
            name: task.name,
            exit_status: task.exit_status,
            timed_out: task.state == :killed and task.exit_status == nil,
+           reason:
+             cond do
+               task.state == :exited -> :exited
+               Map.get(task, :reaped) -> :reaped
+               Map.get(task, :killed_by) -> :killed
+               true -> :timeout
+             end,
            ms: System.system_time(:millisecond) - task.started_at,
            output: task.output,
            bytes: file_size(task.output),
