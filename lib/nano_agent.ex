@@ -93,6 +93,7 @@ defmodule NanoAgent do
         template: template,
         prompt_file: file,
         context_window: entry.context_length,
+        input_modalities: entry[:input_modalities] || ["text"],
         max_output: entry[:max_output],
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
@@ -209,6 +210,7 @@ defmodule NanoAgent do
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
+        input_modalities: Map.get(s, :input_modalities, ["text"]),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -329,6 +331,8 @@ defmodule NanoAgent do
       bindings: [],
       status: :idle,
       pending: [],
+      pending_images: [],
+      tool_images: [],
       halted: nil,
       max_turns: opts[:max_turns],
       max_tokens: opts[:max_tokens],
@@ -364,6 +368,7 @@ defmodule NanoAgent do
         # The model's, as its provider listed them at start: the context window, which
         # max_context cannot exceed, and the most it generates in one response (or nil).
         context_window: opts[:context_window],
+        input_modalities: opts[:input_modalities] || ["text"],
         max_output: opts[:max_output],
         # The size in bytes of the conversation context_used measured: what a request adds
         # is estimated from the growth since (estimate/1).
@@ -491,7 +496,12 @@ defmodule NanoAgent do
   # come from the model's list if it can be had, and the window then caps max_context (which
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
-  defp upgrade(%{context_window: _} = s), do: s
+  defp upgrade(%{context_window: _} = s),
+    do:
+      s
+      |> Map.put_new(:input_modalities, ["text"])
+      |> Map.put_new(:pending_images, [])
+      |> Map.put_new(:tool_images, [])
 
   defp upgrade(s) do
     entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
@@ -501,6 +511,9 @@ defmodule NanoAgent do
 
     Map.merge(s, %{
       context_window: window,
+      input_modalities: ["text"],
+      pending_images: [],
+      tool_images: [],
       max_output: entry[:max_output],
       max_context: if(window && (max == 0 or max > window), do: window, else: max),
       context_used: Map.get(s, :context_used, 0),
@@ -566,7 +579,7 @@ defmodule NanoAgent do
 
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
-    end)
+    end) <> "\n\n" <> Vega.Images.vision_note(Map.get(s, :input_modalities, ["text"]))
   end
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
@@ -680,11 +693,13 @@ defmodule NanoAgent do
   def handle_info(msg, s), do: noreply(event(s, msg))
 
   defp event(s, term) do
+    s = upgrade(s)
+    {images, image_note} = event_images(term, s.input_modalities)
     seq = s.event_seq + 1
 
     {text, truncated, spill} =
       truncate(
-        inspect(term, inspect_opts()),
+        inspect(term, inspect_opts()) <> image_note,
         stated(s, :result_max_bytes),
         {s.id, "event-#{seq}"}
       )
@@ -695,7 +710,8 @@ defmodule NanoAgent do
       s
       | event_seq: seq,
         wakeup: nil,
-        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
+        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)],
+        pending_images: s.pending_images ++ images
     }
 
     # queue_length: events waiting for the next turn, this one included.
@@ -706,6 +722,7 @@ defmodule NanoAgent do
       :event_received,
       spilled(spill, %{
         event_seq: seq,
+        images: images,
         message: text,
         queue_length: queued,
         truncated: truncated
@@ -715,7 +732,48 @@ defmodule NanoAgent do
     maybe_start_turn(s)
   end
 
+  defp event_images(term, modalities) do
+    refs = if is_map(term), do: Map.get(term, :images, Map.get(term, "images", [])), else: []
+
+    case Vega.Images.validate_refs(refs) do
+      {:ok, []} ->
+        {[], ""}
+
+      {:ok, refs} ->
+        {refs,
+         if("image" in modalities,
+           do: "",
+           else: "\nThis model cannot see the attached images; do not guess their contents."
+         )}
+
+      {:error, reason} ->
+        {[], "\nImages rejected: " <> reason}
+    end
+  end
+
+  defp image_content(s, text, refs) do
+    if "image" in s.input_modalities,
+      do: Vega.Images.content(text, refs),
+      else:
+        text <> if(refs == [], do: "", else: "\nThis model cannot see images: " <> inspect(refs))
+  end
+
+  defp flush_tool_images(s) do
+    s = upgrade(s)
+
+    if s.tool_images == [],
+      do: s,
+      else: %{
+        append(s, %{
+          "role" => "user",
+          "content" => image_content(s, "Images viewed in eval:", s.tool_images)
+        })
+        | tool_images: []
+      }
+  end
+
   # Harness notes queue up with events, in the order things happened.
+
   defp note(s, text) do
     log(s, :harness_note, %{text: text})
     %{s | pending: s.pending ++ ["<harness>#{text}</harness>"]}
@@ -764,8 +822,12 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        user = %{
+          "role" => "user",
+          "content" => image_content(s, Enum.join(s.pending ++ [line], "\n"), s.pending_images)
+        }
+
+        next = if new_turn?, do: %{append(s, user) | pending: [], pending_images: []}, else: s
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -904,9 +966,10 @@ defmodule NanoAgent do
   # The size, as JSON, of the tools and messages of a request: what the estimate scales.
   defp bytes(system_prompt, transcript),
     do:
-      byte_size(
-        Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
-      )
+      Vega.Images.estimated_bytes([
+        @tools,
+        %{"role" => "system", "content" => system_prompt} | transcript
+      ])
 
   defp context_halt(s, estimate) do
     b = budget(s)
@@ -1120,6 +1183,8 @@ defmodule NanoAgent do
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
   defp run_calls(%{calls: []} = s) do
+    s = flush_tool_images(s)
+
     cond do
       not s.idle_called -> request(s, false)
       s.wakeup_after && s.pending == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")
@@ -1248,8 +1313,14 @@ defmodule NanoAgent do
     {output, spawned} = release(io, gl, self())
 
     case result do
-      {:ok, value, bindings, warnings} -> {{:ok, value, bindings}, output <> warnings, spawned}
-      error -> {error, output, spawned}
+      {:ok, value, bindings, warnings} ->
+        {{:ok, value, bindings}, output <> warnings, spawned}
+
+      {:ok, value, bindings, warnings, _images} ->
+        {{:ok, value, bindings}, output <> warnings, spawned}
+
+      error ->
+        {error, output, spawned}
     end
   end
 
@@ -1272,8 +1343,14 @@ defmodule NanoAgent do
     diagnostics = Enum.map_join(diagnostics, &"#{&1.severity}: #{&1.message}#{where(&1)}\n")
 
     case result do
-      {:ok, value, bindings} -> {:ok, value, bindings, diagnostics}
-      {:error, kind, reason, stack} -> {:error, format_error(kind, reason, stack, diagnostics)}
+      {:ok, value, bindings} ->
+        case Vega.Images.take_views() do
+          [] -> {:ok, value, bindings, diagnostics}
+          refs -> {:ok, value, bindings, diagnostics, refs}
+        end
+
+      {:error, kind, reason, stack} ->
+        {:error, format_error(kind, reason, stack, diagnostics)}
     end
   end
 
@@ -1358,6 +1435,20 @@ defmodule NanoAgent do
     s = %{s | spawned: s.spawned ++ spawned}
 
     case result do
+      {:ok, value, bindings, warnings, images} ->
+        Nano.StateStore.put_bindings(s.name, bindings)
+        s = upgrade(s)
+
+        tool_result(
+          %{s | bindings: bindings, tool_images: s.tool_images ++ images},
+          call,
+          started,
+          true,
+          value,
+          output <> warnings,
+          images
+        )
+
       {:ok, value, bindings, warnings} ->
         Nano.StateStore.put_bindings(s.name, bindings)
         tool_result(%{s | bindings: bindings}, call, started, true, value, output <> warnings)
@@ -1378,7 +1469,7 @@ defmodule NanoAgent do
 
   # The model sees the result followed by any captured IO, truncated as a whole; the log
   # keeps result and IO apart for the dashboard.
-  defp tool_result(s, call, started, ok, result, io \\ "") do
+  defp tool_result(s, call, started, ok, result, io \\ "", images \\ []) do
     whole = if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io
     max = stated(s, :result_max_bytes)
     {text, truncated, spill} = truncate(whole, max, {s.id, "call-#{s.call_seq}"})
@@ -1391,6 +1482,7 @@ defmodule NanoAgent do
         name: call["function"]["name"],
         duration_ms: System.monotonic_time(:millisecond) - started,
         ok: ok,
+        images: images,
         result: elem(truncate(result, max), 0),
         io: elem(truncate(io, max), 0),
         truncated: truncated

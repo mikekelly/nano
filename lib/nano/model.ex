@@ -10,6 +10,10 @@ defmodule Nano.Model do
 
   @prefix "openai-codex/"
 
+  @doc "Catalog input modalities, conservatively text-only when unverified."
+  def input_modalities(value) when is_list(value), do: Enum.filter(value, &is_binary/1)
+  def input_modalities(_), do: ["text"]
+
   @doc """
   One model call: `{:ok, %{message, finish_reason, usage, provider, cost}}` or `{:error, %{status,
   body}}`, with `message` and `usage` in OpenRouter's chat completions shape. An error may also

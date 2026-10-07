@@ -312,7 +312,7 @@ defmodule Nano.ChatGPT do
           id: m["slug"],
           name: m["display_name"] || m["slug"],
           context_length: m["context_window"],
-          input_modalities: m["input_modalities"] || ["text"]
+          input_modalities: Nano.Model.input_modalities(m["input_modalities"])
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )
