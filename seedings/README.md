@@ -4,8 +4,10 @@ The thesis and the spec's own experiments are in SPEC.md; the vocabulary: `main`
 plant in an agent, asking it to grow a capability the seed deliberately lacks; a *seedling*
 is the branch that grows (`seedling/<agent>-<what>`, never merged into `main`).
 
-Each seeding is a high-level spec for one capability of a fuller harness: what it must do
-and the interfaces it must have, not how to build it. The agent reads the spec from `/app`
+Each seeding is a high-level spec for one capability of a fuller harness. It states the
+**outcome** — what must be true when the work is done — then **considerations** worth
+weighing and **inspiration** worth reading, and stops there: how to get to the outcome is
+the agent's decision, and every seeding says so. The agent reads the spec from `/app`
 and builds the capability in the checkout, as modules under `/app/lib` plus whatever else
 it needs, following `guidance.md`, which goes with every seeding.
 

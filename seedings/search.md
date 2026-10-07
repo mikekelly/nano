@@ -1,38 +1,31 @@
-# Seeding: search and research with Exa
+# Seeding: search and research
 
 Needs `EXA_API_KEY` in `.env`; the node passes it through. If it is absent, say so and
 stop.
 
-Exa (https://exa.ai; the API is described at https://exa.ai/docs/llms.txt) is a search
-engine with an API at `https://api.exa.ai`, authenticated with `x-api-key: $EXA_API_KEY`:
+## Outcome
 
-- `POST /search` — natural-language web search with clean page content in the response;
-  filters by date, domain and type; optional summaries and highlights.
-- `POST /contents` — full contents, summaries and metadata for given URLs.
-- `POST /answer` — an answer to a question grounded in search results, with citations.
-- `POST /runs` — the research agent: an asynchronous run for deep research, list-building
-  and enrichment that returns structured output; poll it or wait for it.
+Agents can search the web and hand off research from `eval`. When this is done, an agent
+asked a question it cannot answer from the node searches, reads, and answers with
+citations; and a research job started in one turn is received as an event in a later one,
+so handing research to a service works the way handing a task to a sub-agent does
+([delegation.md](delegation.md)).
 
-## What to build
+## Considerations
 
-- One module with a function per endpoint, callable from `eval`, returning plain terms;
-  errors (rate limits, bad key) returned, never raised.
-- **Delegation to Exa's research agent**: a way to hand a research question to `/runs`
-  with a requested output shape, carry on, and be told by a mailbox event when it is done
-  — so an agent can delegate research exactly as it would to a sub-agent (see
-  `delegation.md`), and the result arrives as an `<event>`.
-- Breadcrumbs: one place that says what search can do here, with an example per call.
-- Keep responses small by default (titles and highlights), with a second call for full
-  content, so searching does not flood the agent's context.
+- Exa (https://exa.ai; API described at https://exa.ai/docs/llms.txt) is the provider the
+  operators have a key for. Its API at `https://api.exa.ai` offers search with clean page
+  content, contents for given URLs, grounded answers with citations, and asynchronous
+  research runs that return structured output. Read its docs from the node; they change.
+- Search results are large; by default return titles, highlights and ids, and fetch full
+  content only on a second call, so a search does not fill the agent's context.
+- Errors (rate limits, a bad key) should be returned as values, never raised.
+- A long research run is a background job: something must notice it finishing and tell
+  the agent by a mailbox message.
 
-## What counts as done
+## Inspiration
 
-An agent asked a question it cannot answer from the node searches, reads, and answers with
-citations; and a research run started in one turn is received as an event in a later one.
+- The search half of pi's `pi-web-access` ([web-access.md](web-access.md)).
+- The seed's `idle` with `wakeup_after` as a way to wait cheaply.
 
-## Related
-
-- Builds on: [web-access.md](web-access.md) (reading what search finds), [delegation.md](delegation.md) (a research run is delegation), [guidance.md](guidance.md) (small responses by default).
-- Used by: [bots.md](bots.md) (memory and research for bots).
-- In the seed: keys arrive through the environment and compose passthrough ([docker-compose.yml](../docker-compose.yml), [.env.example](../.env.example)); the agent can read them ([SPEC.md, limits](../SPEC.md#container-configuration-and-limits)).
-- Runs: not yet run (no key); `gardener` wired Exa into `Nano.Web` for when a key appears ([RUNS.md](RUNS.md)).
+How you build it is yours to decide.

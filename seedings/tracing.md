@@ -1,35 +1,33 @@
-# Seeding: tracing with Langfuse
+# Seeding: tracing
 
-Needs Langfuse running next to the node; the operators will start whatever compose file
-you write for it (see below). Keys are created in Langfuse's UI and put in `.env` as
-`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST`.
+Needs Langfuse running next to the node and its keys in `.env` (`LANGFUSE_PUBLIC_KEY`,
+`LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`); the operators will start whatever compose file
+you write for it. If they are absent, say so and stop.
 
-Langfuse (https://langfuse.com) is an open-source LLM observability platform. Self-hosting
-with docker compose (https://langfuse.com/self-hosting/docker-compose) brings up six
-services — web (the UI and API, port 3000), worker, PostgreSQL, ClickHouse, Redis and MinIO
-— with secrets to set. Applications send traces through its SDKs or its ingestion API with
-the project's keys.
+## Outcome
 
-## What to build
+Every agent's activity can be followed in Langfuse (https://langfuse.com), an open-source
+LLM observability platform, as traces: each turn with its model requests (messages sent,
+response, tokens, cost, latency, provider), each tool call with arguments and result, and
+the events, notes, restarts and halts around them — matchable to the agent's own JSONL
+log. When this is done, a conversation with an agent appears in Langfuse with the same
+numbers the dashboard shows, and sending traces never slows or blocks an agent.
 
-- A compose file under `/app` (for example `docker-compose.langfuse.yml`) that runs
-  Langfuse on the same compose network as the node, with instructions for the operator.
-- A tracer in the node that sends, for every agent: a trace per turn; a generation per
-  model request with the model, the messages sent, the response, token usage, cost,
-  latency and provider; a span per tool call with its arguments and result; events for
-  mailbox events, harness notes, restarts and halts. Use the agent's name and id, the
-  request id and the log seq so a trace can be matched to the JSONL log.
-- Sending must never slow or block an agent: buffer and send in a separate process, drop
-  with a logged warning if Langfuse is unreachable.
-- A link from an agent's page on the dashboard to its traces, if that is cheap.
+## Considerations
 
-## What counts as done
+- Self-hosting Langfuse with docker compose (https://langfuse.com/self-hosting/docker-compose)
+  means six services — web (UI and API, port 3000), worker, PostgreSQL, ClickHouse, Redis,
+  MinIO — with secrets to set; the node reaches it by service name on the compose network.
+- Traces can be sent through an SDK or the ingestion API; there is no Elixir SDK from
+  Langfuse, so the API is the likely route.
+- The seed already logs every one of these moments as a structured entry with a seq;
+  a tracer that subscribes to the log and sends is one process and touches nothing else.
+- Buffer, batch and drop with a warning when Langfuse is unreachable; the log is the
+  durable record, Langfuse is a view.
 
-With Langfuse up and keys in `.env`, a conversation with an agent appears in Langfuse as a
-trace with its generations and tool spans, and the numbers match the agent's own log.
+## Inspiration
 
-## Related
+- The log entry table in [SPEC.md](../SPEC.md#openrouter-and-the-harness-log).
+- Langfuse's data model: traces, observations (generations, spans, events), scores.
 
-- Builds on: the per-agent JSONL log and its entry types ([SPEC.md, OpenRouter and the harness log](../SPEC.md#openrouter-and-the-harness-log)), which is what the traces mirror; [lib/nano/log.ex](../lib/nano/log.ex).
-- Pairs with: [goals.md](goals.md) and [delegation.md](delegation.md) (traces across a parent and its children), [bots.md](bots.md) (sessions as traces).
-- Runs: not yet run (no service); `gardener` left a `docker-compose.langfuse.yml` on its branch ([RUNS.md](RUNS.md)).
+How you build it is yours to decide.

@@ -1,32 +1,29 @@
-# Seeding: background tasks (async shell)
+# Seeding: background tasks
 
-Long-running commands should not hold an eval open. An agent should be able to start a
-command in the background, carry on, and be told when it finishes.
+## Outcome
 
-## What to build
+Long-running commands do not hold an eval open. When this is done, an agent starts a
+build or a long test run, carries on or idles with a wakeup, is told by a mailbox message
+when the command finishes or is killed (with its exit status and where its output is),
+reads the tail of the output, and acts on it — tested, and visible on the dashboard as a
+spawned process while it runs. Tasks survive the agent's restart: the OS process keeps
+going, and the completion message still arrives.
 
-- Start: run a shell command in the background and return a handle at once. Options: a
-  working directory, environment, a timeout after which it is killed, and where output
-  goes (a file under `/data` or `/tmp`).
-- Status and output: check whether it is still running, read its output so far (paged,
-  tail-able), get the exit status when done.
-- Completion as an event: when the command finishes or is killed, the agent that started
-  it receives a mailbox message saying so, with the exit status and a pointer to the
-  output — so it arrives as an `<event>` and can wake an idle agent.
-- Control: kill a task; list an agent's tasks; tasks survive the agent's restart (the
-  OS process keeps running; the handle and the completion message must still work).
-- Keep output out of the context by default: the completion event carries a size and a
-  path, not the output.
+## Considerations
 
-## What counts as done
+- Output stays out of the context by default: the completion message carries a size and a
+  path, not the output; reading is paged and tail-able.
+- The seed's eval runs in a task with its own timeout and kills what it spawned; a
+  background task has to live somewhere that an agent's restart does not kill.
+- Working directory, environment, a timeout after which the command is killed, and
+  killing on demand are the controls an agent will want.
+- Coding agents' conventions for shell output (keep the tail, save the whole output to a
+  file whose path is returned) are in [guidance.md](guidance.md).
 
-An agent starts a build or a long test run, idles with a wakeup, is woken by the
-completion event, reads the tail of the output and acts on it — tested, and visible on
-the dashboard as a spawned process while it runs.
+## Inspiration
 
-## Related
+- Claude Code's `run_in_background` and pi's bash tool.
+- Elixir ports and `Task.Supervisor`; `erlexec` on Hex if port handling gets in the way.
+- `gardener` built this first, with a drainer process owning the port ([RUNS.md](RUNS.md)).
 
-- Builds on: [guidance.md](guidance.md) (output stays out of context by default).
-- Used by: [delegation.md](delegation.md), [mcp.md](mcp.md) (stdio servers), [web-access.md](web-access.md) (slow fetches), [goals.md](goals.md) (review on wakeup).
-- In the seed: eval runs in a task with `EVAL_TIMEOUT_MS` ([SPEC.md, Agent GenServer](../SPEC.md#agent-genserver)); processes an agent spawns are tagged and shown ([SPEC.md, Web dashboard](../SPEC.md#web-dashboard)); completion must arrive as a mailbox message to become an `<event>`.
-- Runs: `gardener` built this first (`Nano.Background`, a drainer owns the port so the task survives the agent's restart) in [RUNS.md](RUNS.md); branch `seedling/gardener-five-capabilities`.
+How you build it is yours to decide.

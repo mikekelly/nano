@@ -1,55 +1,52 @@
 # Seeding: delegation
 
-Agents must be able to start sub-agents that are set up for a job, hand them work, and get
-results back, without the parent's context paying for the child's.
+## Outcome
 
-## Starting a sub-agent
+An agent can hand work to other agents without its own context paying for theirs. When
+this is done, a parent agent can, from one eval, start a sub-agent that is set up for a
+job, give it a task, carry on with its own work, and receive the result as a message — and
+a sub-agent that runs out of budget or dies is reported to its parent, not just logged.
 
-One function, callable from `eval`, that starts a sub-agent and returns a handle (its name
-is enough). Its options:
+What "set up for a job" has to cover (these are the outcomes the operators need; how they
+are expressed is yours):
 
-- **System prompt file** — a path to a Mustache template. The template can include other
-  templates or plain text files as partials, so prompts are composed from reusable parts
-  (an "identity" partial, a "node facts" partial, a job-specific body). Rendered once at
-  start with the same facts the harness renders into the default prompt.
-- **Pre-reading** — a list of file paths. The harness adds each file's contents to the
-  sub-agent's context before its first turn, as `<file path="..." hash="...">...</file>`,
-  where `hash` is a content hash so the agent can tell later whether the file changed.
-- **LLM provider and model name** — which provider to call and which model; the default is
-  the node's default. The provider abstraction should make a second provider a small
-  addition, not a rewrite.
-- **Effort** — the reasoning level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-  `max`).
-- **Worktree head** — a git SHA. When given, the sub-agent gets its own git worktree of
-  `/app` checked out at that SHA, and works there; when not given, no worktree is made and
-  it works in `/app` like everyone else.
-- **Prompt** — an optional first message. When blank the sub-agent starts idle and waits.
-- **MCP servers** — an optional list of MCP servers to connect for the sub-agent (see
-  `mcp.md`); their tools and events are available to it from its first turn.
+- a system prompt composed from reusable parts, so a job prompt can be assembled from an
+  identity, the node's facts and a job body rather than written whole each time;
+- pre-reading: files the sub-agent has in its context before its first turn, marked so it
+  can tell later whether a file changed;
+- which provider and model it runs on and at what reasoning effort, defaulting to the
+  node's;
+- an isolated working copy of `/app` at a given git revision when the job needs one, and
+  none when it does not;
+- an optional first message, or starting idle;
+- optional MCP servers it can use from its first turn (see [mcp.md](mcp.md)).
 
-## Working with it
+The parent must be able to wait for a result without spending turns, to address the
+sub-agent by name, and to find the message shapes it needs without being told.
 
-- The parent addresses the sub-agent by name and talks to it by sending messages; the
-  sub-agent replies to the pid or name it was given. Define one message shape for
-  "here is a task", "here is a result" and "I am done", and document it where a fresh
-  agent will find it.
-- The parent can wait for a result without spending turns: `idle` with a wakeup, or a
-  helper that blocks until a reply arrives or a timeout passes.
-- Sub-agents inherit budgets or are given their own; running out must be reported to the
-  parent, not just logged.
-- The dashboard shows which agent started which (`started_by` exists already); make sure
-  what you build keeps that true.
+## Considerations
 
-## What counts as done
+- Erlang messages carry no sender; a protocol has to put the reply address in the message.
+  The seed's `say` convention (`%{message:, sender_pid:}`) is one precedent.
+- Budgets: sub-agents started with the default limits ran out before reporting in an
+  earlier run; whoever starts an agent is responsible for what it is allowed to spend and
+  for hearing about it when it is spent.
+- The seed already records which agent started which (`started_by`) and shows it on the
+  dashboard; anything built should keep that true.
+- Mustache (https://mustache.github.io) is one well-known way to compose prompts from
+  partials; the operators mentioned it, and it is not a requirement.
+- Git worktrees (`git worktree add`) give an isolated checkout cheaply; they share the
+  repository, so a sub-agent's commits are visible to the parent.
+- The parent's context is the thing being protected; measure what a delegation costs the
+  parent in tokens, not just whether it works.
 
-A parent agent can, from one eval, start a sub-agent with a composed prompt, pre-reading
-and a worktree, give it a task, continue with its own work, receive the result as a message
-and show it. All of it tested; the message protocol and the options written up where the
+## Inspiration
+
+- How coding agents delegate: Claude Code's sub-agents (a brief, an isolated context, a
+  report back), pi's sessions; the common shape is one message in, one summary out.
+- Earlier runs: `reviewer` (no reports from its sub-agents; recovered their work from
+  `git diff`) and `gardener` (a watcher that reports a child's budget or death on its
+  behalf), in [RUNS.md](RUNS.md).
+
+How you build it is yours to decide. Record the choices and the message shapes where the
 next agent will find them.
-
-## Related
-
-- Builds on: [guidance.md](guidance.md) (role and abstraction level; defend your context), [mcp.md](mcp.md) (servers for the child), [background-tasks.md](background-tasks.md) (waiting without spending turns).
-- Used by: [bots.md](bots.md) (one agent per bot or per session), [search.md](search.md) (research runs as delegation).
-- In the seed: `NanoAgent.start/1` and `started_by` in [lib/nano_agent.ex](../lib/nano_agent.ex); agents addressed by name ([SPEC.md, Operator access](../SPEC.md#operator-access)); the prompt template and its placeholders ([priv/system_prompt.txt](../priv/system_prompt.txt), [SPEC.md, System prompt](../SPEC.md#system-prompt)).
-- Runs: `reviewer` (sub-agents never reported; budgets) and `gardener` (`Nano.Delegation`, a watcher reports on a child's behalf) in [RUNS.md](RUNS.md); branches `seedling/reviewer-harness-review`, `seedling/gardener-five-capabilities`.
