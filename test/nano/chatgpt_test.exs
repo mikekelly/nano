@@ -263,6 +263,35 @@ defmodule Nano.ChatGPTTest do
                 "low, medium, high, xhigh, max"}
   end
 
+  test "image references become Responses input_image only at the request edge" do
+    connect!()
+    model = Fake.model()
+    bytes = <<137, 80, 78, 71, 13, 10, 26, 10, 13::32, "IHDR", 1::32, 1::32, 8, 2, 0, 0, 0>>
+    {:ok, ref} = Vega.Images.import_bytes(bytes)
+
+    messages = [
+      %{"role" => "system", "content" => "see"},
+      %{"role" => "user", "content" => Vega.Images.content("look", [ref])}
+    ]
+
+    Fake.push(model, text: "seen")
+    assert {:ok, _} = Nano.ChatGPT.chat(model, messages, [], "low")
+    {body, _} = request!(model)
+
+    assert [
+             %{
+               "role" => "user",
+               "content" => [
+                 %{"type" => "input_text"},
+                 %{"type" => "input_image", "image_url" => url}
+               ]
+             }
+           ] = body["input"]
+
+    assert url == "data:image/png;base64," <> Base.encode64(bytes)
+    refute Jason.encode!(messages) =~ "data:image"
+  end
+
   test "no bound on the response is sent: the backend refuses max_output_tokens" do
     connect!()
     {model, name, _} = start_agent!(max_context: 10_000)
