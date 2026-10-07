@@ -56,6 +56,32 @@ defmodule Nano.BrowserTest do
     end
   end
 
+  test "port watcher terminates its own browser when session is killed" do
+    if System.find_executable("lightpanda") do
+      {:ok, browser} = Browser.start()
+      state = :sys.get_state(browser)
+      {:os_pid, os_pid} = Port.info(state.port, :os_pid)
+      {:connected, watcher} = Port.info(state.port, :connected)
+      watcher_monitor = Process.monitor(watcher)
+      Process.exit(browser, :kill)
+      assert_receive {:DOWN, ^watcher_monitor, :process, ^watcher, _}, 2000
+      assert eventually_gone(os_pid, 100)
+    end
+  end
+
+  defp eventually_gone(_, 0), do: false
+
+  defp eventually_gone(pid, tries) do
+    case System.cmd("kill", ["-0", to_string(pid)], stderr_to_stdout: true) do
+      {_, 0} ->
+        Process.sleep(20)
+        eventually_gone(pid, tries - 1)
+
+      {_, _} ->
+        true
+    end
+  end
+
   defmodule Form do
     def init(opts), do: opts
 

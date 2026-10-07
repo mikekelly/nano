@@ -17,9 +17,9 @@ Nano.Browser.stop(browser)
 
 Start uses installed `lightpanda serve`, loopback and an ephemeral port. Port
 reservation is released before spawn (a small bind race remains). The owner
-terminates only its own OS process on normal stop. Abrupt untrappable owner/node
-kill may leave the OS browser behind: this is not restart-persistent lifecycle
-management. `executable` selects an alternative binary. `connect(ws_url)` creates
+terminates only its own OS process on normal stop. An unlinked port-owner watcher monitors the session and terminates its own
+child even after an untrappable session `:kill`. Whole-node/container failure
+still cannot guarantee cleanup: this is not restart-persistent lifecycle management. `executable` selects an alternative binary. `connect(ws_url)` creates
 a fresh target/session in an existing local CDP service; it never kills that
 service. Only `ws://127.0.0.1` is supported; remote/TLS endpoints are rejected.
 
@@ -41,7 +41,7 @@ change offsets; snapshots are live, not cached. Very small byte caps may not fit
 one Unicode character. This is not an SSRF sandbox: browser navigation and page
 JavaScript can access local/network resources.
 
-Tests use local port-zero services only. Four focused tests cover invalid
+Tests use local port-zero services only. Five focused tests cover invalid
 endpoints, missing executable, a forged mocked handshake, and real Lightpanda JS
 form navigation/evaluate/click/fill/snapshot/CDP error behavior when the installed
-binary exists. No paid services or global environment changes.
+binary exists, plus forced-session-kill child cleanup. No paid services or global environment changes.

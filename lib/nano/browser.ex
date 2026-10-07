@@ -157,13 +157,7 @@ defmodule Nano.Browser do
           {:ok, {_, number}} = :inet.sockname(listener)
           :gen_tcp.close(listener)
 
-          port =
-            Port.open({:spawn_executable, executable}, [
-              :binary,
-              :exit_status,
-              :stderr_to_stdout,
-              args: ["serve", "--host", "127.0.0.1", "--port", to_string(number)]
-            ])
+          port = owned_port(executable, number)
 
           case discover(number, 100) do
             {:ok, url} ->
@@ -179,6 +173,48 @@ defmodule Nano.Browser do
 
       url ->
         {:ok, nil, url}
+    end
+  end
+
+  # A separate, unlinked port owner survives an untrappable session :kill.
+  # It monitors the session and terminates only the child whose live Port it owns.
+  defp owned_port(executable, number) do
+    owner = self()
+    ref = make_ref()
+
+    {watcher, monitor} =
+      spawn_monitor(fn ->
+        Process.flag(:trap_exit, true)
+        owner_monitor = Process.monitor(owner)
+
+        port =
+          Port.open({:spawn_executable, executable}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: ["serve", "--host", "127.0.0.1", "--port", to_string(number)]
+          ])
+
+        send(owner, {ref, port})
+        watch_port(owner, owner_monitor, port)
+      end)
+
+    receive do
+      {^ref, port} ->
+        Process.demonitor(monitor, [:flush])
+        port
+
+      {:DOWN, ^monitor, :process, ^watcher, reason} ->
+        exit({:browser_spawn, reason})
+    end
+  end
+
+  defp watch_port(owner, monitor, port) do
+    receive do
+      {:DOWN, ^monitor, :process, ^owner, _} -> close_browser(port)
+      {^port, {:exit_status, status}} -> send(owner, {port, {:exit_status, status}})
+      {:EXIT, ^port, _} -> :ok
+      {^port, {:data, _}} -> watch_port(owner, monitor, port)
     end
   end
 
