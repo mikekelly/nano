@@ -3,9 +3,8 @@ defmodule Nano.Bots.Runtime do
   def deliver(bot, chat, text, memories) do
     name = "bot-#{bot.id}-#{chat.id}-#{chat.generation}"
 
-    retire_idle_generations(bot, chat)
-
-    with {:ok, pid} <- ensure_agent(name, bot, chat) do
+    with :ok <- retire_idle_generations(bot, chat),
+         {:ok, pid} <- ensure_agent(name, bot, chat) do
       NanoAgent.notify(pid, payload(bot, chat, text, memories))
 
       {:ok, pid}
@@ -60,37 +59,55 @@ defmodule Nano.Bots.Runtime do
     bid = bot.id
 
     if chat.generation > 0 do
-      for generation <- 0..(chat.generation - 1) do
+      Enum.reduce_while(0..(chat.generation - 1), :ok, fn generation, _ ->
         name = "bot-#{bid}-#{chat.id}-#{generation}"
 
         case Nano.StateStore.get(name) do
           %{status: :idle, task: nil, calls: [], halted: halted} when halted in [nil, :context] ->
-            Nano.Bots.archive(chat.id, generation, Map.get(bot, :server, Nano.Bots))
-            Nano.Ops.stop_agent(name)
+            case Nano.Bots.archive(chat.id, generation, Map.get(bot, :server, Nano.Bots)) do
+              :ok ->
+                Nano.Ops.stop_agent(name)
+                {:cont, :ok}
+
+              _ ->
+                {:halt, {:error, :bot_budget_archive_unavailable}}
+            end
+
+          nil ->
+            if NanoAgent.whereis(name),
+              do: {:halt, {:error, :previous_generation_state_unavailable}},
+              else: {:cont, :ok}
 
           _ ->
-            :ok
+            {:halt, {:error, :previous_generation_busy}}
         end
-      end
+      end)
+    else
+      :ok
     end
   end
 
   defp remaining_limits(opts, bot, chat) do
     usage = Nano.Bots.usage(chat.id, bot.id, Map.get(bot, :server, Nano.Bots))
 
-    exhausted =
-      Enum.any?([{:max_turns, usage.turns}, {:max_tokens, usage.tokens}], fn {key, used} ->
-        (opts[key] || 0) > 0 and used >= opts[key]
-      end)
+    if is_map(usage) do
+      exhausted =
+        Enum.any?([{:max_turns, usage.turns}, {:max_tokens, usage.tokens}], fn {key, used} ->
+          (opts[key] || 0) > 0 and used >= opts[key]
+        end)
 
-    if exhausted do
-      {:error, :bot_budget_exhausted}
+      if exhausted do
+        {:error, :bot_budget_exhausted}
+      else
+        {:ok,
+         Enum.reduce([{:max_turns, usage.turns}, {:max_tokens, usage.tokens}], opts, fn {key,
+                                                                                         used},
+                                                                                        opts ->
+           if (opts[key] || 0) > 0, do: Keyword.put(opts, key, opts[key] - used), else: opts
+         end)}
+      end
     else
-      {:ok,
-       Enum.reduce([{:max_turns, usage.turns}, {:max_tokens, usage.tokens}], opts, fn {key, used},
-                                                                                      opts ->
-         if (opts[key] || 0) > 0, do: Keyword.put(opts, key, opts[key] - used), else: opts
-       end)}
+      {:error, :bot_budget_archive_unavailable}
     end
   end
 
@@ -130,6 +147,7 @@ defmodule Nano.Bots.Runtime do
               Keep tool/eval traffic out of chat. Before context becomes large, finish your reply and idle.
               Produced files: Nano.Bots.attach(#{inspect(chat.id)}, #{inspect(bot.id)}, local_path, filename: "friendly-name.txt", server: #{inspect(server)}).
               Read a registered attachment with Nano.Bots.file(artifact_id, #{inspect(server)}); returns its private local path. Never post secrets or credentials as files.
+              History returns bounded fragments; retrieve exact message content via Nano.Bots.message(#{inspect(chat.id)}, index, offset: byte_offset, server: #{inspect(server)}) using returned next_offset until nil.
               Full chat history is available via Nano.Bots.history(#{inspect(chat.id)}, offset: 0, limit: 20, server: #{inspect(server)}).
               Previous runtime checkpoints are available via Nano.Bots.checkpoint(#{inspect(chat.id)}, generation, offset: 0, limit: 6000, server: #{inspect(server)}).
               If a precise commitment is missing from the brief, retrieve history/checkpoint instead of guessing.
