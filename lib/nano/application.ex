@@ -46,6 +46,7 @@ defmodule Nano.Application do
         Nano.StateStore.load()
         NanoAgent.revive(Nano.AgentSupervisor)
         Nano.Delegation.restore()
+        Nano.Search.restore()
       end)
 
       {:ok, sup}

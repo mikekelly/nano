@@ -41,8 +41,40 @@ defmodule Nano.Capabilities do
   def notes(path \\ "/app/NOTES.md") do
     text =
       "# Seedling capability index\n\nBranch: `seedling/nova-all`; never merge into main.\n\nUse `Nano.Capabilities.index()` from eval for a live availability index.\nRead the linked guides for examples and honest limits; modules contain API docs.\n\n" <>
-        index() <> "\n"
+        index() <> "\n\n" <> examples()
 
     File.write(path, text)
+  end
+
+  defp examples do
+    """
+    ## Start here (from eval)
+
+    ```elixir
+    Nano.Tools.read("/app/NOTES.md", limit: 60)
+    Nano.Tools.sh("git status --short", cwd: "/app")
+    {:ok, job} = Nano.Background.start("sleep 1; echo done")
+    # Completion is a mailbox event; use the harness idle tool rather than model polling.
+    Nano.Capabilities.index()
+    Nano.Goals.review("my-agent", limit: 5)
+    Nano.Memory.review("my-agent", query: "current task", limit: 5)
+    Nano.Web.fetch("https://example.com")
+    Nano.Search.search("Elixir documentation") # requires EXA_API_KEY
+    ```
+
+    For isolated child agents and acknowledged durable results, read
+    `docs/nova-delegation.md`; for configured external tools use `docs/nova-mcp.md`.
+    Interactive JavaScript/click/form browser sessions are in `docs/nova-browser.md`.
+    The consumer chat UI is `/bots`; `docs/nova-bots.md` describes bot/session creation,
+    per-bot model configuration, memory, context rollover and human requests.
+
+    ## Boundaries
+
+    This is the seed's trusted, unauthenticated single-user node, not a public service.
+    Bots do not provide separate VM security sandboxes. Keep credentials out of prompts,
+    chat and commits; deployment authorization belongs outside this UI. Each linked guide
+    records actual verification and remaining limits. Main remains untouched; source and
+    integration commits live only on seedling branches.
+    """
   end
 end

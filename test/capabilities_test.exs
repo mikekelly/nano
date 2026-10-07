@@ -12,6 +12,9 @@ defmodule Nano.CapabilitiesTest do
     path = Path.join(root, "NOTES.md")
     assert :ok = Nano.Capabilities.notes(path)
     assert File.read!(path) =~ Nano.Capabilities.index()
+    assert File.read!(path) =~ "Nano.Tools.read"
+    assert File.read!(path) =~ "trusted, unauthenticated"
+    assert Enum.any?(entries, &(&1.module == Nano.Browser))
     assert {:error, _} = Nano.Capabilities.notes(Path.join(root, "missing/NOTES.md"))
   end
 end
