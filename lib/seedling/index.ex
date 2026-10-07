@@ -16,7 +16,16 @@ defmodule Seedling.Index do
        "Exa key required. Results bounded/persisted; async research event and resume(id, notify: name) after restart. Live provider smoke passed; see seedings/SEARCH_USAGE.md for shapes/costs/limits."},
       {"Goals", "Seedling.Goals",
        "add(\"sol\", title, parent: id, why: rationale); complete(name,id,note); review(name)",
-       "Durable per-agent tree and read-only dashboard compact review. See seedings/GOALS_USAGE.md; final filename format hash-based, intermediate development paths require migration."}
+       "Durable per-agent tree and read-only dashboard compact review. See seedings/GOALS_USAGE.md; final filename format hash-based, legacy base64 development paths are read safely and migrate_legacy(name) writes validated hashed storage. Actual node restarts tested."},
+      {"Delegation", "Seedling.Delegation",
+       "subagent(name, prompt: brief, pre: paths, notify: \"sol\", message: \"Begin\"); report(reply_to, ref, result)",
+       "Composed node facts/identity/job, bounded SHA preread snapshots, model/budget controls, optional worktrees/MCP setup. Completion/failure events; watchers survive agents not node. See seedings/DELEGATION_USAGE.md. Ten targeted tests passed."},
+      {"Memory", "Seedling.Memory",
+       "add(bot_id, text, source_session: id, links: ids); retrieve(bot_id, query, budget: 2000, decision: true)",
+       "Durable per-bot linked facts; bounded lexical + one-hop retrieval, optional typed model shortlist ranking. See module docs. No credentials in memory; small graph not embeddings."},
+      {"Decision models", "Seedling.Decision",
+       "decide(:route | :memory | :compact | :summarize, state, opts)",
+       "Typed structured outputs via small OpenRouter model; model/adapter configurable, errors explicit, confidence uncalibrated. Five memory/decision tests and live summary smoke passed; live summaries omitted commitment owner despite prompt strengthening. See module docs."}
     ]
   end
 
