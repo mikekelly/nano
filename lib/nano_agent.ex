@@ -182,7 +182,7 @@ defmodule NanoAgent do
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
   while the agent is busy or suspended. `halted` is nil, `:budget`, `:context`, `:node_budget`,
   `:usage_limit`, `:provider_unavailable`, `:restart_brake`, `:start_failed` or
-  `:log_failed`; `context_window` is the model's, as its provider listed it at start (nil if it
+  `:log_failed` or `:compaction_failed`; `context_window` is the model's, as its provider listed it at start (nil if it
   could not be had for an agent saved before it was recorded); `cache_hit_rate` is nil until
   the first response.
   """
@@ -617,7 +617,7 @@ defmodule NanoAgent do
 
         :context ->
           {s,
-           " This conversation does not shrink: its context is still " <>
+           " Automatic compaction will be attempted if older exchanges can be removed. The context is still " <>
              "#{used(b.context_used, b.max_context, "tokens")}, so unless your limit has been " <>
              "raised I will halt you again before my next call to the model, without making it."}
 
@@ -733,7 +733,7 @@ defmodule NanoAgent do
   defp maybe_start_turn(%{status: :idle, halted: nil, pending: [_ | _]} = s), do: request(s, true)
   defp maybe_start_turn(s), do: s
 
-  defp request(s, new_turn?) do
+  defp request(s, new_turn?, compacted? \\ false) do
     # State from an older version of this module, still running after a reload.
     s = s |> upgrade() |> check_provider()
     node_used = Nano.StateStore.node_tokens_last_hour()
@@ -769,10 +769,110 @@ defmodule NanoAgent do
         estimate = estimate(next)
         room = b.max_context - estimate
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        plan =
+          if not compacted? and Vega.Compaction.needed?(estimate, b.max_context),
+            do: Vega.Compaction.plan(next.transcript, b.max_context),
+            else: :skip
+
+        case plan do
+          {:ok, {old, kept}} ->
+            compact(next, old, kept)
+
+          _ when b.max_context > 0 and room < @reply_room ->
+            s |> context_halt(estimate) |> end_turn("budget")
+
+          _ ->
+            call(next, new_turn? && line, estimate, room)
+        end
     end
+  end
+
+  # Compaction is a task, just like model requests: incoming events queue while it runs,
+  # and no eval or agent model call can race the transcript replacement.
+  defp compact(s, old, kept) do
+    model = Vega.Compaction.model(s.model)
+    fields = %{model: model, removed_messages: length(old), kept_messages: length(kept)}
+
+    if log(s, :compaction_started, fields) == :ok do
+      s = save(%{s | status: :compacting})
+
+      task =
+        Task.Supervisor.async_nolink(Nano.EvalSupervisor, Vega.Compaction, :summarize, [
+          model,
+          old,
+          s.max_context
+        ])
+
+      Process.send_after(
+        self(),
+        {s.tag, :eval_timeout, task.ref},
+        Application.get_env(:nano, :compaction_timeout_ms, 120_000)
+      )
+
+      %{s | task: %{kind: :compaction, task: task, kept: kept, model: model}}
+    else
+      s |> halt(:log_failed, @log_failed) |> end_turn("error")
+    end
+  end
+
+  defp compaction_done(s, t, {:ok, summary, r}) do
+    s = compaction_usage(s, r)
+    path = Path.join(Application.fetch_env!(:nano, :log_dir), s.id <> ".jsonl")
+
+    text =
+      "The harness automatically compacted your older history using #{t.model}. " <>
+        "You are the same agent; your pid, mailbox and bindings are unchanged. " <>
+        "The full harness record is #{path}. Summary follows:\n\n" <> summary
+
+    transcript = [%{"role" => "user", "content" => "<harness>#{text}</harness>"} | t.kept]
+    next = %{s | transcript: transcript, context_used: 0, measured_bytes: 0}
+
+    next = %{
+      next
+      | context_used: estimate(next),
+        measured_bytes: bytes(next.system_prompt, transcript)
+    }
+
+    if next.context_used < estimate(s) and next.max_context - next.context_used >= @reply_room do
+      if log(s, :compaction_completed, %{
+           model: t.model,
+           summary: summary,
+           context_used: next.context_used,
+           record: path
+         }) == :ok do
+        # Both summary and recalibrated context are persisted before the next request.
+        next |> save() |> check_budget() |> request(false, true)
+      else
+        s |> halt(:log_failed, @log_failed) |> end_turn("error")
+      end
+    else
+      compaction_done(
+        s,
+        t,
+        {:error, "summary did not shrink the conversation enough for a safe request"}
+      )
+    end
+  end
+
+  defp compaction_done(s, t, {:error, why, r}),
+    do: compaction_done(compaction_usage(s, r), t, {:error, why})
+
+  defp compaction_done(s, t, error) do
+    why = brief(error)
+    log(s, :compaction_failed, %{model: t.model, error: why})
+
+    s
+    |> halt(
+      :compaction_failed,
+      "Automatic harness compaction failed: #{why}. Your original history is retained"
+    )
+    |> end_turn("error")
+  end
+
+  defp compaction_usage(s, r) do
+    used = (r.usage["prompt_tokens"] || 0) + (r.usage["completion_tokens"] || 0)
+    log(s, :compaction_usage, %{usage: r.usage, cost: r.cost, provider: r.provider})
+    %{s | tokens_used: s.tokens_used + used, cost: s.cost + (r.cost || 0)}
   end
 
   # An operator can turn a provider off (remove OpenRouter's key) at any time; an agent on it
@@ -885,6 +985,9 @@ defmodule NanoAgent do
         end
     end
   end
+
+  defp task_done(%{task: %{kind: :compaction} = t} = s, result),
+    do: compaction_done(%{s | task: nil}, t, result)
 
   defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
 

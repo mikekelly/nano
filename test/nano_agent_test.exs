@@ -1730,17 +1730,17 @@ defmodule NanoAgentTest do
                "to about #{estimate} tokens, which leaves less than 4096 for your reply, so I " <>
                "have halted you: I will not call the model until an operator un-halts you."
 
-    # Un-halting does not shrink it: halted again, still without a call.
+    # The unhalt delivery adds a fresh suffix: compaction can now remove the giant
+    # exchange whole, rather than sever its tool call/result pair.
+    Fake.push(ctx.model, text: "The previous eval produced a large string.")
+    Fake.push(ctx.model, calls: [idle: nil])
     NanoAgent.unhalt(ctx.name)
-    await_nth(id, :budget_exhausted, 2)
-    refute_receive {:openrouter_request, _, _}, 100
+    summary_request = request!(ctx.model)
+    assert summary_request["max_tokens"] <= 2_500
+    request!(ctx.model)
+    await(id, :compaction_completed)
     :sys.get_state(pid)
-    assert NanoAgent.info(ctx.name).halted == :context
-
-    assert Enum.at(entries(id, :harness_note), -2)["text"] =~
-             "An operator un-halted you. This conversation does not shrink: its context is " <>
-               "still 4000 of 20000 tokens, so unless your limit has been raised I will halt " <>
-               "you again before my next call to the model, without making it."
+    assert NanoAgent.info(ctx.name).halted == nil
   end
 
   test "a response that takes the context past its limit halts the agent", ctx do
