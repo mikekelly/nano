@@ -16,12 +16,7 @@ defmodule Vega.Browser do
   DOM/script output is untrusted data. See docs/vega-browser.md.
   """
   def start(opts \\ []) do
-    node =
-      Keyword.get(
-        opts,
-        :node,
-        System.get_env("VEGA_BROWSER_NODE") || System.find_executable("node")
-      )
+    node = node_runtime(opts)
 
     backend = Keyword.get(opts, :backend, :lightpanda)
 
@@ -85,6 +80,27 @@ defmodule Vega.Browser do
        )}
     end
   end
+
+  @doc "Node selection: explicit option, exact string node setting, environment, stable data executable, PATH."
+  def node_runtime(opts \\ []) do
+    case Keyword.fetch(opts, :node) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        stable = "/data/vega-browser-tools/node22"
+
+        nonempty_string(Nano.Settings.get("VEGA_BROWSER_NODE")) ||
+          nonempty_string(System.get_env("VEGA_BROWSER_NODE")) ||
+          if(File.regular?(stable), do: stable) || System.find_executable("node")
+    end
+  end
+
+  defp nonempty_string(value) when is_binary(value) do
+    if String.trim(value) == "", do: nil, else: value
+  end
+
+  defp nonempty_string(_), do: nil
 
   @doc "Recovers a live session handle from its directory, without restarting it."
   def resume(dir) do
