@@ -3,18 +3,20 @@ defmodule Vega.Index do
   @entries [
     {Vega.Files, "Files and shell",
      "Vega.Files.read(\"/app/NOTES.md\"); Vega.Files.sh(\"git status\")"},
-    {Vega.Delegation, "Delegation", "See docs/delegation.md and Vega.Delegation module docs"},
+    {Vega.Delegation, "Delegation",
+     "See docs/vega-delegation.md and Vega.Delegation module docs"},
     {Vega.Compaction, "Automatic compaction",
-     "See docs/compaction.md; runs before each model request"},
+     "See docs/vega-compaction.md; runs before each model request"},
     {Vega.Tasks, "Background shell tasks",
-     "See docs/background-tasks.md and Vega.Tasks module docs"},
-    {Vega.Goals, "Durable goals", "See docs/goals.md and Vega.Goals module docs"},
+     "See docs/vega-background-tasks.md and Vega.Tasks module docs"},
+    {Vega.Goals, "Durable goals", "See docs/vega-goals-memory.md and Vega.Goals module docs"},
     {Vega.Memory, "Durable identity memory", "See Vega.Memory module docs"},
-    {Vega.Web, "Readable web pages", "See docs/web-access.md and Vega.Web module docs"},
-    {Vega.Search, "Exa search and research", "See docs/search.md and Vega.Search module docs"},
-    {Vega.MCP, "MCP servers and events", "See docs/mcp.md and Vega.MCP module docs"},
-    {Vega.Images, "Vision attachments", "See docs/images.md and Vega.Images module docs"},
-    {Vega.Bots, "Consumer chat", "Visit /bots; see docs/bots.md"}
+    {Vega.Web, "Readable web pages", "See docs/vega-web-search.md and Vega.Web module docs"},
+    {Vega.Search, "Exa search and research",
+     "See docs/vega-web-search.md and Vega.Search module docs"},
+    {Vega.MCP, "MCP servers and events", "See docs/vega-mcp.md and Vega.MCP module docs"},
+    {Vega.Images, "Vision attachments", "See docs/vega-images.md and Vega.Images module docs"},
+    {Vega.Bots, "Consumer chat", "Visit /bots; see docs/vega-bots.md"}
   ]
   def entries, do: @entries
 

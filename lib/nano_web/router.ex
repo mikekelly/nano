@@ -27,6 +27,9 @@ defmodule NanoWeb.Router do
   scope "/api", NanoWeb do
     get "/", ApiController, :index
 
+    post "/images", ApiController, :upload_image
+    get "/images/:id", ApiController, :image
+
     get "/processes", ApiController, :processes
     get "/processes/:pid", ApiController, :process
 
