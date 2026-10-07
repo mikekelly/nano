@@ -91,6 +91,16 @@ defmodule NanoAgent do
 
         with {:ok, template} <- if(file, do: File.read(file), else: {:ok, opts[:system_prompt]}) do
           more = [model: model, id: new_id(name), template: template, prompt_file: file]
+          # Called from an agent's eval: the eval task's first caller is that agent.
+          parent =
+            with [pid | _] <- Process.get(:"$callers"),
+                 [{:agent, n}] <- Registry.keys(Nano.Registry, pid) do
+              n
+            else
+              _ -> nil
+            end
+
+          more = Keyword.put(more, :started_by, parent)
 
           case DynamicSupervisor.start_child(
                  Nano.AgentSupervisor,
@@ -165,6 +175,7 @@ defmodule NanoAgent do
           ),
         system_prompt: s.system_prompt,
         prompt_source: prompt_file(s) || "inline",
+        started_by: Map.get(s, :started_by),
         restart_count: s.restart_count,
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
@@ -280,6 +291,8 @@ defmodule NanoAgent do
       # The template text last read, and the file it came from (nil: given as a string).
       template: opts[:template],
       prompt_file: opts[:prompt_file],
+      # The agent whose eval started this one, or nil (an operator did).
+      started_by: opts[:started_by],
       system_prompt: nil,
       transcript: [],
       bindings: [],
@@ -316,7 +329,7 @@ defmodule NanoAgent do
     log(
       s,
       :agent_started,
-      Map.take(s, [:id, :name, :pid, :model, :reasoning, :system_prompt])
+      Map.take(s, [:id, :name, :pid, :model, :reasoning, :system_prompt, :started_by])
       |> Map.merge(%{restarted: false, prompt_source: prompt_file(s) || "inline"})
     )
 
@@ -356,7 +369,8 @@ defmodule NanoAgent do
     template = with {:ok, text} <- read, do: text, else: (_ -> saved.template)
     s = Map.merge(s, %{template: template, prompt_file: file})
     s = %{s | system_prompt: render(s)}
-    started = Map.take(s, [:id, :name, :pid, :model, :reasoning, :system_prompt, :restart_count])
+    keys = [:id, :name, :pid, :model, :reasoning, :system_prompt, :restart_count, :started_by]
+    started = Map.take(s, keys)
 
     log(
       s,

@@ -777,6 +777,8 @@ defmodule NanoAgentTest do
     request!(ctx.model)
     request!(ctx.model)
     await(id, :turn_ended)
+    # At rest, outside its callbacks: a process still running old code when it is purged dies.
+    :sys.get_state(pid)
 
     {mod, bin, file} = :code.get_object_code(NanoAgent)
     for _ <- 1..2, do: {:module, NanoAgent} = :code.load_binary(mod, file, bin)
@@ -1850,5 +1852,36 @@ defmodule NanoAgentTest do
 
     assert log =~ "#{ctx.name}: could not save state to /dev/null/state/#{ctx.name}.term"
     assert %{halted: nil, status: :thinking} = NanoAgent.info(ctx.name)
+  end
+
+  test "an agent started from another agent's eval records which agent started it", ctx do
+    {pid, id} = start!(ctx)
+    assert NanoAgent.info(ctx.name).started_by == nil
+    assert %{"started_by" => nil} = await(id, :agent_started)
+
+    child = %{ctx | name: ctx.name <> "c", model: Fake.model()}
+    Fake.listen(child.model)
+    code = ~s|{:ok, _} = NanoAgent.start(name: "#{child.name}", model: "#{child.model}")|
+    Fake.push(ctx.model, calls: [eval: code])
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+
+    on_exit(fn ->
+      if p = NanoAgent.whereis(child.name),
+        do: DynamicSupervisor.terminate_child(Nano.AgentSupervisor, p)
+    end)
+
+    child_id = NanoAgent.info(child.name).id
+    assert NanoAgent.info(child.name).started_by == ctx.name
+    Nano.Log.subscribe(child_id)
+    assert %{"started_by" => parent} = await(child_id, :agent_started)
+    assert parent == ctx.name
+
+    # Kept across a crash-restart.
+    kill(child, child_id)
+    assert NanoAgent.info(child.name).started_by == ctx.name
+    assert await(child_id, :agent_started, & &1["restarted"])["started_by"] == ctx.name
   end
 end
