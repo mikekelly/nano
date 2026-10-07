@@ -105,17 +105,45 @@ map; use it only when the full response is wanted. Local timeout/worker death
 does **not** cancel the remote billable run. Named notifications re-resolve the agent pid at delivery and retry registration
 for `notify_timeout` milliseconds (default 30,000), surviving ordinary agent
 restarts; worker rescue/catch sends a terminal safe error on unexpected failure.
-The worker is not persisted or supervised: a node restart loses its notification. `Process.exit(job.pid, :kill)`
+The polling worker is not supervised, but accepted run ids are journaled before
+started notifications. `Nano.Search.restore()` resumes GET-only polling after
+node restart; it never re-creates billable runs. `Process.exit(job.pid, :kill)`
 stops local polling only. A transient polling error ends local observation;
 explicit status lets callers recover, without hiding billable retries.
+
+### Durable recovery
+
+`research` also returns a stable `job_id`. Journals live under
+`Application.get_env(:nano, :state_dir)/research` by default (`research_dir`
+overrides). Only job id, remote run id, cache directory and a stable recipient
+name are persisted. Keys, queries, request options, schemas and base URLs are
+never persisted. Explicit pid targets journal a nil recipient; supply
+`notify: pid_or_name` to restore these manually. The journal is removed after
+terminal completion/failure notification, but retained after polling/deadline
+errors or unavailable recipients. Delivery is at-least-once, not transactional
+with the recipient's history write.
+
+At boot, after Registry and agents start, call `Nano.Search.restore()`. It reads
+the current `EXA_API_KEY`, starts workers for available journals, and sends
+`{:nano_research_restored, job_id, result}` rather than a stale Erlang ref.
+`restore(opts)` permits current credentials, transport and timeouts; provider
+config is intentionally not restored from disk. In-node Registry ownership
+prevents simultaneous workers polling the same job. No-key restore returns a
+missing-key value without touching journals. Accepted remote runs can be lost
+only in the unavoidable crash window between provider acceptance and local
+journal write; journal-write failure reports the run id for manual recovery.
+Result caches must themselves use a persistent `cache_dir` to outlive container
+replacement. Stop local polling with `Process.exit(job.pid, :kill)`; its journal
+remains available to restore.
 
 ## Verification
 
 - Isolated `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-web/_build mix test`: 255 passed
   (including the original 10 new mocked tests); existing suite warnings only.
-- Final expanded targeted suite: 17 passed (concurrent store, ephemeral eval
+- Final expanded targeted suite: 18 passed (concurrent store, ephemeral eval
   task, replacement named target, worker exception, HTTP and browser byte caps
-  browser timeout, Unicode and multi-page aggregate output regressions included).
+  browser timeout, Unicode/multi-page aggregate bounds and durable GET-only
+  restore with secret/query-free journal regressions included).
 - Real HTTP example.com fetch: success, bounded readable text.
 - Real Lightpanda example.com render: success, bounded markdown.
 - Real Exa search: two official Elixir URLs returned.
