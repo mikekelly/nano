@@ -124,7 +124,7 @@ Direct sibling integration is supported:
 mcp_servers: ["configured-filesystem", {"job-tools", %{"command" => "my-server", "args" => []}}]
 ```
 
-A string looks up the server in `/app/priv/vega_mcp.json`; a tuple supplies its config.
+`mcp:` is a short alias for `mcp_servers:`. A string looks up the server in `/app/priv/vega_mcp.json`; a tuple supplies its config.
 Delegation invokes `Vega.MCP.connect(name, config)` before launch and
 `Vega.MCP.watch(server, child_name)` after child registration but before the first
 message. The child sees only server names and library discovery/call APIs, **not**

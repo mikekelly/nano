@@ -22,7 +22,8 @@ defmodule Vega.Delegation do
     with :ok <- validate(name, parent, opts),
          {:ok, pre} <- preread(opts[:pre] || [], opts[:pre_max_bytes] || 64_000),
          {:ok, hook} <- hook(opts[:mcp_hook]),
-         {:ok, servers} <- connect_mcp(opts[:mcp_servers] || [], opts[:mcp_module] || Vega.MCP),
+         {:ok, servers} <-
+           connect_mcp(opts[:mcp_servers] || opts[:mcp] || [], opts[:mcp_module] || Vega.MCP),
          {:ok, workspace} <- workspace(name, opts[:worktree]) do
       case launch(name, parent, opts, pre, workspace, %{hook: hook, servers: servers}) do
         {:ok, _} = ok ->
