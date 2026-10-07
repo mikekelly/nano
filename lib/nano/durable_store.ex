@@ -43,7 +43,8 @@ defmodule Nano.DurableStore do
   end
 
   defp path(kind, owner, opts) when is_binary(owner) and byte_size(owner) in 1..512 do
-    root = Keyword.get(opts, :root, "/data/nano-library")
+    root =
+      Keyword.get(opts, :root, Application.get_env(:nano, :library_root, "/data/nano-library"))
 
     if is_binary(root) do
       key = :crypto.hash(:sha256, owner) |> Base.url_encode64(padding: false)

@@ -54,7 +54,8 @@ automatic memory selection or hidden prompt injection.
 
 ## Storage, concurrency and failure behavior
 
-All calls accept `root: path`. Default `/data/nano-library` is outside the
+All calls accept `root: path`. The default root can be set at boot with
+`config :nano, :library_root, path`; otherwise `/data/nano-library` is outside the
 checkout and persists on the container's data volume. Use the same root after
 handover/restart. Files are `root/goals/<sha256-owner>.json` and
 `root/memory/<sha256-owner>.json`, versioned JSON snapshots with file mode 0600.
@@ -95,10 +96,15 @@ behavior policy is installed by this library.
 
 ## Dashboard integration
 
-The owning orchestrator should render `Nano.Goals.review(agent_name)` on the
-agent page and handle `{:error, reason}` without hiding it as an empty list.
-Render `total`/`omitted` and rationale; HTML escape user-authored text normally.
-This task owns the library only; dashboard integration is delegated to nova.
+`NanoWeb.AgentLive` reads `Nano.Goals.review(agent_name)` on mount and on its
+existing one-second refresh. The Open goals section shows total/omitted counts,
+titles, statuses, rationale, notes and parent references. Closed goals are
+excluded. Goals remain visible after an agent stops. Errors are displayed as
+`Goals unavailable`, not hidden as empty goals, and HEEx escapes authored text.
+`test/nano_web/goals_live_test.exs` covers visibility, hierarchy, completion
+refresh, suspended-agent reads, stopped-agent persistence, HTML escaping, empty
+stores, truncation and corruption. Test roots are unique; the boot setting is
+restored within the test VM, with no changes to the running node.
 
 ## Verification
 
