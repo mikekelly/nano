@@ -83,10 +83,9 @@ What the person gets:
 - Sessions get long. Compaction has to happen automatically and keep what matters
   (decisions, commitments, open questions, what the person likes), so a bot never hits its
   context limit mid-conversation (the harness halts an agent before a call that would not
-  fit, so the session simply stops) and never visibly forgets within a session. The seed
-  has no compaction; one mechanism that works here is to rewrite the stored transcript from
-  outside, keeping every tool call answered, since providers refuse a conversation with a
-  tool call that has no result.
+  fit, so the session simply stops) and never visibly forgets within a session.
+  [compaction.md](compaction.md) is the general capability; a bot's summary also has to keep
+  what matters to the person, not only to the task.
 - Much of the above is classification and routing: which memories are relevant, whether a
   session needs compacting, what a message is about, which bot should answer, whether a
   message needs the person now, which path to take through the knowledge graph. The big
