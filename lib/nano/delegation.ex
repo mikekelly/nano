@@ -60,11 +60,9 @@ defmodule Nano.Delegation do
   def subagent(prefix \\ "sub", opts \\ []) do
     parent = Keyword.get(opts, :parent) || Nano.Util.calling_agent()
     name = Keyword.get(opts, :name) || unique_name(prefix)
-    worktree = maybe_worktree(name, opts[:worktree])
-
     with {:ok, template} <- template(opts),
          {:ok, prompt_file} <- write_prompt(name, template),
-         {:ok, worktree} <- worktree,
+         {:ok, worktree} <- maybe_worktree(name, opts[:worktree]),
          :ok <- start_mcp(name, opts[:mcp] || []) do
       agent_opts =
         [
@@ -382,7 +380,7 @@ defmodule Nano.Delegation do
     end
   end
 
-  defp maybe_worktree(name, nil), do: {:ok, nil}
+  defp maybe_worktree(_name, nil), do: {:ok, nil}
   defp maybe_worktree(name, sha), do: worktree(name, sha)
 
   defp start_mcp(_name, []), do: :ok

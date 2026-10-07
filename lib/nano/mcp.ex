@@ -371,13 +371,17 @@ defmodule Nano.MCP do
   end
 
   defp subscriber_pid(sub) do
-    with pid_string when is_binary(pid_string) <- sub["pid"],
-         [_, a, b] <- Regex.run(~r/^#PID<0\.(\d+)\.(\d+)>$/, pid_string),
-         pid <- :c.pid(0, String.to_integer(a), String.to_integer(b)),
-         true <- Process.alive?(pid) do
-      pid
-    else
-      _ -> NanoAgent.whereis(sub["agent"])
+    # The recorded target is a pid for a process that subscribed itself, else an agent name.
+    pid = parse_pid(sub["pid"])
+    if pid && Process.alive?(pid), do: pid, else: NanoAgent.whereis(sub["agent"])
+  end
+
+  defp parse_pid(string) when is_binary(string) do
+    case Regex.run(~r/#PID<(\d+)\.(\d+)\.(\d+)>/, string) do
+      [_, a, b, c] -> :c.pid(String.to_integer(a), String.to_integer(b), String.to_integer(c))
+      _ -> nil
     end
   end
+
+  defp parse_pid(_), do: nil
 end

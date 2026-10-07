@@ -11,6 +11,26 @@ defmodule Nano.Ops do
 
   @inspect [pretty: true, limit: :infinity, printable_limit: :infinity]
 
+  @doc """
+  What an agent beyond the seed is pursuing and running, for the dashboard or a fresh agent:
+  its open goals and its live background tasks. Reads plain modules (`Nano.Goals`,
+  `Nano.Background`); present only on a seedling where those exist.
+  """
+  def agent_extras(name) do
+    %{
+      goals: best_effort(fn -> Nano.Goals.list(agent: name) |> Enum.take(20) end, []),
+      tasks: best_effort(fn -> Nano.Background.list(:all) |> Enum.filter(&(&1.agent == name)) |> Enum.take(20) end, [])
+    }
+  end
+
+  defp best_effort(fun, default) do
+    fun.()
+  rescue
+    _ -> default
+  catch
+    _, _ -> default
+  end
+
   ## Agents
 
   @doc "Info maps for all agents."

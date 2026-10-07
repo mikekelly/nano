@@ -159,10 +159,8 @@ defmodule Nano.Web do
         end
 
       Nano.Web.Extract.html?(body) ->
-        case Nano.Web.Extract.html(body, opts) do
-          {:ok, text} -> {Nano.Web.Extract.decode_entities(text), :html}
-          {:error, _} -> {body, :raw}
-        end
+        {:ok, text} = Nano.Web.Extract.html(body, opts)
+        {Nano.Web.Extract.decode_entities(text), :html}
 
       String.starts_with?(content_type, "text/") or String.starts_with?(content_type, "application/json") ->
         {body, :text}
@@ -385,7 +383,7 @@ defmodule Nano.Web do
           true ->
             offset = Keyword.get(opts, :offset, 0)
             limit = Keyword.get(opts, :limit, @limits.page_chars)
-            slice = text |> String.slice(offset, limit + 1) |> String.slice(0, limit)
+            slice = String.slice(text, offset, limit)
             total = String.length(text)
 
             %{

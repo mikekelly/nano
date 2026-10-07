@@ -123,6 +123,7 @@ defmodule Nano.Background do
     |> Enum.uniq()
     |> Enum.map(&status/1)
     |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(& &1.id)
     |> Enum.filter(&in_scope?(&1, scope))
     |> Enum.sort_by(& &1.started_at, :desc)
     |> Enum.take(Keyword.get(opts, :limit, @limits.list_max))

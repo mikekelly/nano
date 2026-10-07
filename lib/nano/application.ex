@@ -29,6 +29,7 @@ defmodule Nano.Application do
           Nano.MCP.Store,
           Nano.Delegation.Store,
           Nano.Delegation.Watcher,
+          Nano.Web.Cache,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           NanoWeb.Endpoint
