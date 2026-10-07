@@ -107,7 +107,8 @@ What the person gets:
 - The seed's reading view of an agent's timeline
   ([lib/nano_web/live/agent_live.ex](../lib/nano_web/live/agent_live.ex)) as the nearest
   thing to a chat surface, and the `dashboard` user as how a UI talks to agents.
-- [delegation.md](delegation.md), [goals.md](goals.md), [search.md](search.md) and
-  [web-access.md](web-access.md) for what bots can do.
+- [delegation.md](delegation.md), [goals.md](goals.md), [search.md](search.md),
+  [web-access.md](web-access.md) and [images.md](images.md) (pictures people attach) for
+  what bots can do.
 
 How you build it is yours to decide.

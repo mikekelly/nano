@@ -25,6 +25,7 @@ or drop for its own situation.
 | [`search.md`](search.md) | Search and research with Exa, including handing work to its research agent |
 | [`goals.md`](goals.md) | Set, keep and review goals across turns, restarts and agents |
 | [`background-tasks.md`](background-tasks.md) | Run shell commands in the background and be told when they finish |
+| [`images.md`](images.md) | See images that arrive in messages and look at image files, on models that can |
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
 Some seedings need something only the operators can supply, and say so at the top: an API
