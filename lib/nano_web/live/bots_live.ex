@@ -137,6 +137,14 @@ defmodule NanoWeb.BotsLive do
       |> Enum.sort_by(& &1.created_at)
       |> Enum.filter(&String.contains?(String.downcase(&1.name), String.downcase(query)))
 
+  def status_label(:thinking), do: "is thinking…"
+  def status_label(:no_reply), do: "finished without a reply. Try asking again."
+
+  def status_label(:paused),
+    do: "is paused at its budget limit. Start a new conversation to continue."
+
+  def status_label(_), do: "is unavailable — ask the operator to configure the bot model."
+
   defp label(:human, _), do: "You"
   defp label(id, data), do: data.bots[id].name
 
@@ -202,9 +210,7 @@ defmodule NanoWeb.BotsLive do
               </form>
             </article>
             <p :for={{bid, status} <- chat.status} :if={status != :idle} class="status">
-              {label(bid, @data)} {if status == :thinking,
-                do: "is thinking…",
-                else: "is unavailable — ask the operator to configure the bot model."}
+              {label(bid, @data)} {status_label(status)}
             </p>
           </section>
           <form

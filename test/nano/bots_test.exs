@@ -26,10 +26,73 @@ defmodule Nano.BotsTest do
     %{server: pid, path: path}
   end
 
-  test "identities, sessions and human request correlation survive restart", %{
-    server: s,
-    path: path
-  } do
+  test "bounded history fragments have exact UTF-8 continuations", %{server: s} do
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+    text = String.duplicate("🧠\u0001\"", 3000)
+    for _ <- 1..6, do: assert(:ok == Nano.Bots.post(chat.id, a.id, text, s))
+    {:ok, page} = Nano.Bots.history(chat.id, server: s)
+    assert byte_size(Jason.encode!(page)) <= 6000
+    assert hd(page.messages).truncated
+    assert page.next_offset > 0
+    assert String.valid?(hd(page.messages).text)
+
+    recover = fn recover, offset, acc ->
+      {:ok, chunk} = Nano.Bots.message(chat.id, 0, server: s, offset: offset, max_bytes: 777)
+      assert byte_size(Jason.encode!(chunk.text)) <= 777
+      assert String.valid?(chunk.text)
+
+      if chunk.next_offset,
+        do: recover.(recover, chunk.next_offset, acc <> chunk.text),
+        else: acc <> chunk.text
+    end
+
+    assert recover.(recover, 0, "") == text
+    assert {:error, :unknown_message} = Nano.Bots.message(chat.id, -1, server: s)
+  end
+
+  test "checkpoint pages bound raw UTF-8 and encoded text", %{server: s, path: path} do
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+    dir = Path.join(Path.dirname(path), "checkpoints")
+    File.mkdir_p!(dir)
+
+    original = [
+      %{
+        name: "test",
+        transcript: [%{"role" => "user", "content" => String.duplicate("🧠\u0001\"", 8000)}],
+        pending: []
+      }
+    ]
+
+    File.write!(Path.join(dir, "#{chat.id}-0.term"), :erlang.term_to_binary(original))
+
+    recover = fn recover, offset, acc ->
+      {:ok, page} = Nano.Bots.checkpoint(chat.id, 0, server: s, offset: offset, limit: 1000)
+      assert byte_size(page.text) <= 1000
+      assert byte_size(Jason.encode!(page.text)) <= 1000
+      assert String.valid?(page.text)
+
+      if page.next_offset,
+        do: recover.(recover, page.next_offset, acc <> page.text),
+        else: acc <> page.text
+    end
+
+    assert recover.(recover, 0, "") ==
+             inspect(original, limit: :infinity, printable_limit: :infinity)
+  end
+
+  test "status labels distinguish paused and silent completion" do
+    assert NanoWeb.BotsLive.status_label(:paused) =~ "paused"
+    assert NanoWeb.BotsLive.status_label(:no_reply) =~ "without a reply"
+    refute NanoWeb.BotsLive.status_label(:no_reply) =~ "unavailable"
+  end
+
+  test "identities, sessions and human request correlation survive restart",
+       %{
+         server: s,
+         path: path
+       } do
     {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
     {:ok, b} = Nano.Bots.create_bot("Bea", server: s)
     {:ok, chat} = Nano.Bots.create_session([a.id, b.id], server: s)
