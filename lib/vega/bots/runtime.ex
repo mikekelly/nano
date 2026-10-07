@@ -13,6 +13,7 @@ defmodule Vega.Bots.Runtime do
         message: message["text"],
         author: "person",
         images: message["images"],
+        files: message["files"] || [],
         relevant_memories: memories,
         instructions:
           "Reply visibly via Vega.Bots.post(#{inspect(session["id"])}, #{inspect(bot["id"])}, markdown). Do not repeat an already posted reply for this message_id. Final prose is only an operator log, not a chat reply."
@@ -93,6 +94,8 @@ defmodule Vega.Bots.Runtime do
       remains available through Vega.Bots.get_session(session_id). Post once per input.
       When handling human answers, correlate request IDs and acknowledge only after
       safely recording the answer; requester names, not pids, survive restarts.
+      For files you produce, use Vega.Bots.attach_file(path) then post(..., files: [ref]).
+      Downloads are immutable safe attachments, not inline HTML.
       Attachments use Vega.Images references and the harness native images event.
       Never claim to see an image if your model lacks vision. Never expose secret keys.
       If another bot should weigh in, ask the person instead of creating bot ping-pong.
