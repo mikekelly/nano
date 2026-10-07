@@ -1,0 +1,521 @@
+defmodule Vega.MCP.Connection do
+  @moduledoc false
+  use GenServer
+  @versions ["2025-11-25", "2025-06-18", "2025-03-26"]
+  @max_wire 8 * 1024 * 1024
+  def start_link({name, config}),
+    do:
+      GenServer.start_link(__MODULE__, {name, config},
+        name: {:via, Registry, {Vega.MCP.Registry, name}}
+      )
+
+  def init({name, config}) do
+    Process.flag(:trap_exit, true)
+    send(self(), :connect)
+
+    {:ok,
+     %{
+       name: name,
+       config: config,
+       port: nil,
+       buffer: "",
+       phase: :connecting,
+       version: hd(@versions),
+       info: nil,
+       next: 1,
+       pending: %{},
+       waiters: [],
+       interests: Vega.MCP.State.get(name),
+       session: nil,
+       jobs: %{},
+       stream: nil,
+       stream_cursor: nil,
+       stream_retry: 500,
+       backoff: 250,
+       generation: make_ref()
+     }}
+  end
+
+  def handle_call(:ready, _from, %{phase: :ready} = s), do: {:reply, {:ok, bound(s.info, s)}, s}
+  def handle_call(:ready, from, s), do: {:noreply, %{s | waiters: [from | s.waiters]}}
+
+  def handle_call(:status, _, s),
+    do:
+      {:reply,
+       {:ok,
+        %{
+          phase: s.phase,
+          server: bound(s.info, s),
+          protocol: s.version,
+          pending: map_size(s.pending)
+        }}, s}
+
+  def handle_call({op, agent}, _, s) when op in [:watch, :unwatch] do
+    watchers =
+      if op == :watch,
+        do: Enum.uniq([agent | s.interests["watchers"]]),
+        else: List.delete(s.interests["watchers"], agent)
+
+    interests = Map.put(s.interests, "watchers", watchers)
+    persist_reply(interests, s)
+  end
+
+  def handle_call({:request, _, _, _}, _, %{pending: pending} = s) when map_size(pending) >= 128,
+    do: {:reply, {:error, :busy}, s}
+
+  def handle_call({op, uri, _agent} = call, from, %{phase: :ready} = s)
+      when op in [:subscribe, :unsubscribe] do
+    busy =
+      Enum.any?(s.pending, fn
+        {_, {{:interest, _, _, pending_uri, _}, _}} -> pending_uri == uri
+        _ -> false
+      end)
+
+    if busy,
+      do: {:reply, {:error, :subscription_busy}, s},
+      else: handle_subscription(call, from, s)
+  end
+
+  def handle_call({:request, method, params, timeout}, from, %{phase: :ready} = s),
+    do: {:noreply, rpc(s, method, params, {:call, from}, timeout)}
+
+  def handle_call(_, _, s), do: {:reply, {:error, :not_ready}, s}
+
+  defp handle_subscription({:subscribe, uri, agent}, from, %{phase: :ready} = s) do
+    if get_in(s.info, ["capabilities", "resources", "subscribe"]) == true do
+      agents = Map.get(s.interests["resources"], uri, [])
+      interests = put_in(s.interests, ["resources", uri], Enum.uniq([agent | agents]))
+
+      if agents == [],
+        do:
+          {:noreply,
+           rpc(
+             s,
+             "resources/subscribe",
+             %{"uri" => uri},
+             {:interest, from, :subscribe, uri, agent},
+             30_000
+           )},
+        else: persist_reply(interests, s)
+    else
+      {:reply, {:error, :subscription_not_supported}, s}
+    end
+  end
+
+  defp handle_subscription({:unsubscribe, uri, agent}, from, %{phase: :ready} = s) do
+    agents = Map.get(s.interests["resources"], uri, []) |> List.delete(agent)
+
+    resources =
+      if agents == [],
+        do: Map.delete(s.interests["resources"], uri),
+        else: Map.put(s.interests["resources"], uri, agents)
+
+    interests = Map.put(s.interests, "resources", resources)
+
+    if agents == [],
+      do:
+        {:noreply,
+         rpc(
+           s,
+           "resources/unsubscribe",
+           %{"uri" => uri},
+           {:interest, from, :unsubscribe, uri, agent},
+           30_000
+         )},
+      else: persist_reply(interests, s)
+  end
+
+  defp persist_reply(interests, s) do
+    case Vega.MCP.State.put(s.name, interests) do
+      :ok -> {:reply, :ok, %{s | interests: interests}}
+      error -> {:reply, error, s}
+    end
+  end
+
+  def handle_info(:connect, s) do
+    generation = make_ref()
+
+    s = %{
+      s
+      | generation: generation,
+        session: nil,
+        stream_cursor: nil,
+        version: hd(@versions),
+        phase: :initializing,
+        buffer: ""
+    }
+
+    case open(s) do
+      {:ok, s} ->
+        {:noreply,
+         rpc(
+           s,
+           "initialize",
+           %{
+             "protocolVersion" => hd(@versions),
+             "capabilities" => %{},
+             "clientInfo" => %{"name" => "vega", "version" => "1.0"}
+           },
+           :initialize,
+           15_000
+         )}
+
+      {:error, reason} ->
+        {:noreply, down(s, reason)}
+    end
+  end
+
+  def handle_info({port, {:data, chunk}}, %{port: port} = s) when is_port(port) do
+    buffer = s.buffer <> chunk
+
+    if byte_size(buffer) > @max_wire do
+      {:noreply, down(s, :wire_limit)}
+    else
+      parts = String.split(buffer, "\n")
+      {tail, lines} = List.pop_at(parts, -1)
+      s = Enum.reduce(lines, %{s | buffer: tail}, fn line, acc -> decode(line, acc) end)
+      {:noreply, s}
+    end
+  end
+
+  def handle_info({port, {:exit_status, code}}, %{port: port} = s),
+    do: {:noreply, down(s, {:server_exit, code})}
+
+  def handle_info({:EXIT, port, reason}, %{port: port} = s) when is_port(port),
+    do: {:noreply, down(s, {:port_exit, reason})}
+
+  def handle_info({:wire, gen, msg}, %{generation: gen} = s), do: {:noreply, incoming(msg, s)}
+
+  def handle_info({:http_headers, gen, session}, %{generation: gen} = s) when is_binary(session),
+    do: {:noreply, %{s | session: session}}
+
+  def handle_info({:http_done, gen, pid, kind, result}, %{generation: gen} = s) do
+    s = %{s | jobs: Map.delete(s.jobs, pid)}
+
+    case {kind, result} do
+      {_, {:error, reason}} ->
+        {:noreply, down(s, reason)}
+
+      {:get, :unsupported} ->
+        {:noreply, %{s | stream: nil}}
+
+      {:get, :ok} ->
+        Process.send_after(self(), {:stream, gen}, s.stream_retry)
+        {:noreply, %{s | stream: nil}}
+
+      _ ->
+        {:noreply, s}
+    end
+  end
+
+  def handle_info({:stream, gen}, %{generation: gen, phase: :ready, stream: nil} = s),
+    do: {:noreply, http(s, :get, nil)}
+
+  def handle_info({:sse_state, gen, id, retry}, %{generation: gen} = s) do
+    {:noreply, %{s | stream_cursor: id || s.stream_cursor, stream_retry: retry || s.stream_retry}}
+  end
+
+  def handle_info({:timeout, id}, s) do
+    case Map.pop(s.pending, id) do
+      {nil, _} ->
+        {:noreply, s}
+
+      {{action, _timer}, pending} ->
+        s = %{s | pending: pending}
+
+        if action == :initialize do
+          {:noreply, down(s, :initialize_timeout)}
+        else
+          reply(action, {:error, :timeout})
+
+          s =
+            transmit(s, %{
+              "jsonrpc" => "2.0",
+              "method" => "notifications/cancelled",
+              "params" => %{"requestId" => id, "reason" => "timeout"}
+            })
+
+          {:noreply, s}
+        end
+    end
+  end
+
+  def handle_info({:EXIT, pid, reason}, s) when is_pid(pid) do
+    if Map.has_key?(s.jobs, pid),
+      do: {:noreply, down(s, {:http_worker_exit, reason})},
+      else: {:noreply, s}
+  end
+
+  def handle_info(_, s), do: {:noreply, s}
+
+  defp open(%{config: %{"command" => command} = config} = s) do
+    executable = System.find_executable(command) || if(File.regular?(command), do: command)
+
+    if executable do
+      env =
+        Enum.map(Map.get(config, "env", %{}), fn {k, v} ->
+          {String.to_charlist(k), String.to_charlist(v)}
+        end)
+
+      opts = [
+        :binary,
+        :exit_status,
+        :use_stdio,
+        :hide,
+        args: Map.get(config, "args", []),
+        env: env
+      ]
+
+      opts = if config["cwd"], do: opts ++ [cd: config["cwd"]], else: opts
+      {:ok, %{s | port: Port.open({:spawn_executable, executable}, opts)}}
+    else
+      {:error, :executable_not_found}
+    end
+  rescue
+    e -> {:error, {:spawn_failed, Exception.message(e)}}
+  end
+
+  defp open(%{config: %{"url" => url}} = s) when is_binary(url), do: {:ok, s}
+  defp open(_), do: {:error, :invalid_transport_config}
+
+  defp rpc(s, method, params, action, timeout) do
+    id = s.next
+    timer = Process.send_after(self(), {:timeout, id}, timeout)
+    s = %{s | next: id + 1, pending: Map.put(s.pending, id, {action, timer})}
+    transmit(s, %{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params})
+  end
+
+  defp transmit(%{port: port} = s, msg) when is_port(port) do
+    Port.command(port, Jason.encode!(msg) <> "\n")
+    s
+  rescue
+    _ -> down(s, :write_failed)
+  end
+
+  defp transmit(%{config: %{"url" => _}} = s, msg), do: http(s, :post, msg)
+  defp transmit(s, _), do: s
+
+  defp http(s, kind, msg) do
+    owner = self()
+    gen = s.generation
+    config = Map.put(s.config, "_last_event_id", s.stream_cursor)
+    session = s.session
+    version = s.version
+
+    pid =
+      spawn_link(fn ->
+        result = Vega.MCP.HTTP.run(owner, gen, config, session, version, kind, msg)
+        send(owner, {:http_done, gen, self(), kind, result})
+      end)
+
+    %{s | jobs: Map.put(s.jobs, pid, kind), stream: if(kind == :get, do: pid, else: s.stream)}
+  end
+
+  defp decode("", s), do: s
+
+  defp decode(line, s) do
+    case Jason.decode(line) do
+      {:ok, msg} when is_map(msg) -> incoming(msg, s)
+      _ -> down(s, :invalid_json_rpc)
+    end
+  end
+
+  defp incoming(%{"jsonrpc" => "2.0"} = msg, s), do: message(msg, s)
+  defp incoming(_, s), do: down(s, :invalid_json_rpc)
+
+  defp message(%{"method" => method, "id" => id}, s) when is_binary(method) do
+    result =
+      if method == "ping",
+        do: %{"result" => %{}},
+        else: %{"error" => %{"code" => -32601, "message" => "Client capability not supported"}}
+
+    transmit(s, Map.merge(%{"jsonrpc" => "2.0", "id" => id}, result))
+  end
+
+  defp message(%{"method" => method} = msg, s) when is_binary(method) do
+    params = Map.get(msg, "params", %{})
+
+    recipients =
+      if method == "notifications/resources/updated",
+        do: Map.get(s.interests["resources"], params["uri"], []),
+        else: []
+
+    emit(s, method, params, recipients)
+    s
+  end
+
+  defp message(%{"id" => id} = msg, s) do
+    case Map.pop(s.pending, id) do
+      {nil, _} ->
+        s
+
+      {{action, timer}, pending} ->
+        Process.cancel_timer(timer)
+        s = %{s | pending: pending}
+
+        result =
+          if Map.has_key?(msg, "error"),
+            do: {:error, msg["error"]},
+            else: {:ok, Map.get(msg, "result", %{})}
+
+        complete(action, result, s)
+    end
+  end
+
+  defp message(_, s), do: s
+
+  defp complete(:initialize, {:ok, %{"protocolVersion" => version} = info}, s)
+       when version in @versions do
+    s = %{s | version: version, info: info, phase: :ready, backoff: 250}
+    s = transmit(s, %{"jsonrpc" => "2.0", "method" => "notifications/initialized"})
+    Enum.each(s.waiters, &GenServer.reply(&1, {:ok, bound(info, s)}))
+    emit(s, "connection/ready", %{"protocolVersion" => version})
+    s = %{s | waiters: []}
+
+    s =
+      Enum.reduce(s.interests["resources"], s, fn {uri, _}, acc ->
+        rpc(acc, "resources/subscribe", %{"uri" => uri}, {:restore, uri}, 30_000)
+      end)
+
+    if s.config["url"], do: http(s, :get, nil), else: s
+  end
+
+  defp complete(:initialize, result, s),
+    do: down(s, {:initialize_failed, bound_result(result, s)})
+
+  defp complete({:interest, from, op, uri, agent}, {:ok, _}, s) do
+    agents = Map.get(s.interests["resources"], uri, [])
+
+    agents =
+      if op == :subscribe, do: Enum.uniq([agent | agents]), else: List.delete(agents, agent)
+
+    resources =
+      if agents == [],
+        do: Map.delete(s.interests["resources"], uri),
+        else: Map.put(s.interests["resources"], uri, agents)
+
+    interests = Map.put(s.interests, "resources", resources)
+
+    case Vega.MCP.State.put(s.name, interests) do
+      :ok ->
+        GenServer.reply(from, :ok)
+        %{s | interests: interests}
+
+      error ->
+        GenServer.reply(from, error)
+        s
+    end
+  end
+
+  defp complete({:restore, uri}, {:error, error}, s) do
+    emit(
+      s,
+      "subscription/failed",
+      %{"uri" => uri, "error" => error},
+      Map.get(s.interests["resources"], uri, [])
+    )
+
+    s
+  end
+
+  defp complete(action, result, s),
+    do:
+      (
+        reply(action, bound_result(result, s))
+        s
+      )
+
+  defp reply({:call, from}, result), do: GenServer.reply(from, result)
+  defp reply({:interest, from, _, _, _}, result), do: GenServer.reply(from, result)
+  defp reply(_, _), do: :ok
+
+  defp down(%{phase: :disconnected} = s, _), do: s
+
+  defp down(s, reason) do
+    close(s)
+
+    Enum.each(s.pending, fn {_, {action, timer}} ->
+      Process.cancel_timer(timer)
+      reply(action, {:error, {:disconnected, reason}})
+    end)
+
+    Enum.each(s.waiters, &GenServer.reply(&1, {:error, {:disconnected, reason}}))
+    emit(s, "connection/dead", %{"reason" => inspect(reason)})
+    Process.send_after(self(), :connect, s.backoff)
+
+    %{
+      s
+      | port: nil,
+        phase: :disconnected,
+        pending: %{},
+        waiters: [],
+        jobs: %{},
+        stream: nil,
+        generation: make_ref(),
+        backoff: min(s.backoff * 2, 30_000)
+    }
+  end
+
+  defp close(s) do
+    if is_port(s.port),
+      do:
+        (try do
+           Port.close(s.port)
+         rescue
+           _ -> :ok
+         end)
+
+    Enum.each(s.jobs, fn {pid, _} -> Process.exit(pid, :kill) end)
+  end
+
+  def terminate(_, s), do: close(s)
+
+  defp emit(s, method, params, extra \\ []) do
+    recipients =
+      Enum.uniq(
+        s.interests["watchers"] ++
+          extra ++
+          if(String.starts_with?(method, "connection/"),
+            do: Enum.flat_map(s.interests["resources"], fn {_, agents} -> agents end),
+            else: []
+          )
+      )
+
+    event = %{mcp: s.name, method: method, params: bound(params, s)}
+    Enum.each(recipients, &NanoAgent.notify(&1, event))
+  end
+
+  defp bound_result({tag, result}, s), do: {tag, bound(result, s)}
+
+  defp bound(value, s) do
+    encoded = Jason.encode!(value)
+    limit = (s.config["result_limit"] || 16_384) |> max(256) |> min(32_768)
+
+    if byte_size(encoded) <= limit do
+      value
+    else
+      dir = Path.join(Vega.MCP.State.directory(), "results")
+
+      path =
+        Path.join(
+          dir,
+          "#{System.unique_integer([:positive, :monotonic])}-#{:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false)}.json"
+        )
+
+      result = with :ok <- File.mkdir_p(dir), do: File.write(path, encoded)
+
+      case result do
+        :ok ->
+          %{
+            truncated: true,
+            bytes: byte_size(encoded),
+            preview: binary_part(encoded, 0, min(limit, 4096)),
+            spill: path
+          }
+
+        {:error, reason} ->
+          %{truncated: true, bytes: byte_size(encoded), spill_error: inspect(reason)}
+      end
+    end
+  end
+end
