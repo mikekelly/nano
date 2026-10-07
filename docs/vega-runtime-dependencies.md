@@ -1,0 +1,9 @@
+# Seedling runtime dependencies
+
+The seedling Dockerfile (not main) includes Debian python3/python3-pil for strict bounded image decoding, Chromium for optional actual CSS CDP, and nodejs/npm for optional MCP servers. It also installs native Node22 v22.21.1 as `/usr/local/bin/node22` without replacing Debian Node20, SHA256-pinned separately for amd64/arm64. Browser selection still honors explicit option, exact node setting, environment, and durable task runtime before PATH fallbacks.
+
+Official filesystem MCP server `2026.8.31` plus its full transitive graph are locked in `priv/vega_mcp_runtime/package*.json`, installed under `/opt/vega-mcp-tools` (outside mounted checkout/data). Source config `vega-filesystem` points there; sample npx config remains optional. Existing data-installed tree remains on this node but isn't the fresh-image dependency path.
+
+Actual host verification: Python/Pillow and Chromium154 installed and tested by capability suites; native ARM64 Node22 v22.21.1 runs at both durable-data and `/usr/local/bin/node22`; official server connected and tools exercised. Tracked lockfile reproduced through actual `npm ci --omit=dev --no-audit --no-fund`, exit0, package version2026.8.31 (task `_vORpzi3r6aPz6m7`, `/data/vega-tasks/_vORpzi3r6aPz6m7`). Node archive checksums fetched from official versioned SHASUMS: arm64 e660365729b434af422bcd2e8e14228637ecf24a1de2cd7c916ad48f2a0521e1; x64 680d3f30b24a7ff24b98db5e96f294c0070f8f9078df658da1bce1b9c9873c88. Copied ARM executable SHA256 c8c89c91b842b5852dea0863836e24d38fec55c263a5b4377e54b40886a1cdb9.
+
+**The complete Docker image build has not been executed here** (no Docker daemon used). Dependency commands and current runtime are tested, but that is not a claim of a tested image build. Future builds require outbound Debian/Node/npm registry access. The main seed remains minimal; these additions live only on the seedling branch.

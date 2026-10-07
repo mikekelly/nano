@@ -1,13 +1,13 @@
 #!/bin/sh
 set -eu
-# Explicit opt-in installation; no dependency installation happens during MCP connect.
-# Run as root on this Debian node if npm/node are absent.
+# Explicit opt-in reproduction for an older image; fresh seedling Docker images include this.
 if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
   apt-get update
   apt-get install -y nodejs npm
 fi
-mkdir -p /data/vega-mcp-tools
-cd /data/vega-mcp-tools
-npm install --no-audit --no-fund --save-exact @modelcontextprotocol/server-filesystem@2026.8.31
+mkdir -p /opt/vega-mcp-tools
+cp /app/priv/vega_mcp_runtime/package*.json /opt/vega-mcp-tools/
+cd /opt/vega-mcp-tools
+npm ci --omit=dev --no-audit --no-fund
 printf '%s
-' 'Installed pinned MCP filesystem server. Use Vega.MCP.connect("vega-filesystem").'
+' 'Installed locked MCP filesystem server. Use Vega.MCP.connect("vega-filesystem").'

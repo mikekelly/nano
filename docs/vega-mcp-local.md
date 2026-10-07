@@ -1,6 +1,6 @@
 # Configured filesystem server on this node
 
-`/app/priv/vega_mcp.json` includes `vega-filesystem`, backed by the **actual official** `@modelcontextprotocol/server-filesystem@2026.8.31`, installed under `/data/vega-mcp-tools/node_modules` and run with `/usr/bin/node`. Package files survive an agent/node restart; an entirely new image needs explicit installation via `sh /app/scripts/vega/install-mcp-filesystem.sh` (installs Debian Node/npm if absent, then the pinned package). The installer is a reproduction recipe, not part of boot or a silent network action. The current node was installed from the sibling's already-tested official package tree; installer itself has not been executed here.
+`/app/priv/vega_mcp.json` includes `vega-filesystem`, backed by the **actual official** `@modelcontextprotocol/server-filesystem@2026.8.31`, installed under `/opt/vega-mcp-tools/node_modules` and run with `/usr/bin/node`. Package files survive an agent/node restart; the seedling Dockerfile includes the locked package. An older image can explicitly install it via `sh /app/scripts/vega/install-mcp-filesystem.sh` (installs Debian Node/npm if absent, then locked `npm ci` using tracked package manifests). The installer is a reproduction recipe, not part of boot or a silent network action. The current node was installed from the sibling's already-tested official package tree; installer itself has not been executed here.
 
 ```elixir
 Vega.MCP.connect("vega-filesystem")
