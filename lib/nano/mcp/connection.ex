@@ -33,6 +33,7 @@ defmodule Nano.MCP.Connection do
       config: config,
       path: path,
       subscriptions: subscriptions,
+      subscription_queue: %{},
       watchers: [],
       transport: nil,
       ready: false,
@@ -55,19 +56,15 @@ defmodule Nano.MCP.Connection do
   end
 
   @impl true
-  def handle_call(:ready, from, %{ready: true} = state) do
-    {:reply, {:ok, self()},
-     %{state | watchers: Enum.uniq([canonical_target(elem(from, 0)) | state.watchers])}}
+  def handle_call(:ready, from, state), do: handle_call({:ready, :caller}, from, state)
+
+  def handle_call({:ready, recipient}, from, %{ready: true} = state) do
+    {:reply, {:ok, self()}, add_watcher(state, recipient, from)}
   end
 
-  def handle_call(:ready, from, state),
-    do:
-      {:noreply,
-       %{
-         state
-         | waiters: [from | state.waiters],
-           watchers: Enum.uniq([canonical_target(elem(from, 0)) | state.watchers])
-       }}
+  def handle_call({:ready, recipient}, from, state) do
+    {:noreply, %{add_watcher(state, recipient, from) | waiters: [from | state.waiters]}}
+  end
 
   def handle_call(:status, _from, state),
     do:
@@ -86,6 +83,22 @@ defmodule Nano.MCP.Connection do
 
   def handle_call({operation, uri, target}, from, state)
       when operation in [:subscribe, :unsubscribe] do
+    if subscription_active?(state, uri) or Map.get(state.subscription_queue, uri, []) != [] do
+      queue =
+        Map.update(
+          state.subscription_queue,
+          uri,
+          [{operation, target, from}],
+          &(&1 ++ [{operation, target, from}])
+        )
+
+      {:noreply, %{state | subscription_queue: queue}}
+    else
+      subscription_call({operation, uri, target}, from, state)
+    end
+  end
+
+  defp subscription_call({operation, uri, target}, from, state) do
     target = canonical_target(target)
 
     cond do
@@ -121,6 +134,30 @@ defmodule Nano.MCP.Connection do
   end
 
   @impl true
+  def handle_info({:subscription_next, uri}, state) do
+    if subscription_active?(state, uri) do
+      {:noreply, state}
+    else
+      case Map.get(state.subscription_queue, uri, []) do
+        [] ->
+          {:noreply, state}
+
+        [{operation, target, from} | rest] ->
+          state = %{state | subscription_queue: Map.put(state.subscription_queue, uri, rest)}
+
+          case subscription_call({operation, uri, target}, from, state) do
+            {:reply, result, next} ->
+              GenServer.reply(from, result)
+              send(self(), {:subscription_next, uri})
+              {:noreply, next}
+
+            {:noreply, next} ->
+              {:noreply, next}
+          end
+      end
+    end
+  end
+
   def handle_info(:connect, state) do
     state = %{
       state
@@ -189,6 +226,7 @@ defmodule Nano.MCP.Connection do
 
       {entry, pending} ->
         reply(entry.kind, {:error, :timeout})
+        advance_subscription(entry.kind)
         notify(state, "notifications/cancelled", %{"requestId" => id, "reason" => "timeout"})
         {:noreply, %{state | pending: pending}}
     end
@@ -363,7 +401,9 @@ defmodule Nano.MCP.Connection do
             {:ok, message["result"]}
           end
 
-        completed(state, entry.kind, result)
+        state = completed(state, entry.kind, result)
+        advance_subscription(entry.kind)
+        state
     end
   end
 
@@ -478,7 +518,9 @@ defmodule Nano.MCP.Connection do
 
       {entry, pending} ->
         Process.cancel_timer(entry.timer)
-        completed(%{state | pending: pending}, entry.kind, {:error, reason})
+        state = completed(%{state | pending: pending}, entry.kind, {:error, reason})
+        advance_subscription(entry.kind)
+        state
     end
   end
 
@@ -492,6 +534,12 @@ defmodule Nano.MCP.Connection do
     end)
 
     Enum.each(state.waiters, &GenServer.reply(&1, {:error, {:disconnected, reason}}))
+
+    Enum.each(state.subscription_queue, fn {_, entries} ->
+      Enum.each(entries, fn {_, _, from} ->
+        GenServer.reply(from, {:error, {:disconnected, reason}})
+      end)
+    end)
 
     emit(
       state,
@@ -508,6 +556,7 @@ defmodule Nano.MCP.Connection do
       | ready: false,
         transport: nil,
         pending: %{},
+        subscription_queue: %{},
         waiters: [],
         attempts: state.attempts + 1,
         generation: state.generation + 1
@@ -529,6 +578,29 @@ defmodule Nano.MCP.Connection do
         send(pid, {:mcp, state.name, method, bounded})
       end
     end)
+  end
+
+  defp subscription_active?(state, uri) do
+    Enum.any?(state.pending, fn {_, entry} ->
+      case entry.kind do
+        {operation, _, ^uri, _} when operation in [:subscribe, :unsubscribe] -> true
+        {:restore, ^uri} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  defp advance_subscription({operation, _, uri, _}) when operation in [:subscribe, :unsubscribe],
+    do: send(self(), {:subscription_next, uri})
+
+  defp advance_subscription({:restore, uri}), do: send(self(), {:subscription_next, uri})
+  defp advance_subscription(_), do: :ok
+
+  defp add_watcher(state, false, _from), do: state
+  defp add_watcher(state, :caller, from), do: add_watcher(state, elem(from, 0), from)
+
+  defp add_watcher(state, recipient, _from) do
+    %{state | watchers: Enum.uniq([canonical_target(recipient) | state.watchers])}
   end
 
   defp canonical_target(pid) when is_pid(pid) do

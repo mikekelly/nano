@@ -31,11 +31,19 @@ defmodule Nano.MCP do
       spec = {Nano.MCP.Connection, {name, config, opts}}
 
       case DynamicSupervisor.start_child(Nano.MCP.Connections, spec) do
-        {:ok, pid} -> ready(pid, Keyword.get(opts, :timeout, 15_000))
-        {:error, {:already_started, pid}} -> ready(pid, Keyword.get(opts, :timeout, 15_000))
+        {:ok, pid} -> connect_ready(pid, opts)
+        {:error, {:already_started, pid}} -> connect_ready(pid, opts)
         error -> error
       end
     end
+  end
+
+  defp connect_ready(pid, opts) do
+    safe_call(
+      pid,
+      {:ready, Keyword.get(opts, :recipient, :caller)},
+      Keyword.get(opts, :timeout, 15_000)
+    )
   end
 
   defp config(name, opts) do
