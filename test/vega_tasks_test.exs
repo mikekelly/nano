@@ -183,7 +183,47 @@ defmodule Vega.TasksTest do
     assert id == task.id
   end
 
-  test "immediate stop races command startup safely", %{root: root} do
+  test "guardian retires before absent-recipient retries, so later controller death cannot signal an old group",
+       %{root: root} do
+    name = "absent-guardian-#{System.unique_integer([:positive])}"
+    gate = Path.join(root, "release-guardian-test")
+
+    {:ok, task} =
+      Tasks.start("while [ ! -f '#{gate}' ]; do sleep 0.01; done; printf done",
+        root: root,
+        agent: name
+      )
+
+    eventually(fn ->
+      case Process.info(task.pid, :dictionary) do
+        {:dictionary, dict} -> is_pid(Keyword.get(dict, :vega_task_guardian))
+        _ -> false
+      end
+    end)
+
+    {:dictionary, dict} = Process.info(task.pid, :dictionary)
+    guardian = Keyword.fetch!(dict, :vega_task_guardian)
+    guardian_ref = Process.monitor(guardian)
+    # Trace the real single signaling path, not a mock and not PID reuse.
+    :erlang.trace_pattern({Tasks, :cleanup, 1}, true, [:local])
+    :erlang.trace(guardian, true, [:call])
+    on_exit(fn -> :erlang.trace_pattern({Tasks, :cleanup, 1}, false, [:local]) end)
+    File.write!(gate, "release")
+    assert_receive {:trace, ^guardian, :call, {Tasks, :cleanup, [dir]}}, 2000
+    assert dir == task.dir
+    assert_receive {:DOWN, ^guardian_ref, :process, ^guardian, :normal}, 2000
+    assert {:ok, %{status: :completed, delivered_at: nil}} = Tasks.status(task)
+    assert Process.alive?(task.pid)
+    refute Process.alive?(guardian)
+    worker_ref = Process.monitor(task.pid)
+    Process.exit(task.pid, :kill)
+    assert_receive {:DOWN, ^worker_ref, :process, _, :killed}, 2000
+    refute_receive {:trace, ^guardian, :call, {Tasks, :cleanup, _}}, 200
+    assert {:ok, %{status: :completed}} = Tasks.status(task)
+  end
+
+  test "immediate stop races command startup safely",
+       %{root: root} do
     for _ <- 1..10 do
       {:ok, task} = Tasks.start("sleep 60 & wait", root: root)
       assert :ok = Tasks.stop(task)
