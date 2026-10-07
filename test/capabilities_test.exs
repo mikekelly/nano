@@ -1,5 +1,6 @@
 defmodule Nano.CapabilitiesTest do
   use ExUnit.Case, async: true
+
   test "index is discoverable and generated notes are deterministic" do
     root = Path.join(System.tmp_dir!(), "nova-index-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
