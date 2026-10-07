@@ -118,7 +118,8 @@ defmodule Nano.OpenRouter do
           id: m["id"],
           name: m["name"],
           context_length: m["context_length"],
-          input_modalities: get_in(m, ["architecture", "input_modalities"]) || ["text"],
+          input_modalities:
+            Nano.Model.input_modalities(get_in(m, ["architecture", "input_modalities"])),
           max_output: get_in(m, ["top_provider", "max_completion_tokens"]),
           prompt_price: price.(get_in(m, ["pricing", "prompt"])),
           completion_price: price.(get_in(m, ["pricing", "completion"]))
