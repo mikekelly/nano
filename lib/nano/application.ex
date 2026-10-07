@@ -20,10 +20,12 @@ defmodule Nano.Application do
           {Phoenix.PubSub, name: Nano.PubSub},
           {Registry, keys: :unique, name: Nano.Registry},
           Nano.StateStore,
+          Seedling.MCP,
           {Task.Supervisor, name: Nano.EvalSupervisor},
           # Holds the ChatGPT subscription's tokens; its init cannot fail, so it cannot stop the boot.
           Nano.ChatGPT.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
+          Seedling.Bots,
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           NanoWeb.Endpoint
         ],
