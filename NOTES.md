@@ -9,11 +9,13 @@ Libraries compose through eval; consult module docs for exact return shapes and 
 - **Background shell tasks** (`Vega.Tasks`): See docs/vega-background-tasks.md and Vega.Tasks module docs.
 - **Durable goals** (`Vega.Goals`): See docs/vega-goals-memory.md and Vega.Goals module docs.
 - **Durable identity memory** (`Vega.Memory`): See Vega.Memory module docs.
+- **Typed cheap judgments (Jev)** (`Vega.Decision`): See docs/vega-decision.md; exact setting TYPESAFE_API_KEY.
+- **Stateful CDP browser** (`Vega.Browser`): See docs/vega-browser.md; Lightpanda screenshots are text-layout, not CSS.
 - **Readable web pages** (`Vega.Web`): See docs/vega-web-search.md and Vega.Web module docs.
 - **Exa search and research** (`Vega.Search`): See docs/vega-web-search.md and Vega.Search module docs.
 - **MCP servers and events** (`Vega.MCP`): See docs/vega-mcp.md and Vega.MCP module docs.
 - **Vision attachments** (`Vega.Images`): See docs/vega-images.md and Vega.Images module docs.
-- **Consumer chat** (`Vega.Bots`): Visit /bots; see docs/vega-bots.md.
+- **Consumer chat** (`Vega.Bots`): Visit /bots; see docs/bots.md.
 
 Integration status, real test evidence and known limitations: [docs/vega-status.md](docs/vega-status.md).
 API keys are node settings (`Nano.Settings.get/1`), never source or logs.

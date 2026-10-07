@@ -11,12 +11,16 @@ defmodule Vega.Index do
      "See docs/vega-background-tasks.md and Vega.Tasks module docs"},
     {Vega.Goals, "Durable goals", "See docs/vega-goals-memory.md and Vega.Goals module docs"},
     {Vega.Memory, "Durable identity memory", "See Vega.Memory module docs"},
+    {Vega.Decision, "Typed cheap judgments (Jev)",
+     "See docs/vega-decision.md; exact setting TYPESAFE_API_KEY"},
+    {Vega.Browser, "Stateful CDP browser",
+     "See docs/vega-browser.md; Lightpanda screenshots are text-layout, not CSS"},
     {Vega.Web, "Readable web pages", "See docs/vega-web-search.md and Vega.Web module docs"},
     {Vega.Search, "Exa search and research",
      "See docs/vega-web-search.md and Vega.Search module docs"},
     {Vega.MCP, "MCP servers and events", "See docs/vega-mcp.md and Vega.MCP module docs"},
     {Vega.Images, "Vision attachments", "See docs/vega-images.md and Vega.Images module docs"},
-    {Vega.Bots, "Consumer chat", "Visit /bots; see docs/vega-bots.md"}
+    {Vega.Bots, "Consumer chat", "Visit /bots; see docs/bots.md"}
   ]
   def entries, do: @entries
 
