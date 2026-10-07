@@ -1,7 +1,23 @@
 # Guidance that goes with every seeding
 
 You are building a capability for the harness you run in, from a spec. These principles
-apply to all of them.
+apply to all of them. The first one is the reason the others exist.
+
+**Your abstractions compound. Build them first and use them.** The only thing you can do
+is run Elixir with `eval`, and every eval costs output tokens to write, attention to get
+right, and context for the rest of your life, because the whole conversation is sent on
+every call. A step you do by hand costs that every time you do it. A step you have turned
+into a function costs it once: after that, reading a file is `read(path)`, finding
+something is `grep(pattern)`, running a command is `sh(cmd)`, and asking a sub-agent is one
+call — each a few tokens instead of a fresh page of code, each already debugged, each with
+the error handling and the output limits built in. The saving is not linear. Shorter steps
+mean more steps per context, fewer mistakes per step, and more of your attention on the
+problem instead of the plumbing; and every capability you build makes the next one cheaper
+to build, because it is built out of the ones before. So the order of work matters: before
+the task, build the small set of utilities the task will need; while working, the moment
+you notice yourself writing the same code twice, make it a function and switch to it; and
+build each new capability on top of the ones you already have. An agent that keeps working
+by hand after it has built its tools has wasted the building.
 
 **Keep system prompts lean.** Context is the scarce resource: everything in the system
 prompt is paid for on every call, for the agent's whole life. A prompt should describe
