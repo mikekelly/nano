@@ -47,6 +47,7 @@ defmodule Nano.MCPTest do
         out({'jsonrpc':'2.0','method':'notifications/resources/updated','params':{'uri':m['params']['uri']}})
         out({'jsonrpc':'2.0','id':'server-ping','method':'ping'})
       if method=='tools/call':
+        if m['params']['arguments'].get('notify_uri'): out({'jsonrpc':'2.0','method':'notifications/resources/updated','params':{'uri':m['params']['arguments']['notify_uri']}})
         out({'jsonrpc':'2.0','method':'notifications/tools/list_changed'})
         out({'jsonrpc':'2.0','method':'notifications/progress','params':{'progressToken':1,'progress':1}})
     """)
@@ -96,6 +97,34 @@ defmodule Nano.MCPTest do
     File.mkdir_p!(quiet_dir)
     {quiet_name, _} = server(quiet_dir, recipient: false)
     refute_receive {:mcp, ^quiet_name, "client/connected", _}, 30
+  end
+
+  test "subscription for an absent stable agent is retained and starts delivering when it returns",
+       %{dir: dir} do
+    {server, pid} = server(dir)
+    name = "temporarily-absent-" <> Path.basename(dir)
+    assert NanoAgent.whereis(name) == nil
+    assert :ok = MCP.subscribe(pid, "test://later", name)
+    [path] = Path.wildcard(Path.join(dir, "*.json"))
+    assert %{"test://later" => [^name]} = path |> File.read!() |> Jason.decode!()
+    owner = self()
+
+    agent =
+      spawn(fn ->
+        Registry.register(Nano.Registry, {:agent, name}, nil)
+        send(owner, :agent_returned)
+
+        receive do
+          message -> send(owner, {:returned_agent_event, message})
+        end
+      end)
+
+    assert_receive :agent_returned
+    on_exit(fn -> if Process.alive?(agent), do: Process.exit(agent, :kill) end)
+    assert {:ok, _} = MCP.call_tool(pid, "echo", %{"notify_uri" => "test://later"})
+
+    assert_receive {:returned_agent_event,
+                    {:mcp, ^server, "notifications/resources/updated", %{"uri" => "test://later"}}}
   end
 
   test "resource membership changes are serialized per URI", %{dir: dir} do

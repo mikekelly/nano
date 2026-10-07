@@ -77,6 +77,8 @@ Set `recipient: child_name` during delegation to avoid watching on behalf of the
 setup caller, or `recipient: false` to disable automatic watching.
 Supervisor options `config_path` and `state_dir` apply to boot-loaded servers.
 `load_config/1` returns `{:ok, server_map}` or a file/JSON/config error.
+Malformed server descriptors return errors before a process starts; config
+parse errors are sanitized and do not reflect file contents.
 Servers must emit newline-delimited JSON on stdio stdout; stderr is not treated
 as protocol data. A connection initializes, sends `notifications/initialized`,
 then starts its HTTP GET notification stream if supported. JSON and incremental
@@ -140,13 +142,17 @@ Results over **16 KiB** are written to a private unique file, not silently cut:
 
 ```elixir
 {:ok, %{spilled: true, path: path, bytes: total, preview: _}} = result
-Nano.MCP.Result.page(path, offset: 0, limit: 8192)
-# {:ok, %{data: json_bytes, next_offset: 8192}}; {:ok, :eof} at end
+Nano.MCP.Result.page(path, offset: 0, limit: 4096)
+# {:ok, %{data: json_bytes, next_offset: 4096}}; {:ok, :eof} at end
 ```
 
 Spills default to `/tmp/nano-mcp-results`, mode 0600. Callers own their retention
-and cleanup. `preview` is at most 2,000 bytes and may end mid-JSON/UTF-8; the full
-JSON is always preserved. Large notification parameters use the same spill shape.
+and cleanup. `preview` is at most 2,000 bytes and may end mid-JSON (never mid-UTF-8); the full
+JSON is always preserved. Large notification parameters use the same spill shape. Budgets are validated
+as positive integers; malformed options return `{:error, :invalid_options}`.
+Even explicitly larger budgets are clamped at 24,000 JSON bytes, and a separate
+32,000-byte unlimited-inspect budget protects the harness cap. Binary pages are
+clamped at 4,096 bytes (worst-case inspected output remains below 35 KiB).
 Binary/image/audio content remains protocol base64 in the JSON result or spill;
 no decoding or accidental binary expansion is performed. Decode deliberately
 using `Base.decode64/1` on a selected content `data` or resource `blob` field,
@@ -171,20 +177,28 @@ this protects transport buffering independently of printed result limits.
 ## Validation
 
 `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-mcp/_build mix test test/mcp*test.exs`
-passed **10 tests**. They use a local Python stdio JSON-RPC fixture and local
+passed **14 tests** (one optional delegation integration test skips when
+`Nano.Delegation` is not available). With the actual sibling delegation module
+loaded, **15 MCP tests pass**, including the real `Nano.Delegation` setup path
+with a fake agent adapter but a real MCP connection/fixture server. They use a local Python stdio JSON-RPC fixture and local
 Bandit on port 0: lifecycle/initialization, live discovery/cursors, tools,
 resources/prompts, mailbox list/progress/resource notifications, server ping,
 RPC errors/timeouts/reconnect, restart-safe explicit and automatic identities,
 spills/paging, config validation, incremental SSE, HTTP session/version headers,
 and notifications delivered before a GET stream ends.
 
-Full checkout suite passed **255 tests** at implementation time. A real, uncredentialed Streamable HTTP smoke test also passed against
+Full checkout suite passed **260 tests** with the actual sibling `Nano.Delegation` loaded at implementation time. A real, uncredentialed Streamable HTTP smoke test also passed against
 `https://mcp.deepwiki.com/mcp` (DeepWiki 2.14.3): negotiated 2025-11-25, discovered
 `ask_wiki_question`, `read_wiki_contents`, `read_wiki_structure`, and successfully
 called `read_wiki_structure` for `modelcontextprotocol/modelcontextprotocol`
 (one 1,594-byte text result, `isError: false`). It used an isolated temporary
-state directory and no secrets. No credentialed server or npx reference server
-was exercised; Node installation is not needed for these tests. Tests use unique temporary directories and ephemeral
+state directory and no secrets. The official `@modelcontextprotocol/server-filesystem` 2026.8.31 reference server was
+also exercised over stdio with actual `npx --offline`, using checksum-verified
+task-local Node 24.21.0 (ARM64), isolated npm cache/package directory, and a single
+allowed task-local root. It negotiated 2025-11-25, advertised 14 tools, returned
+expected `read_text_file` text/structured content, and rejected an outside-root
+read with `isError: true`. No global Node installation or environment mutation
+was needed, and no credentialed service was exercised. Tests use unique temporary directories and ephemeral
 ports, never `/data` or shared application environment. Integration entry point
 for the main agent: add `Nano.MCP` to application children; its modules own no
 harness changes.
