@@ -3,11 +3,11 @@ defmodule Vega.Decision do
   Optional Jev typed-decision adapter. Never silently replaces service answers with heuristics.
   `evaluate(state, questions, api_key: key)` accepts documented noul/choice/score questions,
   returns validated answers/probabilities plus model and usage. Key defaults to
-  TYPESAFE_API_KEY environment variable; no node settings changed or key logged.
+  TYPESAFE_API_KEY live string setting, then environment; no settings changed or key logged.
   See docs/vega-decision.md. No credentials means {:error, :missing_api_key}.
   """
   def evaluate(state, questions, opts \\ []) do
-    key = Keyword.get(opts, :api_key, System.get_env("TYPESAFE_API_KEY"))
+    key = Keyword.get_lazy(opts, :api_key, &default_key/0)
 
     with true <- is_binary(key) and key != "",
          true <- valid_questions?(questions),
@@ -51,6 +51,10 @@ defmodule Vega.Decision do
       {:error, _} ->
         {:error, :invalid_request}
     end
+  end
+
+  defp default_key do
+    Nano.Settings.get("TYPESAFE_API_KEY") || System.get_env("TYPESAFE_API_KEY")
   end
 
   defp valid_questions?(questions) do
