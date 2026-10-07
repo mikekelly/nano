@@ -45,12 +45,12 @@ defmodule Seedling.MCP.HTTPTest do
     {:ok, transport} = HTTP.start_link(%{url: url, listen: false}, self())
     on_exit(fn -> if Process.alive?(transport), do: HTTP.close(transport) end)
     assert :ok = HTTP.send_message(transport, request(1))
-    assert_receive {:http_request, "POST", headers, _}
+    assert_receive {:http_request, "POST", headers, _}, 2000
     assert {"accept", "application/json, text/event-stream"} in headers
     assert_receive {:mcp_message, ^transport, %{"id" => 1}}, 2000
     assert :ok = HTTP.set_version(transport, "2025-11-25")
     assert :ok = HTTP.send_message(transport, request(2))
-    assert_receive {:http_request, "POST", headers, _}
+    assert_receive {:http_request, "POST", headers, _}, 2000
     assert {"mcp-session-id", "session-1"} in headers
     assert {"mcp-protocol-version", "2025-11-25"} in headers
     assert_receive {:mcp_message, ^transport, %{"id" => 2}}, 2000
