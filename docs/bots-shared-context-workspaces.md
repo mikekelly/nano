@@ -53,5 +53,8 @@ persistence/service restart/path traversal; and actual NanoAgent/scripted provid
 contains Dot's authored token in Muse's next person event but no private foreign-session
 token. Focused new+existing runtime/service run13 tests passed. No live modules loaded
 by this agent. Parent must review/load followup first; then real Dot-generated random
- token -> person asks Muse to repeat is authorized only after upgrade confirmation.
+token -> person asks Muse to repeat is authorized only after upgrade confirmation.
 That real shared-conversation check is pending, not inferred from authored UI bubbles.
+
+Full own-worktree compile --warnings-as-errors + suite passed **348 tests**, task
+`mTOR2P1yxlQtf-VS` log `/tmp/vega-bots-tasks/mTOR2P1yxlQtf-VS/output.log`, exit0.
