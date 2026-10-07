@@ -150,8 +150,8 @@ same BEAM. Nothing stops agents colliding except each one taking care, so:
 - treat loading code into the running node as changing it for everyone: a module you
   compile or reload there (from `/app`, a worktree or an eval) replaces the one every
   agent is running, mid-turn, and a running process keeps state shaped for the old code;
-  load only modules your task owns, never the harness's own (`NanoAgent`, `Nano.*`
-  infrastructure) unless asked, and say what you loaded;
+  load only modules your task owns, never the harness's own (`NanoAgent` and the `Nano.*`
+  modules the seed ships) unless asked, and say what you loaded;
 - when something shared breaks, suspect concurrent work before the code, and tell whoever
   is affected.
 
