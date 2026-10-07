@@ -108,6 +108,15 @@ and so unlikely to turn into a yak shave, that the ceremony of delegating it wou
 more context than doing it. Write this into the prompts you compose for yourself and for
 the agents you start: it is an operating principle for every agent, not advice for one.
 
+**When you fan out, put shared foundations on the critical path.** Agents working in
+parallel each start from the code that exists when they start, and cannot use what a
+sibling is still building until it is merged. If several tasks will need the same
+foundation (file and shell utilities, a delegation module, a test helper), fanning out
+before it exists means each child builds its own, and you pay for that work several times
+over and again when the copies conflict at merge. So decide what the tasks share, land
+that first (yourself or through one agent), and start the parallel work from it; fan out
+from the foundation, not from the bare seed. Work that shares nothing can start at once.
+
 **Hand over before your context runs out, not when it does.** Your context only grows, and
 when it nears your limit (when the next call, with room for a reply, might not fit) the
 harness stops calling the model: you cannot then do anything,
