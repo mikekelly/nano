@@ -76,9 +76,9 @@ Without explicit session, newest session involving the bot is used, or one is cr
 ## Evidence and current limits
 
 `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-bots-build mix test test/vega/bots_test.exs test/vega/bots_relevance_test.exs`:
-Final full worktree suite: **345 tests passed**, compile --warnings-as-errors passed
-(task HjxHTL-vkCFBpcpG, /tmp/vega-bots-tasks/HjxHTL-vkCFBpcpG/output.log). Focused
-bots tests total27:14 backend/controller and13 LiveView/Markdown. ARM Node syntax
+Latest post-review full worktree suite: **350 tests passed**, compile --warnings-as-errors passed
+(task Z-u5zgZSow4AlTlD, /tmp/vega-bots-tasks/Z-u5zgZSow4AlTlD/output.log). Focused
+bots tests total32:17 backend/controller and15 LiveView/Markdown. ARM Node syntax
 and reproducible test/js/bots_hooks_test.js + bots_scroll_test.js passed. Existing
 seed-test-only unused-variable/optional-default warnings remain outside owned files.
 Real authorized Codex evidence (group authors, cross-session memory, requester restart,
@@ -101,3 +101,11 @@ remains explicit, with partitioning a future improvement. Images are canonicaliz
 closed. Native vision delivery awaits sibling harness hook integration. Notifications planned for background open
 browser tabs, not closed-tab push. Node remains unauthenticated like existing operator
 API; this is not a multi-user authorization boundary.
+
+Parent review followups: see bots-shared-context-workspaces.md for bounded peer-authored
+group context and stable identity/session computers (organizational, not security
+sandbox). Glyph icons now use trusted SVG/CSS rather than missing-font symbols; raw
+LiveView uploads cancel with reattach notice on navigation, preserving imported per-chat
+drafts without leaking A's attachment into B. Actual Chromium desktop/mobile layout
+review was reported by parent; glyph-fix screenshot rerun and real peer-token test
+remain pending parent deployment confirmation.
