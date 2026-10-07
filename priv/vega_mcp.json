@@ -1,9 +1,22 @@
 {
   "mcpServers": {
     "filesystem": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@2026.8.31",
+        "/tmp"
+      ],
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"],
       "result_limit": 16384
+    },
+    "vega-filesystem": {
+      "args": [
+        "/data/vega-mcp-tools/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
+        "/app",
+        "/data/vega"
+      ],
+      "command": "/usr/bin/node",
+      "result_limit": 16000
     }
   }
 }
