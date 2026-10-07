@@ -37,6 +37,7 @@ seedling branch, and reset the checkout to `main` for the next run.
 | `tracing.md` | Trace every model call and tool call into Langfuse |
 | `goals.md` | Set, keep and review goals across turns, restarts and agents |
 | `background-tasks.md` | Run shell commands in the background and be told when they finish |
+| `bots.md` | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
 Older, advice-style seedings and tasks are kept under `tasks/` and as
 `utilities-and-delegation.md` because `RUNS.md` refers to them.
