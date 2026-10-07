@@ -2,8 +2,8 @@ defmodule Nano.Model do
   @moduledoc """
   Which provider serves a model, by the slug's prefix: `openai-codex/<model>` runs on the
   ChatGPT subscription connected to this node (`Nano.ChatGPT`), anything else on OpenRouter
-  (`Nano.OpenRouter`). Both take and return the same shapes, so the agent need not know which.
-  The model lists of both are checked here, in one place, before an agent starts (`check/3`).
+  (`Nano.OpenRouter`), if the node has its key (`openrouter?/0`). Both take and return the same
+  shapes, so the agent need not know which. The model lists of both are checked here, in one place, before an agent starts (`check/3`).
   The start form picks a provider, then a model there, and joins them back into a slug.
   """
 
@@ -122,12 +122,15 @@ defmodule Nano.Model do
   end
 
   defp unavailable(:openrouter) do
-    if Application.get_env(:nano, :openrouter_api_key) in [nil, ""],
+    if not openrouter?(),
       do:
         {:error,
-         "OPENROUTER_API_KEY is not set on this node: set it in .env and restart the " <>
-           "container, or use an openai-codex/ model"}
+         "OpenRouter is not configured on this node (no OPENROUTER_API_KEY); use an " <>
+           "openai-codex/ model on the ChatGPT subscription, or set the key and restart"}
   end
+
+  @doc "Whether OpenRouter is configured: `OPENROUTER_API_KEY` was set when the node booted."
+  def openrouter?, do: Application.get_env(:nano, :openrouter_api_key) not in [nil, ""]
 
   @doc """
   The `reasoning_levels` and `default_reasoning` of an entry of either provider's model list

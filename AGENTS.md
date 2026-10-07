@@ -29,16 +29,17 @@ truthfully.
 | `priv/system_prompt.txt` | The prompt template, read from disk at every agent start. |
 | `lib/nano_agent.ex` | The harness. The agent's own module; agents can read and change it. |
 | `lib/nano/ops.ex` | Everything an operator can do, as plain functions; the dashboard and the API are skins over it. |
-| `lib/nano/model.ex` | Which provider serves a model: `openai-codex/…` the ChatGPT subscription (`lib/nano/chatgpt*`), anything else OpenRouter. |
+| `lib/nano/model.ex` | Which provider serves a model: `openai-codex/…` the ChatGPT subscription (`lib/nano/chatgpt*`), anything else OpenRouter (if the node has its key). |
 | `data/logs/<agent-id>.jsonl` | The durable record of every agent: events, requests, responses, tool calls, results. |
 | `data/state/` | Each agent's saved state; agents are revived from here when the node boots. |
 
 ## Starting it
 
-Requirements: Docker, and a `.env` in this directory with your OpenRouter key.
+Requirements: Docker, and a model provider: an OpenRouter key in a `.env` in this directory,
+or a ChatGPT subscription connected from the dashboard (below), or both.
 
 ```bash
-echo 'OPENROUTER_API_KEY=sk-or-...' > .env
+echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # optional; without it OpenRouter is not offered
 bin/up                        # creates ../nano-checkout, builds, starts, prints the URL
 open http://localhost:4000
 ```
@@ -56,7 +57,8 @@ The container mounts a **dedicated checkout** of this repo as `/app` (default
 Use a dedicated OpenRouter key with a low spending limit: agents can read it from their
 environment, and with turns and tokens set to 0 the key's limit is the only hard stop.
 
-Or run agents on a ChatGPT Plus/Pro subscription: models `openai-codex/<model>`, connected
+Or run agents on a ChatGPT Plus/Pro subscription, with or without the key: models
+`openai-codex/<model>`, connected
 with a device-code login from the dashboard (Connect ChatGPT) or `POST /api/chatgpt/login`.
 The tokens live in `data/state/chatgpt_auth.json`; agents can read them, and they are
 account access, not a capped key. README, "Running agents on a ChatGPT subscription".

@@ -58,18 +58,21 @@ exists only for the agents to scribble on, never a working copy you care about.
 
 ```bash
 git clone git@github.com:mikekelly/nano.git nano && cd nano
-echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # a dedicated key with a low spending limit
+echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # optional: a dedicated key with a low spending limit
 bin/up
 ```
+
+Agents need a model provider: OpenRouter, with that key, or a ChatGPT Plus or Pro
+subscription, which needs no key: connect it from the dashboard, see
+[Running agents on a ChatGPT subscription](#running-agents-on-a-chatgpt-subscription). Either
+will do, or both. Without the key OpenRouter is not offered, and an agent on an OpenRouter
+model is refused.
 
 `bin/up` clones this repo to `../nano-checkout` if it is not there yet (the dedicated
 checkout the agents edit, mounted at `/app`; they can read every doc in it), builds the image, starts the container, waits for the node and prints the dashboard
 URL, http://127.0.0.1:4000. Running it again on a running stack is fine. `docker compose
 down` stops it. Each agent's model, reasoning level and limits are chosen when it is started;
 there are no defaults for them.
-
-Agents can also run on a ChatGPT Plus or Pro subscription instead of OpenRouter; no key is
-needed for that, see [Running agents on a ChatGPT subscription](#running-agents-on-a-chatgpt-subscription).
 
 `.env` can also hold, all optional and listed with their defaults in [.env.example](.env.example):
 `NANO_CHECKOUT` (the checkout's path), `SYSTEM_PROMPT_FILE` (the system prompt template,
@@ -204,7 +207,8 @@ guides, not by the Codex source; if the code is accepted but the login never com
 check it first.)
 
 **Connecting.** On the dashboard's home page, choose **ChatGPT** as the Start agent form's
-provider; the subscription's status appears under the model box:
+provider (on a node without an OpenRouter key it is the only one); the subscription's status
+appears under the model box:
 
 1. Click **Connect ChatGPT**. The form shows a link, `https://auth.openai.com/codex/device`,
    and a one-time code, valid for 15 minutes.
@@ -295,7 +299,7 @@ networks:
     ipam: { config: [{ subnet: 10.99.0.0/24, ip_range: 10.99.0.128/25 }] }
 ```
 
-**The API key is exposed to every agent**: it is in the node's environment, and
+**The API key, if set, is exposed to every agent**: it is in the node's environment, and
 `System.get_env/1` reads it. Use a dedicated OpenRouter key with a low spending limit. So
 are a connected ChatGPT subscription's tokens (see above), which have no spending limit at all.
 

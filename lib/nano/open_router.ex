@@ -70,12 +70,15 @@ defmodule Nano.OpenRouter do
   reasoning_levels, default_reasoning}` (`max_output` the most tokens its top provider will
   generate in one response, or nil; prices in USD per million tokens, nil if not given;
   levels as `Nano.Model.reasoning/3` gives them), sorted by id. Cached for an hour, a failure for a
-  minute; `[]` if they cannot be fetched (5 s at most).
+  minute; `[]` if they cannot be fetched (5 s at most), or OpenRouter is not configured.
   """
   def models do
     now = System.monotonic_time(:second)
 
-    case :persistent_term.get({__MODULE__, :models}, nil) do
+    case Nano.Model.openrouter?() && :persistent_term.get({__MODULE__, :models}, nil) do
+      false ->
+        []
+
       {until, models} when until > now ->
         models
 
@@ -92,9 +95,13 @@ defmodule Nano.OpenRouter do
   end
 
   defp fetch_models do
-    key = Application.get_env(:nano, :openrouter_api_key)
-    auth = if key in [nil, ""], do: [], else: [auth: {:bearer, key}]
-    opts = [retry: false, receive_timeout: 5_000, connect_options: [timeout: 5_000]] ++ auth
+    opts = [
+      auth: {:bearer, Application.get_env(:nano, :openrouter_api_key)},
+      retry: false,
+      receive_timeout: 5_000,
+      connect_options: [timeout: 5_000]
+    ]
+
     url = Application.fetch_env!(:nano, :openrouter_base_url) <> "/models"
     {:ok, %{status: 200, body: %{"data" => data}}} = Req.get(url, opts)
     price = &with({p, _} <- Float.parse(&1 || ""), do: p * 1_000_000, else: (_ -> nil))

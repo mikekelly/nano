@@ -24,7 +24,8 @@ defmodule NanoWeb.ApiController do
     {"POST", "/api/agents",
      "Start an agent. Nothing has a default; required: name; model (a slug its provider " <>
        "lists: openai-codex/<model> runs on the ChatGPT subscription connected with " <>
-       "/api/chatgpt/login, anything else on OpenRouter); reasoning (how hard the model thinks " <>
+       "/api/chatgpt/login, anything else on OpenRouter if the node has OPENROUTER_API_KEY; " <>
+       "providers in this index says which can be used now); reasoning (how hard the model thinks " <>
        "before answering: one of the model's levels, from {reasoning_levels}); max_turns (model " <>
        "calls) and max_tokens (prompt + completion tokens, summed), each a non-negative integer " <>
        "where 0 means no limit; max_context (tokens in the conversation sent to the model, from " <>
@@ -89,6 +90,8 @@ defmodule NanoWeb.ApiController do
         "Nano Agent: one BEAM node hosting LLM agents, each a GenServer. " <>
           "Everything the dashboard can do is here too.",
       conventions: @conventions,
+      # OpenRouter: whether the node has its key. ChatGPT: the subscription's status.
+      providers: %{openrouter: Nano.Model.openrouter?(), chatgpt: Ops.chatgpt().status},
       endpoints:
         for {method, path, about} <- @endpoints do
           about = String.replace(about, "{reasoning_levels}", levels)

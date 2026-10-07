@@ -647,4 +647,55 @@ defmodule Nano.ChatGPTTest do
     assert opts.("chatgpt", " ")[:model] == nil
     assert opts.("openrouter", "")[:model] == nil
   end
+
+  test "a node without an OpenRouter key: the subscription is the only provider" do
+    saved = Application.get_env(:nano, :openrouter_api_key)
+    Application.put_env(:nano, :openrouter_api_key, nil)
+    on_exit(fn -> Application.put_env(:nano, :openrouter_api_key, saved) end)
+
+    refused =
+      "OpenRouter is not configured on this node (no OPENROUTER_API_KEY); use an " <>
+        "openai-codex/ model on the ChatGPT subscription, or set the key and restart"
+
+    assert %{"providers" => %{"openrouter" => false, "chatgpt" => "disconnected"}} =
+             build_conn() |> get("/api") |> json_response(200)
+
+    # Neither provider: the form says so, over the subscription's connect control.
+    {:ok, view, _} = live(build_conn(), "/")
+    refute has_element?(view, "#start input[name=provider][value=openrouter]")
+    assert has_element?(view, "#start .segmented label.on", "ChatGPT")
+    assert has_element?(view, "#chatgpt button", "Connect ChatGPT")
+    assert has_element?(view, "#start button.primary[disabled]")
+    assert has_element?(view, "#start .actions", "no provider is configured on this node")
+
+    # The API refuses an OpenRouter model, saying what to do.
+    body = %{
+      name: "or_#{System.unique_integer([:positive])}",
+      model: "deepseek/deepseek-v4.1-flash",
+      reasoning: "off",
+      max_turns: 0,
+      max_tokens: 0,
+      max_context: 1000
+    }
+
+    assert %{"error" => "could not start agent: " <> ^refused} =
+             build_conn()
+             |> Plug.Conn.put_req_header("content-type", "application/json")
+             |> post("/api/agents", Jason.encode!(body))
+             |> json_response(422)
+
+    # Only the subscription, connected: its models, and no OpenRouter option or notice.
+    Fake.models([%{"slug" => "gpt-5.5", "display_name" => "GPT-5.5"}])
+    connect!()
+    send(view.pid, :refresh)
+    refute has_element?(view, "#start input[name=provider][value=openrouter]")
+    refute has_element?(view, "#start .actions", "no provider is configured")
+    assert has_element?(view, "#start input[name=model][value='gpt-5.5']")
+
+    # An OpenRouter slug typed in the box is refused, not offered.
+    view |> form("#start", %{model: "deepseek/deepseek-v4.1-flash"}) |> render_change()
+    assert has_element?(view, "#start .segmented label.on", "ChatGPT")
+    view |> form("#start", %{name: body.name}) |> render_submit()
+    assert has_element?(view, "#start .error", refused)
+  end
 end

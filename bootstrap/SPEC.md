@@ -75,7 +75,7 @@ Erlang is reachable from Elixir eval (`:erlang`, `:ets`, `:sys`), so a separate 
 
 **Start options are checked against the model's provider.** `Nano.Model` checks both providers' models in one place, against the list the provider gives (OpenRouter's `/models`, the subscription's `/models`; each cached for an hour):
 
-- `model` must be in its provider's list, and the provider callable (OpenRouter's key set, the subscription connected).
+- `model` must be in its provider's list, and the provider callable (OpenRouter's key set, the subscription connected). Each provider is optional: OpenRouter is configured only when `OPENROUTER_API_KEY` is set at boot, and without it an OpenRouter model is refused with a message saying to use an `openai-codex/` model or set the key and restart.
 - `reasoning` must be one of the levels the list gives that model (see Web dashboard).
 - `max_turns` and `max_tokens` are whole numbers, 0 meaning no limit.
 - `max_context` is from 1 to the model's context window. There is no unlimited context: the window is the ceiling.
@@ -268,7 +268,7 @@ Processes spawned during an agent's eval are tagged with that agent, using `$anc
 
 Any process row has the same send form, so operators can message non-agent processes too.
 
-A Start agent form takes a name, a provider (OpenRouter or the ChatGPT subscription), a model, a reasoning level, the three limits, the system prompt, and a Start idle checkbox, checked by default; everything is filled in and sent, since an agent has no defaults. The model box starts empty for OpenRouter and with the subscription's first model for ChatGPT, and offers only the chosen provider's models, a ChatGPT model by its name alone: the form sends the slug, `openai-codex/` included. Its reasoning select offers only the levels the provider's list gives the chosen model (from OpenRouter's `reasoning` block, or the subscription's `supported_reasoning_levels`; effort `none` is `off`, and a model OpenRouter lists without the block has only `off`), and every level for a model not listed. Max turns and max tokens start at 0, no limit. Whenever the model changes, the select is set to the model's default level and max context to the model's context window as its provider lists it (OpenRouter's `context_length`, the subscription's `context_window`); either can be changed, and is kept until the model changes again. When a start is refused, the refusal's message is shown under the form, with what was typed kept. With ChatGPT chosen, a Connect ChatGPT control under the model starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; until then the form cannot start the agent.
+A Start agent form takes a name, a provider (OpenRouter or the ChatGPT subscription; OpenRouter is offered only when the node has its key, and when neither is usable the form says so under the ChatGPT connect control), a model, a reasoning level, the three limits, the system prompt, and a Start idle checkbox, checked by default; everything is filled in and sent, since an agent has no defaults. The model box starts empty for OpenRouter and with the subscription's first model for ChatGPT, and offers only the chosen provider's models, a ChatGPT model by its name alone: the form sends the slug, `openai-codex/` included. Its reasoning select offers only the levels the provider's list gives the chosen model (from OpenRouter's `reasoning` block, or the subscription's `supported_reasoning_levels`; effort `none` is `off`, and a model OpenRouter lists without the block has only `off`), and every level for a model not listed. Max turns and max tokens start at 0, no limit. Whenever the model changes, the select is set to the model's default level and max context to the model's context window as its provider lists it (OpenRouter's `context_length`, the subscription's `context_window`); either can be changed, and is kept until the model changes again. When a start is refused, the refusal's message is shown under the form, with what was typed kept. With ChatGPT chosen, a Connect ChatGPT control under the model starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; until then the form cannot start the agent.
 
 ## HTTP API
 
@@ -280,7 +280,7 @@ Everything a human can do in the dashboard is also available as a JSON API on po
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api` | Endpoint index |
+| GET | `/api` | Endpoint index, and which providers can be used (`providers`: OpenRouter's key set, the subscription's status) |
 | GET | `/api/processes` | Non-standard processes, with the dashboard's columns |
 | GET | `/api/processes/:pid` | `Process.info` detail for one process |
 | GET | `/api/agents` | Agents with status, model, and budget used |
@@ -324,7 +324,7 @@ One image, based on the official Elixir image, running the app from source with 
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | (required for OpenRouter models) | Model access |
+| `OPENROUTER_API_KEY` | none (optional) | OpenRouter model access; without it OpenRouter is not configured and its models are refused |
 | `CHATGPT_BASE_URL` | `https://chatgpt.com/backend-api/codex` | The Codex backend that serves `openai-codex/` models |
 | `CHATGPT_AUTH_URL` | `https://auth.openai.com` | The OAuth server for the device-code login and token refresh |
 | `CHATGPT_CLIENT_VERSION` | `0.160.1` | The Codex CLI version reported when listing models: the backend lists only the models released to clients at least this new, so keep it at Codex's latest release |
@@ -343,5 +343,5 @@ One image, based on the official Elixir image, running the app from source with 
 - **Spend.** Per-agent turn and token budgets, plus a node-wide hourly token cap, stop runaway loops, including two agents messaging each other forever.
 - **Node survival.** Agents can call `System.halt/0` or kill the supervisor. That ends the experiment but nothing else; Docker's restart policy brings the node back, and the logs remain.
 - **Network.** If agents should not reach the internet, enforce it at the Docker network level, allowing only the model providers (openrouter.ai, and chatgpt.com and auth.openai.com for a ChatGPT subscription), and say so accurately in the system prompt.
-- **API key exposure.** The key is in the environment, so any agent can read it with `System.get_env/1`. Use a dedicated OpenRouter key with a low spending limit. Likewise the ChatGPT tokens: agents run as root and can read the token file or ask the process that holds them, and the tokens are access to the ChatGPT account itself, not a key with a spending cap.
+- **API key exposure.** The key, if set, is in the environment, so any agent can read it with `System.get_env/1`. Use a dedicated OpenRouter key with a low spending limit. Likewise the ChatGPT tokens: agents run as root and can read the token file or ask the process that holds them, and the tokens are access to the ChatGPT account itself, not a key with a spending cap.
 - **Tracing.** `:erlang.trace(:all, ...)` can slow the node badly. The node is disposable, so this is allowed, but it can distort timing in experiments run alongside.

@@ -825,10 +825,18 @@ defmodule NanoAgentTest do
              "unknown model fake/unlisted: OpenRouter does not list it; its model ids are at " <>
                "https://openrouter.ai/models"
 
+    # Without the key OpenRouter is not configured: its models are refused, saying what to do.
     saved = Application.get_env(:nano, :openrouter_api_key)
-    Application.put_env(:nano, :openrouter_api_key, nil)
     on_exit(fn -> Application.put_env(:nano, :openrouter_api_key, saved) end)
-    assert refusal(ctx, all) =~ "OPENROUTER_API_KEY is not set on this node"
+
+    for key <- [nil, ""] do
+      Application.put_env(:nano, :openrouter_api_key, key)
+
+      assert refusal(ctx, all) ==
+               "OpenRouter is not configured on this node (no OPENROUTER_API_KEY); use an " <>
+                 "openai-codex/ model on the ChatGPT subscription, or set the key and restart"
+    end
+
     Application.put_env(:nano, :openrouter_api_key, saved)
 
     # A list that cannot be had verifies nothing, so nothing starts.

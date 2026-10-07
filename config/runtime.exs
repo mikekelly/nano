@@ -33,7 +33,7 @@ data =
   end
 
 config :nano,
-  # "Required", but only when an agent is started: the harness reports it then, so the node boots without.
+  # Optional: without it OpenRouter is not configured, and agents on its models are refused.
   openrouter_api_key: env.("OPENROUTER_API_KEY", if(test?, do: "test-key")),
   # Tests must point this at a scripted fake; the test default refuses connections.
   openrouter_base_url:
