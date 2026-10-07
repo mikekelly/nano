@@ -67,7 +67,7 @@ Three surfaces, all calling the same `Nano.Ops` functions: the dashboard, the HT
 port 4000, and a shell on the node. Nothing is authenticated; the port is bound to
 localhost.
 
-**Dashboard.** The start form takes a name, a model, Start idle (on by default), and
+**Dashboard.** The start form takes a name, a provider and one of its models, Start idle (on by default), and
 optional limits, reasoning level, a system prompt template or a prompt file. Each agent's
 page has a *reading* view (what arrived, what the model said, each eval with its result) and
 a *debug* view (every log entry), both streaming live, plus a text box (`say`) and a term

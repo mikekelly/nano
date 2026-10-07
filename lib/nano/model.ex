@@ -3,6 +3,7 @@ defmodule Nano.Model do
   Which provider serves a model, by the slug's prefix: `openai-codex/<model>` runs on the
   ChatGPT subscription connected to this node (`Nano.ChatGPT`), anything else on OpenRouter
   (`Nano.OpenRouter`). Both take and return the same shapes, so the agent need not know which.
+  The start form picks a provider, then a model there, and joins them back into a slug.
   """
 
   @prefix "openai-codex/"
@@ -31,9 +32,14 @@ defmodule Nano.Model do
       do: :missing_openrouter_api_key
   end
 
-  @doc "Models for the start form: the ChatGPT subscription's (when connected) first, then OpenRouter's."
-  def models do
-    chatgpt = for m <- Nano.ChatGPT.models(), do: %{m | id: @prefix <> m.id}
-    chatgpt ++ Nano.OpenRouter.models()
-  end
+  @doc """
+  A slug as its provider and the model's name there: `{:chatgpt, "gpt-5.5"}` for
+  `openai-codex/gpt-5.5`, `{:openrouter, slug}` for anything else.
+  """
+  def split(@prefix <> model), do: {:chatgpt, model}
+  def split(slug), do: {:openrouter, slug}
+
+  @doc "The slug for a provider's model; the inverse of `split/1`."
+  def slug(:chatgpt, model), do: @prefix <> model
+  def slug(:openrouter, model), do: model
 end

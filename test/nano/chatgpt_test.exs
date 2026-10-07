@@ -398,7 +398,16 @@ defmodule Nano.ChatGPTTest do
     ])
 
     assert Nano.ChatGPT.models() == [%{id: "gpt-x", name: "GPT-X", context_length: 1000}]
-    assert %{id: "openai-codex/gpt-x"} = hd(Nano.Model.models())
+
+    # In the catalog's priority order, lowest first.
+    :persistent_term.erase({Nano.ChatGPT, :models})
+
+    Fake.models([
+      %{"slug" => "gpt-b", "priority" => 2},
+      %{"slug" => "gpt-a", "priority" => 1}
+    ])
+
+    assert [%{id: "gpt-a"}, %{id: "gpt-b"}] = Nano.ChatGPT.models()
 
     :persistent_term.erase({Nano.ChatGPT, :models})
     Fake.models(500)
@@ -433,23 +442,101 @@ defmodule Nano.ChatGPTTest do
     assert %{"error" => _} = build_conn() |> post("/api/chatgpt/login") |> json_response(502)
   end
 
-  test "the dashboard: connect shows the code and link, then who is connected" do
+  test "the dashboard: with ChatGPT chosen, connect shows the code and link, then who is connected" do
     Fake.auth(:poll, List.duplicate({403, %{}}, 3))
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Connect ChatGPT"
+    # OpenRouter is the default provider here, and the subscription is not mentioned.
+    refute html =~ "Connect ChatGPT"
+    refute has_element?(view, "#chatgpt")
+
+    view |> form("#start", %{provider: "chatgpt"}) |> render_change(%{_target: ["provider"]})
+    assert has_element?(view, "#chatgpt", "not connected")
+    assert has_element?(view, "#start button.primary[disabled]")
+    assert has_element?(view, "#start .actions", "connect the ChatGPT subscription first")
+    # No models to offer yet, so no default either.
+    assert has_element?(view, "#start input[name=model][value='']")
 
     html = view |> element("#chatgpt button", "Connect ChatGPT") |> render_click()
     assert html =~ "FAKE-CODE"
     assert html =~ "/codex/device"
 
     view |> element("#chatgpt button", "cancel") |> render_click()
+    view |> form("#start", %{name: "typing"}) |> render_change()
+
+    Fake.models([
+      %{"slug" => "gpt-6-luna", "display_name" => "GPT-6 Luna", "priority" => 4},
+      %{"slug" => "gpt-6.1-sol", "display_name" => "GPT-6.1 Sol", "priority" => 1}
+    ])
+
     connect!()
     send(view.pid, :refresh)
-    html = render(view)
-    assert html =~ "connected as me@example.com (plus)"
+    assert has_element?(view, "#chatgpt", "connected as me@example.com (plus)")
+    refute has_element?(view, "#start button.primary[disabled]")
+    # The box left blank gets the subscription's first model, shown without its prefix.
+    assert has_element?(view, "#start input[name=model][value='gpt-6.1-sol']")
+    assert has_element?(view, "#start option[value=minimal]", "minimal (= low)")
 
-    # The subscription's models are offered in the model box.
-    html = view |> element("#start") |> render_change(%{"model" => "gpt-5.5"})
-    assert html =~ "openai-codex/gpt-5.5"
+    # Only the subscription's models are offered, by name.
+    view |> form("#start", %{model: "luna"}) |> render_change()
+    assert has_element?(view, "#start .matches button .id", ~r/^gpt-6-luna$/)
+
+    # It is sent as an openai-codex/ slug.
+    Fake.listen()
+    name = "codex_#{System.unique_integer([:positive])}"
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+    assert {:error, {:live_redirect, _}} =
+             view |> form("#start", %{name: name, model: "gpt-6-luna"}) |> render_submit()
+
+    assert Nano.Ops.agent(name).model == "openai-codex/gpt-6-luna"
+
+    # Back to OpenRouter: its default model, and nothing about the subscription.
+    {:ok, view, _} = live(build_conn(), "/")
+    view |> form("#start", %{provider: "chatgpt"}) |> render_change(%{_target: ["provider"]})
+    view |> form("#start", %{provider: "openrouter"}) |> render_change(%{_target: ["provider"]})
+    default = Application.fetch_env!(:nano, :default_model)
+    assert has_element?(view, "#start input[name=model][value='#{default}']")
+    refute has_element?(view, "#chatgpt")
+  end
+
+  test "the start form: each provider's own models; a whole slug of the other chooses it" do
+    Nano.FakeOpenRouter.start()
+    Nano.FakeOpenRouter.models([%{"id" => "openai/gpt-5.5", "name" => "OpenAI: GPT-5.5"}])
+    :persistent_term.erase({Nano.OpenRouter, :models})
+    on_exit(fn -> :persistent_term.erase({Nano.OpenRouter, :models}) end)
+    Fake.models([%{"slug" => "gpt-5.5", "display_name" => "GPT-5.5"}])
+    connect!()
+    {:ok, view, _} = live(build_conn(), "/")
+
+    # Connected, the subscription's models are still not offered under OpenRouter, and
+    # OpenRouter's are not offered under ChatGPT.
+    view |> form("#start", %{model: "gpt-5"}) |> render_change()
+    assert has_element?(view, "#start .matches button .id", ~r/^openai\/gpt-5\.5$/)
+    refute has_element?(view, "#start .matches button .id", ~r/^(openai-codex\/)?gpt-5\.5$/)
+    view |> form("#start", %{provider: "chatgpt"}) |> render_change(%{_target: ["provider"]})
+    view |> form("#start", %{model: "gpt-5"}) |> render_change()
+    assert has_element?(view, "#start .matches button .id", ~r/^gpt-5\.5$/)
+    refute has_element?(view, "#start .matches button .id", "/")
+
+    view |> form("#start", %{provider: "openrouter"}) |> render_change(%{_target: ["provider"]})
+
+    view |> form("#start", %{model: "openai-codex/gpt-5.5"}) |> render_change()
+    assert has_element?(view, "#start .segmented label.on", "ChatGPT")
+    assert has_element?(view, "#chatgpt", "connected")
+
+    # An OpenRouter slug typed under ChatGPT goes back to OpenRouter.
+    view |> form("#start", %{model: "anthropic/claude-haiku-4.5"}) |> render_change()
+    assert has_element?(view, "#start .segmented label.on", "OpenRouter")
+    refute has_element?(view, "#chatgpt")
+
+    # Submitted without a change event, the slug is sent as it is.
+    opts = &NanoWeb.StartForm.opts(%{"provider" => &1, "model" => &2})
+    assert opts.("openrouter", "openai-codex/gpt-5.5")[:model] == "openai-codex/gpt-5.5"
+    assert opts.("chatgpt", "openai-codex/gpt-5.5")[:model] == "openai-codex/gpt-5.5"
+    assert opts.("chatgpt", "gpt-5.5")[:model] == "openai-codex/gpt-5.5"
+    assert opts.("openrouter", "a/b")[:model] == "a/b"
+    # Blank under ChatGPT is no model, not OpenRouter's default.
+    assert opts.("chatgpt", " ")[:model] == ""
+    assert opts.("openrouter", "")[:model] == nil
   end
 end

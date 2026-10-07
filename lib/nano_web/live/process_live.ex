@@ -27,7 +27,11 @@ defmodule NanoWeb.ProcessLive do
       |> assign(
         start: %{},
         start_error: nil,
-        models: if(connected?(socket), do: Nano.Model.models(), else: []),
+        models:
+          if(connected?(socket),
+            do: %{"openrouter" => Nano.OpenRouter.models(), "chatgpt" => Nano.ChatGPT.models()},
+            else: %{}
+          ),
         chatgpt: Nano.Ops.chatgpt()
       )
       |> mount_shared()
@@ -84,7 +88,8 @@ defmodule NanoWeb.ProcessLive do
   end
 
   # Inputs are held in assigns so the once-a-second re-render does not reset them.
-  def handle_event("start_draft", params, socket), do: {:noreply, assign(socket, start: params)}
+  def handle_event("start_draft", params, socket),
+    do: {:noreply, assign(socket, start: NanoWeb.StartForm.draft(params))}
 
   def handle_event("pick_model", %{"id" => id}, socket),
     do: {:noreply, update(socket, :start, &Map.put(&1, "model", id))}
@@ -143,16 +148,20 @@ defmodule NanoWeb.ProcessLive do
 
     chatgpt = Nano.Ops.chatgpt()
 
-    # The subscription's models join the list once it is connected, and leave when it is not.
-    models =
-      if connected?(socket) and chatgpt.status != socket.assigns.chatgpt.status,
-        do: Nano.Model.models(),
-        else: socket.assigns.models
+    # The subscription's models arrive once it is connected, and leave when it is not; a model
+    # box left blank meanwhile gets the provider's default again.
+    socket =
+      if connected?(socket) and chatgpt.status != socket.assigns.chatgpt.status do
+        socket
+        |> update(:models, &Map.put(&1, "chatgpt", Nano.ChatGPT.models()))
+        |> update(:start, &if(&1["model"] == "", do: Map.delete(&1, "model"), else: &1))
+      else
+        socket
+      end
 
     socket
     |> assign(
       chatgpt: chatgpt,
-      models: models,
       rows: rows,
       prev: Map.new(rows, &{&1.pid, &1.reductions}),
       prev_at: now,

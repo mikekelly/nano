@@ -255,7 +255,7 @@ Processes spawned during an agent's eval are tagged with that agent, using `$anc
 
 Any process row has the same send form, so operators can message non-agent processes too.
 
-A Start agent form takes a name, a model, and a Start idle checkbox, checked by default. Beside it, a Connect ChatGPT control starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; once connected, the subscription's models are offered in the model box.
+A Start agent form takes a name, a provider (OpenRouter or the ChatGPT subscription), a model, and a Start idle checkbox, checked by default. The model box offers only the chosen provider's models, and a ChatGPT model by its name alone: the form sends the slug, `openai-codex/` included. With ChatGPT chosen, a Connect ChatGPT control under the model starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; until then the form cannot start the agent.
 
 ## HTTP API
 

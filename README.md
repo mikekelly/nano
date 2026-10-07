@@ -149,13 +149,15 @@ workspace an administrator may have to allow it. (This setting is described by t
 guides, not by the Codex source; if the code is accepted but the login never completes,
 check it first.)
 
-**Connecting.** On the dashboard's home page, under the model box of the Start agent form:
+**Connecting.** On the dashboard's home page, choose **ChatGPT** as the Start agent form's
+provider; the subscription's status appears under the model box:
 
 1. Click **Connect ChatGPT**. The form shows a link, `https://auth.openai.com/codex/device`,
    and a one-time code, valid for 15 minutes.
 2. Open the link in your own browser, sign in to ChatGPT, and enter the code.
 3. The node polls until you have approved it, then shows `connected as <email> (<plan>)`,
-   and the model box offers the subscription's models.
+   and the model box offers the subscription's models, by name (`gpt-5.5`; the form sends
+   `openai-codex/gpt-5.5`).
 
 The same over HTTP: `curl -XPOST localhost:4000/api/chatgpt/login` returns `user_code` and
 `verification_url`; poll `curl localhost:4000/api/chatgpt` until `status` is `connected`.

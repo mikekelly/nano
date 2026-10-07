@@ -257,8 +257,8 @@ defmodule Nano.ChatGPT do
   @doc """
   The models the connected subscription offers, as `%{id, name, context_length}` (ids without
   the `openai-codex/` prefix): the backend's list (`GET /models`, as the Codex CLI fetches
-  it), or the Codex CLI's bundled list if that cannot be had; `[]` when no subscription is
-  connected. Cached for an hour, a fallback for a minute.
+  it, in its order of priority), or the Codex CLI's bundled list if that cannot be had; `[]`
+  when no subscription is connected. Cached for an hour, a fallback for a minute.
   """
   def models do
     now = System.monotonic_time(:second)
@@ -290,7 +290,8 @@ defmodule Nano.ChatGPT do
     {:ok, %{status: 200, body: %{"models" => models}}} =
       Req.get(url("/models?client_version=#{@client_version}"), opts)
 
-    for m <- models, m["visibility"] in [nil, "list"] do
+    # In the catalog's `priority` order, lowest first, as the Codex CLI's picker lists them.
+    for m <- Enum.sort_by(models, & &1["priority"]), m["visibility"] in [nil, "list"] do
       %{id: m["slug"], name: m["display_name"] || m["slug"], context_length: m["context_window"]}
     end
   catch

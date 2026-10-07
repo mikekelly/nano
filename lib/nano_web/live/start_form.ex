@@ -1,12 +1,14 @@
 defmodule NanoWeb.StartForm do
   @moduledoc """
-  The Start agent form: every option in view, prefilled with the node's defaults. The model
-  box filters the model list (`Nano.Model.models/0`: the ChatGPT subscription's, when one is
-  connected, then OpenRouter's) as you type, but takes any slug; the system prompt is one of
-  default / file / custom, so only one can be sent. Under the model, the ChatGPT subscription
-  control: connect (a device-code login), the code to enter while pending, then who is connected.
-  `NanoWeb.ProcessLive` holds what was typed (so the once-a-second refresh keeps it) and
-  calls `opts/1` and `error/1`.
+  The Start agent form: every option in view, prefilled with the node's defaults. A provider
+  is chosen first, OpenRouter or the ChatGPT subscription, and the model box offers only that
+  provider's models (`Nano.OpenRouter.models/0` or `Nano.ChatGPT.models/0`), filtering them as
+  you type but taking any name; a ChatGPT model is shown without its `openai-codex/` prefix and
+  sent with it. With ChatGPT chosen, its connection sits under the model: connect (a
+  device-code login), the code to enter while pending, then who is connected; Start waits for
+  it. The system prompt is one of default / file / custom, so only one can be sent.
+  `NanoWeb.ProcessLive` holds what was typed (so the once-a-second refresh keeps it) and calls
+  `draft/1`, `opts/1` and `error/1`.
   """
   use Phoenix.Component
 
@@ -19,13 +21,24 @@ defmodule NanoWeb.StartForm do
   ]
 
   attr :start, :map, required: true, doc: "what was typed so far"
-  attr :models, :list, required: true
+  attr :models, :map, required: true, doc: ~s|each provider's models, by "openrouter", "chatgpt"|
   attr :error, :any, required: true
   attr :chatgpt, :map, required: true, doc: "Nano.Ops.chatgpt/0"
 
   def start_form(assigns) do
     v = Map.merge(defaults(), assigns.start)
-    assigns = assign(assigns, v: v, matches: matches(assigns.models, v["model"]))
+    chatgpt? = v["provider"] == "chatgpt"
+    models = assigns.models[v["provider"]] || []
+    v = Map.put_new(v, "model", default_model(v["provider"], models))
+
+    assigns =
+      assign(assigns,
+        v: v,
+        chatgpt?: chatgpt?,
+        models: models,
+        matches: matches(models, v["model"]),
+        blocked: chatgpt? and assigns.chatgpt.status != :connected
+      )
 
     ~H"""
     <form id="start" class="start" phx-change="start_draft" phx-submit="start">
@@ -34,6 +47,18 @@ defmodule NanoWeb.StartForm do
         <label class="field">
           name <input type="text" name="name" value={@v["name"]} required autocomplete="off" />
         </label>
+        <div class="field">
+          <span>provider</span>
+          <div class="segmented" role="radiogroup" aria-label="provider">
+            <label
+              :for={{choice, label} <- [{"openrouter", "OpenRouter"}, {"chatgpt", "ChatGPT"}]}
+              class={@v["provider"] == choice && "on"}
+            >
+              <input type="radio" name="provider" value={choice} checked={@v["provider"] == choice} />
+              {label}
+            </label>
+          </div>
+        </div>
         <div class="field model">
           <label for="start-model">model</label>
           <input
@@ -44,9 +69,11 @@ defmodule NanoWeb.StartForm do
             autocomplete="off"
             phx-debounce="150"
             placeholder={
-              if @models == [],
-                do: "any OpenRouter slug",
-                else: "type to filter #{length(@models)} models"
+              cond do
+                @models != [] -> "type to filter #{length(@models)} models"
+                @chatgpt? -> "listed once connected"
+                true -> "any OpenRouter slug"
+              end
             }
           />
           <ul :if={@matches != []} class="matches">
@@ -67,17 +94,12 @@ defmodule NanoWeb.StartForm do
               value={level}
               selected={level == @v["reasoning"]}
             >
-              {level}
+              {level}{if @chatgpt? and level == "minimal", do: " (= low)"}
             </option>
           </select>
         </label>
-        <label class="field check">
-          <input type="hidden" name="start_idle" value="false" />
-          <input type="checkbox" name="start_idle" value="true" checked={@v["start_idle"] != "false"} />
-          start idle
-        </label>
       </div>
-      <.chatgpt status={@chatgpt} />
+      <.chatgpt :if={@chatgpt?} status={@chatgpt} />
       <div class="fields">
         <label :for={{field, label, _} <- limits()} class="field">
           {label}
@@ -87,7 +109,7 @@ defmodule NanoWeb.StartForm do
       </div>
       <div class="field prompt">
         <span>system prompt</span>
-        <div class="segmented" role="radiogroup">
+        <div class="segmented" role="radiogroup" aria-label="system prompt">
           <label
             :for={{choice, label} <- [{"default", "default"}, {"file", "file"}, {"custom", "custom"}]}
             class={@v["prompt"] == choice && "on"}
@@ -115,7 +137,13 @@ defmodule NanoWeb.StartForm do
         >{@v["system_prompt"]}</textarea>
       </div>
       <div class="actions">
-        <button class="primary"><.icon name="play" /> Start</button>
+        <button class="primary" disabled={@blocked}><.icon name="play" /> Start</button>
+        <label class="check">
+          <input type="hidden" name="start_idle" value="false" />
+          <input type="checkbox" name="start_idle" value="true" checked={@v["start_idle"] != "false"} />
+          start idle
+        </label>
+        <span :if={@blocked} class="dim">connect the ChatGPT subscription first</span>
         <p :if={@error} class="error">{@error}</p>
       </div>
     </form>
@@ -127,12 +155,12 @@ defmodule NanoWeb.StartForm do
   # Buttons of type "button", so they never submit the form around them.
   defp chatgpt(assigns) do
     ~H"""
-    <div id="chatgpt" class="chatgpt">
+    <div id="chatgpt" class={["chatgpt", @status.status]}>
       <span class="dim">ChatGPT subscription</span>
       <%= case @status.status do %>
         <% :connected -> %>
           <span>connected{if @status.email, do: " as #{@status.email}"}{if @status.plan,
-            do: " (#{@status.plan})"} · models openai-codex/…</span>
+            do: " (#{@status.plan})"}</span>
           <button
             type="button"
             class="small"
@@ -149,8 +177,9 @@ defmodule NanoWeb.StartForm do
           <span class="dim">waiting for approval · expires {time(@status.expires_at)} UTC</span>
           <button type="button" class="small" phx-click="chatgpt_logout">cancel</button>
         <% _ -> %>
+          <span>not connected</span>
           <button type="button" class="small" phx-click="chatgpt_login">Connect ChatGPT</button>
-          <span class="dim">flat-rate models openai-codex/… on a Plus or Pro plan</span>
+          <span class="dim">flat-rate on a Plus or Pro plan</span>
       <% end %>
       <span :if={@status.error} class="error">{@status.error}</span>
     </div>
@@ -159,20 +188,55 @@ defmodule NanoWeb.StartForm do
 
   defp limits, do: @limits
 
-  # What the form shows before anything is typed: the node's defaults, as values.
+  # What the form shows before anything is typed: the node's defaults, as values. The model is
+  # `default_model/2`'s, for the provider chosen.
   defp defaults do
     limits =
       for {field, _, env} <- @limits,
           into: %{},
           do: {field, to_string(Application.get_env(:nano, env))}
 
+    {provider, _} = Nano.Model.split(Application.get_env(:nano, :default_model) || "")
+
     Map.merge(limits, %{
       "name" => "",
-      "model" => Application.get_env(:nano, :default_model) || "",
+      "provider" => Atom.to_string(provider),
       "reasoning" => Application.get_env(:nano, :reasoning, "off"),
       "start_idle" => "true",
       "prompt" => "default"
     })
+  end
+
+  # DEFAULT_MODEL, if it is this provider's; else, for ChatGPT, the first model the
+  # subscription lists (the catalog's highest priority).
+  defp default_model(provider, models) do
+    {default, model} = Nano.Model.split(Application.get_env(:nano, :default_model) || "")
+
+    cond do
+      provider == Atom.to_string(default) -> model
+      provider == "chatgpt" and models != [] -> hd(models).id
+      true -> ""
+    end
+  end
+
+  @doc """
+  What was typed, as the form keeps it. Choosing a provider empties the model, so the box
+  shows that provider's default. A whole slug of the other provider's chooses it: an
+  `openai-codex/` slug ChatGPT, leaving the model's name in the box; while ChatGPT is chosen,
+  a slug with a `/` OpenRouter, since ChatGPT's model names have none.
+  """
+  def draft(%{"_target" => ["provider"]} = params), do: Map.delete(params, "model")
+
+  def draft(params) do
+    case Nano.Model.split(String.trim(params["model"] || "")) do
+      {:chatgpt, model} ->
+        Map.merge(params, %{"provider" => "chatgpt", "model" => model})
+
+      {:openrouter, slug} ->
+        if params["provider"] == "chatgpt" and String.contains?(slug, "/"),
+          do: Map.merge(params, %{"provider" => "openrouter", "model" => slug}),
+          else: params
+    end
   end
 
   @doc """
@@ -211,12 +275,24 @@ defmodule NanoWeb.StartForm do
     end
   end
 
-  @doc "`NanoAgent.start/1` options from the submitted form. Only the chosen prompt is sent."
+  @doc """
+  `NanoAgent.start/1` options from the submitted form. Only the chosen prompt is sent, and the
+  model as a slug: `openai-codex/` and the name for ChatGPT.
+  """
   def opts(params) do
+    params = draft(params)
     prompt = params["prompt"]
 
+    model =
+      case {params["provider"], blank_to_nil(params["model"])} do
+        # None, rather than OpenRouter's default.
+        {"chatgpt", nil} -> ""
+        {"chatgpt", model} -> Nano.Model.slug(:chatgpt, model)
+        {_, model} -> model
+      end
+
     [
-      model: blank_to_nil(params["model"]),
+      model: model,
       start_idle: params["start_idle"] != "false",
       max_turns: number(params["max_turns"]),
       max_tokens: number(params["max_tokens"]),
@@ -252,9 +328,9 @@ defmodule NanoWeb.StartForm do
   def error(:missing_openrouter_api_key), do: "OPENROUTER_API_KEY is not set on this node"
 
   def error(:chatgpt_not_connected),
-    do: "openai-codex/ models need a ChatGPT subscription: connect one above"
+    do: "the ChatGPT subscription is not connected: connect it above"
 
-  def error(:missing_model), do: "no model given and DEFAULT_MODEL is not set"
+  def error(:missing_model), do: "choose a model"
 
   def error(:invalid_option),
     do: "max turns, max tokens and max context must be whole numbers, 0 or more (0 = no limit)"

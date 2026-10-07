@@ -111,8 +111,9 @@ form.start .fields {
 form.start .field { display: flex; flex-direction: column; gap: 0.2rem; color: var(--dim); font-size: 0.9em; min-width: 0; }
 form.start .field input, form.start .field select, form.start .field textarea { color: var(--fg); font-size: 1.1em; width: 100%; }
 form.start .field.model { grid-column: span 2; position: relative; }
-form.start .field.check { flex-direction: row; align-items: center; gap: 0.4rem; padding-top: 1.3rem; color: var(--fg); }
-form.start .field.check input { width: auto; }
+/* Too narrow for two columns: spanning two would add a column and scroll sideways. */
+@media (max-width: 460px) { form.start .field.model { grid-column: auto; } }
+form.start .check { display: inline-flex; align-items: center; gap: 0.4rem; }
 form.start .hint { font-size: 0.85em; }
 form.start .matches {
   position: absolute;
@@ -143,14 +144,30 @@ form.start .matches button:hover { background: var(--panel); }
 form.start .matches .id { white-space: nowrap; }
 form.start .matches .dim { flex: 1; min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 form.start .prompt { margin-bottom: 0.6rem; }
-form.start .chatgpt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.8rem; margin-bottom: 0.6rem; }
+/* The ChatGPT subscription's connection, under the fields while ChatGPT is the provider. */
+form.start .chatgpt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.8rem;
+  margin-bottom: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--dim);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+form.start .chatgpt.connected { border-left-color: var(--idle); }
+form.start .chatgpt.pending { border-left-color: var(--thinking); }
 form.start .chatgpt .user-code { font-size: 1.2em; font-weight: bold; letter-spacing: 0.08em; padding: 0 0.4em; }
 form.start .segmented { display: inline-flex; border: 1px solid #b8bec8; border-radius: 4px; overflow: hidden; width: max-content; }
 form.start .segmented label { padding: 0.2rem 0.9rem; cursor: pointer; color: var(--fg); background: #fff; }
 form.start .segmented label + label { border-left: 1px solid #b8bec8; }
 form.start .segmented label.on { background: var(--fg); color: #fff; }
-form.start .segmented input { position: absolute; opacity: 0; pointer-events: none; }
-form.start .actions { display: flex; align-items: center; gap: 1rem; }
+/* Sized to nothing: `.field input`'s width: 100% would make each a page wide, scrolling sideways. */
+form.start .segmented input { position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0; margin: 0; }
+form.start .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; }
 form.start .error { margin: 0; }
 
 /* Process table */
