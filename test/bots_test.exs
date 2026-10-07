@@ -37,7 +37,8 @@ defmodule Seedling.BotsTest do
     assert {:ok, one} = Bots.create_session([a["id"]])
     assert {:ok, shared} = Bots.create_session([a["id"], b["id"]], %{title: "Team"})
     assert {:ok, _} = Bots.say(shared["id"], "Hello team")
-    assert_receive {:dispatched, ^a, _, "Hello team"}
+    assert_receive {:dispatched, ^a, dispatched_session, "Hello team"}
+    assert List.last(dispatched_session["messages"])["text"] == "Hello team"
     assert_receive {:dispatched, ^b, _, "Hello team"}
     assert {:ok, _} = Bots.post(shared["id"], a["id"], "Hi <script>")
     assert Bots.session(one["id"])["messages"] == []
@@ -72,6 +73,11 @@ defmodule Seedling.BotsTest do
     {:ok, session} = Bots.create_session([bot["id"]])
     assert {:error, :invalid_message} = Bots.post(session["id"], "intruder", "bad")
     assert {:error, :invalid_text} = Bots.say(session["id"], "")
+
+    assert {:error, :invalid_request} =
+             Bots.request_human(bot["id"], "Question", session_id: "missing")
+
+    assert length(Bots.bots()) == 1
 
     assert {:ok, %{"notifications" => true, "quiet" => false}} =
              Bots.settings(session["id"], %{notifications: true})

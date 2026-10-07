@@ -158,7 +158,7 @@ defmodule Seedling.Bots do
           case persist(s.path, data) do
             :ok ->
               Task.Supervisor.start_child(Nano.EvalSupervisor, fn ->
-                dispatch_session(data["bots"], session, text)
+                dispatch_session(data["bots"], data["sessions"][id], text)
               end)
 
               broadcast()
@@ -189,8 +189,10 @@ defmodule Seedling.Bots do
           if bot in session["bot_ids"], do: id
         end)
 
-    if s.data["bots"][bot] && session_id && text?(question) &&
-         bot in s.data["sessions"][session_id]["bot_ids"] do
+    session = s.data["sessions"][session_id]
+
+    if s.data["bots"][bot] && session && text?(question) &&
+         bot in session["bot_ids"] do
       request = %{
         "id" => id(),
         "bot_id" => bot,
