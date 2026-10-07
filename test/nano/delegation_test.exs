@@ -120,11 +120,17 @@ defmodule Nano.DelegationTest do
     %{name: name, parent: parent, dir: dir, opts: opts}
   end
 
+  defp kill_watcher(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1000
+  end
+
   test "named compact reply and durable watch recovery", c do
     Registry.register(Nano.Registry, {:agent, c.parent}, nil)
     assert {:ok, h} = D.subagent(c.name, c.opts)
     assert_receive {:started, _, _}
-    Process.exit(h.watcher, :kill)
+    kill_watcher(h.watcher)
 
     assert [{name, {:ok, watcher}}] =
              D.restore(storage_dir: h.storage_dir, adapter: Adapter, poll_ms: 10)
@@ -179,8 +185,7 @@ defmodule Nano.DelegationTest do
     send(h.pid, {:halt, :budget})
     Process.sleep(40)
     refute_receive %{delegation: :failure}, 20
-    Process.exit(h.watcher, :kill)
-    Process.sleep(10)
+    kill_watcher(h.watcher)
 
     assert [{_, {:ok, watcher}}] =
              D.restore(storage_dir: h.storage_dir, adapter: Adapter, poll_ms: 10)
@@ -205,8 +210,7 @@ defmodule Nano.DelegationTest do
     send(h.pid, :stop)
     Process.sleep(40)
     refute_receive %{delegation: :failure}, 20
-    Process.exit(h.watcher, :kill)
-    Process.sleep(10)
+    kill_watcher(h.watcher)
 
     assert [{_, {:ok, watcher}}] =
              D.restore(storage_dir: h.storage_dir, adapter: Adapter, poll_ms: 10, retry_ms: 20)
@@ -217,9 +221,10 @@ defmodule Nano.DelegationTest do
     assert receipt == event.receipt
     refute_receive %{delegation: :failure}, 30
     assert File.exists?(Path.join(h.storage_dir, h.id <> ".term"))
+    down = Process.monitor(watcher)
     assert :ok = D.ack(event)
     assert :ok = D.ack(event)
-    refute Process.alive?(watcher)
+    assert_receive {:DOWN, ^down, :process, ^watcher, :normal}
     assert D.restore(storage_dir: h.storage_dir, adapter: Adapter) == []
   end
 

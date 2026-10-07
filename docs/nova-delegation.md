@@ -160,3 +160,7 @@ It verifies required settings, pre-read hash/change/cap behavior, shared composi
 idle starts, MCP-before-start callback, lifecycle halt/death, named terminal reply,
 durable watcher/outbox recovery across absent parent/restart, duplicate receipts/ack,
 corrupt manifest isolation, and real local git worktree/build isolation.
+
+Recovery tests synchronize watcher death with process monitors (not sleeps). `watch/2`
+rechecks dead Registry registrations rather than returning a stale pid. Lifecycle regression
+stress: 20 focused-suite runs, seeds 1–20, max-cases 64, all 240 tests passed.
