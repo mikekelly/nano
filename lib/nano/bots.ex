@@ -100,11 +100,15 @@ defmodule Nano.Bots do
         {:error, reason} -> raise "bots state unreadable: #{inspect(reason)}"
       end
 
+    data = Map.put_new(data, :service_id, id())
+    server = {:via, Registry, {Nano.Registry, {:bots_service, data.service_id}}}
+    {:ok, _} = Registry.register(Nano.Registry, {:bots_service, data.service_id}, nil)
     Process.send_after(self(), :monitor, 500)
 
     {:ok,
      %{
        data: data,
+       server: server,
        path: path,
        runner: opts[:runner] || (&Nano.Bots.Runtime.deliver/4),
        decision:
@@ -167,7 +171,11 @@ defmodule Nano.Bots do
       result =
         with {:ok, bytes} <- File.read(path) do
           text =
-            inspect(:erlang.binary_to_term(bytes, [:safe]),
+            inspect(
+              Enum.map(
+                :erlang.binary_to_term(bytes, [:safe]),
+                &Map.take(&1, [:name, :transcript, :pending])
+              ),
               limit: :infinity,
               printable_limit: :infinity
             )
@@ -429,7 +437,7 @@ defmodule Nano.Bots do
 
   def handle_info({:deliver, sid, bid, text}, s) do
     parent = self()
-    bot = s.data.bots[bid]
+    bot = Map.put(s.data.bots[bid], :server, s.server)
     chat = s.data.sessions[sid]
 
     spawn(fn ->
@@ -559,7 +567,11 @@ defmodule Nano.Bots do
 
     try do
       states = Enum.map(paused, fn {name, _} -> Nano.StateStore.get(name) end)
-      safe = Enum.all?(states, fn state -> state && state.status != :running_tool end)
+
+      safe =
+        Enum.all?(states, fn state ->
+          state && (state.status == :idle or state.halted == :context)
+        end)
 
       if safe and paused != [] do
         checkpoint = checkpoint_path(path, chat.id, chat.generation)
@@ -712,7 +724,11 @@ defmodule Nano.Bots do
       brief =
         if is_binary(brief) and byte_size(brief) <= 12_000,
           do: brief,
-          else: String.slice(chat.brief <> "\n" <> recent, -12_000, 12_000)
+          else:
+            Nano.Bots.Context.clip(
+              String.slice(chat.brief <> "\n" <> recent, -12_000, 12_000),
+              12_000
+            )
 
       %{chat | generation: chat.generation + 1, context_bytes: 0, brief: brief}
     else
