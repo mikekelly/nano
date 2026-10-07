@@ -42,6 +42,7 @@ defmodule Vega.CompactionChunksTest do
     n = length(bodies)
     assert n > 2 and n < 32
     assert final =~ "digest #{n}:"
+    assert usage.stages == n
     assert usage.usage == %{"prompt_tokens" => n * 200, "completion_tokens" => n * 20}
     assert_in_delta usage.cost, n * 0.02, 0.00001
 

@@ -190,7 +190,12 @@ defmodule Vega.Compaction do
   end
 
   defp empty_usage,
-    do: %{usage: %{"prompt_tokens" => 0, "completion_tokens" => 0}, cost: nil, provider: nil}
+    do: %{
+      usage: %{"prompt_tokens" => 0, "completion_tokens" => 0},
+      cost: nil,
+      provider: nil,
+      stages: 0
+    }
 
   defp add_usage(total, r) do
     %{
@@ -204,7 +209,8 @@ defmodule Vega.Compaction do
           do: (total.cost || 0) + r.cost,
           else: nil
         ),
-      provider: r.provider
+      provider: r.provider,
+      stages: total.stages + 1
     }
   end
 
