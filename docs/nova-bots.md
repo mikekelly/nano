@@ -80,14 +80,13 @@ transcript is edited, so orphan tool calls cannot arise.
 
 The proactive worker suspends agents at GenServer callback boundaries and inspects
 their stored state. If any is running an eval/tool, it resumes and retries later;
-it never kills a live eval during rollover. At a safe thinking/idle boundary it saves
+it never kills a live eval during rollover. At a safe idle/context-halted boundary it saves
 a **lossless runtime checkpoint to disk**, persists the new generation, retires old
-agents, and resumes unfinished work in a fresh context. Pending provider requests
-are cancelled; completed tool calls/results remain in the checkpoint. Abort,
+agents, and resumes unfinished work in a fresh context. Active thinking providers are not killed by the monitor; completed tool calls/results remain in the checkpoint. Abort,
 service death or timeout resumes the old agent rather than leaving it suspended.
 An eval that suddenly emits an enormous result can still outrun the external monitor
 and hit the harness cap; the monitor can recover a context-halted agent, but this is
-not a guarantee of unbounded single-turn autonomous execution. Rollover cannot
+not a guarantee of unbounded single-turn autonomous execution. Recovery cannot
 promise exactly-once external side effects: successor prompts say inspect completed
 actions and do not repeat them, but actions should still be idempotent.
 
@@ -168,3 +167,29 @@ Node-wide bots_agent_options remains an optional deployment fallback.
 Runtime followup tests (`test/nano/bots_runtime_test.exs`) cover proactive no-human
 rollover, lossless checkpoint retrieval, durable options/secret stripping, and
 slow-decision UI responsiveness. 16 focused tests pass, including defer/resume while a tool is running.
+
+## Request-boundary policy and aggregate context caps
+
+`Nano.Bots.Context.before_request/1` implements the opt-in harness `context_policy`
+contract: pure bounded-time deterministic callback, no network/GenServer/model calls.
+At pressure it replaces completed tool exchanges with a quoted plain-user checkpoint,
+never an active/dangling tool call. It keeps a previous checkpoint and recent completed
+exchanges. This is a conservative safety fallback, not a fake semantic classifier;
+semantic summaries and retrieved memory arrive from asynchronous decision workers.
+It is wired into new bot agents as `context_policy: Nano.Bots.Context` (requires the
+coordinator's generic NanoAgent hook). The external monitor now rotates only idle or
+context-halted agents, never active thinking providers or running evals.
+
+`Nano.Bots.Runtime.payload/4` has a final **12KB JSON aggregate cap**. Incoming text is
+bounded to 3KB, memories to ~3KB total, history to ~4KB total, session brief to 1.5KB;
+the newest human message is not duplicated in history. Runtime system brief is at
+most 4KB. UTF-8 is preserved and JSON escape expansion is accounted for. Full text
+remains in durable history, available by paging, rather than flooding a new context.
+Regression tests cover six 32KB memories, twelve long messages and Unicode/control
+character expansion. 19 focused tests pass with these guards.
+
+Custom service agents receive a stable Registry `{:via, Registry, ...}` descriptor in
+their prompts (service ID persists on disk). Replies, memories, human requests,
+history/checkpoints and retirement archives route to that service, not the production
+singleton. Thus isolated named/path services can run live smoke without changing
+node-wide provider configuration. Service restart restores that stable routing ID.
