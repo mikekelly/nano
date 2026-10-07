@@ -27,7 +27,7 @@ defmodule Vega.Tasks do
   def start(command, opts \\ []) do
     with :ok <- validate(command, opts),
          executable when is_binary(executable) <- System.find_executable("setsid"),
-         dir = Path.join(Keyword.get(opts, :root, "/data/vega-tasks"), id()),
+         dir = Path.join(Path.expand(Keyword.get(opts, :root, "/data/vega-tasks")), id()),
          :ok <- File.mkdir_p(dir),
          :ok <- File.write(Path.join(dir, "output.log"), "") do
       agent = Keyword.get(opts, :agent, infer_agent())
