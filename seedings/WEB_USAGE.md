@@ -48,5 +48,4 @@ bounded, but the command runner buffers them internally.
 Tests inject `http: fn url, opts -> {:ok, body, content_type} end` and
 `renderer: fn url, opts -> {:ok, markdown} end` without network or model spending.
 Dependencies: curl, GNU timeout, Lightpanda for JS. Missing executables produce
-returned errors. To test: `env -u MIX_BUILD_PATH MIX_ENV=test mix test
-test/seedling_web_test.exs`.
+returned errors. To test: `MIX_ENV=test mix test test/seedling_web_test.exs`.
