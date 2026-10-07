@@ -64,7 +64,44 @@ defmodule Nano.BackgroundTest do
     refute Process.alive?(replacement)
   end
 
-  test "invalid options and await deadline" do
+  test "waits for real completion rather than setsid parent exit" do
+    {:ok, job} = Nano.Background.start("sleep 1; printf completed", notify: nil)
+
+    assert {:ok, %{duration_ms: duration, bytes: 9, exit_status: 0}} =
+             Nano.Background.await(job.id)
+
+    assert duration >= 800
+  end
+
+  test "timeout kills descendants in the session group" do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "nano-bg-child-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    {:ok, job} =
+      Nano.Background.start("sleep 30 & echo $! > child.pid; wait",
+        cwd: dir,
+        timeout: 300,
+        notify: nil
+      )
+
+    assert {:ok, %{state: :timed_out}} = Nano.Background.await(job.id)
+    pid = File.read!(Path.join(dir, "child.pid")) |> String.trim()
+    Process.sleep(30)
+
+    case File.read("/proc/#{pid}/stat") do
+      {:error, :enoent} -> :ok
+      {:ok, stat} -> assert Regex.match?(~r/\) Z /, stat), "child still running: #{stat}"
+    end
+  end
+
+  test "invalid options
+ and await deadline" do
     assert {:error, _} = Nano.Background.start("echo", timeout: -1)
     {:ok, job} = Nano.Background.start("sleep 1", notify: nil)
     assert {:error, :await_timeout} = Nano.Background.await(job.id, 1)
