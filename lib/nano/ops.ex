@@ -207,6 +207,7 @@ defmodule Nano.Ops do
 
     %{
       boot: Nano.Application.boot_set(),
+      infrastructure: infrastructure(),
       endpoint: Process.whereis(NanoWeb.Endpoint),
       names: names,
       model_requests: for(%{task: %{kind: :model, task: %{pid: pid}}} <- agents, do: pid),
@@ -223,6 +224,21 @@ defmodule Nano.Ops do
     }
   end
 
+  # The boot snapshot contains old pids after a supervised service restarts.
+  # Resolve direct infrastructure children afresh. Do not exclude their whole
+  # ancestry: the eval supervisor also hosts independent user-started tasks.
+  defp infrastructure do
+    roots =
+      for {id, pid, _, _} <- Supervisor.which_children(Nano.Supervisor),
+          is_pid(pid),
+          id not in [Nano.AgentSupervisor, Nano.UserSupervisor],
+          do: pid
+
+    MapSet.new(roots)
+  catch
+    :exit, _ -> MapSet.new()
+  end
+
   defp kind(pid, ctx) do
     case ctx.names[pid] do
       {:agent, _} -> :agent
@@ -237,6 +253,7 @@ defmodule Nano.Ops do
     cond do
       MapSet.member?(ctx.boot, pid) or pid in ctx.model_requests -> :standard
       agent = Enum.find_value(chain, &ctx.owned[&1]) -> {:spawned_by, agent}
+      MapSet.member?(ctx.infrastructure, pid) -> :standard
       ctx.endpoint in chain -> :standard
       :application.get_application(pid) not in [:undefined, {:ok, :nano}] -> :standard
       true -> :other
