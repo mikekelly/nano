@@ -79,10 +79,14 @@ Reading active output is a snapshot; call again for bytes appended later.
 ## Evidence
 
 `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-background-build mix test test/vega_tasks_test.exs`
-passes 11 tests: cwd/env, merged output and nonzero exit, large output paging,
+passes 12 tests: cwd/env, merged output and nonzero exit, large output paging,
 stop/timeout/normal-exit/controller-kill descendant cleanup, eval death survival,
 actual NanoAgent restart plus dashboard ownership plus named completion,
-absent-name retry/replay, ten immediate-stop startup races, and invalid options.
+absent-name retry/replay, ten immediate-stop startup races, relative artifact
+root with a different command cwd, and invalid options. The full suite also
+passed: **258 tests**, executed as a real asynchronous Vega.Tasks shell task
+(24.5 seconds, exit 0). That full-suite run preceded the additional relative-root
+regression test.
 The checkout's Mix config deliberately places test builds in its isolated
 `_build/test` even when MIX_BUILD_ROOT is supplied.
 
