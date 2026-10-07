@@ -17,10 +17,34 @@ something only the person can give; the bot posts the request in the right sessi
 browser notification brings the person back, they answer in the chat, and the asking
 agent receives the answer.
 
-What the person sees:
+The surface is a messaging app, laid out like Grok's Bot app (and iMessage):
 
-- a sidebar of chat sessions they have started, each involving one or more bots; a session
-  with several bots is one shared conversation in which each bot speaks as itself;
+- **Left column.** At the top, a search button and a new-chat (+) button. Below them, the
+  person's main bot, shown large: its face and name, the one to talk to by default. Then
+  the chats, newest first, each a row with the participants' faces (one bot's face, or
+  small overlapping faces for a group, including the person's initials), a title (the
+  bot's name for a one-to-one chat; the participants, or a topic such as "Hotel stay
+  December", for a group) and a one-line preview of the last message. The open chat is
+  highlighted. At the bottom, the person's own initials, and room for actions such as
+  connecting apps.
+- **Starting a chat.** The main pane opens with a `To:` line, as when composing a message.
+  Typing filters a dropdown: "Create new Bot", "Create group chat", then the existing bots
+  by face and name, each with a keyboard shortcut (⌘1, ⌘2, …); arrow keys and Enter work.
+  A chosen bot becomes a removable chip (face, name, ×) in the `To:` line; two or more
+  chips make a group chat. Typing a name that matches no bot offers to create a bot with
+  that name, on the spot.
+- **In a chat.** A pill at the top names the participants with their faces. Messages fill
+  the pane. At the bottom, a rounded composer with a + for attachments, a placeholder
+  naming who is being messaged ("Message Grok Bot", or the group's names) and a
+  microphone button (voice input can come later).
+- **Look and feel.** Light, calm, lots of white space, rounded shapes, soft shadows on
+  popovers, the system font; usable from the keyboard. Each bot has a simple, friendly,
+  distinctive face (a shape and a colour), made when the bot is created.
+
+What the person gets:
+
+- chat sessions they have started, each involving one or more bots; a session with
+  several bots is one shared conversation in which each bot speaks as itself;
 - bots with identity — a name, a face or colour, a short self-description, a voice that
   stays consistent across sessions; a bot is something the person comes back to, not a
   fresh agent per chat;
@@ -65,7 +89,8 @@ What the person sees:
 
 ## Inspiration
 
-- Grok Bot, Muse and OpenAI Dots, for the surface.
+- Grok's Bot app (the layout above), Muse and OpenAI Dots, for the surface; iMessage for
+  the `To:` line, chips and group chats.
 - Jev ([docs.typesafe.ai](https://docs.typesafe.ai/introduction.md)) for decision models;
   [s1m](https://github.com/mikekelly/s1m) for traversing a Markdown knowledge graph.
 - The seed's reading view of an agent's timeline
