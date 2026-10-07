@@ -63,8 +63,8 @@ defmodule Nano.Bots.Runtime do
       for generation <- 0..(chat.generation - 1) do
         name = "bot-#{bid}-#{chat.id}-#{generation}"
 
-        case NanoAgent.info(name) do
-          %{status: :idle} ->
+        case Nano.StateStore.get(name) do
+          %{status: :idle, task: nil, calls: [], halted: halted} when halted in [nil, :context] ->
             Nano.Bots.archive(chat.id, generation, Map.get(bot, :server, Nano.Bots))
             Nano.Ops.stop_agent(name)
 
@@ -120,6 +120,9 @@ defmodule Nano.Bots.Runtime do
               You are #{bot.name}. #{bot.description}
               You participate only in session #{chat.id}; other bots speak as themselves.
               Consumer output MUST use Nano.Bots.post(#{inspect(chat.id)}, #{inspect(bot.id)}, text, #{inspect(server)}).
+              API argument types: post text, remember fact, ask_human question and answer text MUST be plain strings, never maps/tuples. IDs are strings, options are keyword lists.
+              Example in one eval: Nano.Bots.remember(#{inspect(bot.id)}, "The person likes vegetarian dinner", server: #{inspect(server)}); Nano.Bots.post(#{inspect(chat.id)}, #{inspect(bot.id)}, "I will remember that preference.", #{inspect(server)})
+              Always post a useful response in your first eval if possible. Do not spend turns exploring API types; then idle.
               Your ordinary response is operator-only and never reaches the person.
               Preserve durable user facts with Nano.Bots.remember(#{inspect(bot.id)}, fact, server: #{inspect(server)}).
               Request human help using Nano.Bots.ask_human(#{inspect(bot.id)}, question, session: #{inspect(chat.id)}, server: #{inspect(server)}).

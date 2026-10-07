@@ -606,11 +606,41 @@ defmodule Nano.Bots do
 
   def handle_info(_, s), do: {:noreply, s}
 
+  defp reconcile_status(s, sid, bid, name) do
+    case Nano.StateStore.get(name) do
+      %{status: :idle, task: nil, calls: [], pending: [], turns_used: turns, halted: halted}
+      when turns > 0 ->
+        current = s.data.sessions[sid].status[bid]
+
+        status =
+          cond do
+            halted != nil -> :paused
+            current == :thinking -> :no_reply
+            true -> current
+          end
+
+        if status != current do
+          data = put_in(s.data, [:sessions, sid, :status, bid], status)
+          persist(s.path, data)
+          broadcast(%{session: sid})
+          %{s | data: data}
+        else
+          s
+        end
+
+      _ ->
+        s
+    end
+  end
+
   defp monitor(s) do
     Enum.reduce(s.data.sessions, s, fn {sid, chat}, s ->
       s =
         Enum.reduce(chat.bots, s, fn bid, s ->
-          case NanoAgent.info("bot-#{bid}-#{sid}-#{chat.generation}") do
+          name = "bot-#{bid}-#{sid}-#{chat.generation}"
+          s = reconcile_status(s, sid, bid, name)
+
+          case NanoAgent.info(name) do
             %{id: id} ->
               if MapSet.member?(s.subscriptions, id) do
                 s
@@ -660,7 +690,7 @@ defmodule Nano.Bots do
       safe =
         Enum.all?(states, fn state ->
           state && state.halted in [nil, :context] &&
-            (state.status == :idle or state.halted == :context)
+            state.status == :idle && state.task == nil && state.calls == []
         end)
 
       if safe and paused != [] do
@@ -833,8 +863,9 @@ defmodule Nano.Bots do
         nil ->
           true
 
-        %{status: status, halted: halted} ->
-          halted in [nil, :context] and (status == :idle or halted == :context)
+        %{status: status, halted: halted} = state ->
+          halted in [nil, :context] and status == :idle and state.task == nil and
+            state.calls == []
 
         _ ->
           false
