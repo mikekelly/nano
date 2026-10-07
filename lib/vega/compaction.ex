@@ -23,20 +23,81 @@ defmodule Vega.Compaction do
   # A conservative JSON-byte estimate, also used to bound unmeasured summary inputs.
   def tokens(term), do: div(byte_size(Jason.encode!(term)) + 1, 2)
 
+  @doc "Conservative retained-context tokens, including native image costs (not summary metadata)."
+  def retained_tokens(term) do
+    bytes =
+      if Code.ensure_loaded?(Vega.Images) and function_exported?(Vega.Images, :estimated_bytes, 1),
+        do: apply(Vega.Images, :estimated_bytes, [term]),
+        else: retained_bytes(term)
+
+    div(bytes + 1, 2)
+  end
+
+  # Standalone compaction builds need no Images dependency. Match the current image
+  # ceiling in its absence; integrated nodes always use Images' authoritative pricing.
+  defp retained_bytes(%{"type" => "image_ref"}), do: 9_600
+
+  defp retained_bytes(map) when is_map(map),
+    do: Enum.reduce(map, 2, fn {k, v}, n -> n + retained_bytes(k) + retained_bytes(v) + 2 end)
+
+  defp retained_bytes(list) when is_list(list),
+    do: Enum.reduce(list, 2, &(retained_bytes(&1) + &2 + 1))
+
+  defp retained_bytes(value), do: byte_size(Jason.encode!(value))
+
   @doc "Selects an old prefix and a verbatim suffix at a complete exchange boundary."
   def plan(transcript, window) do
     keep = min(Application.get_env(:nano, :compaction_keep_tokens, 20_000), div(window, 4))
     boundaries = boundaries(transcript)
     n = length(transcript)
 
+    cuts =
+      if n in boundaries do
+        Enum.filter(boundaries, fn i ->
+          # A user delivery and its first assistant exchange stay together. Later
+          # completed tool-loop exchanges can still be independently summarized.
+          i < n and
+            (Enum.at(transcript, i)["role"] == "user" or
+               (Enum.at(transcript, i)["role"] == "assistant" and
+                  Enum.at(transcript, i - 1)["role"] != "user"))
+        end)
+      else
+        []
+      end
+
     cut =
-      Enum.find(boundaries, fn i ->
-        i > 0 and i < n and tokens(Enum.drop(transcript, i)) <= keep
+      Enum.find(cuts, fn i ->
+        i > 0 and i < n and retained_tokens(Enum.drop(transcript, i)) <= keep
       end)
 
-    if cut,
-      do: {:ok, Enum.split(transcript, cut)},
-      else: {:error, "no complete older exchange can be removed while keeping recent history"}
+    # Retention is a target, not permission to sever an exchange. If the newest
+    # complete exchange alone is larger, retain it whole when it leaves reply room.
+    # Summary/system overhead is still checked by NanoAgent's unchanged final guard.
+    fallback =
+      if n in boundaries do
+        # Keep the latest user delivery AND its assistant/results, not just a
+        # small tail of that exchange. With one exchange there is no older prefix.
+        latest_user =
+          transcript
+          |> Enum.with_index()
+          |> Enum.reverse()
+          |> Enum.find(fn {m, _} -> m["role"] == "user" end)
+
+        case latest_user do
+          {_, i} when i > 0 ->
+            if i in boundaries and
+                 retained_tokens(Enum.drop(transcript, i)) <= window - 4_096 - 512,
+               do: i
+
+          _ ->
+            nil
+        end
+      end
+
+    case cut || fallback do
+      nil -> {:error, "no complete older exchange can be removed while keeping recent history"}
+      i -> {:ok, Enum.split(transcript, i)}
+    end
   end
 
   defp boundaries(messages) do
