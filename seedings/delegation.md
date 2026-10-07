@@ -13,7 +13,7 @@ are expressed is yours):
 
 - a system prompt composed from reusable parts (an identity, the node's facts, a job body)
   rather than written whole each time. What every sub-agent needs (its role and level, how
-  and to whom it reports, when to hand over, and that it shares the machine; see
+  and to whom it reports, when to compact, and that it shares the machine; see
   [guidance.md](guidance.md), "You share this machine": a child knows only what its prompt
   gives it) is then written once and stays consistent; a
   brief written whole drifts, drops what matters, and costs the parent output tokens on
@@ -48,7 +48,7 @@ agent or a successor, not the one that built them).
 - Erlang messages carry no sender; a protocol has to put the reply address in the message,
   or the child has no way to answer. The seed's `say` convention (`%{message:,
   sender_pid:}`) is one precedent.
-- Budgets: too small and a sub-agent halts before it can report or hand over (`max_context`
+- Budgets: too small and a sub-agent halts before it can report or compact (`max_context`
   must leave room for that: the harness halts an agent before a call that would not fit);
   too large and a runaway spends real money. Whoever starts an agent answers for what it
   may spend and must hear when it is spent, since a halted agent sits silent.

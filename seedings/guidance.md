@@ -82,7 +82,7 @@ the ones before it, and each makes the next one cheaper, so it is a good default
 4. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
    and pre-reading, give it a task, get its result as a message. From here on, anything
    large is a sub-agent's job and your context stays at the level of the plan. Build it
-   early, while you have plenty of context left (see "Hand over before your context runs out" below).
+   early, while you have plenty of context left.
 5. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
    search, when a key for a search service is present (`EXA_API_KEY`;
    [search.md](search.md)); and the browser that is already in the image — Lightpanda at
@@ -117,26 +117,30 @@ over and again when the copies conflict at merge. So decide what the tasks share
 that first (yourself or through one agent), and start the parallel work from it; fan out
 from the foundation, not from the bare seed. Work that shares nothing can start at once.
 
-**Hand over before your context runs out, not when it does.** Your context only grows, and
+**Compact before your context runs out, not when it does.** Your context only grows, and
 when it nears your limit (when the next call, with room for a reply, might not fit) the
-harness stops calling the model: you cannot then do anything,
-including hand over. Compacting your context, or handing the baton to a successor agent that starts
-fresh with your notes, your plan and the job of reporting to whoever you report to, is
-itself work that needs room: a turn that reads what it must and writes the summary or the
-successor's brief, which can be long. Leave that room. So have the mechanism working long
-before you need it (delegation is the simplest one), keep the handoff cheap by keeping your
-notes and goals current as you go, and act on a threshold you set early, short of the
-limit. Think of the reserve in tokens, not as a fraction: it is what the handover itself
-will take. pi, a coding agent whose harness compacts mechanically with a separate
-summarising call, keeps 16,384 tokens in reserve (the summary may use about 13,000 of them)
-and the last 20,000 tokens of the conversation verbatim, so it compacts at 94% of a
-272,000-token window. A handover you do yourself costs more, because you read your notes
-and write the successor's brief or your own summary in your own turns: reserve enough for
-that, a few tens of thousands of tokens, and act when that much is left. Handing over much
-earlier throws away context you could still have used.
-The budget line delivered with your events tells you where you are. Put the same rule into
-the prompts of the agents you start: an agent halted for its context cannot report what it
-found.
+harness stops calling the model: you cannot then do anything, including shrink it. The seed
+has no compaction, so an agent that will run long needs one: its conversation replaced by
+a summary of what matters (decisions, commitments, open questions, where things are), while
+it stays the same agent. That last part is the point. Your name, pid and mailbox are how
+people, your sub-agents and whoever started you reach you, and what you have started
+reports back to you; compaction keeps all of that. Handing the work to a fresh successor
+does not: it is a different agent, so messages, reports and replies addressed to you no
+longer reach whoever is doing the work, and the chain of who started whom forks. Pass work
+to a successor only when the work itself is being handed on, not as a way to get more
+context.
+
+Compaction is itself work that needs room, so build it while you have plenty, keep it
+cheap by keeping your notes and goals current as you go, and act on a threshold set short
+of the limit. Think of the reserve in tokens, not as a fraction: it is what compacting will
+take. pi, a coding agent whose harness compacts mechanically with a separate summarising
+call, keeps 16,384 tokens in reserve (the summary may use about 13,000 of them) and the last
+20,000 tokens of the conversation verbatim, so it compacts at 94% of a 272,000-token
+window. If your compaction asks you to read your notes and write the summary in your own
+turns, it costs more: reserve enough for that, and act when that much is left. Compacting
+much earlier throws away context you could still have used. The budget line delivered with
+your events tells you where you are. Put the same rule into the prompts of the agents you
+start: an agent halted for its context cannot report what it found.
 
 **You share this machine.** Other agents work on this node while you do: in `/app` (the
 running node's source), in worktrees, under `/data` and `/tmp`, on the same ports and in the
@@ -153,7 +157,7 @@ same BEAM. Nothing stops agents colliding except each one taking care, so:
 
 Once you start sub-agents, the collisions are between your own agents, and each knows only
 what its prompt tells it. So this belongs in the shared part of every prompt you compose,
-beside role, reporting and handover, for them to pass on to theirs.
+beside role, reporting and compaction, for them to pass on to theirs.
 
 **Use decision models where the LLM is too expensive and code is too brittle.** Some
 judgments come up constantly, must be fast and cheap, and are beyond deterministic code
