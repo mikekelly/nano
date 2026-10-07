@@ -310,6 +310,7 @@ One image, based on the official Elixir image, running the app from source with 
 | `AGENT_MAX_CONTEXT` | 1000000 | Size of one agent's conversation, in tokens, at which it is halted; 0 means no limit (the model's own limit then applies) |
 | `EVAL_TIMEOUT_MS` | 30000 | Per-eval timeout |
 | `RESULT_MAX_BYTES` | 16000 | Truncation limit for tool results and events |
+| `MAX_BINDINGS_BYTES` | 16000000 | Eval variables are saved for restarts up to this many bytes in total; larger ones stay bound in the running process only, and the restart note names them |
 | `NETWORK_POLICY` | `openrouter-only` | Text shown in the system prompt; must match the actual network setup |
 
 **Limits that matter even in a disposable container**

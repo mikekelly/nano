@@ -254,6 +254,8 @@ defmodule NanoAgent do
       %{id: ^id} = saved ->
         # The previous process's eval has no timeout any more, and no one to report to.
         kill_tasks(saved.pid)
+        # An entry saved by an older version of this module still holds its bindings.
+        with %{bindings: b} <- saved, do: Nano.StateStore.put_bindings(saved.name, b)
 
         s =
           opts
@@ -325,6 +327,8 @@ defmodule NanoAgent do
   defp fresh(opts) do
     s = base(opts)
     s = %{s | system_prompt: render(s)}
+    # Clears any saved by an earlier agent of the same name.
+    Nano.StateStore.put_bindings(s.name, [])
 
     log(
       s,
@@ -355,12 +359,20 @@ defmodule NanoAgent do
     # after a node restart there are none left.
     orphans = with %{io: io} <- saved.task, do: adopt(io, Process.group_leader()), else: (_ -> [])
 
-    s = %{
-      new_process(saved)
-      | restart_count: saved.restart_count + 1,
+    # Bindings are saved apart from the entry (one saved by an older version of this module
+    # still holds them), and the largest may have been left out as too large to save.
+    with %{bindings: b} <- saved, do: Nano.StateStore.put_bindings(saved.name, b)
+    {bindings, unsaved} = Nano.StateStore.bindings(saved.name)
+
+    s =
+      saved
+      |> new_process()
+      |> Map.merge(%{
+        bindings: bindings,
+        restart_count: saved.restart_count + 1,
         restarts: restarts,
         spawned: if(node_restart?, do: [], else: saved.spawned ++ orphans)
-    }
+      })
 
     # The template file is read again, so edits to it take effect at a restart. If it cannot
     # be read, the copy read last is used, and the note says so.
@@ -404,6 +416,12 @@ defmodule NanoAgent do
             "Your process exited with reason #{brief(reason)} #{doing(saved)} and was restarted. " <>
               "Your pid is now #{inspect(self())}; your registered name is unchanged."
         ) <>
+          if(unsaved == [],
+            do: "",
+            else:
+              " These variables were not restored and are no longer bound, because they were " <>
+                "too large for me to save: #{Enum.join(unsaved, ", ")}."
+          ) <>
           with(
             {:error, e} <- read,
             do:
@@ -1057,6 +1075,7 @@ defmodule NanoAgent do
 
     case result do
       {:ok, value, bindings, warnings} ->
+        Nano.StateStore.put_bindings(s.name, bindings)
         tool_result(%{s | bindings: bindings}, call, started, true, value, output <> warnings)
 
       {:error, error} ->
@@ -1134,9 +1153,10 @@ defmodule NanoAgent do
       :error
   end
 
+  # Bindings are saved apart, when an eval changes them (Nano.StateStore.put_bindings/2).
   defp save(s) do
     s = %{s | spawned: Enum.filter(s.spawned, &Process.alive?/1)}
-    Nano.StateStore.put(s.name, s)
+    Nano.StateStore.put(s.name, Map.delete(s, :bindings))
     s
   end
 

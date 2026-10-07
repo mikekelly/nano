@@ -14,6 +14,10 @@ defmodule Nano.StateStore do
 
   Each agent's entry is also written to `<state_dir>/<name>.term` whenever it changes, so it
   survives node death: at boot, `load/0` reads the files back and the agents are revived.
+
+  An agent's eval bindings are kept apart from its entry (row `{{:bindings, name}, kept,
+  dropped}`, file `<name>.bindings`) and saved only when they change, so a large variable costs
+  nothing at each save, and reads of the entry (`get/1`, `all/0`) never copy them.
   """
   use GenServer
   require Logger
@@ -43,18 +47,71 @@ defmodule Nano.StateStore do
     # before this module wrote files).
     changed? = :ets.lookup(@table, name) != [{name, map}]
     :ets.insert(@table, {name, map})
-    if changed? or not File.exists?(file(name)), do: write(name, map)
+    if changed? or not File.exists?(file(name)), do: write(name, file(name), map)
     :ok
   rescue
     ArgumentError -> :ok
+  end
+
+  @doc """
+  Saves an agent's eval bindings if they changed. If together they would take more than
+  `:max_bindings_bytes` (default 16 MB), the largest variables are left out of what is saved
+  (they stay bound in the running process); a warning is logged when a variable is first left
+  out. Returns the names left out.
+  """
+  def put_bindings(name, bindings) do
+    max = Application.get_env(:nano, :max_bindings_bytes, 16_000_000)
+
+    {kept, dropped, _} =
+      bindings
+      |> Enum.map(fn {k, v} -> {k, v, :erlang.external_size(v)} end)
+      |> Enum.sort_by(&elem(&1, 2))
+      |> Enum.reduce({[], [], 0}, fn {k, v, size}, {kept, dropped, total} ->
+        if total + size <= max,
+          do: {[{k, v} | kept], dropped, total + size},
+          else: {kept, [{k, size} | dropped], total}
+      end)
+
+    {kept, names} = {Enum.sort(kept), dropped |> Enum.map(&elem(&1, 0)) |> Enum.sort()}
+    {old_kept, old_names} = bindings(name)
+
+    if names -- old_names != [] do
+      sizes = Enum.map_join(Enum.sort(dropped), ", ", fn {k, size} -> "#{k} (#{size} bytes)" end)
+
+      Logger.warning(
+        "#{name}: not saving eval variables #{sizes}: together over #{max} bytes; " <>
+          "they stay bound in the running process but will not survive a restart"
+      )
+    end
+
+    if {kept, names} != {old_kept, old_names} do
+      :ets.insert(@table, {{:bindings, name}, kept, names})
+      write(name, bindings_file(name), {kept, names})
+    end
+
+    names
+  rescue
+    ArgumentError -> []
+  end
+
+  @doc "An agent's saved bindings and the names left out of them: `{bindings, names}`."
+  def bindings(name) do
+    case :ets.lookup(@table, {:bindings, name}) do
+      [{_, kept, names}] -> {kept, names}
+      [] -> {[], []}
+    end
+  rescue
+    ArgumentError -> {[], []}
   end
 
   @doc "Deletes an agent's entry, its state file, its recorded exit and its log sequence counter."
   def delete(name) do
     with %{id: id} <- get(name), do: :ets.delete(@table, {:seq, id})
     :ets.delete(@table, {:exit, name})
+    :ets.delete(@table, {:bindings, name})
     :ets.delete(@table, name)
     File.rm(file(name))
+    File.rm(bindings_file(name))
     :ok
   end
 
@@ -66,15 +123,19 @@ defmodule Nano.StateStore do
   def load do
     dir = Application.fetch_env!(:nano, :state_dir)
 
-    for name <- with({:ok, files} <- File.ls(dir), do: files, else: (_ -> [])),
-        Path.extname(name) == ".term" do
-      path = Path.join(dir, name)
+    for file <- with({:ok, files} <- File.ls(dir), do: files, else: (_ -> [])),
+        Path.extname(file) in [".term", ".bindings"] do
+      path = Path.join(dir, file)
 
       try do
-        %{name: name, pid: pid} = entry = path |> File.read!() |> :erlang.binary_to_term()
+        case path |> File.read!() |> :erlang.binary_to_term() do
+          %{name: name, pid: pid} = entry ->
+            if :ets.insert_new(@table, {name, entry}),
+              do: :ets.insert(@table, {{:exit, name}, pid, :node_restart})
 
-        if :ets.insert_new(@table, {name, entry}),
-          do: :ets.insert(@table, {{:exit, name}, pid, :node_restart})
+          {kept, names} when is_list(kept) and is_list(names) ->
+            :ets.insert_new(@table, {{:bindings, Path.rootname(file)}, kept, names})
+        end
       rescue
         e -> Logger.error("Nano.StateStore: skipped #{path}: #{Exception.message(e)}")
       end
@@ -85,13 +146,15 @@ defmodule Nano.StateStore do
 
   defp file(name), do: Path.join(Application.fetch_env!(:nano, :state_dir), name <> ".term")
 
+  defp bindings_file(name),
+    do: Path.join(Application.fetch_env!(:nano, :state_dir), name <> ".bindings")
+
   # Atomically: a node that dies mid-write leaves the previous file, not half of this one.
-  defp write(name, map) do
-    path = file(name)
+  defp write(name, path, term) do
     tmp = path <> ".tmp"
 
     with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.write(tmp, :erlang.term_to_binary(map)),
+         :ok <- File.write(tmp, :erlang.term_to_binary(term)),
          :ok <- File.rename(tmp, path) do
       :ok
     else

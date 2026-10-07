@@ -1744,7 +1744,10 @@ defmodule NanoAgentTest do
     pid = NanoAgent.whereis(ctx.name)
     :sys.get_state(pid)
     DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
-    for key <- [ctx.name, {:exit, ctx.name}, {:seq, id}], do: :ets.delete(Nano.StateStore, key)
+
+    for key <- [ctx.name, {:exit, ctx.name}, {:seq, id}, {:bindings, ctx.name}],
+        do: :ets.delete(Nano.StateStore, key)
+
     Nano.StateStore.load()
     NanoAgent.revive(Nano.AgentSupervisor)
     new = NanoAgent.whereis(ctx.name)
@@ -1883,5 +1886,94 @@ defmodule NanoAgentTest do
     kill(child, child_id)
     assert NanoAgent.info(child.name).started_by == ctx.name
     assert await(child_id, :agent_started, & &1["restarted"])["started_by"] == ctx.name
+  end
+
+  ## Large bindings
+
+  defp bindings_file(name),
+    do: Path.join(Application.get_env(:nano, :state_dir), name <> ".bindings")
+
+  test "a large binding costs nothing at each save; bindings are saved only when an eval changes them",
+       ctx do
+    {pid, id} = start!(ctx, max_turns: 1)
+    Fake.push(ctx.model, calls: [eval: "big = Enum.to_list(1..2_000_000); :ok"])
+    send(pid, :go)
+    request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    assert {[big: _, me: _], []} = Nano.StateStore.bindings(ctx.name)
+    refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
+    File.rm!(bindings_file(ctx.name))
+
+    # Halted, so each event is just received, logged and saved. Saving the entry with its
+    # ~10 MB binding took about 45 ms each; without it, a save costs what the entry costs.
+    {us, _} =
+      :timer.tc(fn ->
+        for i <- 1..10, do: send(pid, {:poke, i})
+        :sys.get_state(pid)
+      end)
+
+    assert us < 200_000
+    assert File.stat!(state_file(ctx.name)).size < 100_000
+    # Events do not rewrite the bindings.
+    refute File.exists?(bindings_file(ctx.name))
+  end
+
+  test "variables too large to save are left out, with one warning, and named at restart", ctx do
+    Application.put_env(:nano, :max_bindings_bytes, 100_000)
+    on_exit(fn -> Application.delete_env(:nano, :max_bindings_bytes) end)
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: ~s|big = :binary.copy("x", 1_000_000); small = 1|])
+    Fake.push(ctx.model, calls: [eval: "small + 1"])
+    Fake.push(ctx.model, text: "ok")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        send(pid, :go)
+        for _ <- 1..3, do: request!(ctx.model)
+        await(id, :turn_ended)
+        :sys.get_state(pid)
+      end)
+
+    assert [_] = Regex.scan(~r/not saving eval variables big \(\d+ bytes\)/, log)
+    assert {kept, [:big]} = Nano.StateStore.bindings(ctx.name)
+    assert Keyword.keys(kept) == [:me, :small]
+    assert {_, [:big]} = bindings_file(ctx.name) |> File.read!() |> :erlang.binary_to_term()
+
+    Fake.push(ctx.model, calls: [eval: "binding() |> Keyword.keys() |> Enum.sort()"])
+    Fake.push(ctx.model, text: "ok")
+    kill(ctx, id)
+    body = request!(ctx.model)
+
+    assert delivery(List.last(body["messages"])) =~
+             "These variables were not restored and are no longer bound, because they were too " <>
+               "large for me to save: big."
+
+    assert List.last(tool_texts(request!(ctx.model))) == "[:me, :small]"
+  end
+
+  test "an entry saved with its bindings (by the previous version) restores them", ctx do
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "x = 41"])
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :go)
+    for _ <- 1..2, do: request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    # The old shape: bindings inside the entry, no bindings row.
+    {bindings, []} = Nano.StateStore.bindings(ctx.name)
+    :ets.delete(Nano.StateStore, {:bindings, ctx.name})
+
+    :ets.insert(
+      Nano.StateStore,
+      {ctx.name, Map.put(Nano.StateStore.get(ctx.name), :bindings, bindings)}
+    )
+
+    Fake.push(ctx.model, calls: [eval: "x + 1"])
+    Fake.push(ctx.model, text: "ok")
+    kill(ctx, id)
+    request!(ctx.model)
+    assert List.last(tool_texts(request!(ctx.model))) == "42"
+    refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
   end
 end

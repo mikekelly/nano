@@ -24,6 +24,7 @@ services:
       - NODE_MAX_TOKENS_PER_HOUR
       - EVAL_TIMEOUT_MS
       - RESULT_MAX_BYTES
+      - MAX_BINDINGS_BYTES
       - OPENROUTER_BASE_URL
       # Shown to agents in their system prompt, so it must be true. This file does not
       # restrict egress; if you do (see README), set NETWORK_POLICY to text that matches.
