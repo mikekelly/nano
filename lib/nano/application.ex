@@ -21,6 +21,19 @@ defmodule Nano.Application do
           {Registry, keys: :unique, name: Nano.Registry},
           Nano.StateStore,
           {Task.Supervisor, name: Nano.EvalSupervisor},
+          Nano.Background.Registry,
+          Nano.Background.Tasks,
+          Nano.Goals.Store,
+          Nano.Delegation.Store,
+          Nano.Delegation.Watcher,
+          Nano.MCP.Registry,
+          Nano.MCP.Store,
+          Nano.Web.Cache,
+          %{
+            id: Nano.MCP.Supervisor,
+            start: {Nano.MCP.Supervisor, :start_link, [[]]},
+            type: :supervisor
+          },
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           NanoWeb.Endpoint

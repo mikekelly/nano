@@ -5,3 +5,4 @@
 /.claude/worktrees/
 .env
 erl_crash.dump
+/priv/web/node_modules/

@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@mozilla/readability": "^0.5",
+    "jsdom": "^24"
+  },
+  "name": "nano-web",
+  "private": true
+}

@@ -1,0 +1,88 @@
+# Langfuse for the nano node (seedings/tracing.md).
+#
+# Not used by this run: the operators said they were not supplying the service. Kept so the
+# tracing seeding can be finished later without redesigning this part; the tracer itself was
+# never written, so nothing sends to Langfuse yet.
+#
+# Usage (from the directory with your .env):
+#   echo 'LANGFUSE_PUBLIC_KEY=' >> .env   # after creating a project in the UI
+#   echo 'LANGFUSE_SECRET_KEY=' >> .env
+#   echo 'LANGFUSE_HOST=http://langfuse-web:3000' >> .env
+#   docker compose -f /app/docker-compose.langfuse.yml up -d
+#   # then open http://localhost:3001, create a project, copy its keys into .env, restart nano.
+#
+# Six services as the docs describe (web, worker, postgres, clickhouse, redis, minio) on the
+# same network as the node, so LANGFUSE_HOST resolves.
+services:
+  langfuse-web:
+    image: langfuse/langfuse:2
+    depends_on: [langfuse-db, clickhouse, redis, minio]
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://postgres:postgres@langfuse-db:5432/postgres
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+      REDIS_HOST: redis
+      REDIS_AUTH: redis
+      MINIO_ENDPOINT: minio
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+      SALT: ${LANGFUSE_SALT:-change-me}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-change-me-too}
+    networks: [nano]
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:2
+    depends_on: [langfuse-db, clickhouse, redis, minio]
+    environment: *langfuse-env
+    networks: [nano]
+
+  langfuse-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - langfuse-db:/var/lib/postgresql/data
+    networks: [nano]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+    networks: [nano]
+
+  redis:
+    image: redis:7
+    command: redis-server --requirepass redis
+    volumes:
+      - redis:/data
+    networks: [nano]
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    volumes:
+      - minio:/data
+    networks: [nano]
+
+volumes:
+  langfuse-db:
+  clickhouse:
+  redis:
+  minio:
+
+networks:
+  nano:
+    name: nano_default # the compose network the node's own docker-compose.yml creates

@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "fs": {
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/app"
+      ],
+      "env": [],
+      "transport": "stdio"
+    }
+  }
+}
