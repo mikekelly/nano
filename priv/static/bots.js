@@ -44,22 +44,25 @@
   Hooks.BotsFollow = {
     mounted() {
       this.follow = true;
+      this.reportedReading = false;
+      this.reportReading = () => { const reading = !this.follow; if (reading !== this.reportedReading) { this.reportedReading = reading; this.pushEvent('reading-history', {reading}); } };
       this.session = (this.el.dataset.sessionId || this.el.dataset.session);
-      this.jump = () => { this.follow = true; this.el.scrollTop = this.el.scrollHeight; this.showJump(false); };
+      this.jump = () => { this.follow = true; this.el.scrollTop = this.el.scrollHeight; this.showJump(false); this.reportReading(); };
       this.showJump = visible => { const button = document.getElementById('jump-latest'); if (button) button.hidden = !visible; };
-      this.scroll = () => { this.follow = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 96; if (this.follow) this.showJump(false); };
-      this.click = e => { if (e.target.closest('#jump-latest')) this.jump(); };
+      this.scroll = () => { this.follow = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 96; if (this.follow) this.showJump(false); this.reportReading(); };
+      this.click = e => { if (e.target.closest('#jump-latest')) this.pushEvent('latest-messages', {}); };
       this.el.addEventListener('scroll', this.scroll, {passive:true});
       document.addEventListener('click', this.click);
       this.handleEvent('bots-show-latest', () => this.jump());
       this.jump();
     },
-    beforeUpdate() { this.wasFollowing = this.follow; this.firstMessage = this.el.querySelector('article[id]')?.id; this.oldHeight = this.el.scrollHeight; this.oldTop = this.el.scrollTop; },
+    beforeUpdate() { this.wasFollowing = this.follow; const anchor = this.el.querySelector('article[id]'); this.firstMessage = anchor?.id; this.anchorTop = anchor?.getBoundingClientRect().top; },
     updated() {
       if (this.session !== (this.el.dataset.sessionId || this.el.dataset.session)) { this.session = (this.el.dataset.sessionId || this.el.dataset.session); this.wasFollowing = true; }
       const first = this.el.querySelector('article[id]')?.id;
       if (this.firstMessage && first && first !== this.firstMessage && this.el.querySelector(`[id="${this.firstMessage}"]`)) {
-        this.follow = false; this.el.scrollTop = this.oldTop + this.el.scrollHeight - this.oldHeight;
+        const anchor = this.el.querySelector(`[id="${this.firstMessage}"]`);
+        this.follow = false; this.el.scrollTop += anchor.getBoundingClientRect().top - this.anchorTop; this.reportReading();
       } else if (this.wasFollowing) this.jump(); else this.showJump(true);
     },
     destroyed() { this.el.removeEventListener('scroll', this.scroll); document.removeEventListener('click', this.click); }
