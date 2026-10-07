@@ -9,12 +9,8 @@ defmodule Nano.DurableStore do
           {:ok, %{}}
 
         {:ok, %{size: size}} when size <= @max_bytes ->
-          with {:ok, bytes} <- File.read(path),
-               {:ok, %{"version" => 1, "entries" => entries}} when is_map(entries) <-
-                 Jason.decode(bytes) do
-            if valid_entries?(kind, entries), do: {:ok, entries}, else: {:error, :corrupt_store}
-          else
-            _ -> {:error, :corrupt_store}
+          with {:ok, bytes} <- File.read(path) do
+            decode(kind, bytes)
           end
 
         {:ok, _} ->
@@ -23,6 +19,19 @@ defmodule Nano.DurableStore do
         error ->
           error
       end
+    end
+  end
+
+  defp decode(_kind, bytes) when byte_size(bytes) > @max_bytes,
+    do: {:error, :store_too_large}
+
+  defp decode(kind, bytes) do
+    case Jason.decode(bytes) do
+      {:ok, %{"version" => 1, "entries" => entries}} when is_map(entries) ->
+        if valid_entries?(kind, entries), do: {:ok, entries}, else: {:error, :corrupt_store}
+
+      _ ->
+        {:error, :corrupt_store}
     end
   end
 
@@ -61,7 +70,7 @@ defmodule Nano.DurableStore do
       if byte_size(bytes) > @max_bytes do
         {:error, :store_too_large}
       else
-        tmp = path <> "." <> Integer.to_string(:erlang.unique_integer([:positive])) <> ".tmp"
+        tmp = path <> "." <> id() <> ".tmp"
 
         try do
           with :ok <- File.mkdir_p(Path.dirname(path)),
@@ -92,19 +101,24 @@ defmodule Nano.DurableStore do
         Enum.all?(~w(created_at updated_at), &is_binary(e[&1])) and
         case kind do
           "goals" ->
-            e["id"] == key and text?(e["title"], 1000) and text?(e["why"]) and
-              e["status"] in ~w(open active blocked done cancelled) and is_binary(e["note"]) and
+            text?(key, 200) and e["id"] == key and text?(e["title"], 1000) and text?(e["why"]) and
+              e["status"] in ~w(open active blocked done cancelled) and
+              optional_text?(e["note"], 8000) and
               (is_nil(e["parent"]) or Map.has_key?(entries, e["parent"]))
 
           "memory" ->
-            e["key"] == key and text?(e["text"], 32_000) and is_binary(e["why"]) and
-              is_list(e["tags"]) and Enum.all?(e["tags"], &text?(&1, 100))
+            text?(key, 200) and e["key"] == key and text?(e["text"], 32_000) and
+              optional_text?(e["why"], 8000) and
+              is_list(e["tags"]) and length(e["tags"]) <= 20 and
+              Enum.all?(e["tags"], &text?(&1, 100))
 
           _ ->
             false
         end
     end)
   end
+
+  defp optional_text?(text, max), do: text == "" or text?(text, max)
 
   def text?(text, max \\ 8_000),
     do: is_binary(text) and String.valid?(text) and byte_size(text) > 0 and byte_size(text) <= max

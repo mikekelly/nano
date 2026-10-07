@@ -64,7 +64,8 @@ trusted configuration: this is not a sandbox/security boundary.
 
 Every mutation takes a per-path `:global` lock on **this BEAM node**, reads the
 latest committed snapshot, applies one change, fsyncs a unique temporary file,
-then atomically renames it. Failed writes never report success. Concurrent
+then atomically renames it. Random temporary filenames avoid collisions with
+leftovers across VM boots. Failed writes never report success. Concurrent
 writers in this node do not lose updates; lock ownership disappears when a
 writer exits. A crash during writing leaves the previous snapshot readable;
 crash leftovers named `.tmp` are ignored. Reads do not acquire mutation locks,
@@ -112,4 +113,15 @@ restored within the test VM, with no changes to the running node.
 parallel checkouts). Covers hierarchy/rationale/status across short-lived
 writers, two independent BEAM boots (actual disk reload), 40 concurrent writers, memory replacement/search/deletion, bounded
 review, hashed paths, permissions, corrupt/oversize stores, and filesystem
-errors. No real models, external services or API keys needed.
+errors, snapshot-size rejection preserving prior data, simultaneous readers and
+writers, lock release after killing a transaction owner, cancellation semantics,
+Unicode excerpts, tag bound corruption and read I/O errors. No real models, external services or API keys needed.
+
+## Focused audit follow-up
+
+The independent edge-case pass found no lost-update issue in the supported
+single-node model. It hardened temporary names against boot-time stale-file
+collisions, preserved filesystem read errors rather than mislabeling all as
+corruption, and validates persisted optional-field/tag/key bounds as well as
+API inputs. Test roots must use one canonical path: symlink aliases of the
+same directory are not normalized into a single lock key.
