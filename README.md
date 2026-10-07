@@ -55,7 +55,7 @@ their own module. So `/app` is bind-mounted from a **dedicated git checkout**: a
 exists only for the agents to scribble on, never a working copy you care about.
 
 ```bash
-git clone git@github.com:mikekelly/lolwut.git nano && cd nano
+git clone git@github.com:mikekelly/nano.git nano && cd nano
 echo 'OPENROUTER_API_KEY=sk-or-...' > .env   # a dedicated key with a low spending limit
 bin/up
 ```

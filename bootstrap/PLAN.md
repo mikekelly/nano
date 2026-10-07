@@ -77,7 +77,7 @@ and say so.
     Cookie: generated into a file at build; `NODE_COOKIE` overrides; the entrypoint and
     `bin/shell` / `bin/rpc` all resolve it the same way.
 16. **Commits.** Work is committed as it lands and pushed to `origin`
-    (github.com/mikekelly/lolwut, private). Agents sharing the main working tree (stages 1–2)
+    (github.com/mikekelly/nano, private). Agents sharing the main working tree (stages 1–2)
     do not run git write commands — the orchestrator commits their work at the stage boundary,
     so parallel agents cannot sweep up each other's half-written files. Agents from stage 3 on
     work in their own git worktree and commit there on a branch; the orchestrator merges to

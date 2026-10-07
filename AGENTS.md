@@ -24,7 +24,7 @@ truthfully.
 | [bootstrap/SPEC.md](bootstrap/SPEC.md) | The design. Source of truth; nearly every sentence is a requirement. Includes the system prompt. |
 | [README.md](README.md) | Running it: quick start, shell and HTTP usage, reverting agent edits, limits, gotchas. |
 | [seedings/](seedings/README.md) | Design specs for capabilities to grow from the seed. |
-| [`runs` branch](https://github.com/mikekelly/lolwut/blob/runs/README.md) | The record of every run, and the experiments. Kept off `main`, which agents read as `/app`. |
+| [`runs` branch](https://github.com/mikekelly/nano/blob/runs/README.md) | The record of every run, and the experiments. Kept off `main`, which agents read as `/app`. |
 | [bootstrap/PLAN.md](bootstrap/PLAN.md) | How it was delivered: decisions taken where the spec was silent, module contracts. |
 | `priv/system_prompt.txt` | The prompt template, read from disk at every agent start. |
 | `lib/nano_agent.ex` | The harness. The agent's own module; agents can read and change it. |
