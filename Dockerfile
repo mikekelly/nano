@@ -2,12 +2,15 @@ FROM elixir:1.20.2-otp-29
 
 # The node runs as root: the container is the sandbox, and agents get all of it.
 # Deps and build output live outside /app, so a checkout mounted over /app hides nothing.
+# MIX_BUILD_ROOT, not MIX_BUILD_PATH: each MIX_ENV gets its own directory under it, so
+# `MIX_ENV=test mix test` on the node cannot overwrite the running node's prod build.
+# All deps are fetched, test ones too, so tests run on the node.
 # The app listens on loopback by default; a published port needs all interfaces.
 # A crash dump goes to the data volume, not into the checkout mounted at /app.
 # NETWORK_POLICY is shown to agents in their system prompt: keep it true (see README).
 ENV MIX_ENV=prod \
     MIX_DEPS_PATH=/opt/nano/deps \
-    MIX_BUILD_PATH=/opt/nano/_build \
+    MIX_BUILD_ROOT=/opt/nano/_build \
     LISTEN_IP=0.0.0.0 \
     ERL_CRASH_DUMP=/data/erl_crash.dump \
     NETWORK_POLICY="unrestricted outbound internet access"
@@ -30,7 +33,7 @@ RUN case "$TARGETARCH" in amd64) a=x86_64 ;; arm64) a=aarch64 ;; *) echo "no lig
  && chmod +x /usr/local/bin/lightpanda
 
 COPY mix.exs mix.lock ./
-RUN mix deps.get --only prod && mix deps.compile
+RUN mix deps.get && mix deps.compile
 
 # The image's own copy of the source, committed so `git diff` shows what agents change.
 COPY . .
