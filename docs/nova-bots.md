@@ -34,7 +34,7 @@ credentials in chat**: plaintext disk persistence is not a secrets store.
 
 ## Runtime configuration
 
-The operator must set `:nano, :bots_agent_options` in deployment configuration:
+Choose explicit per-bot agent_options (see below) or set a deployment fallback:
 
 ```elixir
 # Set through config, not a shared node eval during concurrent tests:
@@ -72,16 +72,34 @@ seeding's API. Selection is an optional cheap-model decision, with a conservativ
 lexical fallback if unavailable. Agents must explicitly remember facts: automatic
 memory extraction and knowledge-graph traversal are not yet implemented.
 
-Automatic rollover is checked on each incoming human message at 24 KB of visible
-conversation, or when measured agent tokens/serialized transcript bytes exceed 55%
-of its context limit; a decision model can request an earlier rollover. The new
-agent receives a bounded brief and recent conversation, while the UI retains the
-full history. No transcript rewrite means provider tool calls cannot become orphans.
-Old idle generations are stopped; busy ones are not killed mid-tool-call. A tool-heavy
-single turn can still hit the harness context cap before the next human turn. This
-is not a claim of arbitrary-length autonomous execution with zero forgotten detail.
-The fallback brief is a bounded recent excerpt, not semantic summarization; older
-facts may be lost without explicit memory or a configured decision model.
+Automatic rollover checks incoming human messages and also subscribes to agent
+PubSub response/tool-result/turn-ended traffic plus a 500ms poll. A hard trigger is
+24KB of visible conversation or measured agent tokens/serialized transcript bytes
+over 55% of context; a semantic decision model can compact sooner. No provider
+transcript is edited, so orphan tool calls cannot arise.
+
+The proactive worker suspends agents at GenServer callback boundaries and inspects
+their stored state. If any is running an eval/tool, it resumes and retries later;
+it never kills a live eval during rollover. At a safe thinking/idle boundary it saves
+a **lossless runtime checkpoint to disk**, persists the new generation, retires old
+agents, and resumes unfinished work in a fresh context. Pending provider requests
+are cancelled; completed tool calls/results remain in the checkpoint. Abort,
+service death or timeout resumes the old agent rather than leaving it suspended.
+An eval that suddenly emits an enormous result can still outrun the external monitor
+and hit the harness cap; the monitor can recover a context-halted agent, but this is
+not a guarantee of unbounded single-turn autonomous execution. Rollover cannot
+promise exactly-once external side effects: successor prompts say inspect completed
+actions and do not repeat them, but actions should still be idempotent.
+
+The UI retains all visible history; `Nano.Bots.history(session, offset: 0, limit: 20)`
+retrieves it in pages. `Nano.Bots.checkpoint(session, generation, offset: 0, limit: 6000)`
+retrieves runtime history in bounded text pages. Semantic summaries preserve decisions,
+preferences, commitments and open questions when a decision model is configured.
+Without it a bounded excerpt is explicit fallback; it may omit facts from working
+context, but neither display history nor proactive runtime checkpoints are erased.
+Bots are instructed to retrieve the archive rather than guessing forgotten details.
+Use per-bot memory for cross-session facts; this is not perfect automatic extraction
+or a claim of never forgetting a nuance.
 
 ## Cheap typed decision adapter
 
@@ -99,9 +117,11 @@ Probability/confidence must be numeric in 0..1. The service acts only above 0.6
 for each; invalid outputs never silently become decisions. Semantic compaction
 considers topic transitions, continuity, commitments, recent chat and actual
 budgets; deterministic hard context limits remain in code. Missing model/key uses transparent
-fallback. Decisions currently execute in the state-owner call and can delay other
-chat operations up to the request timeout; provider judgments/cost are not exercised
-in offline tests. Jev is not required or claimed integrated.
+fallback. Semantic decisions run outside the state owner in workers, with a per-session
+preparation queue to serialize incoming human dispatch. Offline tests inject callbacks.
+A real smoke (google/gemini-2.5-flash-lite, 256-token cap) returned
+`{:ok, %{value: true, probability: 0.9, confidence: 0.8}}` for a directed peer question.
+No keys or provider secret payloads were logged. Jev is not required or claimed integrated.
 
 ## Safety and current scope
 
@@ -128,3 +148,23 @@ test/nano_web/bots_live_test.exs` in this checkout; builds are checkout-local be
 the seed mix.exs explicitly clears MIX_BUILD_ROOT in test mode.
 
 Follow-up focused verification includes `test/nano/bots_audit_test.exs`; 12 focused tests pass.
+
+## Per-bot runtime options and instance decisions
+
+```elixir
+Nano.Bots.create_bot("Ada", agent_options: [model: "google/gemini-2.5-flash-lite",
+  reasoning: "off", max_context: 32_000, max_turns: 0, max_tokens: 0])
+Nano.Bots.configure(bot_id, agent_options: [model: "google/gemini-2.5-flash-lite"])
+# For isolated service deployments/tests, without changing global application env:
+Nano.Bots.start_link(name: :my_bots, path: "/tmp/my-bots/state.term",
+  decision_options: [model: "google/gemini-2.5-flash-lite"])
+```
+
+The To composer exposes an explicit model slug field. No costly model is chosen
+silently; its placeholder names a cheap example, not a hidden default. Only model,
+reasoning and budget options are persisted; API keys/system prompts are discarded.
+Node-wide bots_agent_options remains an optional deployment fallback.
+
+Runtime followup tests (`test/nano/bots_runtime_test.exs`) cover proactive no-human
+rollover, lossless checkpoint retrieval, durable options/secret stripping, and
+slow-decision UI responsiveness. 16 focused tests pass, including defer/resume while a tool is running.
