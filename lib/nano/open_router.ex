@@ -50,7 +50,32 @@ defmodule Nano.OpenRouter do
            Application.fetch_env!(:nano, :openrouter_base_url) <> "/chat/completions",
            opts
          ) do
-      {:ok, %{status: 200, body: %{"choices" => [choice | _]} = resp}} ->
+      {:ok, %{status: 200, body: resp}} when is_map(resp) ->
+        completion(resp)
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, %{status: status, body: bounded_error(body)}}
+
+      {:error, exception} ->
+        {:error, %{status: nil, body: Exception.message(exception)}}
+    end
+  end
+
+  # Some upstreams return HTTP 200 with an error choice, including a nil message and
+  # zero usage. It is a failed attempt, not a successful empty assistant response.
+  defp completion(%{"error" => error} = resp) when not is_nil(error),
+    do: {:error, %{status: 200, body: bounded_error(resp)}}
+
+  defp completion(%{"choices" => [choice | _]} = resp) when is_map(choice) do
+    cond do
+      choice["finish_reason"] == "error" or not is_nil(choice["error"]) ->
+        error = choice["error"] || %{"message" => "Provider reported finish_reason:error"}
+        {:error, %{status: 200, body: bounded_error(Map.put(resp, "error", error))}}
+
+      not valid_message?(choice["message"]) or not valid_usage?(resp["usage"] || %{}) ->
+        malformed_completion(resp)
+
+      true ->
         usage = resp["usage"] || %{}
 
         {:ok,
@@ -61,13 +86,65 @@ defmodule Nano.OpenRouter do
            provider: resp["provider"],
            cost: usage["cost"]
          }}
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, %{status: status, body: body}}
-
-      {:error, exception} ->
-        {:error, %{status: nil, body: Exception.message(exception)}}
     end
+  end
+
+  defp completion(resp), do: malformed_completion(resp)
+
+  defp valid_message?(%{} = message) do
+    (is_nil(message["content"]) or is_binary(message["content"])) and
+      (is_nil(message["tool_calls"]) or
+         (is_list(message["tool_calls"]) and
+            Enum.all?(message["tool_calls"], fn call ->
+              is_map(call) and is_binary(call["id"]) and is_map(call["function"]) and
+                is_binary(call["function"]["name"])
+            end)))
+  end
+
+  defp valid_message?(_), do: false
+
+  defp valid_usage?(usage) when is_map(usage) do
+    counts = ~w(prompt_tokens completion_tokens)
+    details = usage["prompt_tokens_details"]
+    cost = usage["cost"]
+
+    Enum.all?(counts, &(is_nil(usage[&1]) or (is_integer(usage[&1]) and usage[&1] >= 0))) and
+      (is_nil(details) or
+         (is_map(details) and
+            (is_nil(details["cached_tokens"]) or
+               (is_integer(details["cached_tokens"]) and details["cached_tokens"] >= 0)))) and
+      (is_nil(cost) or (is_number(cost) and cost >= 0))
+  end
+
+  defp valid_usage?(_), do: false
+
+  defp malformed_completion(resp) do
+    error = %{"code" => 502, "message" => "Malformed provider completion"}
+    {:error, %{status: 200, body: bounded_error(Map.put(resp, "error", error))}}
+  end
+
+  # Retain error codes for the existing transient classifier, while bounding error
+  # payloads before they enter every later agent turn. No provider key/request body.
+  defp bounded_error(body) do
+    json = Jason.encode!(body)
+
+    if byte_size(json) <= 16_384 do
+      body
+    else
+      error = if is_map(body), do: body["error"], else: nil
+      code = if is_map(error) and is_integer(error["code"]), do: error["code"], else: nil
+
+      %{
+        "error" => %{"code" => code, "message" => "Provider error payload truncated"},
+        "truncated" => true,
+        "preview" => utf8_prefix(json, 12_000)
+      }
+    end
+  end
+
+  defp utf8_prefix(text, bytes) do
+    prefix = binary_part(text, 0, min(bytes, byte_size(text)))
+    if String.valid?(prefix), do: prefix, else: utf8_prefix(prefix, byte_size(prefix) - 1)
   end
 
   @doc """
