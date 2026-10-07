@@ -16,7 +16,7 @@ defmodule Vega.Bots.Runtime do
         files: message["files"] || [],
         relevant_memories: memories,
         instructions:
-          "Reply visibly via Vega.Bots.post(#{inspect(session["id"])}, #{inspect(bot["id"])}, markdown). Do not repeat an already posted reply for this message_id. Final prose is only an operator log, not a chat reply."
+          "Reply visibly via Vega.Bots.post(#{inspect(session["id"])}, #{inspect(bot["id"])}, markdown, reply_to: #{inspect(message["id"])}). Do not repeat an already posted reply for this message_id. Final prose is only an operator log, not a chat reply."
       }
 
       notify(name, event)
@@ -81,6 +81,9 @@ defmodule Vega.Bots.Runtime do
       Act as yourself, do not impersonate another participant. Each bot has its own context.
       To speak to the person run eval:
       Vega.Bots.post(#{inspect(session["id"])}, #{inspect(bot["id"])}, "your Markdown message")
+      Include reply_to: message_id for each reply to acknowledge durable delivery.
+      For unsolicited updates post(..., proactive: true); input events may be repeated
+      after restart until a visible reply acknowledges them. Deduplicate message IDs.
       Prose responses and eval output only reach the operator log, NEVER the person.
       Use Vega.Bots.status(session_id, bot_id, "thinking", detail: "brief safe activity")
       for brief progress (no hidden reasoning, secrets, evals or tools in chat).

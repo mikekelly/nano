@@ -203,6 +203,30 @@ defmodule Vega.BotsTest do
     assert {:ok, %{"entries" => [_]}} = Jason.decode(bytes)
   end
 
+  test "accepted inputs persist until visible reply, with proactive posts not acknowledging", c do
+    b = bot("Muse", c.opts)
+    {:ok, s} = Bots.create_session([b["id"]], c.opts)
+    {:ok, input} = Bots.send_message(s["id"], "Please reply", c.opts)
+    assert_receive {:delivered, _, _, ^input}
+    {:ok, _} = Bots.post(s["id"], b["id"], "An unsolicited update", c.opts ++ [proactive: true])
+    {:ok, saved} = Vega.Bots.Persistence.load(c.root)
+    assert Enum.any?(saved["outbox"], &(&1["message_id"] == input["id"]))
+    stop_supervised(Vega.Bots.Server)
+
+    {:ok, pid} =
+      start_supervised(
+        {Vega.Bots.Server,
+         name: c.name, root: c.root, runtime: Vega.BotsTest.Runtime, tick_ms: 20}
+      )
+
+    opts = [server: pid]
+    {:ok, _} = Bots.retry(s["id"], opts)
+    assert_receive {:delivered, _, _, ^input}
+    {:ok, _} = Bots.post(s["id"], b["id"], "Here is the reply", opts ++ [reply_to: input["id"]])
+    {:ok, saved} = Vega.Bots.Persistence.load(c.root)
+    assert saved["outbox"] == []
+  end
+
   test "notification settings validate person controlled bounds and attachments fail closed", c do
     assert {:error, :invalid_settings} =
              Bots.update_settings(%{notification_interval_seconds: 0}, c.opts)

@@ -193,9 +193,11 @@ defmodule Vega.Bots.Server do
       next = append(d, session, message)
 
       next =
-        if author == "person",
-          do: queue(next, session, message),
-          else: put_status(next, sid, author, "idle", "")
+        if author == "person" do
+          queue(next, session, message)
+        else
+          next |> put_status(sid, author, "idle", "") |> acknowledge_input(sid, author, opts)
+        end
 
       {:ok, message, next,
        Map.merge(event("message", sid), %{"message_id" => message["id"], "author_id" => author})}
@@ -431,6 +433,28 @@ defmodule Vega.Bots.Server do
     Enum.reduce(session["bot_ids"], next, &put_status(&2, session["id"], &1, "thinking", ""))
   end
 
+  # A cast is not proof of receipt. Keep accepted inputs until the bot visibly posts.
+  # Explicit reply_to acknowledges preceding inputs for that pair; default is oldest.
+  defp acknowledge_input(d, sid, bid, opts) do
+    if opts[:proactive] do
+      d
+    else
+      pair = Enum.filter(d["outbox"], &(&1["session_id"] == sid and &1["bot_id"] == bid))
+
+      target =
+        opts[:reply_to] ||
+          case pair do
+            [first | _] -> first["message_id"]
+            _ -> nil
+          end
+
+      {done, rest} = Enum.split_while(pair, &(&1["message_id"] != target))
+      acknowledged = if target && rest != [], do: done ++ [hd(rest)], else: []
+      ids = MapSet.new(Enum.map(acknowledged, & &1["id"]))
+      Map.update!(d, "outbox", &Enum.reject(&1, fn x -> MapSet.member?(ids, x["id"]) end))
+    end
+  end
+
   defp persist(s, data), do: Vega.Bots.Persistence.save(s.root, data)
 
   @impl true
@@ -452,7 +476,15 @@ defmodule Vega.Bots.Server do
         next =
           case result do
             :ok ->
-              Map.update!(s.data, "outbox", &Enum.reject(&1, fn x -> x["id"] == item["id"] end))
+              Map.update!(
+                s.data,
+                "outbox",
+                &Enum.map(&1, fn x ->
+                  if x["id"] == item["id"],
+                    do: Map.put(x, "retry_at", System.system_time(:millisecond) + 60_000),
+                    else: x
+                end)
+              )
 
             {:error, _} ->
               failed(s.data, item)
@@ -565,6 +597,30 @@ defmodule Vega.Bots.Server do
 
             %{status: status} when status in [:thinking, :running_tool, :compacting] ->
               put_status(d, session["id"], bid, "thinking", "")
+
+            %{status: :idle} ->
+              {:ok, current} = find(d, "sessions", session["id"])
+
+              awaiting =
+                Enum.any?(
+                  d["outbox"],
+                  &(&1["session_id"] == session["id"] and &1["bot_id"] == bid and
+                      &1["retry_at"] > 0)
+                )
+
+              if awaiting do
+                put_status(
+                  d,
+                  session["id"],
+                  bid,
+                  "error",
+                  "The bot finished without a visible reply. Retry to ask it again."
+                )
+              else
+                if get_in(current, ["statuses", bid, "state"]) == "thinking",
+                  do: put_status(d, session["id"], bid, "idle", ""),
+                  else: d
+              end
 
             _ ->
               d
