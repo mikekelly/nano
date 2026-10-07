@@ -15,7 +15,8 @@ defmodule NanoWeb.BotsLive do
        query: "",
        model: Application.get_env(:nano, :bots_agent_options, [])[:model] || "",
        notice: nil
-     )}
+     )
+     |> allow_upload(:files, accept: :any, max_entries: 1, max_file_size: 5_000_000)}
   end
 
   def handle_info({:bots_changed, event}, socket) do
@@ -76,8 +77,34 @@ defmodule NanoWeb.BotsLive do
 
   def handle_event("open", %{"id" => id}, socket), do: {:noreply, assign(socket, selected: id)}
 
+  def handle_event("upload_validate", _, socket), do: {:noreply, socket}
+
   def handle_event("send", %{"text" => text}, socket) do
-    result = Nano.Bots.say(socket.assigns.selected, text)
+    attachments =
+      consume_uploaded_entries(socket, :files, fn %{path: path}, entry ->
+        {:ok,
+         Nano.Bots.attach(socket.assigns.selected, :human, path, filename: entry.client_name)}
+      end)
+
+    error = Enum.find(attachments, &match?({:error, _}, &1))
+
+    result =
+      cond do
+        error ->
+          error
+
+        String.trim(text) != "" ->
+          Nano.Bots.say(socket.assigns.selected, text)
+
+        attachments != [] ->
+          Nano.Bots.say(
+            socket.assigns.selected,
+            "Please review the attached file."
+          )
+
+        true ->
+          {:error, :empty_message}
+      end
 
     {:noreply,
      assign(socket,
@@ -153,7 +180,14 @@ defmodule NanoWeb.BotsLive do
           <header class="participants">{chat.title}</header>
           <section class="messages" aria-live="polite">
             <article :for={m <- chat.messages} class={if m.who == :human, do: "human", else: "bot"}>
-              <strong>{label(m.who, @data)}</strong><.message text={m.text} />
+              <strong>{label(m.who, @data)}</strong> <.message text={m.text} />
+              <a
+                :for={file <- Map.get(m, :files, [])}
+                href={"/bots/files/#{file.service}/#{file.id}"}
+                download={file.filename}
+                class="file"
+              >📎 {file.filename} ({file.size} bytes)</a>
+
               <form
                 :if={m.request && @data.requests[m.request].status == :pending}
                 id={"answer-#{m.id}"}
@@ -173,10 +207,15 @@ defmodule NanoWeb.BotsLive do
                 else: "is unavailable — ask the operator to configure the bot model."}
             </p>
           </section>
-          <form phx-submit="send" class="composer" id={"composer-#{chat.id}"}>
+          <form
+            phx-submit="send"
+            phx-change="upload_validate"
+            class="composer"
+            id={"composer-#{chat.id}"}
+          >
+            <label aria-label="Attach file">＋<.live_file_input upload={@uploads.files} /></label>
             <input
               name="text"
-              required
               placeholder={"Message #{chat.title}"}
               aria-label="Message"
               autocomplete="off"

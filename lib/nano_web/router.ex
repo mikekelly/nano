@@ -29,6 +29,7 @@ defmodule NanoWeb.Router do
   scope "/", NanoWeb do
     pipe_through [:browser, :bots]
     live "/bots", BotsLive
+    get "/bots/files/:service/:id", BotsFileController, :show
   end
 
   # No pipeline: the API always answers JSON (or an event stream), whatever the Accept header.
