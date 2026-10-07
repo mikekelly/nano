@@ -35,6 +35,14 @@ defmodule Nano.Delegation do
       }
 
       prompt = compose(name, handle, opts, pre)
+      # Tool schemas belong in the child context, not in the parent's eval result.
+      handle =
+        Map.update!(handle, :mcp, fn entries ->
+          Enum.map(entries, fn
+            entry when is_map(entry) -> Map.drop(entry, [:tools, :use])
+            entry -> entry
+          end)
+        end)
 
       start_opts =
         Keyword.take(opts, [:model, :reasoning, :max_turns, :max_tokens, :max_context]) ++
@@ -65,14 +73,18 @@ defmodule Nano.Delegation do
           end
 
         error ->
-          adapter.notify(parent, %{
-            delegation: :failure,
-            id: id,
-            from: name,
-            reply_to: parent,
-            kind: :start,
-            reason: inspect(error)
-          })
+          finish(
+            handle,
+            %{
+              delegation: :failure,
+              id: id,
+              from: name,
+              reply_to: parent,
+              kind: :start,
+              reason: inspect(error)
+            },
+            Keyword.put(opts, :adapter, adapter)
+          )
 
           # Preserve failed worktrees for inspection; never delete someone else's work.
           {:error, %{stage: :start, reason: error, workspace: workspace}}
@@ -163,7 +175,7 @@ defmodule Nano.Delegation do
         @shared,
         "Role/level: #{opts[:role] || "implementation"}",
         "Reply with Nano.Delegation.reply(#{inspect(Map.take(handle, [:id, :name, :parent, :storage_dir]))}, summary).",
-        "Workspace: #{inspect(handle.workspace)}. MCP: #{inspect(handle.mcp)}.",
+        "Workspace: #{inspect(handle.workspace)}. MCP: #{inspect(handle.mcp, limit: :infinity, printable_limit: :infinity)}.",
         opts[:prompt] || "",
         readings
       ],
@@ -228,36 +240,50 @@ defmodule Nano.Delegation do
 
   @doc "Compact terminal result. Required handle keys: id, name, parent."
   def reply(handle, summary) do
-    term = %{
+    finish(handle, %{
       delegation: :result,
       id: handle.id,
       from: handle.name,
       reply_to: handle.parent,
       result: summary
-    }
+    })
+  end
 
-    NanoAgent.notify(handle.parent, term)
-    File.rm(manifest_path(handle.id, handle[:storage_dir]))
-
-    case Registry.lookup(Nano.Registry, {:delegation, handle.id}) do
-      [{pid, _}] -> send(pid, :complete)
-      [] -> :ok
+  @doc "Acknowledge a result/failure after saving/processing it. Retries carry the same receipt."
+  def ack(%{receipt: receipt}) do
+    if File.exists?(manifest_path(receipt.id, receipt[:storage_dir])) do
+      with {:ok, watcher} <- watch(receipt) do
+        GenServer.call(watcher, {:ack, receipt.delivery_id})
+      end
+    else
+      :ok
     end
+  end
 
-    :ok
+  defp finish(handle, term, opts \\ []) do
+    with {:ok, watcher} <- watch(handle, opts) do
+      GenServer.call(watcher, {:complete, term})
+    end
   end
 
   @doc "Persist and watch a handle; restart watchers after node restart with restore/1."
   def watch(handle, opts \\ []) do
+    handle = Map.put_new(handle, :storage_dir, opts[:storage_dir] || default_storage())
     adapter = opts[:adapter] || NanoAgent
     path = manifest_path(handle.id, handle[:storage_dir])
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.write(path, :erlang.term_to_binary(Map.drop(handle, [:pid, :watcher]))) do
-      case Nano.Delegation.Watcher.start(handle, adapter, opts) do
-        {:error, {:already_started, pid}} -> {:ok, pid}
-        result -> result
-      end
+    case Registry.lookup(Nano.Registry, {:delegation, handle.id}) do
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        with :ok <- File.mkdir_p(Path.dirname(path)),
+             :ok <- initialize_manifest(path, handle) do
+          case Nano.Delegation.Watcher.start(handle, adapter, opts) do
+            {:error, {:already_started, pid}} -> {:ok, pid}
+            result -> result
+          end
+        end
     end
   end
 
@@ -266,11 +292,27 @@ defmodule Nano.Delegation do
     dir = opts[:storage_dir] || default_storage()
 
     for path <- Path.wildcard(Path.join(dir, "*.term")) do
-      with {:ok, binary} <- File.read(path),
-           %{} = handle <- :erlang.binary_to_term(binary, [:safe]) do
-        {handle.name, watch(handle, opts)}
-      end
+      restore_manifest(path, opts)
     end
+  end
+
+  defp initialize_manifest(path, handle) do
+    case File.write(path, :erlang.term_to_binary(Map.drop(handle, [:pid, :watcher])), [:exclusive]) do
+      {:error, :eexist} -> :ok
+      result -> result
+    end
+  end
+
+  defp restore_manifest(path, opts) do
+    with {:ok, binary} <- File.read(path),
+         %{id: id, name: name, parent: parent} = handle <- :erlang.binary_to_term(binary, [:safe]),
+         true <- is_binary(id) and is_binary(name) and is_binary(parent) do
+      {name, watch(Map.put(handle, :storage_dir, Path.dirname(path)), opts)}
+    else
+      _ -> {path, {:error, :invalid_manifest}}
+    end
+  rescue
+    _ -> {path, {:error, :invalid_manifest}}
   end
 
   defp default_storage,
@@ -286,9 +328,103 @@ defmodule Nano.Delegation do
         fun.(name, servers)
 
       _ ->
-        {:error,
-         "MCP requested: supply mcp_setup: fn agent_name, servers -> {:ok, public_handles} end; see docs"}
+        connect_mcp(name, servers, opts)
     end
+  end
+
+  defp connect_mcp(name, servers, opts) do
+    adapter = opts[:mcp_adapter] || Nano.MCP
+    cap = opts[:mcp_max_bytes] || 32_768
+
+    if Code.ensure_loaded?(adapter) do
+      Enum.reduce_while(servers, {:ok, []}, fn descriptor, {:ok, handles} ->
+        case connect_mcp_server(adapter, name, descriptor, cap) do
+          {:ok, handle} ->
+            handles = handles ++ [handle]
+
+            if byte_size(:erlang.term_to_binary(handles)) <= cap,
+              do: {:cont, {:ok, handles}},
+              else:
+                {:halt, {:error, "MCP metadata exceeds #{cap} bytes; select fewer tools/servers"}}
+
+          error ->
+            {:halt, error}
+        end
+      end)
+    else
+      {:error, "Nano.MCP is not loaded; omit mcp or provide mcp_setup callback"}
+    end
+  end
+
+  defp connect_mcp_server(adapter, child, descriptor, cap) do
+    {server, config} =
+      case descriptor do
+        name when is_binary(name) -> {name, []}
+        {name, config} when is_binary(name) and is_list(config) -> {name, config}
+        _ -> {nil, []}
+      end
+
+    if server do
+      subscriptions = Keyword.get(config, :subscribe, [])
+      connect_opts = config |> Keyword.delete(:subscribe) |> Keyword.put(:recipient, child)
+
+      with {:ok, _pid} <- apply(adapter, :connect, [server, connect_opts]),
+           :ok <- apply(adapter, :watch, [server, child]),
+           {:ok, status} <- apply(adapter, :status, [server]),
+           {:ok, tools} <- mcp_tools(adapter, server, status, cap),
+           :ok <- mcp_subscriptions(adapter, server, subscriptions, child) do
+        {:ok,
+         %{
+           name: server,
+           capabilities: status[:capabilities] || %{},
+           tools: tools,
+           use:
+             "Nano.MCP.call_tool(#{inspect(server)}, tool_name, arguments); see Nano.MCP module docs"
+         }}
+      else
+        _ ->
+          {:error,
+           "MCP setup failed for #{server}; inspect Nano.MCP.status/1 (credentials are not included in delegation errors)"}
+      end
+    else
+      {:error, "mcp entries must be configured server names or {name, keyword_options}"}
+    end
+  end
+
+  defp mcp_tools(adapter, server, status, cap) do
+    if Map.has_key?(status[:capabilities] || %{}, "tools"),
+      do: mcp_tool_pages(adapter, server, cap, [], nil, MapSet.new()),
+      else: {:ok, []}
+  end
+
+  defp mcp_tool_pages(adapter, server, cap, acc, cursor, seen) do
+    opts = [max_bytes: cap] ++ if(cursor, do: [cursor: cursor], else: [])
+
+    case apply(adapter, :tools, [server, opts]) do
+      {:ok, %{"tools" => tools} = result} when is_list(tools) ->
+        all = acc ++ tools
+        next = result["nextCursor"]
+
+        cond do
+          byte_size(:erlang.term_to_binary(all)) > cap -> {:error, :too_large}
+          is_nil(next) -> {:ok, all}
+          MapSet.member?(seen, next) or MapSet.size(seen) >= 20 -> {:error, :pagination_loop}
+          true -> mcp_tool_pages(adapter, server, cap, all, next, MapSet.put(seen, next))
+        end
+
+      _ ->
+        {:error, :tool_listing_failed}
+    end
+  end
+
+  defp mcp_subscriptions(adapter, server, uris, child) do
+    Enum.reduce_while(uris, :ok, fn uri, :ok ->
+      case apply(adapter, :subscribe, [server, uri, child]) do
+        :ok -> {:cont, :ok}
+        {:ok, _} -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
   end
 end
 
@@ -303,43 +439,101 @@ defmodule Nano.Delegation.Watcher do
       )
 
   def init({handle, adapter, opts}) do
-    pid = adapter.whereis(handle.name)
+    path = Path.join(handle.storage_dir, handle.id <> ".term")
+    {:ok, binary} = File.read(path)
+    saved = :erlang.binary_to_term(binary, [:safe]) |> Map.put(:storage_dir, handle.storage_dir)
+    terminal = saved[:terminal] || false
+    pid = if not terminal, do: adapter.whereis(handle.name)
     ref = if pid, do: Process.monitor(pid)
     interval = opts[:poll_ms] || 250
     Process.send_after(self(), :poll, interval)
-    {:ok, %{handle: handle, adapter: adapter, ref: ref, interval: interval, last: nil}}
+
+    {:ok,
+     %{
+       handle: Map.drop(saved, [:pending, :terminal, :last]),
+       adapter: adapter,
+       ref: ref,
+       interval: interval,
+       last: saved[:last],
+       pending: saved[:pending] || [],
+       terminal: terminal,
+       path: path,
+       retry_ms: opts[:retry_ms] || 5000,
+       next_delivery: 0,
+       dirty: false
+     }}
   end
 
-  def handle_info(:complete, s), do: {:stop, :normal, s}
+  def handle_call({:complete, term}, _from, s) do
+    if s.ref, do: Process.demonitor(s.ref, [:flush])
+    # Persist before replying to the child's eval. Its subsequent exit cannot race this.
+    s = %{s | terminal: true, ref: nil, dirty: true} |> enqueue(term)
 
-  def handle_info({:DOWN, ref, :process, _, reason}, %{ref: ref} = s) do
-    report(s, :exit, inspect(reason))
-    {:noreply, %{s | ref: nil}}
+    case persist(s) do
+      :ok -> {:reply, :ok, deliver(%{s | dirty: false})}
+      error -> {:reply, error, s}
+    end
   end
+
+  def handle_call({:ack, id}, _from, s) do
+    original = s
+    s = %{s | pending: Enum.reject(s.pending, &(&1.receipt.delivery_id == id))}
+
+    case persist(s) do
+      :ok ->
+        if s.terminal and s.pending == [] do
+          File.rm(s.path)
+          {:stop, :normal, :ok, s}
+        else
+          {:reply, :ok, %{s | dirty: false}}
+        end
+
+      error ->
+        {:reply, error, original}
+    end
+  end
+
+  # Administrative cancellation, not used by reply (tests and explicit cleanup only).
+  def handle_info(:complete, s) do
+    File.rm(s.path)
+    {:stop, :normal, s}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, reason}, %{ref: ref, terminal: false} = s) do
+    s = %{s | ref: nil} |> failure(:exit, inspect(reason))
+    {:noreply, durable_deliver(s)}
+  end
+
+  def handle_info({:DOWN, _, :process, _, _}, s), do: {:noreply, s}
 
   def handle_info(:poll, s) do
-    info = s.adapter.info(s.handle.name)
-    halted = if info, do: info[:halted], else: :missing
-    if halted && halted != s.last, do: report(s, :halted, halted)
-
     s =
-      if s.ref == nil do
-        case s.adapter.whereis(s.handle.name) do
-          nil -> s
-          pid -> %{s | ref: Process.monitor(pid)}
-        end
-      else
+      if s.terminal do
         s
+      else
+        info = s.adapter.info(s.handle.name)
+        halted = if info, do: info[:halted], else: :missing
+        s = if halted && halted != s.last, do: failure(s, :halted, halted), else: s
+        s = %{s | last: halted, dirty: s.dirty or halted != s.last}
+
+        if s.ref == nil do
+          case s.adapter.whereis(s.handle.name) do
+            nil -> s
+            pid -> %{s | ref: Process.monitor(pid)}
+          end
+        else
+          s
+        end
       end
 
     Process.send_after(self(), :poll, s.interval)
-    {:noreply, %{s | last: halted}}
+    {:noreply, durable_deliver(s)}
   end
 
-  defp report(s, kind, reason),
+  defp failure(s, kind, reason),
     do:
-      s.adapter.notify(
-        s.handle.parent,
+      enqueue(
+        s,
         %{
           delegation: :failure,
           id: s.handle.id,
@@ -349,4 +543,57 @@ defmodule Nano.Delegation.Watcher do
           reason: reason
         }
       )
+
+  defp enqueue(s, term) do
+    # Retrying a terminal reply must not create duplicate terminal entries.
+    if Enum.any?(s.pending, &(Map.drop(&1, [:receipt]) == term)) do
+      s
+    else
+      receipt =
+        Map.take(s.handle, [:id, :name, :parent, :storage_dir])
+        |> Map.put(:delivery_id, Base.encode16(:crypto.strong_rand_bytes(8), case: :lower))
+
+      %{
+        s
+        | pending: s.pending ++ [Map.put(term, :receipt, receipt)],
+          next_delivery: 0,
+          dirty: true
+      }
+    end
+  end
+
+  defp durable_deliver(%{dirty: true} = s) do
+    case persist(s) do
+      :ok -> deliver(%{s | dirty: false})
+      _ -> s
+    end
+  end
+
+  defp durable_deliver(s), do: deliver(s)
+
+  defp deliver(s) do
+    now = System.monotonic_time(:millisecond)
+
+    if s.pending != [] and (s.next_delivery == 0 or now >= s.next_delivery) and
+         s.adapter.whereis(s.handle.parent) != nil do
+      Enum.each(s.pending, &s.adapter.notify(s.handle.parent, &1))
+      %{s | next_delivery: now + s.retry_ms}
+    else
+      s
+    end
+  end
+
+  defp persist(s) do
+    saved = Map.merge(s.handle, %{pending: s.pending, terminal: s.terminal, last: s.last})
+    tmp = s.path <> ".#{System.unique_integer([:positive])}.tmp"
+
+    with :ok <- File.write(tmp, :erlang.term_to_binary(saved)),
+         :ok <- File.rename(tmp, s.path) do
+      :ok
+    else
+      error ->
+        File.rm(tmp)
+        error
+    end
+  end
 end
