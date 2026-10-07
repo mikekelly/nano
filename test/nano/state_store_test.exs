@@ -1,5 +1,7 @@
 defmodule Nano.StateStoreTest do
-  use ExUnit.Case, async: true
+  # Not async: its entries are partial, and the dashboard and API, rendered by async tests,
+  # read every entry in the node-wide store as an agent's.
+  use ExUnit.Case, async: false
 
   alias Nano.StateStore
 

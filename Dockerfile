@@ -35,6 +35,10 @@ RUN case "$TARGETARCH" in amd64) a=x86_64 ;; arm64) a=aarch64 ;; *) echo "no lig
 
 COPY mix.exs mix.lock ./
 RUN mix deps.get && mix deps.compile
+# Each checkout builds its test deps itself, and lazy_html's build downloads its precompiled
+# NIF into elixir_make's cache: one throwaway test build fills the cache now, so first test
+# runs in several checkouts at once only read it, and need no network for it.
+RUN MIX_ENV=test MIX_BUILD_PATH=/tmp/warm mix deps.compile && rm -rf /tmp/warm
 
 # The image's own copy of the source, committed so `git diff` shows what agents change.
 COPY . .
