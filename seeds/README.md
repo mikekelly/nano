@@ -18,4 +18,5 @@ Record which was used. Keep seeds true of the running system: the harness's valu
 on the agent being told the truth.
 
 Keep every seed that has been run, with the run it produced noted in CHALLENGES.md, even
-when it did not work.
+when it did not work. What the run grew stays on a `seedling/<agent>-<what>` branch, never
+in `main` (see AGENTS.md).

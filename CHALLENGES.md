@@ -21,6 +21,10 @@ mid-run.
 - **Record.** The agent's JSONL under `data/logs`, `git -C ../nano-checkout diff` and
   `git status` there for what it built, and the reading view for the story. Copy the log
   out afterwards: a stopped agent's log stays on disk but is no longer served by the API.
+- **Keep the seedling, never merge it.** `main` is the minimal seed. When a run ends,
+  commit whatever the agents left in the checkout onto a branch named
+  `seedling/<agent>-<what>`, push it, and note it below; then reset the checkout to `main`
+  for the next run. Nothing from a seedling goes into `main`.
 - **Ask for a report.** End the task message with: "When done, or if you conclude it can't
   be done, send a message to the sender_pid of this message saying what you did." Replies
   then land in the sender's inbox.
@@ -232,3 +236,13 @@ model is; whether the result is code or prose; whether its later turns look diff
 from an agent without it; what it says the model is for.
 
 **Not yet run.**
+
+## Seedlings
+
+Branches grown from the seed by agents, kept for reading and never merged into `main`.
+
+| Branch | Grown by | Challenge | What is on it |
+| --- | --- | --- | --- |
+| `seedling/builder-shell-tool` | `builder`, 2026-10-06 | 5 | `Nano.Shell` and a third `shell` tool wired into `NanoAgent` |
+| `seedling/porter-pi-tools` | `porter`, 2026-10-06 | 4 | `PiTools`, an Elixir port of pi's seven tools, with pi's own tests ported (90 passing) and the `fd`/`rg` binaries |
+| `seedling/reviewer-harness-review` | `reviewer` and `fix-low`/`fix-m2`/`fix-m3`, 2026-10-07 | 8, 10, 11 | `REVIEW.md` (four real bugs, with evidence), fixes with tests, `Nano.Tools`, `Nano.Compact`, the sub-agents' briefs and the delegation record |

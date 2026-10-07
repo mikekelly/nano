@@ -116,6 +116,13 @@ have to rebuild it with `:erlang.list_to_pid/1`, since `#PID<0.1.0>` is not vali
 
 ## Working on the code
 
+- **`main` is the seed, and stays minimal.** Everything an agent grows from it — libraries,
+  fixes, modules, notes, no matter how good — lives on a *seedling* branch and is never
+  merged into `main`. When a run ends, commit the agents' checkout onto a branch named
+  `seedling/<agent>-<what>`, push it, and record it in CHALLENGES.md. Harness changes made
+  by the people running the project go through the usual review; changes made by agents
+  do not come back, even as "just the fixes". If an agent finds a real bug, re-implement
+  the fix from the finding, not from its code, and credit the finding.
 - `mix test`, `mix format --check-formatted`, `mix compile --warnings-as-errors` must all
   pass; tests run against a scripted fake OpenRouter in `test/support` and never spend.
 - SPEC.md is the source of truth. If code and spec disagree, fix one and say which.
