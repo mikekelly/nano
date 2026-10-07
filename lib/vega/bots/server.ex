@@ -128,6 +128,8 @@ defmodule Vega.Bots.Server do
   def handle_call(_, _, %{load_error: error} = s) when not is_nil(error),
     do: {:reply, {:error, error}, s}
 
+  def handle_call({:get_request, id}, _, s), do: {:reply, find(s.data, "requests", id), s}
+
   def handle_call({:get_message, sid, mid}, _, s) do
     result =
       with {:ok, session} <- find(s.data, "sessions", sid) do
@@ -379,6 +381,7 @@ defmodule Vega.Bots.Server do
     with {:ok, _} <- find(d, "bots", bid),
          true <- text?(question, 8000),
          true <- is_binary(opts[:requester]) and Regex.match?(~r/^[\w.-]+$/, opts[:requester]),
+         {:ok, kind, setting_key} <- request_kind(opts),
          {:ok, session, d} <- request_session(d, bid, opts[:session_id]) do
       rid = opts[:request_id] || id()
 
@@ -393,6 +396,8 @@ defmodule Vega.Bots.Server do
               "session_id" => session["id"],
               "question" => question,
               "requester" => opts[:requester],
+              "kind" => kind,
+              "setting_key" => setting_key,
               "status" => "pending",
               "created_at" => Store.now(),
               "answer" => nil,
@@ -412,9 +417,10 @@ defmodule Vega.Bots.Server do
             {:ok, r, next, Map.put(event("request", session["id"]), "request_id", rid)}
 
           existing ->
-            if existing["requester"] == opts[:requester] and existing["question"] == question,
-              do: {:ok, existing, d, event("request_existing", session["id"])},
-              else: {:error, :request_id_conflict}
+            if existing["requester"] == opts[:requester] and existing["question"] == question and
+                 (existing["kind"] || "choice") == kind and existing["setting_key"] == setting_key,
+               do: {:ok, existing, d, event("request_existing", session["id"])},
+               else: {:error, :request_id_conflict}
         end
       end
     else
@@ -425,20 +431,60 @@ defmodule Vega.Bots.Server do
 
   defp mutate({:answer, rid, text}, d) do
     with {:ok, r} <- find(d, "requests", rid), true <- text?(text, 8000) do
+      if r["kind"] == "setting" do
+        {:error, :use_setting_form}
+      else
+        if r["status"] == "answered" do
+          if r["answer"] == text,
+            do: {:ok, r, d, event("answer_existing", r["session_id"])},
+            else: {:error, :already_answered}
+        else
+          {:ok, session} = find(d, "sessions", r["session_id"])
+
+          answer =
+            Map.merge(r, %{"status" => "answered", "answer" => text, "answered_at" => Store.now()})
+
+          m = %{
+            "id" => id(),
+            "author_id" => "person",
+            "text" => text,
+            "at" => Store.now(),
+            "images" => [],
+            "request_id" => rid
+          }
+
+          next = append(d, session, m) |> replace("requests", answer)
+          {:ok, answer, next, Map.put(event("answer", session["id"]), "request_id", rid)}
+        end
+      end
+    else
+      false -> {:error, :invalid_answer}
+      error -> error
+    end
+  end
+
+  defp mutate({:setting_answer, rid, key}, d) do
+    with {:ok, r} <- find(d, "requests", rid),
+         true <- r["kind"] == "setting" and r["setting_key"] == key,
+         {:ok, ^key} <- Vega.Bots.Credentials.key(key),
+         true <- is_binary(Nano.Settings.get(key)) and Nano.Settings.get(key) != "" do
       if r["status"] == "answered" do
-        if r["answer"] == text,
-          do: {:ok, r, d, event("answer_existing", r["session_id"])},
-          else: {:error, :already_answered}
+        {:ok, r, d, event("answer_existing", r["session_id"])}
       else
         {:ok, session} = find(d, "sessions", r["session_id"])
+        metadata = %{"setting_key" => key, "set" => true}
 
         answer =
-          Map.merge(r, %{"status" => "answered", "answer" => text, "answered_at" => Store.now()})
+          Map.merge(r, %{
+            "status" => "answered",
+            "answer" => metadata,
+            "answered_at" => Store.now()
+          })
 
         m = %{
           "id" => id(),
           "author_id" => "person",
-          "text" => text,
+          "text" => "Credential #{key} saved.",
           "at" => Store.now(),
           "images" => [],
           "request_id" => rid
@@ -448,8 +494,7 @@ defmodule Vega.Bots.Server do
         {:ok, answer, next, Map.put(event("answer", session["id"]), "request_id", rid)}
       end
     else
-      false -> {:error, :invalid_answer}
-      error -> error
+      _ -> {:error, :invalid_setting_confirmation}
     end
   end
 
@@ -496,6 +541,20 @@ defmodule Vega.Bots.Server do
   end
 
   defp mutate(_, _), do: {:error, :invalid_command}
+
+  defp request_kind(opts) do
+    case opts[:kind] do
+      kind when kind in [nil, "choice"] ->
+        {:ok, "choice", nil}
+
+      "setting" ->
+        with {:ok, key} <- Vega.Bots.Credentials.key(opts[:setting_key]),
+             do: {:ok, "setting", key}
+
+      _ ->
+        {:error, :invalid_request_kind}
+    end
+  end
 
   defp request_session(d, bid, nil) do
     case Enum.find(d["sessions"], &(bid in &1["bot_ids"])) do
