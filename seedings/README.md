@@ -1,6 +1,6 @@
 # Seedings
 
-The vocabulary: `main` is the *seed*, the minimal harness; a *seeding* is a design spec we
+The thesis and the spec's own experiments are in SPEC.md; the vocabulary: `main` is the *seed*, the minimal harness; a *seeding* is a design spec we
 plant in an agent, asking it to grow a capability the seed deliberately lacks; a *seedling*
 is the branch that grows (`seedling/<agent>-<what>`, never merged into `main`).
 
@@ -22,7 +22,7 @@ works, or if you conclude it can't be done, send a message to the sender_pid of 
 message saying what you built and how to use it.
 ```
 
-Record the run in CHALLENGES.md (which seeding, which model, what grew, cost), push the
+Record the run in `RUNS.md` (which seeding, which model, what grew, cost), push the
 seedling branch, and reset the checkout to `main` for the next run.
 
 ## Seedings
@@ -38,8 +38,8 @@ seedling branch, and reset the checkout to `main` for the next run.
 | `goals.md` | Set, keep and review goals across turns, restarts and agents |
 | `background-tasks.md` | Run shell commands in the background and be told when they finish |
 
-Older, pre-spec seedings and tasks are kept under `tasks/` and as
-`utilities-and-delegation.md` for the record of the runs they produced.
+Older, advice-style seedings and tasks are kept under `tasks/` and as
+`utilities-and-delegation.md` because `RUNS.md` refers to them.
 
 Some seedings need something only the operators can supply, and say so at the top: an API
 key in `.env` (`EXA_API_KEY`), or a service started next to the node (Langfuse). Keep every

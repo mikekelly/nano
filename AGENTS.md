@@ -24,8 +24,7 @@ truthfully.
 | --- | --- |
 | [SPEC.md](SPEC.md) | The design. Source of truth; nearly every sentence is a requirement. Includes the system prompt and the first experiments. |
 | [README.md](README.md) | Running it: quick start, shell and HTTP usage, reverting agent edits, limits, gotchas. |
-| [CHALLENGES.md](CHALLENGES.md) | Experiments to run, with what happened when we ran them. |
-| `seedings/` | Advice planted in an agent before a task, and the tasks, kept for the record. |
+| [seedings/](seedings/README.md) | Design specs for capabilities to grow from the seed, and the record of every run (`seedings/RUNS.md`). |
 | [PLAN.md](PLAN.md) | How it was delivered: decisions taken where the spec was silent, module contracts. |
 | `priv/system_prompt.txt` | The prompt template, read from disk at every agent start. |
 | `lib/nano_agent.ex` | The harness. The agent's own module; agents can read and change it. |
@@ -120,7 +119,7 @@ have to rebuild it with `:erlang.list_to_pid/1`, since `#PID<0.1.0>` is not vali
 - **`main` is the seed, and stays minimal.** Everything an agent grows from it — libraries,
   fixes, modules, notes, no matter how good — lives on a *seedling* branch and is never
   merged into `main`. When a run ends, commit the agents' checkout onto a branch named
-  `seedling/<agent>-<what>`, push it, and record it in CHALLENGES.md. Harness changes made
+  `seedling/<agent>-<what>`, push it, and record it in `seedings/RUNS.md`. Harness changes made
   by the people running the project go through the usual review; changes made by agents
   do not come back, even as "just the fixes". If an agent finds a real bug, re-implement
   the fix from the finding, not from its code, and credit the finding.
