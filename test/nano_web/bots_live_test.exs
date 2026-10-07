@@ -297,4 +297,68 @@ defmodule NanoWeb.BotsLiveTest do
     assert has_element?(view, "#messages", "Detached new item")
     refute has_element?(view, "#messages .bubble p", ~r/^Detached item 6$/)
   end
+
+  test "chat changes cancel raw uploads but keep imported refs in their original draft", ctx do
+    {:ok, bot} = Vega.Bots.create_bot("Muse", ctx.opts)
+    {:ok, a} = Vega.Bots.create_session([bot["id"]], ctx.opts ++ [title: "A"])
+    {:ok, b} = Vega.Bots.create_session([bot["id"]], ctx.opts ++ [title: "B"])
+    {:ok, view, _} = open(ctx.conn)
+
+    switch = fn id ->
+      view |> element("button[phx-click='open-session'][phx-value-id='#{id}']") |> render_click()
+    end
+
+    switch.(a["id"])
+
+    png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWQAAAABJRU5ErkJggg=="
+      )
+
+    upload =
+      file_input(view, "#composer", :images, [
+        %{name: "private-a.png", content: png, type: "image/png"}
+      ])
+
+    render_upload(upload, "private-a.png")
+    switch.(b["id"])
+    assert render(view) =~ "Unsent image uploads were removed"
+    refute render(view) =~ "private-a.png"
+    view |> form("#composer", %{text: "Only B"}) |> render_submit()
+    {:ok, b_chat} = Vega.Bots.get_session(b["id"], ctx.opts)
+    assert List.last(b_chat["messages"])["images"] == []
+    switch.(a["id"])
+
+    upload =
+      file_input(view, "#composer", :images, [
+        %{name: "retry-a.png", content: png, type: "image/png"}
+      ])
+
+    render_upload(upload, "retry-a.png")
+    view |> form("#composer", %{text: String.duplicate("x", 32_001)}) |> render_submit()
+    assert render(view) =~ "Image ready to resend"
+    switch.(b["id"])
+    refute render(view) =~ "Image ready to resend"
+    view |> form("#composer", %{text: "Still only B"}) |> render_submit()
+    {:ok, b_chat} = Vega.Bots.get_session(b["id"], ctx.opts)
+    assert List.last(b_chat["messages"])["images"] == []
+    switch.(a["id"])
+    assert render(view) =~ "Image ready to resend"
+    view |> form("#composer", %{text: "A with its own image"}) |> render_submit()
+    {:ok, a_chat} = Vega.Bots.get_session(a["id"], ctx.opts)
+    assert length(List.last(a_chat["messages"])["images"]) == 1
+  end
+
+  test "consumer faces and composer controls use font-independent graphics", ctx do
+    {:ok, bot} = Vega.Bots.create_bot("Muse", ctx.opts)
+    {:ok, _} = Vega.Bots.create_session([bot["id"]], ctx.opts)
+    {:ok, view, _} = open(ctx.conn)
+    view |> element("button[phx-click='open-session']") |> render_click()
+    assert has_element?(view, "button[aria-label='New chat'] svg[aria-hidden='true']")
+    assert has_element?(view, ".attach-button svg")
+    assert has_element?(view, "button[aria-label='Voice input coming later'] svg")
+    refute render(view) =~ "⌣"
+    refute render(view) =~ "🎙"
+    refute render(view) =~ "＋"
+  end
 end
