@@ -32,7 +32,8 @@ defmodule Seedling.BotsCompactorTest do
           ],
           context_used: 30_000,
           turns_used: 9,
-          tokens_used: 40000
+          tokens_used: 40000,
+          halted: :context
       }
 
       Nano.StateStore.put(name, Map.delete(updated, :bindings))
@@ -53,6 +54,7 @@ defmodule Seedling.BotsCompactorTest do
 
     assert {:ok, info} = Compactor.compact(name, adapter: adapter)
     assert info.budget.context_used < 30000
+    assert info.halted == nil
     assert info.budget.turns_used == 9
     assert info.budget.tokens_used == 40000
     assert Enum.at(Nano.StateStore.get(name).transcript, 0)["content"] =~ "Bob owes tests Friday"

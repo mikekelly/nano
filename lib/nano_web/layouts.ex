@@ -81,6 +81,34 @@ defmodule NanoWeb.Layouts do
             }
           }
 
+          // Explicit opt-in only; no history replay or background delivery.
+          const BotNotifications = {
+            mounted() {
+              this.status = text => { const el = document.getElementById("bot-notification-status"); if (el) el.textContent = text }
+              this.click = async e => {
+                const button = e.target.closest("[data-bot-notifications]")
+                if (!button || !this.el.contains(button)) return
+                if (button.dataset.botNotifications === "disable") { this.pushEvent("notifications", {enabled: false, session_id: button.dataset.sessionId}); return }
+                if (!("Notification" in window) || !window.isSecureContext) { this.status("Notifications unavailable: use a supported browser over HTTPS or localhost."); return }
+                try {
+                  const permission = await Notification.requestPermission()
+                  if (permission === "granted") { this.pushEvent("notifications", {enabled: true, session_id: button.dataset.sessionId}); this.status("Permission granted. Notifications enabled for this conversation.") }
+                  else this.status("Permission not granted. Change browser site permissions to enable notifications.")
+                } catch { this.status("Browser notification permission failed.") }
+              }
+              this.el.addEventListener("click", this.click)
+              this.handleEvent("bot-notification", data => {
+                if (!("Notification" in window) || Notification.permission !== "granted") return
+                if (document.visibilityState === "visible" && document.hasFocus()) return
+                try {
+                  const notification = new Notification(data.title, {body: data.body, tag: "nano-bot-" + data.id})
+                  notification.onclick = () => { window.focus(); this.pushEvent("select", {id: data.session_id}); notification.close() }
+                } catch { this.status("This browser could not display a notification.") }
+              })
+            },
+            destroyed() { this.el.removeEventListener("click", this.click) }
+          }
+
           // Dropdowns (<details class="dropdown">) close on a click outside them, on Escape, or
           // when the server says so (a message sent from one).
           window.addEventListener("phx:close", e => { const d = document.getElementById(e.detail.id); if (d) d.open = false })
@@ -95,7 +123,7 @@ defmodule NanoWeb.Layouts do
             // after a random 5-10 s, meant to spread out many clients; one operator needs only ~1 s.
             window.liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
               params: {_csrf_token: csrf},
-              hooks: {Follow, InboxSeen},
+              hooks: {Follow, InboxSeen, BotNotifications},
               reloadJitterMin: 500,
               reloadJitterMax: 1500
             })

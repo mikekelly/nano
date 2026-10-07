@@ -150,7 +150,7 @@ defmodule Seedling.Bots do
       nil ->
         {:reply, {:error, :not_found}, s}
 
-      session ->
+      _session ->
         if text?(text) do
           msg = message("human", nil, text)
           data = append(s.data, id, msg)

@@ -10,7 +10,9 @@ defmodule NanoWeb.BotsLive do
     end
 
     {:ok,
-     socket |> assign(page_title: "Bots", selected: nil, error: nil, answer_to: nil) |> refresh()}
+     socket
+     |> assign(page_title: "Bots", selected: nil, error: nil, answer_to: nil, seen_messages: nil)
+     |> refresh()}
   end
 
   def handle_info(:bots_updated, socket), do: {:noreply, refresh(socket)}
@@ -62,6 +64,13 @@ defmodule NanoWeb.BotsLive do
       else: failure(socket, :not_found)
   end
 
+  def handle_event("notifications", %{"enabled" => enabled, "session_id" => id}, socket)
+      when is_boolean(enabled) do
+    if socket.assigns.session && socket.assigns.session["id"] == id,
+      do: result(socket, Bots.settings(id, %{notifications: enabled})),
+      else: failure(socket, :not_found)
+  end
+
   defp result(socket, {:ok, _}), do: {:noreply, socket |> assign(error: nil) |> refresh()}
   defp result(socket, {:error, reason}), do: failure(socket, reason)
 
@@ -69,9 +78,40 @@ defmodule NanoWeb.BotsLive do
     do: {:noreply, assign(socket, error: "Could not complete that action: #{reason}")}
 
   defp refresh(socket) do
+    sessions = Enum.sort_by(Bots.sessions(), & &1["title"])
+    seen = socket.assigns.seen_messages
+
+    socket =
+      if is_map(seen) do
+        Enum.reduce(sessions, socket, fn session, socket ->
+          if session["settings"]["notifications"] and not session["settings"]["quiet"] do
+            Enum.reduce(session["messages"], socket, fn msg, socket ->
+              if msg["role"] == "bot" and
+                   not MapSet.member?(Map.get(seen, session["id"], MapSet.new()), msg["id"]) do
+                push_event(socket, "bot-notification", %{
+                  title: session["title"],
+                  body: String.slice(msg["text"], 0, 200),
+                  id: msg["id"],
+                  session_id: session["id"]
+                })
+              else
+                socket
+              end
+            end)
+          else
+            socket
+          end
+        end)
+      else
+        socket
+      end
+
+    seen = Map.new(sessions, fn s -> {s["id"], MapSet.new(s["messages"], & &1["id"])} end)
+
     assign(socket,
       bots: Enum.sort_by(Bots.bots(), & &1["name"]),
-      sessions: Enum.sort_by(Bots.sessions(), & &1["title"]),
+      sessions: sessions,
+      seen_messages: seen,
       session: Bots.session(socket.assigns.selected)
     )
   end
@@ -91,7 +131,7 @@ defmodule NanoWeb.BotsLive do
 
   def render(assigns) do
     ~H"""
-    <main id="bots" style="max-width:1100px;margin:auto;padding:1rem">
+    <main id="bots" phx-hook="BotNotifications" style="max-width:1100px;margin:auto;padding:1rem">
       <header>
         <h1>Bots</h1><a href="/">Operator dashboard</a>
       </header>
@@ -143,7 +183,18 @@ defmodule NanoWeb.BotsLive do
                                                                                                               else:
                                                                                                                 "off"}</button>
             <p>
-              <small>Browser notifications are not available in this client. Requests appear here live.</small>
+              <button
+                type="button"
+                data-session-id={@session["id"]}
+                data-bot-notifications={
+                  if @session["settings"]["notifications"], do: "disable", else: "enable"
+                }
+              >
+                Browser notifications: {if @session["settings"]["notifications"],
+                  do: "on",
+                  else: "off"}
+              </button>
+              <small id="bot-notification-status" role="status">Requires browser permission; only while this page is open. Quiet mode suppresses notifications.</small>
             </p>
             <p :for={id <- @session["bot_ids"]} :if={thinking?(@session, id)} role="status">
               {name(@bots, id)} is thinking…

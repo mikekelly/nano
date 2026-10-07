@@ -78,10 +78,13 @@ Confidence is self-reported, **not calibrated probability**.
 
 The Bots service polls every 30 seconds. At 45% of a session agent's context limit,
 `Seedling.Bots.Compactor` asks the decision model for a continuity summary and uses
-`NanoAgent.compact(name, summary, expected_transcript_hash: hash)` only while idle.
+`NanoAgent.compact(name, summary, expected_transcript_hash: NanoAgent.transcript_hash(snapshot),
+resume_context: true)` only while idle. The guard uses SHA-256; calls are bounded to five
+seconds and expired queued calls cannot mutate history.
 It preserves counters, budgets, identity, system prompt, bindings, unread events and
 original durable logs. A stale snapshot/busy agent is rejected and retried, never overwritten.
-Only a successful compact of an agent halted specifically for context allows unhalting;
+Only a successful compact of an agent halted specifically for context, with its new
+context below the limit, atomically permits resumption;
 other budget/provider halts remain operator-controlled. For manual maintenance:
 
 ```elixir
@@ -106,12 +109,24 @@ Configure session-agent provider with `:nano, :bots_model` (default node model),
 `:bots_reasoning` (default "off"). Each agent has a 64k context limit and 1M total token
 budget. Compaction does not reset spending. No per-bot independent browser/computer,
 file attachment storage, push service worker or guaranteed background notification delivery
-is implemented. Browser notification permission and session opt-in are required; no
-notifications are sent while the browser is closed.
+is implemented. Use the Browser notifications button in a selected session: it requests permission on
+a user gesture and enables that session only if granted. Permission denial/unsupported
+browsers show a status; HTTPS or localhost is required. New bot posts and human-request
+questions notify while the open page is hidden or unfocused; focused chat, quiet mode,
+human posts and historical messages do not notify. Notification clicks focus the page
+and select the conversation. OS/browser policies can still suppress delivery. No
+notifications are sent while the browser is closed. Text snippets appear in OS alerts:
+leave opt-in off for sensitive conversations.
 
 ## Validation
 
 Targeted non-spending tests: `env -u MIX_BUILD_PATH MIX_ENV=test mix test test/bots_test.exs
- test/bots_compactor_test.exs test/seedling_memory_decision_test.exs` plus UI and compact-API
+ test/bots_compactor_test.exs test/bots_e2e_test.exs test/seedling_memory_decision_test.exs` plus UI and compact-API
 tests delivered with their modules. Run serially: these tests change application environment
 and use isolated temporary persistence directories. Overall integration is run by sol.
+
+`node test/js/bot_notifications_test.cjs` checks the notification hook with a mocked
+browser (permission, dispatch, focus suppression, disable, unsupported and cleanup).
+The fake-provider E2E drives real HTTP/model/eval/idle paths for two bots across private
+and shared sessions, memory writes/retrieval, human answer and compaction. This is not
+a live model quality evaluation or a real-browser notification smoke.

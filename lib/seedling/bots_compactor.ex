@@ -23,7 +23,8 @@ defmodule Seedling.Bots.Compactor do
                when confidence >= 0.5 <- Seedling.Decision.decide(:summarize, snapshot, opts),
                {:ok, _} = result <-
                  NanoAgent.compact(name, summary,
-                   expected_transcript_hash: :erlang.phash2(s.transcript)
+                   expected_transcript_hash: NanoAgent.transcript_hash(s),
+                   resume_context: true
                  ) do
             result
           else

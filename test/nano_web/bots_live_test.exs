@@ -58,6 +58,37 @@ defmodule NanoWeb.BotsLiveTest do
     GenServer.stop(view.pid)
   end
 
+  test "notifications opt in, no replay, quiet suppression and new bot messages", %{conn: conn} do
+    {:ok, bot} = Bots.create_bot(%{name: "Muse"})
+    {:ok, s} = Bots.create_session([bot["id"]], %{title: "One"})
+    Bots.post(s["id"], bot["id"], "old")
+    {:ok, view, _} = live(conn, "/bots")
+    render_click(view, "select", %{"id" => s["id"]})
+    assert has_element?(view, "#bots[phx-hook=BotNotifications]")
+    render_hook(view, "notifications", %{enabled: true, session_id: s["id"]})
+    assert Bots.session(s["id"])["settings"]["notifications"]
+    {:ok, msg} = Bots.post(s["id"], bot["id"], "new")
+    render(view)
+
+    message_id = msg["id"]
+    session_id = s["id"]
+
+    assert_push_event(view, "bot-notification", %{
+      id: ^message_id,
+      body: "new",
+      title: "One",
+      session_id: ^session_id
+    })
+
+    render_click(view, "quiet", %{})
+    Bots.post(s["id"], bot["id"], "silent")
+    render(view)
+    refute_receive {_, {:push_event, "bot-notification", _}}, 20
+    render_hook(view, "notifications", %{enabled: false, session_id: s["id"]})
+    refute Bots.session(s["id"])["settings"]["notifications"]
+    GenServer.stop(view.pid)
+  end
+
   test "live requests answer once, settings persist, bad selection stays safe", %{conn: conn} do
     {:ok, bot} = Bots.create_bot(%{name: "Muse"})
     {:ok, s} = Bots.create_session([bot["id"]], %{title: "One"})
