@@ -26,6 +26,9 @@ defmodule Seedling.SearchTest do
 
     assert {:ok, data} = Search.search("question", opts(transport))
     assert data["_truncated"]
+    assert hd(data["results"])["url"] == "https://example.com"
+    assert hd(data["results"])["id"] == "id"
+    assert hd(data["results"])["title"] == "Official"
     assert String.valid?(hd(hd(data["results"])["highlights"]))
     refute Map.has_key?(hd(data["results"]), "text")
     assert byte_size(Jason.encode!(data)) < 22000
@@ -125,5 +128,8 @@ defmodule Seedling.SearchTest do
     assert {:ok, _} = Search.resume("timeout", Keyword.put(options, :poll_timeout, 0))
     assert_receive {:search_research_done, "timeout", {:error, %{kind: :poll_timeout}}}, 2000
     assert {:error, _} = Search.resume("../../bad", options)
+    saved = File.read!(Path.join(dir, "fake.json"))
+    assert Jason.decode!(saved)["result"]["error"]["kind"] == "research_failed"
+    refute String.contains?(saved, "x-api-key")
   end
 end

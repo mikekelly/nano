@@ -24,7 +24,9 @@ overridden via params, so search cannot accidentally request full text.
 Contents accepts 1–20 URLs/ids, requests at most 12,000 characters of text per page.
 All compact responses share a 20,000-byte string-content budget and at most 100 entries
 per nested collection. `_truncated: true` indicates clipping; JSON structure/keys add
-some overhead. Request fewer pages or results if clipped. Research completion retains
+some overhead. Results additionally divide a 19,000-byte budget evenly across pages,
+processing citation metadata before highlights/text so an oversized page cannot starve
+later pages' ids and URLs. Request fewer pages or results if clipped. Research completion retains
 full output on disk and only sends bounded data through the mailbox.
 `research_status/2` is an explicit full provider response fetch, not a compact result.
 

@@ -223,10 +223,26 @@ defmodule Seedling.Search do
         if(text?, do: ["text"], else: [])
 
     if is_list(data["results"]) and Enum.all?(data["results"], &is_map/1) do
-      {:ok,
-       Map.take(data, ["requestId", "costDollars", "statuses"])
-       |> Map.put("results", Enum.take(data["results"], 20) |> Enum.map(&Map.take(&1, keys)))
-       |> bounded()}
+      results = Enum.take(data["results"], 20)
+      budget = div(19000, max(length(results), 1))
+
+      results =
+        Enum.map(results, fn result ->
+          {value, _, clipped} = clip(Map.take(result, keys), budget)
+          if clipped, do: Map.put(value, "_truncated", true), else: value
+        end)
+
+      result =
+        Map.take(data, ["requestId", "costDollars", "statuses"])
+        |> Map.put("results", results)
+        |> bounded()
+
+      result =
+        if Enum.any?(results, & &1["_truncated"]),
+          do: Map.put(result, "_truncated", true),
+          else: result
+
+      {:ok, result}
     else
       error(:invalid_response)
     end
@@ -256,10 +272,18 @@ defmodule Seedling.Search do
 
   defp clip(value, budget) when is_map(value) do
     {pairs, {left, clipped}} =
-      Enum.map_reduce(Enum.take(value, 100), {budget, map_size(value) > 100}, fn {k, v}, {b, c} ->
-        {v, b, c2} = clip(v, b)
-        {{k, v}, {b, c or c2}}
-      end)
+      Enum.map_reduce(
+        value
+        |> Enum.sort_by(fn {k, _} ->
+          if k in ["text", "highlights", "answer", "output"], do: 1, else: 0
+        end)
+        |> Enum.take(100),
+        {budget, map_size(value) > 100},
+        fn {k, v}, {b, c} ->
+          {v, b, c2} = clip(v, b)
+          {{k, v}, {b, c or c2}}
+        end
+      )
 
     {Map.new(pairs), left, clipped}
   end
