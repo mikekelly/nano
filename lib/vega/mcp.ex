@@ -1,6 +1,8 @@
 defmodule Vega.MCP do
   @moduledoc """
-  MCP client (legacy revisions 2025-11-25, 2025-06-18, 2025-03-26).
+  MCP client for current 2026-07-28 and legacy 2025-11-25/06-18/03-26.
+  Set server config `"protocol": "2026-07-28"` for modern stateless requests
+  and POST subscriptions; default legacy mode preserves compatibility.
   Server definitions live in `/app/priv/vega_mcp.json`. See `docs/vega-mcp.md`.
 
       Vega.MCP.connect("filesystem")
@@ -30,6 +32,7 @@ defmodule Vega.MCP do
       nil ->
         case Vega.MCP.Supervisor.start_link([]) do
           {:ok, pid} ->
+            if stable = Process.whereis(:user), do: Process.group_leader(pid, stable)
             Process.unlink(pid)
             {:ok, pid}
 
@@ -85,9 +88,15 @@ defmodule Vega.MCP do
     headers_valid =
       is_map(headers) and Enum.all?(headers, fn {k, v} -> is_binary(k) and is_binary(v) end)
 
-    if (stdio or http) and is_integer(limit) and limit > 0 and headers_valid,
-      do: :ok,
-      else: {:error, :invalid_server_config}
+    if (stdio or http) and is_integer(limit) and limit > 0 and headers_valid and
+         Map.get(config, "protocol", "2025-11-25") in [
+           "2026-07-28",
+           "2025-11-25",
+           "2025-06-18",
+           "2025-03-26"
+         ],
+       do: :ok,
+       else: {:error, :invalid_server_config}
   end
 
   defp validate(_), do: {:error, :invalid_server_config}
@@ -105,18 +114,37 @@ defmodule Vega.MCP do
 
   defp definition(_, _), do: {:error, :invalid_server_config}
 
-  defp ready(pid), do: safe_call(pid, :ready, 30_000)
+  defp ready(pid), do: safe_call(pid, :ready, 25_000)
 
   def disconnect(name) do
     case lookup(name) do
-      {:ok, pid} -> DynamicSupervisor.terminate_child(Vega.MCP.Connections, pid)
-      error -> error
+      {:ok, pid} ->
+        case DynamicSupervisor.terminate_child(Vega.MCP.Connections, pid) do
+          :ok -> await_unregistered(name, pid, 20)
+          error -> error
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp await_unregistered(_name, _pid, 0), do: :ok
+
+  defp await_unregistered(name, pid, n) do
+    case Registry.lookup(Vega.MCP.Registry, name) do
+      [{^pid, _}] ->
+        Process.sleep(5)
+        await_unregistered(name, pid, n - 1)
+
+      _ ->
+        :ok
     end
   end
 
   def status(name), do: invoke(name, :status)
-  def watch(name, agent) when is_binary(agent), do: invoke(name, {:watch, agent})
-  def unwatch(name, agent), do: invoke(name, {:unwatch, agent})
+  def watch(name, agent) when is_binary(agent), do: invoke(name, {:watch, agent}, 25_000)
+  def unwatch(name, agent), do: invoke(name, {:unwatch, agent}, 25_000)
   def tools(name, cursor \\ nil), do: list(name, "tools/list", cursor)
   def resources(name, cursor \\ nil), do: list(name, "resources/list", cursor)
   def resource_templates(name, cursor \\ nil), do: list(name, "resources/templates/list", cursor)
@@ -133,18 +161,45 @@ defmodule Vega.MCP do
     do: request(name, "prompts/get", %{"name" => prompt, "arguments" => arguments})
 
   def subscribe(name, uri, agent) when is_binary(agent),
-    do: invoke(name, {:subscribe, uri, agent}, 30_000)
+    do: invoke(name, {:subscribe, uri, agent}, 25_000)
 
-  def unsubscribe(name, uri, agent), do: invoke(name, {:unsubscribe, uri, agent}, 30_000)
+  def unsubscribe(name, uri, agent), do: invoke(name, {:unsubscribe, uri, agent}, 25_000)
 
   def request(name, method, params \\ %{}, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 30_000)
+    timeout = Keyword.get(opts, :timeout, 20_000)
 
     if is_integer(timeout) and timeout > 0 and timeout <= 300_000 and is_binary(method) and
          is_map(params),
        do: invoke(name, {:request, method, params, timeout}, timeout + 1_000),
        else: {:error, :invalid_request}
   end
+
+  @doc "Start a supervised long RPC; completion reaches the named agent as a request/completed event."
+  def request_async(name, method, params, agent, opts \\ []) when is_binary(agent) do
+    with {:ok, _} <- start() do
+      ref = make_ref()
+
+      case Task.Supervisor.start_child(Vega.MCP.Requests, fn ->
+             if stable = Process.whereis(:user), do: Process.group_leader(self(), stable)
+             result = request(name, method, params, opts)
+
+             NanoAgent.notify(agent, %{
+               mcp: name,
+               method: "request/completed",
+               request_method: method,
+               ref: ref,
+               result: result
+             })
+           end) do
+        {:ok, _pid} -> {:ok, ref}
+        error -> error
+      end
+    end
+  end
+
+  def call_tool_async(name, tool, arguments, agent, opts \\ []),
+    do:
+      request_async(name, "tools/call", %{"name" => tool, "arguments" => arguments}, agent, opts)
 
   defp invoke(name, message, timeout \\ 5_000) do
     with {:ok, pid} <- lookup(name), do: safe_call(pid, message, timeout)
@@ -192,10 +247,13 @@ defmodule Vega.MCP.Supervisor do
   def start_link(opts), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
 
   def init(_) do
+    if stable = Process.whereis(:user), do: Process.group_leader(self(), stable)
+
     Supervisor.init(
       [
         {Registry, keys: :unique, name: Vega.MCP.Registry},
         Vega.MCP.State,
+        {Task.Supervisor, name: Vega.MCP.Requests},
         {DynamicSupervisor,
          strategy: :one_for_one, name: Vega.MCP.Connections, max_restarts: 100, max_seconds: 10}
       ],
