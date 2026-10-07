@@ -259,25 +259,6 @@ defmodule NanoWeb.AgentLive do
     ]
   end
 
-  defp halt_reason(:budget), do: "its own turn or token budget is used up"
-
-  defp halt_reason(:context),
-    do:
-      "context limit reached: the conversation sent to the model is as large as it may get " <>
-        "and never shrinks, so un-halting allows one more model call before it halts again"
-
-  defp halt_reason(:node_budget), do: "the node-wide hourly token cap was reached"
-  defp halt_reason(:restart_brake), do: "restart brake: it restarted 3 times within 60 s"
-
-  defp halt_reason(:start_failed),
-    do: "its process failed while starting or restoring; un-halting retries the start"
-
-  defp halt_reason(:log_failed),
-    do:
-      "the harness could not write its log, so it stopped rather than act unlogged; fix the disk, then un-halt"
-
-  defp halt_reason(other), do: "reason #{inspect(other)}"
-
   ## Timeline entries (string-keyed, as on disk)
 
   attr :id, :string, required: true

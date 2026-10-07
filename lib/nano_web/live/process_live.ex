@@ -1,9 +1,14 @@
 defmodule NanoWeb.ProcessLive do
   @moduledoc """
-  Home page: the process view. Every second it re-reads `Nano.Ops.processes/0` (standard set
-  already excluded, agents first) and shows reductions per second as the delta since the
-  previous read. Processes of kind `:other` are highlighted. Any row opens the send form;
-  the Start agent form calls `Nano.Ops.start_agent/2`.
+  Home page. Every second it re-reads `Nano.Ops.processes/0` (standard set already excluded,
+  agents first) and `Nano.Ops.agents/0`. The default view is `NanoWeb.Overview`: agent cards,
+  users, the processes worth a look. `?view=debug` is the process table, with reductions per
+  second as the delta since the previous read and a send form on every row. The Start agent
+  form calls `Nano.Ops.start_agent/2`.
+
+  For the cards' "now" line the page keeps each agent's last three log entries: read once when
+  the agent is first seen, then followed on its PubSub topic. Users' message counts are read
+  once and then counted from their topics.
   """
   use Phoenix.LiveView
 
@@ -11,12 +16,13 @@ defmodule NanoWeb.ProcessLive do
 
   @refresh_ms 1_000
 
-  def mount(_params, _session, socket) do
+  def mount(params, _session, socket) do
     if connected?(socket), do: :timer.send_interval(@refresh_ms, :refresh)
 
     socket =
       socket
-      |> assign(page_title: "nano", prev: %{}, prev_at: nil, send_to: nil)
+      |> assign(page_title: "nano", prev: %{}, prev_at: nil, send_to: nil, view: view(params))
+      |> assign(recent: %{}, counts: %{})
       |> assign(start: %{}, start_error: nil)
       |> mount_shared()
       |> refresh()
@@ -24,8 +30,44 @@ defmodule NanoWeb.ProcessLive do
     {:ok, socket}
   end
 
+  def handle_params(params, _uri, socket), do: {:noreply, assign(socket, view: view(params))}
+
+  defp view(%{"view" => "debug"}), do: "debug"
+  defp view(_), do: "overview"
+
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
-  def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_inbox(socket)}
+
+  def handle_info({:nano_log, %{agent_id: id, seq: seq} = entry}, socket) do
+    recent =
+      case socket.assigns.recent do
+        %{^id => [_ | _] = last} = recent ->
+          if seq > List.last(last)["seq"],
+            do: Map.put(recent, id, Enum.take(last ++ [json(entry)], -3)),
+            else: recent
+
+        %{^id => []} = recent ->
+          Map.put(recent, id, [json(entry)])
+
+        recent ->
+          recent
+      end
+
+    {:noreply, assign(socket, recent: recent)}
+  end
+
+  def handle_info({:nano_user, %{dir: :received, to: to}}, socket) do
+    socket = if to == socket.assigns.inbox_pid, do: refresh_inbox(socket), else: socket
+    name = Enum.find_value(socket.assigns.users, fn {name, pid, _} -> pid == to && name end)
+
+    {:noreply,
+     update(
+       socket,
+       :counts,
+       &if(&1[name], do: Map.update!(&1, name, fn n -> n + 1 end), else: &1)
+     )}
+  end
+
+  def handle_info({:nano_user, _}, socket), do: {:noreply, socket}
 
   def handle_event(event, params, socket) when event in ~w(draft send clear_inbox),
     do: {:noreply, handle_shared(event, params, socket)}
@@ -88,13 +130,73 @@ defmodule NanoWeb.ProcessLive do
         Map.put(row, :rate, rate)
       end
 
-    assign(socket,
+    socket
+    |> assign(
       rows: rows,
       prev: Map.new(rows, &{&1.pid, &1.reductions}),
       prev_at: now,
-      refreshed_at: DateTime.utc_now()
+      refreshed_at: DateTime.utc_now(),
+      agents: Nano.Ops.agents(),
+      standard: length(Process.list()) - length(rows)
     )
+    |> follow()
   end
+
+  # First sight of an agent (by id) or user: subscribe and read what is there once; from then on
+  # their topics keep it current. Agents that are gone are dropped.
+  defp follow(socket) do
+    %{agents: agents, recent: recent, counts: counts} = socket.assigns
+    live? = connected?(socket)
+
+    recent =
+      Map.new(agents, fn %{id: id} ->
+        case recent do
+          %{^id => last} -> {id, last}
+          _ when live? -> {id, tail(id)}
+          _ -> {id, []}
+        end
+      end)
+
+    users = for name <- Enum.sort(Nano.User.list()), do: {name, Nano.User.pid(name)}
+
+    counts =
+      Map.new(users, fn {name, _} ->
+        case counts do
+          %{^name => n} -> {name, n}
+          _ when live? -> {name, first_count(name)}
+          _ -> {name, nil}
+        end
+      end)
+
+    users =
+      for {name, pid} <- users do
+        count =
+          if name == "dashboard" and socket.assigns.inbox,
+            do: length(socket.assigns.inbox),
+            else: counts[name]
+
+        {name, pid, count}
+      end
+
+    assign(socket, recent: recent, counts: counts, users: users)
+  end
+
+  defp tail(id) do
+    Nano.Log.subscribe(id)
+    Enum.take(Nano.Log.read(id), -3)
+  end
+
+  defp first_count(name) do
+    Phoenix.PubSub.subscribe(Nano.PubSub, "user:" <> name)
+
+    case Nano.User.inbox(name) do
+      messages when is_list(messages) -> length(messages)
+      {:error, _} -> nil
+    end
+  end
+
+  # Broadcast entries have atom keys; the log on disk, string keys. Cards read the latter.
+  defp json(entry), do: entry |> Jason.encode!() |> Jason.decode!()
 
   defp limit_fields do
     [
@@ -235,7 +337,26 @@ defmodule NanoWeb.ProcessLive do
           <p :if={@start_error} class="error">{@start_error}</p>
         </form>
 
-        <table class="processes">
+        <nav class="views">
+          <.link
+            :for={v <- ~w(overview debug)}
+            patch={if v == "debug", do: "/?view=debug", else: "/"}
+            class={@view == v && "current"}
+          >
+            {v}
+          </.link>
+        </nav>
+
+        <NanoWeb.Overview.overview
+          :if={@view == "overview"}
+          agents={@agents}
+          rows={@rows}
+          recent={@recent}
+          users={@users}
+          standard={@standard}
+        />
+
+        <table :if={@view == "debug"} class="processes">
           <thead>
             <tr>
               <th>PID</th>
@@ -301,10 +422,13 @@ defmodule NanoWeb.ProcessLive do
             </tr>
           </tbody>
         </table>
-        <p :if={@send_to && !Enum.any?(@rows, &(inspect(&1.pid) == @send_to))} class="dim">
+        <p
+          :if={@view == "debug" && @send_to && !Enum.any?(@rows, &(inspect(&1.pid) == @send_to))}
+          class="dim"
+        >
           {@send_to} has exited.
         </p>
-        <p class="legend dim">
+        <p :if={@view == "debug"} class="legend dim">
           <span class="other-key">highlighted</span>
           = appeared since boot, belongs to no agent: usually the interesting ones.
         </p>

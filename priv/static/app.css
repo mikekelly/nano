@@ -270,6 +270,43 @@ ol.timeline.reading .r { margin: 0.9rem 0; }
 .r.idle { color: var(--dim); font-size: 0.9em; }
 .r.idle .error { color: var(--halted); }
 
+/* Overview: cards that wrap, coloured along the top by state, children nested inside. */
+.overview h2 { margin: 1.3rem 0 0.5rem; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 0.8rem; align-items: start; }
+.card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.agent-card { border-top: 3px solid var(--dim); }
+.agent-card.idle { border-top-color: var(--idle); }
+.agent-card.thinking { border-top-color: var(--thinking); }
+.agent-card.running_tool { border-top-color: var(--running); }
+.agent-card.suspended { border-top-color: var(--suspended); }
+.agent-card.halted, .agent-card.down { border-top-color: var(--halted); }
+.agent-card header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-bottom: 0.2rem; }
+.agent-card .name { font-weight: bold; font-size: 1.05em; }
+.agent-card .halt { color: var(--halted); font-size: 0.9em; margin: 0.3rem 0; }
+.meters { display: grid; gap: 0.2rem; margin: 0.5rem 0; }
+.meter { display: grid; grid-template-columns: 4.2rem minmax(2rem, 1fr) auto; gap: 0.5rem; align-items: center; font-size: 0.9em; }
+.meter .label { color: var(--dim); }
+.meter .bar { height: 6px; background: var(--panel); border-radius: 3px; overflow: hidden; }
+.meter .bar span { display: block; height: 100%; background: var(--idle); }
+.meter.high .bar span { background: var(--halted); }
+.meter .value { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.agent-card .now { margin-top: 0.45rem; padding: 0.3rem 0.5rem; background: var(--panel); border-radius: 4px; font-size: 0.92em; }
+.agent-card details { margin-top: 0.4rem; }
+.agent-card details ul, ul.others { list-style: none; padding: 0; margin: 0.3rem 0 0; }
+.agent-card details li, ul.others li { display: flex; flex-wrap: wrap; gap: 0.2rem 0.7rem; font-size: 0.9em; }
+.agent-card .children { display: grid; gap: 0.5rem; margin-top: 0.6rem; padding-left: 0.6rem; border-left: 2px solid var(--line); }
+.cards.users { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+.user-card { display: flex; flex-direction: column; gap: 0.1rem; }
+ul.others li { background: var(--other); padding: 0.2rem 0.5rem; margin: 0.15rem 0; border-radius: 3px; }
+.overview .empty { padding: 0.8rem; border: 1px dashed var(--line); border-radius: 8px; }
+
 /* Shown by the Follow hook while the reader has scrolled away from the latest entries. */
 #jump {
   position: fixed;

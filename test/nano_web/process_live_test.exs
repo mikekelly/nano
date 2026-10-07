@@ -65,7 +65,7 @@ defmodule NanoWeb.ProcessLiveTest do
     on_exit(fn -> DynamicSupervisor.terminate_child(Nano.UserSupervisor, user_pid) end)
     other = other_process()
 
-    {:ok, view, html} = live(ctx.conn, "/")
+    {:ok, view, html} = live(ctx.conn, "/?view=debug")
 
     for column <- [
           "PID",
@@ -107,13 +107,13 @@ defmodule NanoWeb.ProcessLiveTest do
     %{pid: spawned} = Enum.find(Nano.Ops.processes(), &(&1.kind == {:spawned_by, agent}))
     on_exit(fn -> Process.exit(spawned, :kill) end)
 
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     assert has_element?(view, "#{row(spawned)}.spawned a[href='/agents/#{agent}']", agent)
     assert render(view) =~ "spawned by"
   end
 
   test "refreshes every second; reductions/s is the delta between refreshes", ctx do
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     other = other_process()
     refute has_element?(view, row(other))
 
@@ -133,7 +133,7 @@ defmodule NanoWeb.ProcessLiveTest do
   end
 
   test "the start form defaults to start idle and opens the new agent", ctx do
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     assert has_element?(view, "#start input[type=checkbox][name=start_idle][checked]")
     name = unique("started")
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
@@ -150,7 +150,7 @@ defmodule NanoWeb.ProcessLiveTest do
   end
 
   test "the start form keeps what was typed across the periodic re-render", ctx do
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
 
     view
     |> form("#start", %{name: "half_typed", start_idle: "false", max_turns: "4"})
@@ -164,7 +164,7 @@ defmodule NanoWeb.ProcessLiveTest do
   end
 
   test "the start form can start an agent busy, with a budget", ctx do
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     name = unique("busy")
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     Fake.listen(ctx.model)
@@ -178,7 +178,7 @@ defmodule NanoWeb.ProcessLiveTest do
   end
 
   test "the start form shows why an agent could not start", ctx do
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     html = view |> form("#start", %{name: "no spaces"}) |> render_submit()
     assert html =~ "name must be letters, digits"
 
@@ -209,7 +209,7 @@ defmodule NanoWeb.ProcessLiveTest do
     level = hd(NanoAgent.reasoning_levels() -- ["off"])
     selected = &"#start select[name=reasoning] option[selected][value='#{&1}']"
 
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     assert has_element?(view, selected.(Application.fetch_env!(:nano, :reasoning)))
 
     for l <- ["off" | NanoAgent.reasoning_levels()],
@@ -222,7 +222,7 @@ defmodule NanoWeb.ProcessLiveTest do
     for reasoning <- ["off", level] do
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
-      {:ok, view, _} = live(ctx.conn, "/")
+      {:ok, view, _} = live(ctx.conn, "/?view=debug")
 
       assert {:error, {:live_redirect, _}} =
                view
@@ -239,7 +239,7 @@ defmodule NanoWeb.ProcessLiveTest do
     File.write!(file, "You are {{name}}, from the form's file.")
     on_exit(fn -> File.rm(file) end)
 
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
 
     assert has_element?(
              view,
@@ -260,7 +260,7 @@ defmodule NanoWeb.ProcessLiveTest do
 
     assert Nano.Ops.agent(name).system_prompt == "You are #{name}, from the form's file."
 
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
 
     html =
       view
@@ -275,7 +275,7 @@ defmodule NanoWeb.ProcessLiveTest do
   end
 
   test "the start form rejects a limit that is not a whole number, 0 or more", ctx do
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
 
     for {field, value} <- [max_turns: "abc", max_tokens: "1.5", max_context: "x", max_turns: "-3"] do
       name = unique("agent")
@@ -293,7 +293,7 @@ defmodule NanoWeb.ProcessLiveTest do
 
   test "the start form's three limits accept 0 (no limit), survive re-renders, and are passed on",
        ctx do
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
 
     for field <- ~w(max_turns max_tokens max_context) do
       assert has_element?(
@@ -324,7 +324,7 @@ defmodule NanoWeb.ProcessLiveTest do
     :sys.suspend(user)
     on_exit(fn -> :sys.resume(user) end)
 
-    {:ok, view, html} = live(ctx.conn, "/")
+    {:ok, view, html} = live(ctx.conn, "/?view=debug")
     assert html =~ "The dashboard user is not responding"
     view |> element("#{row(Nano.Ops.whereis(name))} button", "send") |> render_click()
 
@@ -339,7 +339,7 @@ defmodule NanoWeb.ProcessLiveTest do
   test "any process row has the send form: text via say, terms via send_raw, parse errors shown",
        ctx do
     target = other_process()
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     dashboard = Nano.User.pid("dashboard")
 
     refute has_element?(view, "#{row(target)} .send")
@@ -379,7 +379,7 @@ defmodule NanoWeb.ProcessLiveTest do
   end
 
   test "replies to the dashboard user show in its inbox", ctx do
-    {:ok, view, html} = live(ctx.conn, "/")
+    {:ok, view, html} = live(ctx.conn, "/?view=debug")
     assert html =~ "Nothing received yet"
     assert html =~ esc(Nano.User.pid("dashboard"))
 
@@ -402,7 +402,7 @@ defmodule NanoWeb.ProcessLiveTest do
 
   test "the inbox sits behind an icon with a count; messages are made readable", ctx do
     user = Nano.User.pid("dashboard")
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     assert has_element?(view, "header.top #inbox-menu summary svg")
     refute has_element?(view, "#inbox-menu summary .count:not(.new)")
     refute has_element?(view, "aside")
@@ -489,7 +489,7 @@ defmodule NanoWeb.ProcessLiveTest do
   test "suspended agents offer Resume and halted agents Un-halt in their row", ctx do
     {agent, pid} = start_agent(ctx)
     :sys.suspend(pid)
-    {:ok, view, _} = live(ctx.conn, "/")
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
     assert has_element?(view, "#{row(pid)} .badge.suspended")
     view |> element("#{row(pid)} button", "Resume") |> render_click()
     refute Nano.Ops.agent(agent).suspended
@@ -508,5 +508,134 @@ defmodule NanoWeb.ProcessLiveTest do
     Fake.push(ctx.model, text: "ok")
     view |> element("#{row(hpid)} button", "Un-halt") |> render_click()
     eventually(fn -> Nano.Ops.agent(halted).halted == nil end)
+  end
+
+  ## Overview (the default view)
+
+  defp card(name), do: "#card-#{name}"
+
+  # Runs one scripted turn of an agent: notify, then wait for the turn to end.
+  defp turn(name, model, calls) do
+    Nano.Log.subscribe(Nano.Ops.agent(name).id)
+    Fake.push(model, calls: calls)
+    Fake.push(model, calls: [idle: nil])
+    NanoAgent.notify(name, :go)
+    assert_receive {:nano_log, %{type: :turn_ended}}, 5_000
+  end
+
+  test "the overview is the default; the toggle switches to the table and back", ctx do
+    {:ok, view, _} = live(ctx.conn, "/")
+    assert has_element?(view, "section.overview")
+    refute has_element?(view, "table.processes")
+    assert has_element?(view, "#start")
+    assert has_element?(view, "#inbox-menu")
+
+    view |> element("nav.views a", "debug") |> render_click()
+    assert_patch(view, "/?view=debug")
+    assert has_element?(view, "table.processes")
+    view |> element("nav.views a", "overview") |> render_click()
+    assert_patch(view, "/")
+    assert has_element?(view, "section.overview")
+  end
+
+  test "with no agents it says so and points at the start form", ctx do
+    for name <- NanoAgent.list(), do: Nano.Ops.stop_agent(name)
+    {:ok, view, _} = live(ctx.conn, "/")
+    assert has_element?(view, ".overview .empty", "No agents yet. Start one with the form above")
+  end
+
+  test "agent cards: status, halt reasons, limits with ∞, cost and what each is doing", ctx do
+    {idle, _} = start_agent(ctx, max_turns: 0)
+    {suspended, spid} = start_agent(ctx)
+    :sys.suspend(spid)
+    {halted, _} = start_agent(ctx)
+    Nano.StateStore.put(halted, %{Nano.StateStore.get(halted) | halted: :context})
+    {thinking, _} = start_agent(ctx)
+    NanoAgent.notify(thinking, :hello)
+    # The fake holds the request open: the agent stays thinking.
+    assert_receive {:openrouter_request, _, _}, 5_000
+
+    {:ok, view, _} = live(ctx.conn, "/")
+    eventually(fn -> has_element?(view, "#{card(thinking)}.thinking .now", "thinking") end)
+
+    assert has_element?(view, "#{card(idle)}.idle a[href='/agents/#{idle}']", idle)
+    assert has_element?(view, "#{card(idle)} .meter .value", "0 / ∞")
+    assert has_element?(view, "#{card(idle)} .meter .value", "0 / 3,000,000")
+
+    assert has_element?(view, card(idle), ctx.model)
+
+    assert has_element?(view, "#{card(idle)} .now", "started")
+    assert has_element?(view, "#{card(suspended)}.suspended .badge.suspended")
+    assert has_element?(view, "#{card(suspended)} .now", "suspended")
+    assert has_element?(view, "#{card(halted)}.halted .halt", "context limit reached")
+    assert has_element?(view, "#{card(halted)} .now", "halted: context")
+    :sys.resume(spid)
+  end
+
+  test "what an agent's evals spawned is a count that opens to the list", ctx do
+    {name, _} = start_agent(ctx)
+    turn(name, ctx.model, eval: "spawn(fn -> Process.sleep(:infinity) end)")
+
+    {:ok, view, _} = live(ctx.conn, "/")
+    assert has_element?(view, "#{card(name)} details summary", "1 spawned process")
+    [row] = for %{kind: {:spawned_by, ^name}} = r <- Nano.Ops.processes(), do: r
+    assert has_element?(view, "#{card(name)} details li", inspect(row.pid))
+    assert has_element?(view, "#{card(name)} .now", "idle, waiting for a message")
+  end
+
+  test "an agent started by another sits inside its parent's card", ctx do
+    {parent, _} = start_agent(ctx)
+    child = unique("child")
+    on_exit(fn -> Nano.Ops.stop_agent(child) end)
+
+    turn(parent, ctx.model,
+      eval: ~s|{:ok, _} = NanoAgent.start(name: "#{child}", model: "#{ctx.model}")|
+    )
+
+    assert Nano.Ops.agent(child).started_by == parent
+
+    {:ok, view, _} = live(ctx.conn, "/")
+    assert has_element?(view, "#{card(parent)} .children #{card(child)}")
+    # Once, nested; not again at the top level.
+    refute has_element?(view, ".overview > .cards > #{card(child)}")
+  end
+
+  test "users and other processes are listed; the rest is counted", ctx do
+    name = unique("person")
+    pid = Nano.User.start(name)
+    on_exit(fn -> DynamicSupervisor.terminate_child(Nano.UserSupervisor, pid) end)
+    send(pid, :one)
+    other = other_process()
+
+    {:ok, view, _} = live(ctx.conn, "/")
+    assert has_element?(view, ".user-card", name)
+    assert has_element?(view, ".user-card", "1 message")
+    # Counted live from the user's topic.
+    send(pid, :two)
+    eventually(fn -> has_element?(view, ".user-card", "2 messages") end)
+    assert has_element?(view, "ul.others li", inspect(other))
+    assert render(view) =~ ~r/\d+ processes of the standard set are not shown/
+  end
+
+  test "hostile values do not break the overview", ctx do
+    {name, _} = start_agent(ctx)
+    %{id: id} = Nano.Ops.agent(name)
+    agent = %{id: id, name: name}
+    {:ok, view, _} = live(ctx.conn, "/")
+
+    for {type, fields} <- [
+          {:model_response, %{text: %{"x" => [1, %{}]}}},
+          {:tool_call, %{name: %{"odd" => 1}, arguments: [1]}},
+          {:tool_result, %{name: nil, ok: "maybe", duration_ms: %{}}},
+          {:turn_ended, %{reason: [1, 2]}},
+          {:event_received, %{message: String.duplicate("long ", 500)}},
+          {:something_else, %{}}
+        ] do
+      Nano.Log.write(agent, type, fields)
+      assert render(view) =~ name
+    end
+
+    tree = NanoWeb.Overview.tree([%{name: "a", started_by: "b"}, %{name: "b", started_by: "a"}])
+    assert length(tree) == 1
   end
 end

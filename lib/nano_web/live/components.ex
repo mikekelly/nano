@@ -312,6 +312,26 @@ defmodule NanoWeb.Components do
   @doc "The reasoning levels an agent can be started with, \"off\" first."
   def reasoning_levels, do: Enum.uniq(["off" | NanoAgent.reasoning_levels()])
 
+  @doc "Why an agent is halted, in words (shared by the agent page and the overview)."
+  def halt_reason(:budget), do: "its own turn or token budget is used up"
+
+  def halt_reason(:context),
+    do:
+      "context limit reached: the conversation sent to the model is as large as it may get " <>
+        "and never shrinks, so un-halting allows one more model call before it halts again"
+
+  def halt_reason(:node_budget), do: "the node-wide hourly token cap was reached"
+  def halt_reason(:restart_brake), do: "restart brake: it restarted 3 times within 60 s"
+
+  def halt_reason(:start_failed),
+    do: "its process failed while starting or restoring; un-halting retries the start"
+
+  def halt_reason(:log_failed),
+    do:
+      "the harness could not write its log, so it stopped rather than act unlogged; fix the disk, then un-halt"
+
+  def halt_reason(other), do: "reason #{inspect(other)}"
+
   ## Formatting
 
   def time(%DateTime{} = at), do: at |> DateTime.truncate(:second) |> DateTime.to_time()
