@@ -178,9 +178,13 @@ RPC errors/timeouts/reconnect, restart-safe explicit and automatic identities,
 spills/paging, config validation, incremental SSE, HTTP session/version headers,
 and notifications delivered before a GET stream ends.
 
-Full checkout suite passed **253 tests** at implementation time. No external
-credentialed server or npx reference server was exercised; Node installation is
-not needed for these tests. Tests use unique temporary directories and ephemeral
+Full checkout suite passed **255 tests** at implementation time. A real, uncredentialed Streamable HTTP smoke test also passed against
+`https://mcp.deepwiki.com/mcp` (DeepWiki 2.14.3): negotiated 2025-11-25, discovered
+`ask_wiki_question`, `read_wiki_contents`, `read_wiki_structure`, and successfully
+called `read_wiki_structure` for `modelcontextprotocol/modelcontextprotocol`
+(one 1,594-byte text result, `isError: false`). It used an isolated temporary
+state directory and no secrets. No credentialed server or npx reference server
+was exercised; Node installation is not needed for these tests. Tests use unique temporary directories and ephemeral
 ports, never `/data` or shared application environment. Integration entry point
 for the main agent: add `Nano.MCP` to application children; its modules own no
 harness changes.
