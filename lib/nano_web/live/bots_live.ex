@@ -26,6 +26,7 @@ defmodule NanoWeb.BotsLive do
         selected: nil,
         current_chat: nil,
         history_loaded: false,
+        history_new: false,
         pane: "list",
         creating: false,
         bot_form: false,
@@ -82,21 +83,20 @@ defmodule NanoWeb.BotsLive do
           old = socket.assigns.current_chat
 
           if not reset and socket.assigns.history_loaded and not is_nil(old) and old["id"] == id do
-            messages =
-              Enum.uniq_by((old["messages"] || []) ++ (chat["messages"] || []), & &1["id"])
-              |> Enum.take(-400)
+            # Readers own the loaded window: background updates must not replace or evict it.
+            history = old["history"] || %{}
 
-            history =
-              Map.merge(chat["history"] || %{}, %{
-                "has_more" => (old["history"] || %{})["has_more"],
-                "next_before" => (List.first(messages) || %{})["id"]
-              })
+            new_activity =
+              socket.assigns.history_new or
+                (chat["history"] || %{})["total"] > (history["total"] || 0)
 
             assign(socket,
-              current_chat: Map.merge(chat, %{"messages" => messages, "history" => history})
+              current_chat:
+                Map.merge(chat, %{"messages" => old["messages"] || [], "history" => history}),
+              history_new: new_activity
             )
           else
-            assign(socket, current_chat: chat, history_loaded: false)
+            assign(socket, current_chat: chat, history_loaded: false, history_new: false)
           end
 
         {:error, _} ->
@@ -137,7 +137,7 @@ defmodule NanoWeb.BotsLive do
   def handle_event("load-earlier", _, socket) do
     chat = socket.assigns.current_chat
 
-    if chat && length(chat["messages"] || []) < 400 do
+    if chat && (chat["history"] || %{})["has_more"] == true do
       cursor = (chat["history"] || %{})["next_before"]
 
       case Vega.Bots.get_session(
@@ -153,7 +153,7 @@ defmodule NanoWeb.BotsLive do
            |> assign(
              current_chat:
                Map.merge(chat, %{
-                 "messages" => Enum.take(messages, -400),
+                 "messages" => Enum.take(messages, 400),
                  "history" => page["history"] || %{}
                }),
              history_loaded: true
@@ -723,15 +723,17 @@ defmodule NanoWeb.BotsLive do
             aria-label="Messages"
           >
             <div class="history-controls">
+              <p :if={@history_new} role="status">
+                New messages have arrived. Show latest messages to read them.
+              </p>
               <button
                 :if={(@chat["history"] || %{})["has_more"] == true}
                 type="button"
                 phx-click="load-earlier"
-                disabled={length(@chat["messages"] || []) >= 400}
               >Load earlier messages</button>
               <button :if={@history_loaded} type="button" phx-click="latest-messages">Show latest messages</button>
               <p :if={length(@chat["messages"] || []) >= 400} role="status">
-                Showing a bounded window of 400 messages. Return to latest to continue.
+                Showing a window of 400 messages. Load earlier to keep reading, or show latest.
               </p>
             </div>
             <p :if={(@chat["messages"] || []) == []} class="empty-state">
