@@ -7,7 +7,16 @@ defmodule Seedling.Index do
        "Reads keep the head, shell tails keep the end. Caps: 24 KB, 500 lines/matches/entries. A clipped long line is reported; next_offset advances by lines."},
       {"Shell / background tasks", "Seedling.Shell",
        "start(\"mix test\", notify: \"sol\", cwd: \"/app\", timeout: 120000); kill(pid); sh(\"pwd\")",
-       "Completion: {:shell_done, worker_pid, %{status: status, reason: reason, path: path, bytes: bytes}}. Output is on disk, not in event. Always pass notify: your agent name from eval (default self() is the transient eval task). Named recipient resolves after restart (60s retry). Workers are independent and appear as spawned processes. Python3 creates an OS process group; kill/timeout kills that group. No survival across node/container restart, no durable delivery acknowledgement; detached OS descendants can escape the group. Log files require manual retention. Use start, not sh, for long work."}
+       "Completion: {:shell_done, worker_pid, %{status: status, reason: reason, path: path, bytes: bytes}}. Output is on disk, not in event. Always pass notify: your agent name from eval (default self() is the transient eval task). Named recipient resolves after restart (60s retry). Workers are independent and appear as spawned processes. Python3 creates an OS process group; kill/timeout kills that group. No survival across node/container restart, no durable delivery acknowledgement; detached OS descendants can escape the group. Log files require manual retention. Use start, not sh, for long work."},
+      {"Web", "Seedling.Web",
+       "fetch(url); read(id, offset: next_offset); evidence(id, passage); search(query)",
+       "Durable one-hour bounded cache, HTTP-first readable extraction and Lightpanda JavaScript rendering. See seedings/WEB_USAGE.md for caps, errors and unsupported PDF/video/CDP interactions."},
+      {"Search and research", "Seedling.Search",
+       "search(query); contents(urls); answer(query); research(query, notify: \"sol\")",
+       "Exa key required. Results bounded/persisted; async research event and resume(id, notify: name) after restart. Live provider smoke passed; see seedings/SEARCH_USAGE.md for shapes/costs/limits."},
+      {"Goals", "Seedling.Goals",
+       "add(\"sol\", title, parent: id, why: rationale); complete(name,id,note); review(name)",
+       "Durable per-agent tree and read-only dashboard compact review. See seedings/GOALS_USAGE.md; final filename format hash-based, intermediate development paths require migration."}
     ]
   end
 
