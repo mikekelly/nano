@@ -86,7 +86,7 @@ defmodule NanoWeb.ApiController do
 
     json(conn, %{
       description:
-        "Nano agent sandbox: one BEAM node hosting LLM agents, each a GenServer. " <>
+        "Nano Agent: one BEAM node hosting LLM agents, each a GenServer. " <>
           "Everything the dashboard can do is here too.",
       conventions: @conventions,
       endpoints:

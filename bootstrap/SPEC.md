@@ -26,7 +26,7 @@ The design follows the embodied-harness idea: instead of disguising harness traf
 
 Everything runs in one BEAM node, so agents, the log stream, and the dashboard can see each other's processes directly and need no service boundaries between them.
 
-&#91;embedded content: nano agent sandbox · one container, one BEAM node\]
+&#91;embedded content: nano agent · one container, one BEAM node\]
 
 Agents talk to OpenRouter, or to a ChatGPT subscription, and publish every action to PubSub, which feeds the dashboard. People reach agents either from a remote shell or the dashboard's send form, and both arrive as plain mailbox messages. Logs are also appended to JSONL files on a mounted volume.
 
