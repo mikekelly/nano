@@ -11,22 +11,10 @@ services:
       # A dedicated clone of this repo, never this working copy: agents can rewrite it.
       - ${NANO_CHECKOUT:-../nano-checkout}:/app
       - ./data:/data # JSONL logs in ./data/logs, agents' saved state in ./data/state
+    # Only what the node needs before it starts. Everything else, keys included, is a setting
+    # the node keeps in ./data/state/settings.json: bin/up pushes .env's to it once it answers,
+    # and the dashboard and the API change them. Nothing secret is in the node's environment.
     environment:
-      - OPENROUTER_API_KEY
       - NODE_COOKIE
-      - SYSTEM_PROMPT_FILE
       - STATE_DIR
-      - NODE_MAX_TOKENS_PER_HOUR
-      - EVAL_TIMEOUT_MS
-      - RESULT_MAX_BYTES
-      - MAX_BINDINGS_BYTES
       - SPILL_DIR
-      - OPENROUTER_BASE_URL
-      - CHATGPT_BASE_URL
-      - CHATGPT_AUTH_URL
-      - CHATGPT_CLIENT_VERSION
-      # For seedings that need them (see seedings/): unused by the seed itself.
-      - EXA_API_KEY
-      # Shown to agents in their system prompt, so it must be true. This file does not
-      # restrict egress; if you do (see README), set NETWORK_POLICY to text that matches.
-      - NETWORK_POLICY=${NETWORK_POLICY:-unrestricted outbound internet access}

@@ -649,13 +649,12 @@ defmodule Nano.ChatGPTTest do
   end
 
   test "a node without an OpenRouter key: the subscription is the only provider" do
-    saved = Application.get_env(:nano, :openrouter_api_key)
-    Application.put_env(:nano, :openrouter_api_key, nil)
-    on_exit(fn -> Application.put_env(:nano, :openrouter_api_key, saved) end)
+    Nano.TestSettings.delete(:openrouter_api_key)
 
     refused =
-      "OpenRouter is not configured on this node (no OPENROUTER_API_KEY); use an " <>
-        "openai-codex/ model on the ChatGPT subscription, or set the key and restart"
+      "OpenRouter is off on this node (it has no OpenRouter API key); use an " <>
+        "openai-codex/ model on the ChatGPT subscription, or set the openrouter_api_key " <>
+        "setting (dashboard Settings, or PUT /api/settings/openrouter_api_key)"
 
     assert %{"providers" => %{"openrouter" => false, "chatgpt" => "disconnected"}} =
              build_conn() |> get("/api") |> json_response(200)
@@ -666,7 +665,7 @@ defmodule Nano.ChatGPTTest do
     assert has_element?(view, "#start .segmented label.on", "ChatGPT")
     assert has_element?(view, "#chatgpt button", "Connect ChatGPT")
     assert has_element?(view, "#start button.primary[disabled]")
-    assert has_element?(view, "#start .actions", "no provider is configured on this node")
+    assert has_element?(view, "#start .actions", "no provider is on")
 
     # The API refuses an OpenRouter model, saying what to do.
     body = %{
@@ -689,7 +688,7 @@ defmodule Nano.ChatGPTTest do
     connect!()
     send(view.pid, :refresh)
     refute has_element?(view, "#start input[name=provider][value=openrouter]")
-    refute has_element?(view, "#start .actions", "no provider is configured")
+    refute has_element?(view, "#start .actions", "no provider is on")
     assert has_element?(view, "#start input[name=model][value='gpt-5.5']")
 
     # An OpenRouter slug typed in the box is refused, not offered.

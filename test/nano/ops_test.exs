@@ -1,5 +1,5 @@
 defmodule Nano.OpsTest do
-  # Not async: one test changes :eval_timeout_ms.
+  # Not async: one test changes the eval_timeout_ms setting.
   use ExUnit.Case
 
   alias Nano.Ops
@@ -110,10 +110,8 @@ defmodule Nano.OpsTest do
       assert {:error, "** (exit) killed", ""} = Ops.eval("Process.exit(self(), :kill)")
     end
 
-    test "is killed after EVAL_TIMEOUT_MS" do
-      old = Application.get_env(:nano, :eval_timeout_ms)
-      Application.put_env(:nano, :eval_timeout_ms, 100)
-      on_exit(fn -> Application.put_env(:nano, :eval_timeout_ms, old) end)
+    test "is killed after eval_timeout_ms" do
+      Nano.TestSettings.put(:eval_timeout_ms, 100)
 
       assert Ops.eval("Process.sleep(:infinity)") == {:error, "timed out after 100 ms", ""}
     end

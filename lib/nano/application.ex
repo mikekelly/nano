@@ -19,6 +19,8 @@ defmodule Nano.Application do
         [
           {Phoenix.PubSub, name: Nano.PubSub},
           {Registry, keys: :unique, name: Nano.Registry},
+          # The node's settings; its init cannot fail either.
+          Nano.Settings,
           Nano.StateStore,
           {Task.Supervisor, name: Nano.EvalSupervisor},
           # Holds the ChatGPT subscription's tokens; its init cannot fail, so it cannot stop the boot.

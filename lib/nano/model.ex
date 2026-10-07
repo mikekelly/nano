@@ -2,7 +2,8 @@ defmodule Nano.Model do
   @moduledoc """
   Which provider serves a model, by the slug's prefix: `openai-codex/<model>` runs on the
   ChatGPT subscription connected to this node (`Nano.ChatGPT`), anything else on OpenRouter
-  (`Nano.OpenRouter`), if the node has its key (`openrouter?/0`). Both take and return the same
+  (`Nano.OpenRouter`), if the node has its key (`openrouter?/0`, a setting an operator can
+  change at any time). Both take and return the same
   shapes, so the agent need not know which. The model lists of both are checked here, in one place, before an agent starts (`check/3`).
   The start form picks a provider, then a model there, and joins them back into a slug.
   """
@@ -125,12 +126,19 @@ defmodule Nano.Model do
     if not openrouter?(),
       do:
         {:error,
-         "OpenRouter is not configured on this node (no OPENROUTER_API_KEY); use an " <>
-           "openai-codex/ model on the ChatGPT subscription, or set the key and restart"}
+         "OpenRouter is off on this node (it has no OpenRouter API key); use an " <>
+           "openai-codex/ model on the ChatGPT subscription, or set the openrouter_api_key " <>
+           "setting (dashboard Settings, or PUT /api/settings/openrouter_api_key)"}
   end
 
-  @doc "Whether OpenRouter is configured: `OPENROUTER_API_KEY` was set when the node booted."
-  def openrouter?, do: Application.get_env(:nano, :openrouter_api_key) not in [nil, ""]
+  @doc "Whether OpenRouter is on: the node has its key (setting `openrouter_api_key`), now."
+  def openrouter?, do: Nano.Settings.get(:openrouter_api_key) != nil
+
+  @doc """
+  Whether the provider of an agent's model has been turned off: OpenRouter's key removed. The
+  ChatGPT subscription's connection is not checked here; its requests say when it is gone.
+  """
+  def off?(model), do: match?({:openrouter, _}, split(model)) and not openrouter?()
 
   @doc """
   The `reasoning_levels` and `default_reasoning` of an entry of either provider's model list

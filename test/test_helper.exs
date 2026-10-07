@@ -7,4 +7,15 @@ File.mkdir_p!(run)
 System.put_env("ERL_CRASH_DUMP", Path.join(run, "erl_crash.dump"))
 ExUnit.after_suite(fn _ -> File.rm_rf(run) end)
 
+# The node's settings start at their defaults, in that directory too. Tests reach providers
+# only through scripted fakes (test/support), so their addresses default to a port that
+# refuses connections, and OpenRouter has a key that is not one.
+for {key, value} <- [
+      openrouter_api_key: "test-key",
+      openrouter_base_url: "http://127.0.0.1:1/unset",
+      chatgpt_base_url: "http://127.0.0.1:1/unset",
+      chatgpt_auth_url: "http://127.0.0.1:1/unset"
+    ],
+    do: :ok = Nano.Settings.put(key, value)
+
 ExUnit.start()

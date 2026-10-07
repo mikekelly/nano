@@ -24,7 +24,8 @@ defmodule NanoWeb.ApiController do
     {"POST", "/api/agents",
      "Start an agent. Nothing has a default; required: name; model (a slug its provider " <>
        "lists: openai-codex/<model> runs on the ChatGPT subscription connected with " <>
-       "/api/chatgpt/login, anything else on OpenRouter if the node has OPENROUTER_API_KEY; " <>
+       "/api/chatgpt/login, anything else on OpenRouter if the node has its key (setting " <>
+       "openrouter_api_key); " <>
        "providers in this index says which can be used now); reasoning (how hard the model thinks " <>
        "before answering: one of the model's levels, from {reasoning_levels}); max_turns (model " <>
        "calls) and max_tokens (prompt + completion tokens, summed), each a non-negative integer " <>
@@ -32,7 +33,8 @@ defmodule NanoWeb.ApiController do
        "1 to the model's context window: no request is made that could pass it, reply " <>
        "included). Optional: start_idle (default true); system_prompt (a template string) or " <>
        "system_prompt_file (a template file, relative to the app directory; system_prompt wins " <>
-       "if both are given; default template: SYSTEM_PROMPT_FILE, priv/system_prompt.txt). " <>
+       "if both are given; default template: the system_prompt_file setting, " <>
+       "priv/system_prompt.txt unless changed). " <>
        "A refusal (422) says what was missing or wrong."},
     {"GET", "/api/agents/:name",
      "One agent: status, system prompt, budget (turns, tokens and context: used and max, " <>
@@ -46,7 +48,9 @@ defmodule NanoWeb.ApiController do
        "with room for the reply, might not fit in max_context, or a response passed it; the " <>
        "conversation never shrinks, so it halts again before the next model call), node_budget (the node-wide " <>
        "hourly token cap), usage_limit (the provider refused with a usage limit, e.g. the " <>
-       "ChatGPT subscription's; un-halt once it has reset), restart_brake (3 restarts within 60 s), start_failed (its process " <>
+       "ChatGPT subscription's; un-halt once it has reset), provider_unavailable (its model's " <>
+       "provider was turned off: OpenRouter's key removed; set it again, then un-halt), " <>
+       "restart_brake (3 restarts within 60 s), start_failed (its process " <>
        "failed while starting; un-halting retries the start) or log_failed (its log could not " <>
        "be written; fix the disk first)."},
     {"GET", "/api/agents/:name/log?since=:seq",
@@ -73,7 +77,22 @@ defmodule NanoWeb.ApiController do
        "in their own browser, signs in to ChatGPT and enters user_code; poll GET /api/chatgpt " <>
        "until status is connected. 502 if no code could be had."},
     {"POST", "/api/chatgpt/logout",
-     "Forget the subscription's tokens, or cancel a pending login."}
+     "Forget the subscription's tokens, or cancel a pending login."},
+    {"GET", "/api/settings",
+     "The node's settings, changed while it runs: the node's own, then any the operators " <>
+       "supplied under names of their own (such as SOME_SERVICE_KEY). Each: key, value, set " <>
+       "(false: its default), default, applies (live, or agent_start: the system prompt " <>
+       "states it, so agents keep the value they started with) and about. A secret (an API " <>
+       "key, or any value of the operators' own) shows only set and last4, never its value."},
+    {"PUT", "/api/settings/:key",
+     "Set a setting, saved at once. Body: value. :key is one of the node's settings (in " <>
+       "either case: OPENROUTER_API_KEY is openrouter_api_key), or any other name of letters, " <>
+       "digits and _ for a value of the operators' own (any string, kept as a secret). " <>
+       "Returns the setting; 422 says what is allowed."},
+    {"DELETE", "/api/settings/:key",
+     "Put one of the node's settings back to its default (a key: unset), or forget a value " <>
+       "of the operators' own. Removing openrouter_api_key turns OpenRouter off: agents on it " <>
+       "halt (provider_unavailable). Returns the setting."}
   ]
 
   @conventions "Pids are strings such as \"#PID<0.231.0>\". Wherever a target is expected (to), " <>
@@ -320,6 +339,30 @@ defmodule NanoWeb.ApiController do
   def chatgpt_logout(conn, _params) do
     :ok = Ops.chatgpt_logout()
     json(conn, %{ok: true})
+  end
+
+  ## Settings
+
+  def settings(conn, _params), do: json(conn, encode(Ops.settings()))
+
+  def put_setting(conn, %{"key" => key} = params) do
+    if Map.has_key?(params, "value"),
+      do: setting(conn, key, Ops.put_setting(key, params["value"])),
+      else: error(conn, 422, "value is required")
+  end
+
+  def delete_setting(conn, %{"key" => key}), do: setting(conn, key, Ops.delete_setting(key))
+
+  # The setting as GET /api/settings shows it; OPENROUTER_API_KEY is openrouter_api_key.
+  defp setting(conn, key, :ok) do
+    {:ok, key} = Nano.Settings.key(key)
+    entry = Enum.find(Ops.settings(), &(&1.key == key))
+    json(conn, encode(entry || %{key: key, set: false}))
+  end
+
+  defp setting(conn, key, {:error, message}) do
+    missing? = match?({:error, _}, Nano.Settings.key(key)) or message =~ ~r/^no setting/
+    error(conn, if(missing?, do: 404, else: 422), message)
   end
 
   ## Helpers

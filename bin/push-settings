@@ -1,0 +1,41 @@
+#!/bin/sh
+# Push the settings in an env file to a running node:  bin/push-settings [URL] [FILE]
+# (default http://127.0.0.1:4000 and .env; bin/up runs it once the node answers).
+#
+# Each KEY=value line is set on the node, never cleared: clear a setting in the dashboard or
+# with DELETE /api/settings/KEY, and take its line out of the file. The node's own settings
+# go by their env names (OPENROUTER_API_KEY is openrouter_api_key); any other name becomes a
+# value of the operators' own, under that name. Comments, blank lines, empty values and the
+# names only the host and compose use are skipped. Values are never printed, and never put on
+# a command line, where `ps` would show them.
+url=${1:-http://127.0.0.1:4000}
+file=${2:-.env}
+[ -f "$file" ] || exit 0
+pushed=""
+failed=0
+while IFS= read -r line || [ -n "$line" ]; do
+  line=$(printf '%s' "$line" | tr -d '\r')
+  line=${line#export }
+  name=${line%%=*}
+  value=${line#*=}
+  [ "$name" != "$line" ] || continue
+  case $name in
+    '' | '#'* | NANO_CHECKOUT | NODE_COOKIE | STATE_DIR | SPILL_DIR | LOG_DIR | PORT | LISTEN_IP | \
+      SECRET_KEY_BASE | ERL_CRASH_DUMP | MIX_* | COMPOSE_* | DOCKER_*) continue ;;
+  esac
+  case $value in
+    \"*\") value=${value#\"}; value=${value%\"} ;;
+    \'*\') value=${value#\'}; value=${value%\'} ;;
+  esac
+  [ -n "$value" ] || continue
+  json=$(printf '%s' "$value" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  out=$(printf '{"value":"%s"}' "$json" |
+    curl -sS -X PUT -H 'content-type: application/json' --data-binary @- -w ' %{http_code}' \
+      "$url/api/settings/$name" 2>&1)
+  case $out in
+    *' 200') pushed="$pushed $name" ;;
+    *) echo "could not set $name: $out" >&2 && failed=1 ;;
+  esac
+done <"$file"
+[ -z "$pushed" ] || echo "settings set from $file:$pushed"
+exit $failed

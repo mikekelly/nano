@@ -8,13 +8,11 @@ FROM elixir:1.20.2-otp-29
 # All deps are fetched, test ones too, so tests run on the node.
 # The app listens on loopback by default; a published port needs all interfaces.
 # A crash dump goes to the data volume, not into the checkout mounted at /app.
-# NETWORK_POLICY is shown to agents in their system prompt: keep it true (see README).
 ENV MIX_ENV=prod \
     MIX_DEPS_PATH=/opt/nano/deps \
     MIX_BUILD_ROOT=/opt/nano/_build \
     LISTEN_IP=0.0.0.0 \
-    ERL_CRASH_DUMP=/data/erl_crash.dump \
-    NETWORK_POLICY="unrestricted outbound internet access"
+    ERL_CRASH_DUMP=/data/erl_crash.dump
 
 WORKDIR /app
 

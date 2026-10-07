@@ -1,7 +1,9 @@
 import Config
 
-# Every environment variable the node reads is read here, into application env under :nano.
-# Tests ignore the OS environment so they never depend on (or spend with) a developer's shell.
+# Every environment variable the node reads is read here, into application env under :nano:
+# only what is needed before the app starts. Everything else is a setting the node owns and
+# an operator changes while it runs (Nano.Settings).
+# Tests ignore the OS environment so they never depend on a developer's shell.
 test? = config_env() == :test
 
 env = fn name, default ->
@@ -10,8 +12,6 @@ env = fn name, default ->
     value -> value
   end
 end
-
-int = fn name, default -> name |> env.(default) |> String.to_integer() end
 
 # Where the node writes its logs, state and spills: the data volume in the container,
 # tmp/ in a dev checkout. A test run gets a fresh directory of its own, which the app boots
@@ -33,49 +33,11 @@ data =
   end
 
 config :nano,
-  # Optional: without it OpenRouter is not configured, and agents on its models are refused.
-  openrouter_api_key: env.("OPENROUTER_API_KEY", if(test?, do: "test-key")),
-  # Tests must point this at a scripted fake; the test default refuses connections.
-  openrouter_base_url:
-    env.(
-      "OPENROUTER_BASE_URL",
-      if(test?, do: "http://127.0.0.1:1/unset", else: "https://openrouter.ai/api/v1")
-    ),
-  # The ChatGPT subscription provider (models openai-codex/<model>): the Codex backend that
-  # serves inference, and the OAuth server for the device-code login and token refresh.
-  # Tests point both at scripted fakes; the test defaults refuse connections.
-  chatgpt_base_url:
-    env.(
-      "CHATGPT_BASE_URL",
-      if(test?, do: "http://127.0.0.1:1/unset", else: "https://chatgpt.com/backend-api/codex")
-    ),
-  chatgpt_auth_url:
-    env.(
-      "CHATGPT_AUTH_URL",
-      if(test?, do: "http://127.0.0.1:1/unset", else: "https://auth.openai.com")
-    ),
-  # The Codex CLI version the node reports when listing models; the backend lists only the
-  # models released to clients at least this new.
-  chatgpt_client_version: env.("CHATGPT_CLIENT_VERSION", "0.160.1"),
-  # Default prompt template, read from disk each time an agent starts; relative to the app dir.
-  system_prompt_file: env.("SYSTEM_PROMPT_FILE", "priv/system_prompt.txt"),
-  # Each agent's model, reasoning level and limits are given when it is started: no defaults.
-  # This is a node-wide brake, across all agents.
-  node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "100000000"),
-  eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
-  result_max_bytes: int.("RESULT_MAX_BYTES", "51200"),
-  # Eval variables are saved for restarts up to this many bytes in total; the largest are left out.
-  max_bindings_bytes: int.("MAX_BINDINGS_BYTES", "16000000"),
-  # Shown to agents; must be true. The default describes a network limited to the providers.
-  network_policy:
-    env.(
-      "NETWORK_POLICY",
-      "only the model providers, openrouter.ai, chatgpt.com and auth.openai.com"
-    ),
   log_dir: env.("LOG_DIR", Path.join(data, "logs")),
-  # Tool results and events over RESULT_MAX_BYTES are cut, and the whole text written here.
+  # Tool results and events cut at an agent's result_max_bytes are written here whole.
   spill_dir: env.("SPILL_DIR", Path.join(data, "spill")),
-  # Each agent's state is written here on every save and revived from here at boot.
+  # Each agent's state is written here on every save and revived from here at boot; also the
+  # node's settings (settings.json) and the ChatGPT subscription's tokens.
   state_dir: env.("STATE_DIR", Path.join(data, "state"))
 
 if test?, do: config(:nano, test_dir: data)
@@ -89,7 +51,7 @@ if test?, do: config(:nano, test_dir: data)
 
 config :nano, NanoWeb.Endpoint,
   # Tests start no server (one that needs a socket starts its own, on port 0).
-  http: [ip: listen_ip, port: if(test?, do: 0, else: int.("PORT", "4000"))],
+  http: [ip: listen_ip, port: if(test?, do: 0, else: String.to_integer(env.("PORT", "4000")))],
   server: not test?,
   # No authentication, local use only: the secret only signs the session cookie that carries
   # the CSRF token, so a fresh one per boot is enough (open pages reload after a node restart).

@@ -91,9 +91,7 @@ defmodule Nano.OpenRouterTest do
     assert Nano.OpenRouter.models() == []
 
     :persistent_term.erase({Nano.OpenRouter, :models})
-    saved = Application.get_env(:nano, :openrouter_base_url)
-    Application.put_env(:nano, :openrouter_base_url, "http://127.0.0.1:1/unset")
-    on_exit(fn -> Application.put_env(:nano, :openrouter_base_url, saved) end)
+    Nano.TestSettings.put(:openrouter_base_url, "http://127.0.0.1:1/unset")
     assert Nano.OpenRouter.models() == []
   end
 end

@@ -1,7 +1,7 @@
 defmodule Nano.ChatGPT do
   @moduledoc """
   Models served by a ChatGPT subscription (Plus or Pro), the way the Codex CLI and pi use one:
-  the OpenAI Responses API at the Codex backend (`CHATGPT_BASE_URL`), authorised by the tokens
+  the OpenAI Responses API at the Codex backend (setting `chatgpt_base_url`), authorised by the tokens
   `Nano.ChatGPT.Auth` holds. Inference is flat-rate under the plan's usage limits, so a
   response has no cost.
 
@@ -264,18 +264,20 @@ defmodule Nano.ChatGPT do
   reasoning_levels, default_reasoning}` (ids without the `openai-codex/` prefix; levels as
   `Nano.Model.reasoning/3` gives them): the backend's list (`GET /models`, as the Codex CLI
   fetches it, in its order of priority), or the Codex CLI's bundled list if that cannot be had;
-  `[]` when no subscription is connected. Cached for an hour, a fallback for a minute.
+  `[]` when no subscription is connected. Cached for an hour, a fallback for a minute, and
+  fetched again once the backend's address or the client version changes.
   """
   def models do
     now = System.monotonic_time(:second)
+    config = {url(""), client_version()}
     cached = :persistent_term.get({__MODULE__, :models}, nil)
 
     cond do
       Nano.ChatGPT.Auth.status().status != :connected ->
         []
 
-      match?({until, _} when until > now, cached) ->
-        elem(cached, 1)
+      match?({^config, until, _} when until > now, cached) ->
+        elem(cached, 2)
 
       true ->
         {ttl, models} =
@@ -284,7 +286,7 @@ defmodule Nano.ChatGPT do
             list -> {3600, list}
           end
 
-        :persistent_term.put({__MODULE__, :models}, {now + ttl, models})
+        :persistent_term.put({__MODULE__, :models}, {config, now + ttl, models})
         models
     end
   end
@@ -318,8 +320,8 @@ defmodule Nano.ChatGPT do
 
   # The backend lists only the models released to clients at least this new: on 2026-10-07,
   # gpt-6.1-sol from 0.159.0. Keep it at the Codex CLI's latest release.
-  defp client_version, do: Application.fetch_env!(:nano, :chatgpt_client_version)
+  defp client_version, do: Nano.Settings.get(:chatgpt_client_version)
 
-  defp url(path), do: Application.fetch_env!(:nano, :chatgpt_base_url) <> path
+  defp url(path), do: Nano.Settings.get(:chatgpt_base_url) <> path
   defp sha(text), do: Base.encode16(:crypto.hash(:sha256, text), case: :lower)
 end

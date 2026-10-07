@@ -69,7 +69,7 @@ defmodule NanoAgent do
 
   Optional: `start_idle:` (boolean, default true), `system_prompt:` (a template string
   replacing the default; same `{{placeholders}}`), `system_prompt_file:` (a template file,
-  instead of `SYSTEM_PROMPT_FILE`). Returns the supervisor's result, or `{:error, message}`
+  instead of the `system_prompt_file` setting). Returns the supervisor's result, or `{:error, message}`
   saying what was missing or wrong and what to give instead.
   """
   def start(opts) do
@@ -144,7 +144,7 @@ defmodule NanoAgent do
     file =
       if opts[:system_prompt],
         do: nil,
-        else: opts[:system_prompt_file] || env(:system_prompt_file)
+        else: opts[:system_prompt_file] || Nano.Settings.get(:system_prompt_file)
 
     case if(file, do: File.read(file), else: {:ok, opts[:system_prompt]}) do
       {:ok, template} ->
@@ -177,9 +177,18 @@ defmodule NanoAgent do
   def unhalt(agent), do: GenServer.cast(target(agent), :unhalt)
 
   @doc """
+  Has every agent whose model's provider has been turned off (`Nano.Model.off?/1`) halt now,
+  `:provider_unavailable`, rather than at its next model call. Returns `:ok`.
+  """
+  def check_providers do
+    for name <- list(), pid = whereis(name), do: GenServer.cast(pid, :check_provider)
+    :ok
+  end
+
+  @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
   while the agent is busy or suspended. `halted` is nil, `:budget`, `:context`, `:node_budget`,
-  `:usage_limit`, `:restart_brake`, `:start_failed` or `:log_failed`; `context_window` is the
+  `:usage_limit`, `:provider_unavailable`, `:restart_brake`, `:start_failed` or `:log_failed`; `context_window` is the
   model's, as its provider listed it at start (nil if it could not be had for an agent saved
   before it was recorded); `cache_hit_rate` is nil until the first response.
   """
@@ -366,6 +375,7 @@ defmodule NanoAgent do
         # is estimated from the growth since (estimate/1).
         measured_bytes: 0
       })
+      |> stated()
 
     s = %{s | system_prompt: render(s)}
     # Clears any saved by an earlier agent of the same name.
@@ -384,7 +394,7 @@ defmodule NanoAgent do
   end
 
   defp restore(saved) do
-    saved = upgrade(saved)
+    saved = saved |> upgrade() |> stated()
     reason = Nano.StateStore.exit_reason(saved.name, saved.pid) || :unknown
     # Revived at boot from the agent's state file: the whole node stopped, not just the process.
     node_restart? = reason == :node_restart
@@ -535,6 +545,14 @@ defmodule NanoAgent do
     end
   end
 
+  # The settings the system prompt states (and the harness then acts on) are the agent's own,
+  # as they were when it started, so its prompt stays true whatever the node's become.
+  # State saved before they were kept takes them from the node's settings, once restored.
+  @stated [:network_policy, :result_max_bytes]
+
+  defp stated(s), do: Enum.reduce(@stated, s, &Map.put_new(&2, &1, Nano.Settings.get(&1)))
+  defp stated(s, key), do: Map.get_lazy(s, key, fn -> Nano.Settings.get(key) end)
+
   # Rendered at start and again at every restart, so the pid it states is always current.
   defp render(s) do
     vars = %{
@@ -545,11 +563,11 @@ defmodule NanoAgent do
       "elixir_version" => System.version(),
       "os_user" => System.get_env("USER") || String.trim(elem(System.cmd("id", ["-un"]), 0)),
       "os" => os_name(),
-      "network_policy" => env(:network_policy),
+      "network_policy" => stated(s, :network_policy),
       "max_turns" => limit(s.max_turns),
       "max_tokens" => limit(s.max_tokens),
       "max_context" => limit(budget(s).max_context),
-      "result_max_bytes" => env(:result_max_bytes)
+      "result_max_bytes" => stated(s, :result_max_bytes)
     }
 
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
@@ -560,7 +578,10 @@ defmodule NanoAgent do
   # The template file an agent's prompt comes from, or nil for one given as a string. State
   # saved before this was recorded used the default file unless it had a string.
   defp prompt_file(s),
-    do: Map.get(s, :prompt_file, if(s.template, do: nil, else: env(:system_prompt_file)))
+    do:
+      Map.get_lazy(s, :prompt_file, fn ->
+        if s.template, do: nil, else: Nano.Settings.get(:system_prompt_file)
+      end)
 
   defp os_name do
     with {:ok, text} <- File.read("/etc/os-release"),
@@ -581,6 +602,8 @@ defmodule NanoAgent do
     Nano.StateStore.watch(s.name, self())
     noreply(s)
   end
+
+  def handle_cast(:check_provider, s), do: noreply(check_provider(s))
 
   def handle_cast(:unhalt, %{halted: nil} = s), do: noreply(s)
 
@@ -664,7 +687,14 @@ defmodule NanoAgent do
 
   defp event(s, term) do
     seq = s.event_seq + 1
-    {text, truncated, spill} = truncate(inspect(term, inspect_opts()), {s.id, "event-#{seq}"})
+
+    {text, truncated, spill} =
+      truncate(
+        inspect(term, inspect_opts()),
+        stated(s, :result_max_bytes),
+        {s.id, "event-#{seq}"}
+      )
+
     at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
     s = %{
@@ -711,13 +741,16 @@ defmodule NanoAgent do
 
   defp request(s, new_turn?) do
     # State from an older version of this module, still running after a reload.
-    s = upgrade(s)
+    s = s |> upgrade() |> check_provider()
     node_used = Nano.StateStore.node_tokens_last_hour()
-    cap = env(:node_max_tokens_per_hour)
+    cap = Nano.Settings.get(:node_max_tokens_per_hour)
 
     cond do
       s.halted ->
-        end_turn(s, if(s.halted == :log_failed, do: "error", else: "budget"))
+        end_turn(
+          s,
+          if(s.halted in [:log_failed, :provider_unavailable], do: "error", else: "budget")
+        )
 
       reached?(node_used, cap) ->
         text =
@@ -747,6 +780,22 @@ defmodule NanoAgent do
           else: call(next, new_turn? && line, estimate, room)
     end
   end
+
+  # An operator can turn a provider off (remove OpenRouter's key) at any time; an agent on it
+  # halts rather than fail at every call, and un-halting halts it again until it is back.
+  defp check_provider(%{halted: nil} = s) do
+    if Nano.Model.off?(s.model),
+      do:
+        halt(
+          s,
+          :provider_unavailable,
+          "OpenRouter, the provider of your model #{s.model}, has been turned off by an " <>
+            "operator: this node no longer has its API key"
+        ),
+      else: s
+  end
+
+  defp check_provider(s), do: s
 
   # Tokens a request for this conversation may take, at most: what the provider measured for
   # the conversation at its last response, plus one token for every 2 bytes it has grown by
@@ -1041,9 +1090,9 @@ defmodule NanoAgent do
 
         args = [code, Keyword.put(s.bindings, :me, self()), io]
         task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :eval, args)
-
-        Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, env(:eval_timeout_ms))
-        %{s | task: Map.put(s.task, :task, task)}
+        timeout = Nano.Settings.get(:eval_timeout_ms)
+        Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, timeout)
+        %{s | task: Map.merge(s.task, %{task: task, timeout: timeout})}
 
       {"idle", {:ok, %{}}} when is_nil(wakeup) or wakeup in 0..4_294_967_295 ->
         s = tool_result(s, call, started, true, "")
@@ -1207,7 +1256,7 @@ defmodule NanoAgent do
     end
   end
 
-  defp eval_done(s, %{call: call, started: started, io: io, task: task}, result) do
+  defp eval_done(s, %{call: call, started: started, io: io, task: task} = t, result) do
     {output, spawned} = release(io, Process.group_leader(), task.pid)
     s = %{s | spawned: s.spawned ++ spawned}
 
@@ -1220,7 +1269,7 @@ defmodule NanoAgent do
         tool_result(s, call, started, false, error, output)
 
       :timeout ->
-        timeout = "Timeout: the eval was killed after #{env(:eval_timeout_ms)} ms."
+        timeout = "Timeout: the eval was killed after #{t[:timeout]} ms."
         tool_result(s, call, started, false, timeout, output)
 
       {:exit, reason} ->
@@ -1234,7 +1283,8 @@ defmodule NanoAgent do
   # keeps result and IO apart for the dashboard.
   defp tool_result(s, call, started, ok, result, io \\ "") do
     whole = if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io
-    {text, truncated, spill} = truncate(whole, {s.id, "call-#{s.call_seq}"})
+    max = stated(s, :result_max_bytes)
+    {text, truncated, spill} = truncate(whole, max, {s.id, "call-#{s.call_seq}"})
 
     log(
       s,
@@ -1244,8 +1294,8 @@ defmodule NanoAgent do
         name: call["function"]["name"],
         duration_ms: System.monotonic_time(:millisecond) - started,
         ok: ok,
-        result: elem(truncate(result), 0),
-        io: elem(truncate(io), 0),
+        result: elem(truncate(result, max), 0),
+        io: elem(truncate(io, max), 0),
         truncated: truncated
       })
     )
@@ -1263,12 +1313,12 @@ defmodule NanoAgent do
   # The most of an event or result that is printed and kept in a spill file.
   @ceiling 8_388_608
 
-  # Cuts text at RESULT_MAX_BYTES: {text, cut?, spill path}. Given a spill name, the whole
-  # text (up to @ceiling bytes) is first written to <spill_dir>/<agent id>/<name>.txt and
-  # the marker names it.
-  defp truncate(text, spill \\ nil) do
+  # Cuts text at max bytes (the agent's result_max_bytes): {text, cut?, spill path}. Given a
+  # spill name, the whole text (up to @ceiling bytes) is first written to
+  # <spill_dir>/<agent id>/<name>.txt and the marker names it.
+  defp truncate(text, max, spill \\ nil) do
     text = if String.valid?(text), do: text, else: inspect(text)
-    {max, size} = {env(:result_max_bytes), byte_size(text)}
+    size = byte_size(text)
 
     if size <= max do
       {text, false, nil}

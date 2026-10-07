@@ -4,7 +4,8 @@
 #   1. Refuses if the agents' checkout has uncommitted work, or a branch that is not pushed to
 #      this repo: commit a run to seedling/<agent>-<what> and push it first.
 #   2. Stops the node and moves everything in data/ (logs, saved agent state, spill files,
-#      whatever agents wrote there) to archive/<time>/, keeping only the ChatGPT tokens.
+#      whatever agents wrote there) to archive/<time>/, keeping only the ChatGPT tokens and the
+#      node's settings.
 #   3. Resets the checkout to main, removes untracked files and tmp/, deletes every other
 #      branch, and makes it fetch main only, so other branches are not one `git branch -a` away.
 #   4. Recreates the container (dropping packages agents installed) and starts the node.
@@ -32,7 +33,9 @@ if [ -d data ] && [ -n "$(ls -A data)" ]; then
   archive="archive/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$archive" && mv data/* "$archive"/ || exit 1
   mkdir -p data/state
-  [ -f "$archive/state/chatgpt_auth.json" ] && mv "$archive/state/chatgpt_auth.json" data/state/
+  for f in chatgpt_auth.json settings.json; do
+    [ -f "$archive/state/$f" ] && mv "$archive/state/$f" data/state/
+  done
   echo "archived data/ to $archive"
 fi
 

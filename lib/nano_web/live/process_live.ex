@@ -3,8 +3,9 @@ defmodule NanoWeb.ProcessLive do
   Home page. Every second it re-reads `Nano.Ops.processes/0` (standard set already excluded,
   agents first) and `Nano.Ops.agents/0`. The default view is `NanoWeb.Overview`: agent cards,
   users, the processes worth a look. `?view=debug` is the process table, with reductions per
-  second as the delta since the previous read and a send form on every row. The Start agent
-  form calls `Nano.Ops.start_agent/2`.
+  second as the delta since the previous read and a send form on every row. `?view=settings`
+  is `NanoWeb.SettingsPanel`, the node's settings. The Start agent form calls
+  `Nano.Ops.start_agent/2`.
 
   For the cards' "now" line the page keeps each agent's last three log entries: read once when
   the agent is first seen, then followed on its PubSub topic. Users' message counts are read
@@ -22,7 +23,7 @@ defmodule NanoWeb.ProcessLive do
     socket =
       socket
       |> assign(page_title: "nano", prev: %{}, prev_at: nil, send_to: nil, view: view(params))
-      |> assign(recent: %{}, counts: %{})
+      |> assign(recent: %{}, counts: %{}, setting_errors: %{}, saves: 0)
       # The model lists are fetched (and cached) by the providers; only a live page asks for them.
       |> assign(
         start: %{},
@@ -42,7 +43,7 @@ defmodule NanoWeb.ProcessLive do
 
   def handle_params(params, _uri, socket), do: {:noreply, assign(socket, view: view(params))}
 
-  defp view(%{"view" => "debug"}), do: "debug"
+  defp view(%{"view" => view}) when view in ~w(debug settings), do: view
   defp view(_), do: "overview"
 
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
@@ -121,6 +122,15 @@ defmodule NanoWeb.ProcessLive do
     {:noreply, refresh(socket)}
   end
 
+  def handle_event("save_setting", %{"key" => key, "value" => value}, socket),
+    do: {:noreply, setting(socket, key, Nano.Ops.put_setting(key, value))}
+
+  def handle_event("clear_setting", %{"key" => key}, socket),
+    do: {:noreply, setting(socket, key, Nano.Ops.delete_setting(key))}
+
+  def handle_event("add_setting", %{"name" => name, "value" => value}, socket),
+    do: {:noreply, setting(socket, "", Nano.Ops.put_setting(String.trim(name), value))}
+
   def handle_event("resume", %{"name" => name}, socket) do
     Nano.Ops.resume(name)
     {:noreply, refresh(socket)}
@@ -130,6 +140,17 @@ defmodule NanoWeb.ProcessLive do
     Nano.Ops.unhalt(name)
     {:noreply, refresh(socket)}
   end
+
+  # A refusal stays beside its setting until it is next saved; a change starts the inputs over.
+  defp setting(socket, key, :ok) do
+    socket
+    |> update(:setting_errors, &Map.delete(&1, key))
+    |> update(:saves, &(&1 + 1))
+    |> refresh()
+  end
+
+  defp setting(socket, key, {:error, message}),
+    do: update(socket, :setting_errors, &Map.put(&1, key, message))
 
   defp refresh(socket) do
     now = System.monotonic_time(:millisecond)
@@ -167,6 +188,7 @@ defmodule NanoWeb.ProcessLive do
       prev_at: now,
       refreshed_at: DateTime.utc_now(),
       agents: Nano.Ops.agents(),
+      settings: Nano.Ops.settings(),
       standard: length(Process.list()) - length(rows)
     )
     |> follow()
@@ -257,8 +279,8 @@ defmodule NanoWeb.ProcessLive do
 
         <nav class="views">
           <.link
-            :for={{v, icon} <- [{"overview", "grid"}, {"debug", "list"}]}
-            patch={if v == "debug", do: "/?view=debug", else: "/"}
+            :for={{v, icon} <- [{"overview", "grid"}, {"debug", "list"}, {"settings", "sliders"}]}
+            patch={if v == "overview", do: "/", else: "/?view=#{v}"}
             class={@view == v && "current"}
           >
             <.icon name={icon} /> {v}
@@ -272,6 +294,13 @@ defmodule NanoWeb.ProcessLive do
           recent={@recent}
           users={@users}
           standard={@standard}
+        />
+
+        <NanoWeb.SettingsPanel.settings_panel
+          :if={@view == "settings"}
+          settings={@settings}
+          errors={@setting_errors}
+          saves={@saves}
         />
 
         <table :if={@view == "debug"} class="processes">

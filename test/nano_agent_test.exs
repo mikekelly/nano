@@ -1,5 +1,5 @@
 defmodule NanoAgentTest do
-  # Not async: tests change node-wide app env (eval timeout, truncation limit, hourly cap).
+  # Not async: tests change node-wide settings (eval timeout, truncation limit, hourly cap).
   use ExUnit.Case, async: false
 
   alias Nano.FakeOpenRouter, as: Fake
@@ -7,16 +7,9 @@ defmodule NanoAgentTest do
   setup do
     Fake.start()
 
-    keys = [
-      :eval_timeout_ms,
-      :result_max_bytes,
-      :node_max_tokens_per_hour,
-      :openrouter_backoff_ms
-    ]
-
-    saved = for k <- keys, do: {k, Application.get_env(:nano, k)}
+    saved = Application.get_env(:nano, :openrouter_backoff_ms)
     Application.put_env(:nano, :openrouter_backoff_ms, 1)
-    on_exit(fn -> for {k, v} <- saved, do: Application.put_env(:nano, k, v) end)
+    on_exit(fn -> Application.put_env(:nano, :openrouter_backoff_ms, saved) end)
     %{model: Fake.model(), name: "t#{System.unique_integer([:positive])}"}
   end
 
@@ -81,6 +74,13 @@ defmodule NanoAgentTest do
 
     refute Enum.any?(lines, &(&1 =~ "Used so far"))
     Enum.join(lines, "\n")
+  end
+
+  # A value no change could set, as a broken edit could leave one: rendering a prompt fails.
+  defp break_setting(key) do
+    values = :persistent_term.get({Nano.Settings, :values})
+    :persistent_term.put({Nano.Settings, :values}, Map.put(values, key, {:broken}))
+    on_exit(fn -> :persistent_term.put({Nano.Settings, :values}, values) end)
   end
 
   defp budget_line(message), do: message |> text() |> String.split("\n") |> List.last()
@@ -223,7 +223,7 @@ defmodule NanoAgentTest do
   end
 
   test "a stale eval timeout is ignored", ctx do
-    Application.put_env(:nano, :eval_timeout_ms, 50)
+    Nano.TestSettings.put(:eval_timeout_ms, 50)
     {pid, id} = start!(ctx)
     Fake.push(ctx.model, calls: [eval: "1"])
     Fake.push(ctx.model, text: "ok")
@@ -294,7 +294,7 @@ defmodule NanoAgentTest do
   end
 
   test "an eval that runs past the timeout is killed and reported", ctx do
-    Application.put_env(:nano, :eval_timeout_ms, 50)
+    Nano.TestSettings.put(:eval_timeout_ms, 50)
     {pid, id} = start!(ctx)
     Fake.push(ctx.model, calls: [eval: "Process.sleep(:infinity)"])
     Fake.push(ctx.model, text: "ok")
@@ -534,18 +534,14 @@ defmodule NanoAgentTest do
   end
 
   test "the node-wide hourly token cap halts the agent", ctx do
-    Application.put_env(
-      :nano,
-      :node_max_tokens_per_hour,
-      Nano.StateStore.node_tokens_last_hour() + 50
-    )
+    Nano.TestSettings.put(:node_max_tokens_per_hour, Nano.StateStore.node_tokens_last_hour() + 50)
 
     {pid, id} = start!(ctx)
     Fake.push(ctx.model, calls: [eval: "1"])
     send(pid, :go)
     request!(ctx.model)
 
-    cap = Application.get_env(:nano, :node_max_tokens_per_hour)
+    cap = Nano.Settings.get(:node_max_tokens_per_hour)
 
     assert %{"scope" => "node", "turns_used" => 1, "node_max_tokens_per_hour" => ^cap} =
              entry = await(id, :budget_exhausted)
@@ -555,7 +551,7 @@ defmodule NanoAgentTest do
     assert NanoAgent.info(ctx.name).halted == :node_budget
 
     # Un-halting does not pretend the agent's own counters were exhausted or reset.
-    Application.put_env(:nano, :node_max_tokens_per_hour, 1_000_000_000_000)
+    Nano.TestSettings.put(:node_max_tokens_per_hour, 1_000_000_000_000)
     NanoAgent.unhalt(ctx.name)
     body = request!(ctx.model)
     assert [halt, unhalt] = String.split(delivery(List.last(body["messages"])), "\n")
@@ -664,7 +660,7 @@ defmodule NanoAgentTest do
   end
 
   test "cut results and events keep their whole text in a file they name", ctx do
-    Application.put_env(:nano, :result_max_bytes, 100)
+    Nano.TestSettings.put(:result_max_bytes, 100)
     {pid, id} = start!(ctx)
     spill = Path.expand(Path.join(Application.get_env(:nano, :spill_dir), id))
     Fake.push(ctx.model, calls: [eval: ~s|IO.write("io!"); String.duplicate("é", 300)|])
@@ -698,7 +694,7 @@ defmodule NanoAgentTest do
   end
 
   test "past 8 MB, the file keeps the first 8 MB and the cut text says so", ctx do
-    Application.put_env(:nano, :result_max_bytes, 100)
+    Nano.TestSettings.put(:result_max_bytes, 100)
     {pid, id} = start!(ctx)
     spill = Path.expand(Path.join(Application.get_env(:nano, :spill_dir), id))
     Fake.push(ctx.model, calls: [eval: ~s|:binary.copy("y", 9_000_000)|])
@@ -724,7 +720,7 @@ defmodule NanoAgentTest do
   end
 
   test "if the whole text cannot be kept, the cut text says only that it was cut", ctx do
-    Application.put_env(:nano, :result_max_bytes, 100)
+    Nano.TestSettings.put(:result_max_bytes, 100)
     saved = Application.get_env(:nano, :spill_dir)
     Application.put_env(:nano, :spill_dir, "/dev/null/spill")
     on_exit(fn -> Application.put_env(:nano, :spill_dir, saved) end)
@@ -825,19 +821,15 @@ defmodule NanoAgentTest do
              "unknown model fake/unlisted: OpenRouter does not list it; its model ids are at " <>
                "https://openrouter.ai/models"
 
-    # Without the key OpenRouter is not configured: its models are refused, saying what to do.
-    saved = Application.get_env(:nano, :openrouter_api_key)
-    on_exit(fn -> Application.put_env(:nano, :openrouter_api_key, saved) end)
+    # Without the key OpenRouter is off: its models are refused, saying what to do.
+    Nano.TestSettings.delete(:openrouter_api_key)
 
-    for key <- [nil, ""] do
-      Application.put_env(:nano, :openrouter_api_key, key)
+    assert refusal(ctx, all) ==
+             "OpenRouter is off on this node (it has no OpenRouter API key); use an " <>
+               "openai-codex/ model on the ChatGPT subscription, or set the openrouter_api_key " <>
+               "setting (dashboard Settings, or PUT /api/settings/openrouter_api_key)"
 
-      assert refusal(ctx, all) ==
-               "OpenRouter is not configured on this node (no OPENROUTER_API_KEY); use an " <>
-                 "openai-codex/ model on the ChatGPT subscription, or set the key and restart"
-    end
-
-    Application.put_env(:nano, :openrouter_api_key, saved)
+    :ok = Nano.Settings.put(:openrouter_api_key, "test-key")
 
     # A list that cannot be had verifies nothing, so nothing starts.
     Fake.models(503)
@@ -892,7 +884,7 @@ defmodule NanoAgentTest do
     assert prompt =~ "(OTP #{System.otp_release()}, Elixir #{System.version()})"
 
     assert prompt =~
-             "Network access: only the model providers, openrouter.ai, chatgpt.com and auth.openai.com."
+             "Network access: unrestricted outbound internet access."
 
     max = 30_000_000
     ctx_max = 1_000_000
@@ -1070,9 +1062,7 @@ defmodule NanoAgentTest do
 
   test "a refused connection is retried, every attempt logged", ctx do
     {pid, id} = start!(ctx)
-    saved = Application.get_env(:nano, :openrouter_base_url)
-    Application.put_env(:nano, :openrouter_base_url, "http://127.0.0.1:1")
-    on_exit(fn -> Application.put_env(:nano, :openrouter_base_url, saved) end)
+    Nano.TestSettings.put(:openrouter_base_url, "http://127.0.0.1:1")
     send(pid, :go)
     assert await(id, :turn_ended)["reason"] == "error"
 
@@ -1135,9 +1125,7 @@ defmodule NanoAgentTest do
   ## Start failures (items 1 and 5 of fix round 2)
 
   test "a failed first start returns an error instead of a halted agent", ctx do
-    saved = Application.get_env(:nano, :network_policy)
-    Application.delete_env(:nano, :network_policy)
-    on_exit(fn -> Application.put_env(:nano, :network_policy, saved) end)
+    break_setting(:network_policy)
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
@@ -1145,7 +1133,7 @@ defmodule NanoAgentTest do
                  {:error, "the agent's process failed to start; the node's log says why"}
       end)
 
-    assert log =~ "network_policy"
+    assert log =~ "start failed"
 
     assert NanoAgent.whereis(ctx.name) == nil
     assert NanoAgent.info(ctx.name) == nil
@@ -1349,7 +1337,7 @@ defmodule NanoAgentTest do
   ## Evals that do not return (item 7)
 
   test "a timed-out eval reports what it printed and the processes it started", ctx do
-    Application.put_env(:nano, :eval_timeout_ms, 100)
+    Nano.TestSettings.put(:eval_timeout_ms, 100)
     {pid, id} = start!(ctx)
 
     code =
@@ -1510,9 +1498,7 @@ defmodule NanoAgentTest do
     :sys.get_state(pid)
     # As after a state store restart, before the agent saved again; and fresh/1 now fails.
     Nano.StateStore.delete(ctx.name)
-    saved = Application.get_env(:nano, :network_policy)
-    Application.delete_env(:nano, :network_policy)
-    on_exit(fn -> Application.put_env(:nano, :network_policy, saved) end)
+    break_setting(:network_policy)
     ref = Process.monitor(sup)
 
     ExUnit.CaptureLog.capture_log(fn ->
@@ -1779,7 +1765,7 @@ defmodule NanoAgentTest do
   end
 
   test "a node-wide hourly cap of 0 is no cap", ctx do
-    Application.put_env(:nano, :node_max_tokens_per_hour, 0)
+    Nano.TestSettings.put(:node_max_tokens_per_hour, 0)
     {pid, id} = start!(ctx)
     Fake.push(ctx.model, calls: [eval: "1"])
     Fake.push(ctx.model, text: "done")
@@ -1838,16 +1824,14 @@ defmodule NanoAgentTest do
     path
   end
 
-  test "SYSTEM_PROMPT_FILE and system_prompt_file: choose the template; a string still wins",
+  test "the system_prompt_file setting and option choose the template; a string still wins",
        ctx do
-    env_file = prompt_file("from env: {{name}}")
-    saved = Application.get_env(:nano, :system_prompt_file)
-    Application.put_env(:nano, :system_prompt_file, env_file)
-    on_exit(fn -> Application.put_env(:nano, :system_prompt_file, saved) end)
+    env_file = prompt_file("from the setting: {{name}}")
+    Nano.TestSettings.put(:system_prompt_file, env_file)
 
     {_, id} = start!(ctx)
 
-    assert %{system_prompt: "from env: " <> _, prompt_source: ^env_file} =
+    assert %{system_prompt: "from the setting: " <> _, prompt_source: ^env_file} =
              NanoAgent.info(ctx.name)
 
     assert %{"prompt_source" => ^env_file} = await(id, :agent_started)
@@ -2155,8 +2139,7 @@ defmodule NanoAgentTest do
   end
 
   test "variables too large to save are left out, with one warning, and named at restart", ctx do
-    Application.put_env(:nano, :max_bindings_bytes, 100_000)
-    on_exit(fn -> Application.delete_env(:nano, :max_bindings_bytes) end)
+    Nano.TestSettings.put(:max_bindings_bytes, 100_000)
     {pid, id} = start!(ctx)
     Fake.push(ctx.model, calls: [eval: ~s|big = :binary.copy("x", 1_000_000); small = 1|])
     Fake.push(ctx.model, calls: [eval: "small + 1"])

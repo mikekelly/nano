@@ -27,7 +27,7 @@ defmodule Nano.OpenRouter do
   no HTTP response was received.
   """
   def chat(model, messages, tools, reasoning \\ "off", max_output \\ nil) do
-    key = Application.get_env(:nano, :openrouter_api_key)
+    key = Nano.Settings.get(:openrouter_api_key)
 
     body = %{
       model: model,
@@ -42,7 +42,7 @@ defmodule Nano.OpenRouter do
     opts = [json: body, auth: {:bearer, key}, retry: false, receive_timeout: 600_000]
 
     case Req.post(
-           Application.fetch_env!(:nano, :openrouter_base_url) <> "/chat/completions",
+           base_url() <> "/chat/completions",
            opts
          ) do
       {:ok, %{status: 200, body: %{"choices" => [choice | _]} = resp}} ->
@@ -70,16 +70,18 @@ defmodule Nano.OpenRouter do
   reasoning_levels, default_reasoning}` (`max_output` the most tokens its top provider will
   generate in one response, or nil; prices in USD per million tokens, nil if not given;
   levels as `Nano.Model.reasoning/3` gives them), sorted by id. Cached for an hour, a failure for a
-  minute; `[]` if they cannot be fetched (5 s at most), or OpenRouter is not configured.
+  minute, and fetched again once the key or the address changes; `[]` if they cannot be
+  fetched (5 s at most), or OpenRouter is off.
   """
   def models do
     now = System.monotonic_time(:second)
+    config = :erlang.phash2({Nano.Settings.get(:openrouter_api_key), base_url()})
 
     case Nano.Model.openrouter?() && :persistent_term.get({__MODULE__, :models}, nil) do
       false ->
         []
 
-      {until, models} when until > now ->
+      {^config, until, models} when until > now ->
         models
 
       _ ->
@@ -87,7 +89,7 @@ defmodule Nano.OpenRouter do
 
         :persistent_term.put(
           {__MODULE__, :models},
-          {now + if(models == [], do: 60, else: 3600), models}
+          {config, now + if(models == [], do: 60, else: 3600), models}
         )
 
         models
@@ -96,13 +98,13 @@ defmodule Nano.OpenRouter do
 
   defp fetch_models do
     opts = [
-      auth: {:bearer, Application.get_env(:nano, :openrouter_api_key)},
+      auth: {:bearer, Nano.Settings.get(:openrouter_api_key)},
       retry: false,
       receive_timeout: 5_000,
       connect_options: [timeout: 5_000]
     ]
 
-    url = Application.fetch_env!(:nano, :openrouter_base_url) <> "/models"
+    url = base_url() <> "/models"
     {:ok, %{status: 200, body: %{"data" => data}}} = Req.get(url, opts)
     price = &with({p, _} <- Float.parse(&1 || ""), do: p * 1_000_000, else: (_ -> nil))
 
@@ -154,4 +156,6 @@ defmodule Nano.OpenRouter do
   end
 
   defp mark(message), do: message
+
+  defp base_url, do: Nano.Settings.get(:openrouter_base_url)
 end

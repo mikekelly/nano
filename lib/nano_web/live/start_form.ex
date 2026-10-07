@@ -152,7 +152,7 @@ defmodule NanoWeb.StartForm do
           </label>
         </div>
         <span :if={@v["prompt"] == "default"} class="dim">
-          the node's template, {Application.get_env(:nano, :system_prompt_file)}
+          the node's template, {Nano.Settings.get(:system_prompt_file)}
         </span>
         <input
           :if={@v["prompt"] == "file"}
@@ -180,8 +180,8 @@ defmodule NanoWeb.StartForm do
           {if @openrouter?,
             do: "connect the ChatGPT subscription first",
             else:
-              "no provider is configured on this node: connect the ChatGPT subscription, " <>
-                "or set OPENROUTER_API_KEY in .env and restart"}
+              "no provider is on: connect the ChatGPT subscription, or set OpenRouter's " <>
+                "API key in Settings"}
         </span>
         <p :if={@error} class="error">{@error}</p>
       </div>

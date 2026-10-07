@@ -439,3 +439,13 @@ pre.code .cm { color: var(--dim); font-style: italic; }
 }
 [data-phx-main].phx-error ~ #disconnected { display: block; }
 [data-phx-main].phx-error { opacity: 0.5; }
+
+/* Settings: one small form per setting. */
+section.settings { max-width: 60rem; margin-top: 0.8rem; }
+section.settings > p { margin: 0 0 0.8rem; }
+form.setting { padding: 0.5rem 0; border-top: 1px solid var(--line); }
+form.setting .name { display: flex; gap: 0.6rem; align-items: baseline; }
+form.setting .row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.3rem 0; }
+form.setting .row input { flex: 1 1 18rem; min-width: 0; }
+form.setting input[type="password"] { border: 1px solid #c9ced6; border-radius: 3px; padding: 0.2rem 0.4rem; }
+form.setting .about, form.setting .error { margin: 0; font-size: 0.9em; }

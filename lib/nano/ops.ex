@@ -146,6 +146,31 @@ defmodule Nano.Ops do
   @doc "Forgets the subscription's tokens (memory and file), or a pending login. Returns `:ok`."
   def chatgpt_logout, do: Nano.ChatGPT.Auth.logout()
 
+  ## Settings
+
+  @doc """
+  The node's settings (`Nano.Settings.public/0`): each one's value, whether it was set or is
+  its default, what it does, and whether a change applies `:live` or at `:agent_start` (the
+  system prompt states it, so a running agent keeps the value it started with). A secret's
+  value is never shown: only whether it is set, and its last 4 characters.
+  """
+  def settings, do: Nano.Settings.public()
+
+  @doc """
+  Sets a setting, by key or name, saved at once: `:ok`, or `{:error, message}` saying what is
+  allowed (or that there is no such setting).
+  """
+  def put_setting(key, value), do: Nano.Settings.put(key, value)
+
+  @doc """
+  Puts a setting back to its default; a key is then unset. Removing OpenRouter's key turns
+  OpenRouter off: agents on it halt (`:provider_unavailable`) until it is set again and they
+  are un-halted. `:ok` or `{:error, message}`.
+  """
+  def delete_setting(key) do
+    with :ok <- Nano.Settings.delete(key), do: NanoAgent.check_providers()
+  end
+
   ## Processes
 
   @doc """
@@ -292,11 +317,11 @@ defmodule Nano.Ops do
 
   @doc """
   Evaluates Elixir source on the node, like `bin/rpc`, the way an agent's eval tool does
-  (`NanoAgent.run_eval/2`, in a task killed after `EVAL_TIMEOUT_MS`): `{:ok, inspected_result,
+  (`NanoAgent.run_eval/2`, in a task killed after the `eval_timeout_ms` setting): `{:ok, inspected_result,
   output}` or `{:error, message, output}`, where output is what the code printed.
   """
   def eval(code) do
-    timeout = Application.fetch_env!(:nano, :eval_timeout_ms)
+    timeout = Nano.Settings.get(:eval_timeout_ms)
     task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, NanoAgent, :run_eval, [code, []])
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do

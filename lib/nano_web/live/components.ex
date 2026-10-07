@@ -104,7 +104,9 @@ defmodule NanoWeb.Components do
       ~s|<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>|,
     "bot" =>
       ~s|<rect x="4" y="7.5" width="16" height="12" rx="3"/><path d="M12 3.5v4M9 12.5v1.5M15 12.5v1.5"/>|,
-    "plus" => ~s|<path d="M12 5v14M5 12h14"/>|
+    "plus" => ~s|<path d="M12 5v14M5 12h14"/>|,
+    "sliders" =>
+      ~s|<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>|
   }
 
   attr :name, :string, required: true
@@ -358,6 +360,11 @@ defmodule NanoWeb.Components do
   def halt_reason(:usage_limit),
     do:
       "the provider refused with a usage limit (e.g. the ChatGPT plan's); un-halt once it has reset"
+
+  def halt_reason(:provider_unavailable),
+    do:
+      "its model's provider was turned off (OpenRouter's API key removed); set the key in " <>
+        "Settings, then un-halt"
 
   def halt_reason(:restart_brake), do: "restart brake: it restarted 3 times within 60 s"
 

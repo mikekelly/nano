@@ -50,5 +50,9 @@ defmodule NanoWeb.Router do
     get "/chatgpt", ApiController, :chatgpt
     post "/chatgpt/login", ApiController, :chatgpt_login
     post "/chatgpt/logout", ApiController, :chatgpt_logout
+
+    get "/settings", ApiController, :settings
+    put "/settings/:key", ApiController, :put_setting
+    delete "/settings/:key", ApiController, :delete_setting
   end
 end

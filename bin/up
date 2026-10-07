@@ -1,12 +1,18 @@
 #!/bin/sh
-# Start the sandbox, making the agents' checkout if missing. Needs nothing in .env: agents use
-# OpenRouter if it has OPENROUTER_API_KEY, the ChatGPT subscription once connected, or both.
+# Start the sandbox, making the agents' checkout if missing, then push the settings in .env to
+# the node (bin/push-settings). Needs nothing in .env: agents use OpenRouter once the node has
+# its key (OPENROUTER_API_KEY in .env, or set in the dashboard), the ChatGPT subscription once
+# connected, or both.
 cd "$(dirname "$0")/.." || exit 1
-[ -n "$OPENROUTER_API_KEY" ] || grep -q '^OPENROUTER_API_KEY=.' .env 2>/dev/null || [ -f data/state/chatgpt_auth.json ] ||
-  echo "no model provider yet: agents need OPENROUTER_API_KEY=... in .env (then bin/up again) or Connect ChatGPT on the dashboard"
+grep -q '^OPENROUTER_API_KEY=.' .env 2>/dev/null || grep -qs '"openrouter_api_key"' data/state/settings.json ||
+  [ -f data/state/chatgpt_auth.json ] ||
+  echo "no model provider yet: agents need OPENROUTER_API_KEY=... in .env (then bin/up again), or the key set or ChatGPT connected on the dashboard"
 checkout=${NANO_CHECKOUT:-$(sed -n 's/^NANO_CHECKOUT=//p' .env 2>/dev/null)}; checkout=${checkout:-../nano-checkout}
 [ -d "$checkout" ] || { echo "cloning this repo to $checkout: the dedicated checkout the agents will edit"; git clone -q . "$checkout" || exit 1; }
 mkdir -p data && docker compose up -d --build || exit 1
 url="http://$(docker compose port nano 4000)"
-for i in $(seq 120); do curl -fsS -o /dev/null "$url/api" 2>/dev/null && { echo "dashboard: $url"; exit 0; }; sleep 1; done
+for i in $(seq 120); do
+  curl -fsS -o /dev/null "$url/api" 2>/dev/null && { bin/push-settings "$url" .env; echo "dashboard: $url"; exit 0; }
+  sleep 1
+done
 echo "the node has not come up; see: docker compose logs" >&2; exit 1

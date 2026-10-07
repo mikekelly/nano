@@ -9,6 +9,7 @@ defmodule Nano.SmokeTest do
     for name <- [
           Nano.PubSub,
           Nano.Registry,
+          Nano.Settings,
           Nano.StateStore,
           Nano.EvalSupervisor,
           Nano.AgentSupervisor,
@@ -41,7 +42,10 @@ defmodule Nano.SmokeTest do
       {"POST", "/api/users/bob/say", :say},
       {"POST", "/api/users/bob/send_raw", :send_raw},
       {"GET", "/api/users/bob/inbox", :inbox},
-      {"POST", "/api/eval", :eval}
+      {"POST", "/api/eval", :eval},
+      {"GET", "/api/settings", :settings},
+      {"PUT", "/api/settings/eval_timeout_ms", :put_setting},
+      {"DELETE", "/api/settings/eval_timeout_ms", :delete_setting}
     ]
 
     for {method, path, action} <- routes do

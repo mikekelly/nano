@@ -406,5 +406,5 @@ defmodule Nano.ChatGPT.Auth do
   defp why({:error, message}), do: message
 
   defp path, do: Path.join(Application.fetch_env!(:nano, :state_dir), "chatgpt_auth.json")
-  defp auth_url, do: Application.fetch_env!(:nano, :chatgpt_auth_url)
+  defp auth_url, do: Nano.Settings.get(:chatgpt_auth_url)
 end

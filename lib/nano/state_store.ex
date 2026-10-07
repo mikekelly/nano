@@ -55,12 +55,12 @@ defmodule Nano.StateStore do
 
   @doc """
   Saves an agent's eval bindings if they changed. If together they would take more than
-  `:max_bindings_bytes` (default 16 MB), the largest variables are left out of what is saved
+  the `max_bindings_bytes` setting (default 16 MB), the largest variables are left out of what is saved
   (they stay bound in the running process); a warning is logged when a variable is first left
   out. Returns the names left out.
   """
   def put_bindings(name, bindings) do
-    max = Application.get_env(:nano, :max_bindings_bytes, 16_000_000)
+    max = Nano.Settings.get(:max_bindings_bytes)
 
     {kept, dropped, _} =
       bindings

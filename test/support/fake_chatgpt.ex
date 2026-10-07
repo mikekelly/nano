@@ -5,7 +5,7 @@ defmodule Nano.FakeChatGPT do
   exchange and refresh). A real HTTP server on a random localhost port, like
   `Nano.FakeOpenRouter`, so the whole `Req` path runs.
 
-      Nano.FakeChatGPT.start()                 # idempotent; points :chatgpt_base_url and :chatgpt_auth_url here
+      Nano.FakeChatGPT.start()                 # idempotent; points the chatgpt_base_url and chatgpt_auth_url settings here
       Nano.FakeChatGPT.listen()                # the caller receives every request (below)
       Nano.FakeChatGPT.auth(:poll, [{403, %{}}, {200, :approved}])   # queued answers per endpoint
       model = Nano.FakeChatGPT.model()         # a fresh slug (without the openai-codex/ prefix)
@@ -35,8 +35,8 @@ defmodule Nano.FakeChatGPT do
     end
 
     port = GenServer.call(__MODULE__, :port)
-    Application.put_env(:nano, :chatgpt_base_url, "http://127.0.0.1:#{port}/backend-api/codex")
-    Application.put_env(:nano, :chatgpt_auth_url, "http://127.0.0.1:#{port}")
+    :ok = Nano.Settings.put(:chatgpt_base_url, "http://127.0.0.1:#{port}/backend-api/codex")
+    :ok = Nano.Settings.put(:chatgpt_auth_url, "http://127.0.0.1:#{port}")
   end
 
   @doc """

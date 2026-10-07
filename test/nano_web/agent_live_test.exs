@@ -424,6 +424,7 @@ defmodule NanoWeb.AgentLiveTest do
           budget: "its own turn or token budget is used up",
           context: "context limit reached",
           node_budget: "the node-wide hourly token cap was reached",
+          provider_unavailable: "provider was turned off (OpenRouter&#39;s API key removed)",
           restart_brake: "restart brake: it restarted 3 times within 60 s",
           start_failed: "failed while starting or restoring",
           log_failed: "could not write its log",
