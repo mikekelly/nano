@@ -126,10 +126,14 @@ itself work that needs room: a turn that reads what it must and writes the summa
 successor's brief, which can be long. Leave that room. So have the mechanism working long
 before you need it (delegation is the simplest one), keep the handoff cheap by keeping your
 notes and goals current as you go, and act on a threshold you set early, short of the
-limit. Coding agents that compact automatically do it at around 70–80% full, keeping the
-last 20–30% for the compaction itself; that is a sensible default, and the bigger the
-handover you will need to read and write, the earlier you should act. Handing over at half
-full throws away context you could still have used.
+limit. Think of the reserve in tokens, not as a fraction: it is what the handover itself
+will take. pi, a coding agent whose harness compacts mechanically with a separate
+summarising call, keeps 16,384 tokens in reserve (the summary may use about 13,000 of them)
+and the last 20,000 tokens of the conversation verbatim, so it compacts at 94% of a
+272,000-token window. A handover you do yourself costs more, because you read your notes
+and write the successor's brief or your own summary in your own turns: reserve enough for
+that, a few tens of thousands of tokens, and act when that much is left. Handing over much
+earlier throws away context you could still have used.
 The budget line delivered with your events tells you where you are. Put the same rule into
 the prompts of the agents you start: an agent halted for its context cannot report what it
 found.
