@@ -8,6 +8,9 @@ defmodule Nano.Background do
   """
   use GenServer
 
+  def start_link(opts \\ []),
+    do: GenServer.start_link(__MODULE__, %{}, Keyword.put(opts, :name, __MODULE__))
+
   def start(command, opts \\ []) do
     try do
       unless is_binary(command) and is_list(opts),
@@ -32,7 +35,8 @@ defmodule Nano.Background do
                Enum.all?(env, fn
                  {k, v} when is_binary(k) and is_binary(v) -> true
                  _ -> false
-               end), do: raise("env must be a list of string pairs")
+               end),
+             do: raise("env must be a list of string pairs")
 
       ensure_started()
       callers = [self() | List.wrap(Process.get(:"$callers"))]
@@ -55,6 +59,12 @@ defmodule Nano.Background do
       e -> {:error, Exception.message(e)}
     end
   end
+
+  @doc "Delete finished metadata (not log files); running jobs are never pruned."
+  def prune, do: call(:prune)
+  def prune(id), do: call({:prune, id})
+  @doc "Retry a completed job's notification after the automatic one-minute retry window."
+  def notify_again(id, target), do: call({:notify_again, id, target})
 
   def status(id), do: call({:status, id})
   def kill(id), do: call({:kill, id})
@@ -133,6 +143,37 @@ defmodule Nano.Background do
     end
   end
 
+  def handle_call({:prune, id}, _, state) do
+    case Map.get(state, id) do
+      nil -> {:reply, {:error, :not_found}, state}
+      %{state: :running} -> {:reply, {:error, :still_running}, state}
+      _ -> {:reply, :ok, Map.delete(state, id)}
+    end
+  end
+
+  def handle_call(:prune, _, state) do
+    kept = Map.filter(state, fn {_, j} -> j.state == :running end)
+    {:reply, {:ok, %{pruned: map_size(state) - map_size(kept)}}, kept}
+  end
+
+  def handle_call({:notify_again, id, target}, _, state) do
+    case Map.get(state, id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      %{state: :running} ->
+        {:reply, {:error, :still_running}, state}
+
+      job ->
+        if is_pid(target) or is_binary(target) do
+          notify(target, id, Map.drop(job, [:ref, :notify, :started_at, :pid]))
+          {:reply, :ok, state}
+        else
+          {:reply, {:error, :invalid_target}, state}
+        end
+    end
+  end
+
   def handle_call({:status, id}, _, state), do: {:reply, lookup(state, id), state}
 
   def handle_call({:kill, id}, _, state) do
@@ -184,19 +225,23 @@ defmodule Nano.Background do
   defp notify(nil, _, _), do: :ok
 
   defp notify(target, id, result) when is_binary(target) do
+    spawn(fn -> deliver(target, id, result, 120) end)
+  end
+
+  defp notify(pid, id, result), do: send(pid, {:nano_background, id, result})
+
+  defp deliver(_, _, _, 0), do: :ok
+
+  defp deliver(target, id, result, attempts) do
     case NanoAgent.whereis(target) do
       pid when is_pid(pid) ->
         send(pid, {:nano_background, id, result})
 
       _ ->
-        spawn(fn ->
-          Process.sleep(500)
-          notify(target, id, result)
-        end)
+        Process.sleep(500)
+        deliver(target, id, result, attempts - 1)
     end
   end
-
-  defp notify(pid, id, result), do: send(pid, {:nano_background, id, result})
 
   defp run(manager, id, command, path, opts) do
     result =

@@ -100,7 +100,18 @@ defmodule Nano.BackgroundTest do
     end
   end
 
+  test "completed metadata can be redelivered and pruned without deleting output" do
+    {:ok, job} = Nano.Background.start("printf retained", notify: nil)
+    assert {:ok, _} = Nano.Background.await(job.id)
+    assert :ok = Nano.Background.notify_again(job.id, self())
+    assert_receive {:nano_background, _, %{bytes: 8}}
+    assert :ok = Nano.Background.prune(job.id)
+    assert {:error, :not_found} = Nano.Background.status(job.id)
+    assert File.read!(job.path) == "retained"
+  end
+
   test "invalid options
+
  and await deadline" do
     assert {:error, _} = Nano.Background.start("echo", timeout: -1)
     {:ok, job} = Nano.Background.start("sleep 1", notify: nil)

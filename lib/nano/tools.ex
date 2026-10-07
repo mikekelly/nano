@@ -55,29 +55,45 @@ defmodule Nano.Tools do
 
   def tail(path, opts \\ []) do
     safe(fn ->
-      with {:ok, text} <- File.read(path) do
-        cap = Keyword.get(opts, :max_bytes, 16_000)
-        limit = Keyword.get(opts, :limit, 200)
+      cap = Keyword.get(opts, :max_bytes, 16_000)
+      limit = Keyword.get(opts, :limit, 200)
+      unless positive(cap) and positive(limit), do: throw({:error, "positive limits required"})
 
-        if not (positive(cap) and positive(limit)),
-          do: throw({:error, "positive limits required"})
+      with {:ok, stat} <- File.stat(path),
+           {:ok, file} <- :file.open(String.to_charlist(path), [:read, :binary, :raw]) do
+        try do
+          start = max(0, stat.size - cap - 4)
 
-        all = lines(text)
-        text2 = all |> Enum.take(-limit) |> Enum.join("\n")
+          chunk =
+            case :file.pread(file, start, cap + 4) do
+              {:ok, bytes} -> bytes
+              :eof -> ""
+              {:error, reason} -> throw({:error, reason})
+            end
 
-        text3 =
-          if byte_size(text2) > cap,
-            do: utf8_tail(binary_part(text2, byte_size(text2) - cap, cap)),
-            else: text2
+          chunk = utf8_tail(chunk)
+          text2 = chunk |> lines() |> Enum.take(-limit) |> Enum.join("\n")
 
-        {:ok,
-         %{
-           text: text3,
-           path: path,
-           total_bytes: byte_size(text),
-           total_lines: length(all),
-           truncated: text3 != String.trim_trailing(text, "\n")
-         }}
+          text3 =
+            if byte_size(text2) > cap,
+              do: utf8_tail(binary_part(text2, byte_size(text2) - cap, cap)),
+              else: text2
+
+          truncated = start > 0 or text3 != String.trim_trailing(chunk, "\n")
+
+          {:ok,
+           %{
+             text: text3,
+             path: path,
+             total_bytes: stat.size,
+             total_lines: if(start == 0, do: length(lines(chunk)), else: :unknown),
+             truncated: truncated,
+             next:
+               "read(path, offset: 1) for forward paging; increase max_bytes/limit for a larger tail"
+           }}
+        after
+          :file.close(file)
+        end
       end
     end)
   end
