@@ -5,6 +5,7 @@ log_dir = Path.join(run, "logs")
 Application.put_env(:nano, :log_dir, log_dir)
 # Likewise agent state files.
 Application.put_env(:nano, :state_dir, Path.join(run, "state"))
+Application.put_env(:nano, :spill_dir, Path.join(run, "spill"))
 ExUnit.after_suite(fn _ -> File.rm_rf(run) end)
 
 ExUnit.start()

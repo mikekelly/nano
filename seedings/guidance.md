@@ -34,6 +34,17 @@ the ones before it, and each makes the next one cheaper, so it is a good default
 2. *Shell*: `sh(cmd, opts)` with cwd, timeout and bounded, tail-able output; then
    background tasks whose completion arrives as a mailbox event
    ([background-tasks.md](background-tasks.md)), so long commands never hold a turn.
+
+   Heuristics for bounding output that coding agents have converged on, worth copying:
+   a file read keeps the *head* and says how to continue (`offset`), because you page
+   forward from a known line; a shell command keeps the *tail*, because the error is
+   usually at the end, and saves the whole output to a file whose path it returns, so
+   nothing is lost; a search caps the number of matches (say 100) and the length of each
+   matching line (say 500 characters); a listing caps entries (hundreds, not thousands).
+   Cap by lines as well as bytes where lines are the natural unit, so results stay
+   predictable in tokens. The harness's own cap on an eval result is `{{result_max_bytes}}`
+   bytes with the rest spilled to a file; your utilities should bound output well below
+   that, so the cap is never what shapes a result.
 3. *Notes and an index*: a module that says what exists and how to call it, and writes
    `/app/NOTES.md` from that table, so the next agent (or you after a restart) starts from
    the index instead of from the source.

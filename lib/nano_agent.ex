@@ -484,7 +484,8 @@ defmodule NanoAgent do
       "network_policy" => env(:network_policy),
       "max_turns" => limit(s.max_turns),
       "max_tokens" => limit(s.max_tokens),
-      "max_context" => limit(budget(s).max_context)
+      "max_context" => limit(budget(s).max_context),
+      "result_max_bytes" => env(:result_max_bytes)
     }
 
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
@@ -599,7 +600,7 @@ defmodule NanoAgent do
 
   defp event(s, term) do
     seq = s.event_seq + 1
-    {text, truncated} = truncate(inspect(term, inspect_opts()))
+    {text, truncated, spill} = truncate(inspect(term, inspect_opts()), {s.id, "event-#{seq}"})
     at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
     s = %{
@@ -612,12 +613,16 @@ defmodule NanoAgent do
     # queue_length: events waiting for the next turn, this one included.
     queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
 
-    log(s, :event_received, %{
-      event_seq: seq,
-      message: text,
-      queue_length: queued,
-      truncated: truncated
-    })
+    log(
+      s,
+      :event_received,
+      spilled(spill, %{
+        event_seq: seq,
+        message: text,
+        queue_length: queued,
+        truncated: truncated
+      })
+    )
 
     maybe_start_turn(s)
   end
@@ -1095,18 +1100,22 @@ defmodule NanoAgent do
   # The model sees the result followed by any captured IO, truncated as a whole; the log
   # keeps result and IO apart for the dashboard.
   defp tool_result(s, call, started, ok, result, io \\ "") do
-    {text, truncated} =
-      truncate(if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io)
+    whole = if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io
+    {text, truncated, spill} = truncate(whole, {s.id, "call-#{s.call_seq}"})
 
-    log(s, :tool_result, %{
-      call_id: call["id"],
-      name: call["function"]["name"],
-      duration_ms: System.monotonic_time(:millisecond) - started,
-      ok: ok,
-      result: elem(truncate(result), 0),
-      io: elem(truncate(io), 0),
-      truncated: truncated
-    })
+    log(
+      s,
+      :tool_result,
+      spilled(spill, %{
+        call_id: call["id"],
+        name: call["function"]["name"],
+        duration_ms: System.monotonic_time(:millisecond) - started,
+        ok: ok,
+        result: elem(truncate(result), 0),
+        io: elem(truncate(io), 0),
+        truncated: truncated
+      })
+    )
 
     append(s, tool_message(call, text))
   end
@@ -1118,22 +1127,64 @@ defmodule NanoAgent do
 
   defp append(s, message), do: %{s | transcript: s.transcript ++ [message]}
 
-  defp truncate(text) do
-    text = if String.valid?(text), do: text, else: inspect(text)
-    max = env(:result_max_bytes)
+  # The most of an event or result that is printed and kept in a spill file.
+  @ceiling 8_388_608
 
-    if byte_size(text) <= max do
-      {text, false}
+  # Cuts text at RESULT_MAX_BYTES: {text, cut?, spill path}. Given a spill name, the whole
+  # text (up to @ceiling bytes) is first written to <spill_dir>/<agent id>/<name>.txt and
+  # the marker names it.
+  defp truncate(text, spill \\ nil) do
+    text = if String.valid?(text), do: text, else: inspect(text)
+    {max, size} = {env(:result_max_bytes), byte_size(text)}
+
+    if size <= max do
+      {text, false, nil}
     else
-      head =
-        case :unicode.characters_to_binary(binary_part(text, 0, max)) do
-          {_, valid, _} -> valid
-          valid -> valid
+      kept = if size > @ceiling, do: prefix(text, @ceiling), else: text
+      path = spill && spill(spill, kept)
+
+      marker =
+        cond do
+          path && size > @ceiling ->
+            "[cut at #{max} bytes; the whole text was over #{@ceiling} bytes, and the first " <>
+              "#{byte_size(kept)} are in #{path}]"
+
+          path ->
+            "[cut at #{max} of #{size} bytes; the whole text is in #{path}]"
+
+          true ->
+            "[truncated at #{max} bytes]"
         end
 
-      {head <> "\n[truncated at #{max} bytes]", true}
+      {prefix(text, max) <> "\n" <> marker, true, path}
     end
   end
+
+  # The longest valid UTF-8 prefix of text of at most n bytes.
+  defp prefix(text, n) do
+    case :unicode.characters_to_binary(binary_part(text, 0, n)) do
+      {_, valid, _} -> valid
+      valid -> valid
+    end
+  end
+
+  defp spill({id, name}, text) do
+    path = Path.expand(Path.join([env(:spill_dir), id, name <> ".txt"]))
+
+    with :ok <- File.mkdir_p(Path.dirname(path)), :ok <- File.write(path, text) do
+      path
+    else
+      {:error, reason} ->
+        Logger.error(
+          "#{id}: could not keep the whole of a cut text in #{path}: #{inspect(reason)}"
+        )
+
+        nil
+    end
+  end
+
+  defp spilled(nil, fields), do: fields
+  defp spilled(path, fields), do: Map.put(fields, :spill, path)
 
   # A short rendering of an exit reason or error, for notes: harness stacktraces stay in the log.
   defp brief(term) do
@@ -1141,7 +1192,10 @@ defmodule NanoAgent do
     if String.length(text) > 300, do: String.slice(text, 0, 300) <> "…", else: text
   end
 
-  defp inspect_opts, do: [limit: 500, printable_limit: env(:result_max_bytes)]
+  # Bounded only where the printed text would pass @ceiling anyway (a printed item takes at
+  # least 2 bytes), so truncate/2 can tell when it was: an event or result is never printed
+  # much past 8 MB, in the agent or in an eval task.
+  defp inspect_opts, do: [limit: div(@ceiling, 2), printable_limit: @ceiling]
 
   # Best effort: a log that cannot be written must not take the agent down.
   # :ok, or :error when the entry could not be written to disk (Nano.Log still broadcasts it).

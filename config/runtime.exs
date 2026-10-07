@@ -32,11 +32,13 @@ config :nano,
   agent_max_context: int.("AGENT_MAX_CONTEXT", "1000000"),
   node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "100000000"),
   eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
-  result_max_bytes: int.("RESULT_MAX_BYTES", "16000"),
+  result_max_bytes: int.("RESULT_MAX_BYTES", "51200"),
   # Eval variables are saved for restarts up to this many bytes in total; the largest are left out.
   max_bindings_bytes: int.("MAX_BINDINGS_BYTES", "16000000"),
   network_policy: env.("NETWORK_POLICY", "openrouter-only"),
   log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs")),
+  # Tool results and events over RESULT_MAX_BYTES are cut, and the whole text written here.
+  spill_dir: env.("SPILL_DIR", if(config_env() == :prod, do: "/data/spill", else: "tmp/spill")),
   # Each agent's state is written here on every save and revived from here at boot.
   state_dir:
     env.(

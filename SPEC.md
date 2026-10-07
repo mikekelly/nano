@@ -130,8 +130,11 @@ working are queued and delivered together when your current turn ends.
 You have two tools. eval runs Elixir code on this node and returns the
 result. The code must be valid Elixir source, exactly as it would have to
 be in a file: anything else fails to compile, and you get the error back
-instead of a result. Variables you bind persist between calls, and Erlang
-modules are available as atoms. idle ends your turn; I will wake you when the next
+instead of a result. A result, including anything your code prints, is cut
+at {{result_max_bytes}} bytes; when that happens the result says so and
+names a file on this node that holds the whole of it, up to a few
+megabytes. Events are cut the same way. Variables you bind persist between calls, and Erlang modules are
+available as atoms. idle ends your turn; I will wake you when the next
 message arrives. Optionally pass wakeup_after (milliseconds) and I will
 wake you after that long if no message arrives first. If you respond without calling a tool, that also ends
 your turn. Running code with eval is the only way you can affect anything
@@ -156,7 +159,7 @@ The source code for this node, including your own module, is in /app
 node runs.
 ```
 
-Placeholders are filled from `System.otp_release/0`, `System.version/0`, `node/0`, `self/0`, and container env vars. The template is a plain text file, `priv/system_prompt.txt` by default (`SYSTEM_PROMPT_FILE` points elsewhere), read from disk each time an agent starts or restarts, so it can be edited, including by an agent, without recompiling anything. Experiments can swap in variant prompts per agent (`system_prompt:` as a string, or `system_prompt_file:` as a path), and the prompt actually used is written to the log at agent start.
+Placeholders (`{{pid}}`, `{{name}}`, `{{node}}`, `{{otp_release}}`, `{{elixir_version}}`, `{{os_user}}`, `{{os}}`, `{{network_policy}}`, `{{max_turns}}`, `{{max_tokens}}`, `{{max_context}}`, `{{result_max_bytes}}`) are filled from `System.otp_release/0`, `System.version/0`, `node/0`, `self/0`, and container env vars. The template is a plain text file, `priv/system_prompt.txt` by default (`SYSTEM_PROMPT_FILE` points elsewhere), read from disk each time an agent starts or restarts, so it can be edited, including by an agent, without recompiling anything. Experiments can swap in variant prompts per agent (`system_prompt:` as a string, or `system_prompt_file:` as a path), and the prompt actually used is written to the log at agent start.
 
 ## OpenRouter and the harness log
 
@@ -301,6 +304,7 @@ One image, based on the official Elixir image, running the app from source with 
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | (required) | Model access |
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
+| `SPILL_DIR` | `/data/spill` | Where the whole text of a truncated result or event is kept, one file per cut |
 | `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot |
 | `SYSTEM_PROMPT_FILE` | `priv/system_prompt.txt` | Default prompt template for new agents, read at each agent start |
 | `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
@@ -309,7 +313,7 @@ One image, based on the official Elixir image, running the app from source with 
 | `AGENT_MAX_TOKENS` | 30000000 | Total tokens per agent before halting (prompt + completion, summed over every model call); 0 means no limit |
 | `AGENT_MAX_CONTEXT` | 1000000 | Size of one agent's conversation, in tokens, at which it is halted; 0 means no limit (the model's own limit then applies) |
 | `EVAL_TIMEOUT_MS` | 30000 | Per-eval timeout |
-| `RESULT_MAX_BYTES` | 16000 | Truncation limit for tool results and events |
+| `RESULT_MAX_BYTES` | 51200 | Truncation limit for tool results and events; the whole text is written to a file under `/data/spill` and the truncated text names it |
 | `MAX_BINDINGS_BYTES` | 16000000 | Eval variables are saved for restarts up to this many bytes in total; larger ones stay bound in the running process only, and the restart note names them |
 | `NETWORK_POLICY` | `openrouter-only` | Text shown in the system prompt; must match the actual network setup |
 

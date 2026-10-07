@@ -663,19 +663,82 @@ defmodule NanoAgentTest do
     assert_in_delta cost, 0.501, 1.0e-9
   end
 
-  test "tool results and events are truncated at RESULT_MAX_BYTES", ctx do
+  test "cut results and events keep their whole text in a file they name", ctx do
     Application.put_env(:nano, :result_max_bytes, 100)
     {pid, id} = start!(ctx)
-    Fake.push(ctx.model, calls: [eval: ~s|String.duplicate("é", 300)|])
+    spill = Path.expand(Path.join(Application.get_env(:nano, :spill_dir), id))
+    Fake.push(ctx.model, calls: [eval: ~s|IO.write("io!"); String.duplicate("é", 300)|])
     Fake.push(ctx.model, text: "ok")
-    send(pid, String.duplicate("b", 300))
-    assert %{"truncated" => true, "message" => message} = await(id, :event_received)
-    assert message =~ ~r/^"b+\n\[truncated at 100 bytes\]$/u
+    big = String.duplicate("b", 300)
+    send(pid, big)
+
+    # The event: cut, with the whole of it in event-<event_seq>.txt.
+    event_file = Path.join(spill, "event-1.txt")
+
+    assert %{"truncated" => true, "message" => message, "spill" => ^event_file} =
+             await(id, :event_received)
+
+    assert message =~
+             ~r/^"b+\n\[cut at 100 of 302 bytes; the whole text is in #{Regex.escape(event_file)}\]$/u
+
+    assert File.read!(event_file) == inspect(big)
+
+    # The eval result (with its captured IO): cut, the whole of it in call-<call_seq>.txt.
     request!(ctx.model)
     [result] = tool_texts(request!(ctx.model))
+    call_file = Path.join(spill, "call-1.txt")
     assert String.valid?(result)
-    assert result =~ ~r/^"é+\n\[truncated at 100 bytes\]$/u
-    assert %{"truncated" => true} = await(id, :tool_result)
+
+    assert result =~
+             ~r/^"é+\n\[cut at 100 of \d+ bytes; the whole text is in #{Regex.escape(call_file)}\]$/u
+
+    assert File.read!(call_file) == inspect(String.duplicate("é", 300)) <> "\n\nCaptured IO:\nio!"
+    assert %{"truncated" => true, "spill" => ^call_file} = await(id, :tool_result)
+    assert %{"call_seq" => 1} = await(id, :tool_call)
+  end
+
+  test "past 8 MB, the file keeps the first 8 MB and the cut text says so", ctx do
+    Application.put_env(:nano, :result_max_bytes, 100)
+    {pid, id} = start!(ctx)
+    spill = Path.expand(Path.join(Application.get_env(:nano, :spill_dir), id))
+    Fake.push(ctx.model, calls: [eval: ~s|:binary.copy("y", 9_000_000)|])
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :binary.copy("x", 9_000_000))
+
+    event_file = Path.join(spill, "event-1.txt")
+    assert %{"message" => message} = await(id, :event_received)
+
+    assert message =~
+             "[cut at 100 bytes; the whole text was over 8388608 bytes, and the first 8388608 " <>
+               "are in #{event_file}]"
+
+    assert File.stat!(event_file).size == 8_388_608
+    request!(ctx.model)
+    [result] = tool_texts(request!(ctx.model))
+    call_file = Path.join(spill, "call-1.txt")
+
+    assert result =~
+             "the whole text was over 8388608 bytes, and the first 8388608 are in #{call_file}]"
+
+    assert File.stat!(call_file).size == 8_388_608
+  end
+
+  test "if the whole text cannot be kept, the cut text says only that it was cut", ctx do
+    Application.put_env(:nano, :result_max_bytes, 100)
+    saved = Application.get_env(:nano, :spill_dir)
+    Application.put_env(:nano, :spill_dir, "/dev/null/spill")
+    on_exit(fn -> Application.put_env(:nano, :spill_dir, saved) end)
+    {pid, id} = start!(ctx)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        send(pid, String.duplicate("b", 300))
+        assert %{"message" => message} = entry = await(id, :event_received)
+        assert message =~ ~r/\n\[truncated at 100 bytes\]$/
+        refute Map.has_key?(entry, "spill")
+      end)
+
+    assert log =~ "could not keep the whole of a cut text in /dev/null/spill/#{id}/event-1.txt"
   end
 
   test "Nano.Log.read/2 returns the entries after a sequence number", ctx do

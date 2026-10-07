@@ -25,6 +25,7 @@ services:
       - EVAL_TIMEOUT_MS
       - RESULT_MAX_BYTES
       - MAX_BINDINGS_BYTES
+      - SPILL_DIR
       - OPENROUTER_BASE_URL
       # For seedings that need them (see seedings/): unused by the seed itself.
       - EXA_API_KEY
