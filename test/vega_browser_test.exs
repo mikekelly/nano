@@ -51,7 +51,11 @@ defmodule Vega.BrowserTest do
       assert_receive {:started, {:ok, b}}, 15000
       assert_receive {:DOWN, ^ref, :process, ^initiator, :normal}, 1000
 
-      on_exit(fn -> Browser.stop(b) end)
+      on_exit(fn ->
+        Browser.stop(b)
+        wait_stopped(b, 100)
+      end)
+
       assert {:ok, %{"title" => "JS fixture"}} = Browser.navigate(b, "http://127.0.0.1:#{port}/")
       assert {:ok, "Ready🙂"} = Browser.evaluate(b, "document.querySelector('#out').textContent")
       before_image = Browser.screenshot(b)
@@ -120,6 +124,19 @@ defmodule Vega.BrowserTest do
        ) do
     assert crc == :erlang.crc32(type <> data)
     [{type, data} | png_chunks(rest)]
+  end
+
+  defp wait_stopped(_browser, 0), do: :ok
+
+  defp wait_stopped(browser, attempts) do
+    case Browser.status(browser) do
+      {:ok, %{status: state}} when state in [:starting, :running] ->
+        Process.sleep(50)
+        wait_stopped(browser, attempts - 1)
+
+      _ ->
+        :ok
+    end
   end
 
   defp serve(socket) do
