@@ -60,8 +60,8 @@ not fsynced (no promise against abrupt host power loss); `/data` volume removal 
 The files are plain JSON with filesystem permissions, not access-controlled or encrypted.
 Review scans a capped disk document; it does not contact a service or wait for an agent.
 Tests use random isolated roots and exercise fresh-process reads, concurrency, CRUD,
-validation, corruption and bounded retrieval; VM restart durability follows from disk-only
-state, rather than a full container restart test.
+validation, corruption and bounded retrieval; a separate-VM write/shutdown/read test proves persistence without in-memory state. A full
+container/volume restart was not attempted on the shared node.
 
 ## Dashboard integration
 

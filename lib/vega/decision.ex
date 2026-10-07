@@ -32,6 +32,9 @@ defmodule Vega.Decision do
             do: {:ok, Map.take(response, ~w(model answers usage))},
             else: {:error, :invalid_response}
 
+        {:ok, %{status: 200}} ->
+          {:error, :invalid_response}
+
         {:ok, %{status: status}} ->
           {:error, {:http_status, status}}
 
