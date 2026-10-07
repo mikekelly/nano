@@ -27,6 +27,18 @@ defmodule NanoWeb.BotsLiveTest do
     refute html =~ "<script>alert"
     assert has_element?(view, ".code code", "secret_eval()")
     refute has_element?(view, "#timeline")
+    source = Path.join(System.tmp_dir!(), "nova-bots-live-file-#{suffix}.txt")
+    File.write!(source, "generated output")
+
+    {:ok, file} =
+      Nano.Bots.attach(chat.id, hd(chat.bots), source, filename: "<img onerror=alert(1)>.txt")
+
+    File.rm!(source)
+    render(view)
+    assert has_element?(view, "a.file", file.filename)
+    refute has_element?(view, "article img")
+    assert render(view) =~ "&lt;img"
+
     {:ok, request} = Nano.Bots.ask_human(hd(chat.bots), "Which day?", session: chat.id)
     render(view)
 

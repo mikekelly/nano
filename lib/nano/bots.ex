@@ -16,6 +16,14 @@ defmodule Nano.Bots do
     end
   end
 
+  def attach(sid, bid, source, opts \\ []),
+    do: call(opts[:server] || __MODULE__, {:attach, sid, bid, source, opts, caller_agent()})
+
+  def file(id, server \\ __MODULE__), do: call(server, {:file, id})
+  def service_ref(id), do: {:via, Registry, {Nano.Registry, {:bots_service, id}}}
+
+  def usage(sid, bid, server \\ __MODULE__), do: call(server, {:usage, sid, bid})
+
   def archive(sid, generation, server \\ __MODULE__),
     do: call(server, {:archive, sid, generation})
 
@@ -100,7 +108,7 @@ defmodule Nano.Bots do
         {:error, reason} -> raise "bots state unreadable: #{inspect(reason)}"
       end
 
-    data = Map.put_new(data, :service_id, id())
+    data = data |> Map.put_new(:service_id, id()) |> Map.put_new(:artifacts, %{})
     server = {:via, Registry, {Nano.Registry, {:bots_service, data.service_id}}}
     {:ok, _} = Registry.register(Nano.Registry, {:bots_service, data.service_id}, nil)
     Process.send_after(self(), :monitor, 500)
@@ -126,6 +134,86 @@ defmodule Nano.Bots do
   end
 
   @impl true
+  def handle_call({:attach, sid, bid, source, opts, actor}, _, s) do
+    caption = opts[:caption] || "Attached file"
+
+    with true <- valid?(caption),
+         %{bots: bots} = chat <- s.data.sessions[sid],
+         true <- bid == :human or bid in bots,
+         true <- current_actor?(actor, bid, sid, chat.generation),
+         {:ok, file, path} <-
+           Nano.Bots.Files.store(
+             Path.join(Path.dirname(s.path), "files"),
+             source,
+             opts[:filename]
+           ) do
+      file = Map.merge(file, %{service: s.data.service_id, session: sid, who: bid})
+      chat = append(chat, bid, caption)
+      messages = List.update_at(chat.messages, -1, &Map.put(&1, :files, [file]))
+      chat = %{chat | messages: messages}
+      chat = if bid == :human, do: chat, else: put_in(chat, [:status, bid], :idle)
+      data = s.data |> put_in([:sessions, sid], chat) |> put_in([:artifacts, file.id], file)
+
+      case commit(s, data, {:ok, file}, %{session: sid, bot: bid, text: caption}) do
+        {:reply, {:error, _} = error, state} ->
+          File.rm(path)
+          {:reply, error, state}
+
+        reply ->
+          reply
+      end
+    else
+      {:error, _} = error -> {:reply, error, s}
+      _ -> {:reply, {:error, :invalid_file_or_participant}, s}
+    end
+  end
+
+  def handle_call({:file, id}, _, s) do
+    case s.data.artifacts[id] do
+      nil ->
+        {:reply, {:error, :not_found}, s}
+
+      file ->
+        path = Path.join([Path.dirname(s.path), "files", file.id <> ".data"])
+        {:reply, {:ok, Map.put(file, :path, path)}, s}
+    end
+  end
+
+  def handle_call({:usage, sid, bid}, _, s) do
+    case s.data.sessions[sid] do
+      %{generation: generation, bots: bots} when generation > 0 ->
+        if bid in bots do
+          usage =
+            Enum.reduce(0..(generation - 1), %{turns: 0, tokens: 0}, fn gen, acc ->
+              case File.read(checkpoint_path(s.path, sid, gen)) do
+                {:ok, bytes} ->
+                  state =
+                    bytes
+                    |> :erlang.binary_to_term([:safe])
+                    |> Enum.find(&(&1.name == "bot-#{bid}-#{sid}-#{gen}"))
+
+                  if state,
+                    do: %{
+                      turns: acc.turns + state.turns_used,
+                      tokens: acc.tokens + state.tokens_used
+                    },
+                    else: acc
+
+                _ ->
+                  acc
+              end
+            end)
+
+          {:reply, usage, s}
+        else
+          {:reply, %{turns: 0, tokens: 0}, s}
+        end
+
+      _ ->
+        {:reply, %{turns: 0, tokens: 0}, s}
+    end
+  end
+
   def handle_call({:archive, sid, generation}, _, s) do
     case s.data.sessions[sid] do
       nil ->
@@ -410,7 +498,8 @@ defmodule Nano.Bots do
     current = s.data.sessions[sid]
 
     chat =
-      if current.generation == generation do
+      if current.generation == generation and
+           (prepared.generation == generation or rotation_safe?(current)) do
         %{
           current
           | generation: prepared.generation,
@@ -570,7 +659,8 @@ defmodule Nano.Bots do
 
       safe =
         Enum.all?(states, fn state ->
-          state && (state.status == :idle or state.halted == :context)
+          state && state.halted in [nil, :context] &&
+            (state.status == :idle or state.halted == :context)
         end)
 
       if safe and paused != [] do
@@ -706,18 +796,19 @@ defmodule Nano.Bots do
   end
 
   defp compact(chat, decision) do
-    if chat.context_bytes > 24_000 or runtime_needs_compaction?(chat) or
-         decide(
-           decision,
-           :compact,
-           %{
-             bytes: chat.context_bytes,
-             context: runtime_context(chat),
-             recent: Enum.take(chat.messages, -8),
-             brief: chat.brief
-           },
-           false
-         ) == true do
+    if rotation_safe?(chat) and
+         (chat.context_bytes > 24_000 or runtime_needs_compaction?(chat) or
+            decide(
+              decision,
+              :compact,
+              %{
+                bytes: chat.context_bytes,
+                context: runtime_context(chat),
+                recent: Enum.take(chat.messages, -8),
+                brief: chat.brief
+              },
+              false
+            ) == true) do
       recent = chat.messages |> Enum.take(-20) |> Enum.map_join("\n", &"#{&1.who}: #{&1.text}")
       brief = decide(decision, :summary, %{previous: chat.brief, recent: recent}, nil)
 
@@ -734,6 +825,21 @@ defmodule Nano.Bots do
     else
       chat
     end
+  end
+
+  defp rotation_safe?(chat) do
+    Enum.all?(chat.bots, fn bid ->
+      case Nano.StateStore.get("bot-#{bid}-#{chat.id}-#{chat.generation}") do
+        nil ->
+          true
+
+        %{status: status, halted: halted} ->
+          halted in [nil, :context] and (status == :idle or halted == :context)
+
+        _ ->
+          false
+      end
+    end)
   end
 
   defp runtime_context(chat) do
@@ -789,7 +895,7 @@ defmodule Nano.Bots do
 
         broadcast(Map.put(event, :notify, notify?))
 
-        if event[:bot] && event[:text] && !event[:request],
+        if event[:bot] && event[:bot] != :human && event[:text] && !event[:request],
           do: send(self(), {:route_group, event.session, event.bot, event.text})
 
         {:reply, reply,

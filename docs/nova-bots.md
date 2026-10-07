@@ -131,7 +131,7 @@ or style. This is particularly important because `/api/eval` shares the origin.
 The deployment remains the seed's **unauthenticated trusted single-user node**:
 no multi-user access control, sandbox per bot or distinct VM/computer per bot exists.
 Do not expose this endpoint publicly without authentication and network isolation.
-Attachments, voice input, app connections, full Markdown, configurable quiet hours,
+Voice input, app connections, full Markdown, configurable quiet hours,
 service-worker notifications while the browser is closed, bot editing/deletion and
 production-grade transcript pagination are not implemented. Display history is stored
 in one state file; very large histories will need an append-only database/stream.
@@ -193,3 +193,38 @@ their prompts (service ID persists on disk). Replies, memories, human requests,
 history/checkpoints and retirement archives route to that service, not the production
 singleton. Thus isolated named/path services can run live smoke without changing
 node-wide provider configuration. Service restart restores that stable routing ID.
+
+## Files
+
+```elixir
+{:ok, file} = Nano.Bots.attach(chat.id, ada.id, "/tmp/ada/report.txt",
+  filename: "Report.txt", caption: "Here is your report", server: my_service)
+{:ok, %{path: local_path}} = Nano.Bots.file(file.id, my_service)
+```
+
+Generated files and human composer uploads are limited to 5MB. Sources must be
+regular files (symlinks/directories refused) and are bounded-read then copied to a
+service-owned directory with mode 0700 and files 0600. Artifact IDs, not user/model
+paths or URLs, determine stored paths and download routes. Filenames are stripped
+of path separators/control characters, byte-capped and rendered as escaped text.
+Downloads `/bots/files/:service/:id` resolve only registered IDs, refuse symlinks,
+and force attachment disposition, octet-stream, nosniff, sandbox CSP and no-store.
+HTML/script files never render inline on the `/api/eval` origin. This is controlled
+browser exposure, not an OS sandbox: privileged eval agents still have their normal
+filesystem capabilities. Never attach credentials or secrets.
+
+The composer + accepts one file per message; empty-text file sends prompt the bot
+to review the attachment. There is no rich image/media preview, antivirus scanning,
+attachment quota/garbage collector, voice input or external URL download capability.
+Private copied files survive source deletion and node restart. Tests cover copy,
+headers, traversal/unknown IDs, oversized/symlink sources, wrong participants and
+escaped model-authored filenames in the LiveView. 22 focused tests pass.
+
+Decision inputs also have an aggregate 24KB JSON cap: candidate memory snippets,
+query, summary and recent conversation are bounded before provider calls. Missing,
+oversized or invalid judgment inputs fall back explicitly instead of spending on
+an unbounded cheap-model context. Positive operator max_turns/max_tokens carry
+forward across archived generations via `Nano.Bots.usage`; new generations refuse
+to start when an earlier generation exhausted the configured budget. Current
+agent counters/budget remain in NanoAgent.info. Generation changes never clear
+non-context halts, and active providers/evals are not interrupted by human rollover.
