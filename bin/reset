@@ -19,8 +19,9 @@ if [ -n "$(git -C "$checkout" status --porcelain)" ]; then
 fi
 for b in $(git -C "$checkout" for-each-ref --format='%(refname:short)' refs/heads); do
   [ "$b" = main ] && continue
-  [ "$(git rev-parse -q --verify "refs/heads/$b")" = "$(git -C "$checkout" rev-parse "$b")" ] ||
-    { echo "branch $b in $checkout is not in this repo at the same commit; push it first" >&2; exit 1; }
+  sha=$(git -C "$checkout" rev-parse "$b")
+  [ -n "$(git for-each-ref --count=1 --contains "$sha" refs/heads 2>/dev/null)" ] ||
+    { echo "branch $b in $checkout is not on any branch of this repo; push it first" >&2; exit 1; }
 done
 [ -z "$(git -C "$checkout" rev-list -n 1 origin/main..main 2>/dev/null)" ] ||
   { echo "main in $checkout has commits that are not on main here; move them to a seedling branch first" >&2; exit 1; }
@@ -40,7 +41,7 @@ git -C "$checkout" checkout -q -f main &&
 git -C "$checkout" clean -qfd && rm -rf "$checkout/tmp"
 git -C "$checkout" config remote.origin.fetch +refs/heads/main:refs/remotes/origin/main
 for r in $(git -C "$checkout" for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags); do
-  case "$r" in refs/heads/main | refs/remotes/origin/main) ;; *) git -C "$checkout" update-ref -d "$r" ;; esac
+  case "$r" in refs/heads/main | refs/remotes/origin/main) ;; *) git -C "$checkout" update-ref --no-deref -d "$r" ;; esac
 done
 git -C "$checkout" reflog expire --expire=now --all && git -C "$checkout" gc -q --prune=now
 echo "checkout reset to $(git -C "$checkout" log --oneline -1)"
