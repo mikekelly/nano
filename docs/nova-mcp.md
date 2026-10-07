@@ -72,7 +72,9 @@ Nano.MCP.connect("local-fixture",
 ```
 
 Connection options: `config`, `config_path` (default `/app/config/mcp.json`),
-`state_dir` (default `/data/mcp`), and initialization wait `timeout` (15 seconds).
+`state_dir` (default `/data/mcp`), initialization wait `timeout` (15 seconds), and `recipient` (watch recipient).
+Set `recipient: child_name` during delegation to avoid watching on behalf of the
+setup caller, or `recipient: false` to disable automatic watching.
 Supervisor options `config_path` and `state_dir` apply to boot-loaded servers.
 `load_config/1` returns `{:ok, server_map}` or a file/JSON/config error.
 Servers must emit newline-delimited JSON on stdio stdout; stderr is not treated
@@ -103,6 +105,8 @@ progress, are forwarded unchanged (subject to byte bounding) as:
 `watch(server, recipient)` watches **all** notifications and lifecycle events.
 `connect/2` automatically watches on behalf of its caller. Resource subscribers
 also receive their resource updates and disconnect/subscription-error events.
+Membership changes are serialized per resource URI, preventing out-of-order RPC
+responses from resurrecting stale subscriber membership.
 An agent PID is automatically resolved to its registered stable agent name.
 Harness eval runs in a Task: the task's `$callers` chain is inspected to resolve
 its owning agent, so default subscribers/watchers and call telemetry reach the
@@ -167,7 +171,7 @@ this protects transport buffering independently of printed result limits.
 ## Validation
 
 `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-mcp/_build mix test test/mcp*test.exs`
-passed **8 tests**. They use a local Python stdio JSON-RPC fixture and local
+passed **10 tests**. They use a local Python stdio JSON-RPC fixture and local
 Bandit on port 0: lifecycle/initialization, live discovery/cursors, tools,
 resources/prompts, mailbox list/progress/resource notifications, server ping,
 RPC errors/timeouts/reconnect, restart-safe explicit and automatic identities,

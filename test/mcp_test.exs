@@ -14,11 +14,11 @@ defmodule Nano.MCPTest do
     %{dir: dir}
   end
 
-  defp server(dir) do
+  defp server(dir, opts \\ []) do
     script = Path.join(dir, "server.py")
 
     File.write!(script, ~S"""
-    import sys,json,signal
+    import sys,json,signal,time
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     def out(m):
       print(json.dumps(m), flush=True)
@@ -28,6 +28,7 @@ defmodule Nano.MCPTest do
       if method is None:
         if id=='server-ping' and m.get('result')=={}: out({'jsonrpc':'2.0','method':'fixture/ping_ack'})
         continue
+      if method=='resources/subscribe' and m['params']['uri']=='test://slow': time.sleep(0.2)
       if method=='hang': continue
       if method=='die': sys.exit(9)
       if method=='initialize': result={'protocolVersion':'2025-11-25','capabilities':{'tools':{},'resources':{'subscribe':True}},'serverInfo':{'name':'fixture','version':'1'}}
@@ -53,13 +54,82 @@ defmodule Nano.MCPTest do
     name = "fixture-" <> Path.basename(dir)
 
     assert {:ok, pid} =
-             MCP.connect(name,
-               config: %{"command" => "python3", "args" => [script]},
-               state_dir: dir
+             MCP.connect(
+               name,
+               Keyword.merge(
+                 [config: %{"command" => "python3", "args" => [script]}, state_dir: dir],
+                 opts
+               )
              )
 
     on_exit(fn -> MCP.disconnect(pid) end)
     {name, pid}
+  end
+
+  defp await(predicate, attempts \\ 100)
+  defp await(predicate, 0), do: assert(predicate.())
+
+  defp await(predicate, attempts) do
+    if predicate.(),
+      do: :ok,
+      else:
+        (
+          Process.sleep(5)
+          await(predicate, attempts - 1)
+        )
+  end
+
+  test "connect recipient isolates child notifications from setup caller", %{dir: dir} do
+    parent = self()
+
+    child =
+      spawn(fn ->
+        receive do
+          event -> send(parent, {:child_event, event})
+        end
+      end)
+
+    {name, _pid} = server(dir, recipient: child)
+    assert_receive {:child_event, {:mcp, ^name, "client/connected", _}}
+    refute_receive {:mcp, ^name, "client/connected", _}, 30
+    quiet_dir = Path.join(dir, "quiet")
+    File.mkdir_p!(quiet_dir)
+    {quiet_name, _} = server(quiet_dir, recipient: false)
+    refute_receive {:mcp, ^quiet_name, "client/connected", _}, 30
+  end
+
+  test "resource membership changes are serialized per URI", %{dir: dir} do
+    {_name, pid} = server(dir)
+    first = Task.async(fn -> MCP.subscribe(pid, "test://slow", "first") end)
+
+    await(fn ->
+      Enum.any?(:sys.get_state(pid).pending, fn {_, p} ->
+        match?({:subscribe, _, "test://slow", _}, p.kind)
+      end)
+    end)
+
+    second = Task.async(fn -> MCP.unsubscribe(pid, "test://slow", "first") end)
+
+    await(fn ->
+      length(Map.get(:sys.get_state(pid).subscription_queue, "test://slow", [])) == 1
+    end)
+
+    third = Task.async(fn -> MCP.subscribe(pid, "test://slow", "third") end)
+
+    await(fn ->
+      length(Map.get(:sys.get_state(pid).subscription_queue, "test://slow", [])) == 2
+    end)
+
+    assert length(
+             Enum.filter(:sys.get_state(pid).pending, fn {_, p} ->
+               match?({:subscribe, _, "test://slow", _}, p.kind)
+             end)
+           ) == 1
+
+    assert :ok = Task.await(first)
+    assert :ok = Task.await(second)
+    assert :ok = Task.await(third)
+    assert %{"test://slow" => ["third"]} = :sys.get_state(pid).subscriptions
   end
 
   test "stdio lifecycle, discovery, tool/resource/prompt access, events, errors and timeouts", %{
@@ -167,9 +237,12 @@ defmodule Nano.MCPTest do
     name = "bad-version-" <> Path.basename(dir)
 
     assert {:error, {:disconnected, {:initialize, _}}} =
-             MCP.connect(name,
-               config: %{"command" => "python3", "args" => [script]},
-               state_dir: dir
+             MCP.connect(
+               name,
+               Keyword.merge(
+                 [config: %{"command" => "python3", "args" => [script]}, state_dir: dir],
+                 []
+               )
              )
 
     assert_receive {:mcp, ^name, "client/disconnected", _}
