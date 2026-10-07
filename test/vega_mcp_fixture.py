@@ -39,7 +39,13 @@ def handle(msg):
         subscriptions.discard(p["uri"])
     elif method == "tools/call":
         name = p["name"]
+        if name == "credential_log":
+            events.put({"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "error", "data": "bad bearer " + os.getenv("VEGA_MCP_FAKE_SECRET", "missing")}})
+        if name == "credential_error":
+
+            return {"jsonrpc": "2.0", "id": ident, "error": {"code": -32000, "message": "bad bearer " + os.getenv("VEGA_MCP_FAKE_SECRET", "missing")}}
         if name == "die":
+
             os._exit(17)
         if name == "hang":
             return None

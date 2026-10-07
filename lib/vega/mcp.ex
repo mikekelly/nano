@@ -51,7 +51,8 @@ defmodule Vega.MCP do
   def connect(name, config \\ nil) when is_binary(name) do
     with {:ok, _} <- start(),
          {:ok, config} <- definition(name, config),
-         :ok <- validate(config) do
+         :ok <- validate(config),
+         :ok <- Vega.MCP.Config.put(name, config) do
       case Registry.lookup(Vega.MCP.Registry, name) do
         [{pid, _}] ->
           ready(pid)
@@ -59,7 +60,7 @@ defmodule Vega.MCP do
         [] ->
           case DynamicSupervisor.start_child(
                  Vega.MCP.Connections,
-                 {Vega.MCP.Connection, {name, config}}
+                 {Vega.MCP.Connection, name}
                ) do
             {:ok, pid} -> ready(pid)
             {:error, {:already_started, pid}} -> ready(pid)
@@ -252,6 +253,7 @@ defmodule Vega.MCP.Supervisor do
     Supervisor.init(
       [
         {Registry, keys: :unique, name: Vega.MCP.Registry},
+        Vega.MCP.Config,
         Vega.MCP.State,
         {Task.Supervisor, name: Vega.MCP.Requests},
         {DynamicSupervisor,
@@ -279,6 +281,13 @@ defmodule Vega.MCP.State do
     {:ok, if(is_map(state), do: state, else: %{})}
   end
 
+  def handle_cast(_, s), do: {:noreply, s}
+  def handle_info(_, s), do: {:noreply, s}
+
+  def format_status(status),
+    do: Vega.MCP.Redact.status(status, %{servers: map_size(status.state)})
+
+  def terminate(reason, _), do: Vega.MCP.Redact.terminate(reason, :state)
   def get(name), do: GenServer.call(__MODULE__, {:get, name})
   def put(name, state), do: GenServer.call(__MODULE__, {:put, name, state})
 

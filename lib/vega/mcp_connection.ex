@@ -5,13 +5,16 @@ defmodule Vega.MCP.Connection do
   @versions ["2025-11-25", "2025-06-18", "2025-03-26"]
   @modern "2026-07-28"
   @max_wire 8 * 1024 * 1024
-  def start_link({name, config}),
-    do:
-      GenServer.start_link(__MODULE__, {name, config},
-        name: {:via, Registry, {Vega.MCP.Registry, name}}
-      )
+  def start_link(name),
+    do: GenServer.start_link(__MODULE__, name, name: {:via, Registry, {Vega.MCP.Registry, name}})
 
-  def init({name, config}) do
+  def init(name) do
+    config =
+      case Vega.MCP.Config.get(name) do
+        {:ok, config} -> config
+        :error -> %{}
+      end
+
     Process.flag(:trap_exit, true)
     send(self(), :connect)
 
@@ -214,6 +217,15 @@ defmodule Vega.MCP.Connection do
   end
 
   def handle_info(:connect, s) do
+    # A restarted credential store is empty until explicit connect supplies it
+    # again. Workers retry safely; no secret is persisted or put in restart MFA.
+    config =
+      case Vega.MCP.Config.get(s.name) do
+        {:ok, config} -> config
+        :error -> s.config
+      end
+
+    s = %{s | config: config}
     generation = make_ref()
 
     s = %{
@@ -335,9 +347,9 @@ defmodule Vega.MCP.Connection do
     end
   end
 
-  def handle_info({:EXIT, pid, reason}, s) when is_pid(pid) do
+  def handle_info({:EXIT, pid, _reason}, s) when is_pid(pid) do
     if Map.has_key?(s.jobs, pid),
-      do: {:noreply, down(s, {:http_worker_exit, reason})},
+      do: {:noreply, down(s, {:http_worker_exit, :abnormal_exit})},
       else: {:noreply, s}
   end
 
@@ -367,7 +379,7 @@ defmodule Vega.MCP.Connection do
       {:error, :executable_not_found}
     end
   rescue
-    e -> {:error, {:spawn_failed, Exception.message(e)}}
+    e -> {:error, {:spawn_failed, e.__struct__}}
   end
 
   defp open(%{config: %{"url" => url}} = s) when is_binary(url), do: {:ok, s}
@@ -541,7 +553,8 @@ defmodule Vega.MCP.Connection do
         s
       )
 
-  defp complete(:discover, result, s), do: down(s, {:discovery_failed, bound_result(result, s)})
+  defp complete(:discover, result, s),
+    do: down(s, {:discovery_failed, bound_result(Vega.MCP.Redact.value(result, s.config), s)})
 
   defp complete(
          {:call, from, "tools/list"},
@@ -570,7 +583,7 @@ defmodule Vega.MCP.Connection do
   end
 
   defp complete(:initialize, result, s),
-    do: down(s, {:initialize_failed, bound_result(result, s)})
+    do: down(s, {:initialize_failed, bound_result(Vega.MCP.Redact.value(result, s.config), s)})
 
   defp complete({:interest, from, op, uri, agent}, {:ok, _}, s) do
     agents = Map.get(s.interests["resources"], uri, [])
@@ -622,6 +635,7 @@ defmodule Vega.MCP.Connection do
   defp down(%{phase: :disconnected} = s, _), do: s
 
   defp down(s, reason) do
+    reason = Vega.MCP.Redact.value(reason, s.config)
     close(s)
 
     if s.listen && s.listen.from,
@@ -664,9 +678,42 @@ defmodule Vega.MCP.Connection do
     Enum.each(s.jobs, fn {pid, _} -> Process.exit(pid, :kill) end)
   end
 
-  def terminate(_, s), do: close(s)
+  def format_status(status) do
+    state = status.state
+
+    summary = %{
+      server: state.name,
+      phase: state.phase,
+      protocol: state.version,
+      pending: map_size(state.pending),
+      subscribed_resources: map_size(state.interests["resources"])
+    }
+
+    Vega.MCP.Redact.status(status, summary)
+  end
+
+  def terminate(reason, s) do
+    try do
+      close(s)
+    catch
+      _, _ -> :ok
+    end
+
+    Vega.MCP.Redact.terminate(reason, :connection)
+  end
 
   defp emit(s, method, params, extra \\ []) do
+    params =
+      if method in [
+           "connection/dead",
+           "subscription/failed",
+           "tool/rejected",
+           "notifications/message",
+           "notifications/progress"
+         ],
+         do: Vega.MCP.Redact.value(params, s.config),
+         else: params
+
     recipients =
       Enum.uniq(
         s.interests["watchers"] ++
@@ -690,7 +737,7 @@ defmodule Vega.MCP.Connection do
 
           {:error, reason} ->
             Logger.warning(
-              "MCP excluded invalid x-mcp-header schema for tool #{inspect(tool["name"])}: #{inspect(reason)}"
+              "MCP excluded invalid x-mcp-header schema for tool #{inspect(Vega.MCP.Redact.value(tool["name"], s.config))}: #{inspect(reason)}"
             )
 
             emit(s, "tool/rejected", %{"name" => tool["name"], "reason" => inspect(reason)})
@@ -797,6 +844,8 @@ defmodule Vega.MCP.Connection do
   defp listen_failed(%{listen: nil} = s, _), do: s
 
   defp listen_failed(s, reason) do
+    reason = Vega.MCP.Redact.value(reason, s.config)
+
     if s.listen.from,
       do: GenServer.reply(elem(s.listen.from, 0), {:error, {:subscription_failed, reason}})
 
@@ -906,6 +955,9 @@ defmodule Vega.MCP.Connection do
 
     s
   end
+
+  defp bound_result({:error, result}, s),
+    do: {:error, bound(Vega.MCP.Redact.value(result, s.config), s)}
 
   defp bound_result({tag, result}, s), do: {tag, bound(result, s)}
 

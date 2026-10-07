@@ -173,7 +173,7 @@ results directory as appropriate. State/spill filesystem errors are reported.
 
 ```sh
 MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-mcp-build ERL_FLAGS='+S 4:4' \
-  mix test test/vega_mcp_test.exs test/vega_mcp_modern_test.exs test/vega_mcp_reference_test.exs
+  mix test test/vega_mcp_test.exs test/vega_mcp_modern_test.exs test/vega_mcp_reference_test.exs test/vega_mcp_redaction_test.exs
 ```
 
 Hermetic integration uses a real Python OS subprocess and localhost HTTP server on
@@ -199,12 +199,14 @@ wire server; the official filesystem reference does not advertise subscriptions.
 
 ### Verified on 2026-10-07
 
-- MCP focused suite with reference enabled after modern followup: **26 passed**
-  (16 legacy hermetic + 9 current hermetic + 1 official legacy-compatible server).
+- MCP focused suite with reference enabled after modern followup: **31 passed**
+  (16 legacy hermetic + 9 current hermetic + 5 credential hardening +
+  1 official legacy-compatible server).
 - Official `@modelcontextprotocol/server-filesystem` version **2026.8.31**, run by
   Node **v20.19.2**; legacy negotiation/discovery/write/read/path-denial all passed.
-- Final full repository suite with the reference enabled: **273 passed**, no skips
-  (26.9 seconds), including current-protocol stream-closure tests. Without the opt-in reference environment, that one test is
+- Final full repository suite with the reference enabled: **278 passed**, no skips
+  (28.2 seconds), including current-protocol stream closure and simulated
+  credential-bearing crash reports. Without the opt-in reference environment, that one test is
   explicitly skipped.
 - Node runtime was installed as an allowed system package; npm dependencies were
   installed only under `/tmp/vega-mcp-tools`. No harness modules were loaded into
@@ -232,3 +234,42 @@ The MCP supervisor and children use the stable `:user` group leader, not a trans
 eval IO process. Background requests are under their own Task.Supervisor and reset
 their group leader as well. A completion still can be lost if no agent process owns
 the target name at that precise delivery time; no offline queue is claimed.
+
+## Credential-report hardening
+
+Connection child start/restart arguments contain **only the public server name**.
+Definitions (including HTTP auth headers, stdio env and argv) are held in a private
+in-memory `Vega.MCP.Config` GenServer, not DynamicSupervisor child specifications or
+subscription files. Connection restart retrieves the definition by name. A whole
+MCP subtree restart loses this private cache and requires explicit `connect`; if only
+the config process restarts, existing connections retain their definitions until
+reconnected, and an explicit `connect` rehydrates the cache for future worker restarts.
+
+`format_status/1` on Connection/Config/State returns small nonsecret summaries and
+redacts last messages, debug logs and reasons. Abnormal `terminate` additionally
+replaces the actual exit reason with `{:mcp_service_failure, kind}` and drains pending
+mailbox payloads: formatting the GenServer report alone would not protect subsequent
+Supervisor/proc_lib reports or original exception stacktrace arguments. Detailed
+crash state/exception values are intentionally sacrificed for report safety. Transport
+and spawn failures return error **classes**, never interpolated exception text with
+headers/env/argv. Incidental RPC errors, connection/subscription failure events and protocol log/progress
+notifications scrub configured header/env/argv string values and Bearer/key-value components before
+bounding/spilling; normal successful tool/resource data is deliberately unchanged.
+
+Tests use only random **fake** credentials in a separate test VM. They inspect raw
+supervisor restart specifications, formatted status, and actual GenServer/Supervisor/
+proc_lib reports, with SASL reporting enabled and restored only in that test VM. They
+also prove worker restart still fetches the private definition, subscription JSON has
+no auth value, and a server's echoed fake credential is scrubbed from both an RPC error and a pushed
+log-message event before it reaches an agent/provider context.
+
+This is protection against **incidental reports**, not a sandbox or a root-agent
+access control boundary: trusted root agents can explicitly fetch configs or call
+`:sys.get_state`; raw `:sys.trace`/custom tracing, deliberate printing of secret values,
+server-controlled successful results, and a server's own stderr are outside this
+report-redaction guarantee. Run only trusted stdio executables (they inherit the VM
+environment). The library does not invent a secret-on-disk auth store.
+
+**Upgrade:** stop the existing MCP subtree *before* loading these hardened modules,
+then restart it and connect the configured names. Old DynamicSupervisor specifications
+contain raw configs and cannot be made safe simply by hot-loading a new worker callback.

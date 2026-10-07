@@ -113,10 +113,10 @@ defmodule Vega.MCP.HTTP do
         end
 
       {:error, error} ->
-        {:error, {:http_transport, Exception.message(error)}}
+        {:error, {:http_transport, error.__struct__}}
     end
   rescue
-    e -> {:error, {:http_transport, Exception.message(e)}}
+    e -> {:error, {:http_transport, e.__struct__}}
   end
 
   @doc false
