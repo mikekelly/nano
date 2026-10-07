@@ -17,7 +17,8 @@ Nano.Bots.post(chat.id, ada.id, "Here are some options…")
 Nano.Bots.remember(ada.id, "The person prefers vegetarian dinner")
 {:ok, request} = Nano.Bots.ask_human(ada.id, "Choose a budget", session: chat.id,
   reply_to: "asking-agent-name")
-# Or omit reply_to to get {:nano_human_answer, request_id, answer} in this process.
+# From agent eval omit reply_to to infer its stable registered name via $callers.
+# Outside agent eval omit reply_to to get {:nano_human_answer, request_id, answer} in this process.
 # The person answers the inline request form, or:
 Nano.Bots.answer(request, "Under £200")
 Nano.Bots.snapshot()
@@ -57,8 +58,13 @@ Unreadable state fails loudly rather than recreating strangers.
 One harness agent per bot/session/generation deliberately spends more processes to
 avoid cross-session context leakage. Both group members receive the same human
 message and recent shared conversation, speak under their own identities, and see
-other members' replies on subsequent human turns. They do not automatically debate
-in an unbounded response loop.
+other members' replies on subsequent human turns. Peer messages route through the cheap-model :respond judgment; positive decisions
+wake the peer immediately, with a hard budget of two extra peer turns per human
+message. No decision provider means peers observe replies on the next human turn.
+They never automatically debate in an unbounded response loop. Generation identity
+is captured from eval callers: retired/wrong-session bot agents cannot post, even
+if their old tool operation finishes later. Operator calls remain unrestricted on
+this trusted node; this is lifecycle protection, not a security sandbox.
 
 Per-bot facts are bounded to 200 records; at most six relevant facts enter each turn.
 This store is currently independent of Nano.Memory: it does not assume another
@@ -79,8 +85,8 @@ facts may be lost without explicit memory or a configured decision model.
 
 ## Cheap typed decision adapter
 
-`Nano.Bots.Decision.decide/2` accepts `:memories`, `:compact`, `:summary` and returns
-`{:ok, typed_value}` or `{:error, reason}`. Configure an explicitly inexpensive model:
+`Nano.Bots.Decision.decide/2` accepts `:memories`, `:compact`, `:summary`, `:respond` and returns
+`{:ok, %{value: typed_value, probability: p, confidence: c}}` or `{:error, reason}`. Configure an explicitly inexpensive model:
 
 ```elixir
 config :nano, :bots_decision_options, model: "<cheap OpenRouter model>"
@@ -89,7 +95,10 @@ config :nano, :bots_decision_options, model: "<cheap OpenRouter model>"
 
 Requests use JSON-object output, zero temperature, a 1500-token cap, eight-second
 timeout, no retries; booleans, bounded summaries and memory indices are validated.
-Invalid outputs never silently become decisions. Missing model/key uses transparent
+Probability/confidence must be numeric in 0..1. The service acts only above 0.6
+for each; invalid outputs never silently become decisions. Semantic compaction
+considers topic transitions, continuity, commitments, recent chat and actual
+budgets; deterministic hard context limits remain in code. Missing model/key uses transparent
 fallback. Decisions currently execute in the state-owner call and can delay other
 chat operations up to the request timeout; provider judgments/cost are not exercised
 in offline tests. Jev is not required or claimed integrated.
@@ -117,3 +126,5 @@ fake runner functions, no real keys or global provider changes. LiveView uses th
 existing test endpoint (port 0). Run `MIX_ENV=test mix test test/nano/bots_test.exs
 test/nano_web/bots_live_test.exs` in this checkout; builds are checkout-local because
 the seed mix.exs explicitly clears MIX_BUILD_ROOT in test mode.
+
+Follow-up focused verification includes `test/nano/bots_audit_test.exs`; 12 focused tests pass.
