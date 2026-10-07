@@ -127,3 +127,21 @@ result was addressed to the expired eval caller and could not be recovered (node
 usage was booked). The corrected small test explicitly sent its result to the
 agent pid. Only the recovered three-stage run is claimed as passing evidence.
 No settings or credentials were changed, and no test task remains running.
+
+### Native image retention integration
+
+`retained_tokens/1` prices suffixes with `Vega.Images.estimated_bytes/1` when that
+module is available. Standalone compaction builds use the current conservative
+4,800-token/ref fallback. This is deliberately distinct from `tokens/1`, which
+remains metadata-only JSON pricing for tool-free summary-stage input. Twenty image
+references can be tiny serialized metadata but 96,000 native input tokens.
+
+The last-20k retention setting is a target, not permission to sever an exchange.
+User deliveries stay with their first assistant/tool-result exchange; later
+completed tool-loop exchanges can be summarized independently. If the latest
+complete user exchange exceeds the retention target, it is kept whole provided
+its native-price suffix leaves 4,096 reply tokens plus 512 headroom. An oversized
+or incomplete exchange is rejected. The unchanged NanoAgent final estimate and
+request guard must still fit system prompt and installed summary: fallback does
+not guarantee a safe request or loosen any guard. Image metadata itself is never
+hydrated for summarization or described as visible to the summarizer.
