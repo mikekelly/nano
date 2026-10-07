@@ -1,14 +1,58 @@
 # Nano Agent Sandbox
 
-One Docker container running one BEAM node. Each LLM agent is a GenServer that is told,
-truthfully, that it is a process with a mailbox and an `eval` tool; a dashboard and a JSON
-API on port 4000 show what every agent does. [bootstrap/SPEC.md](bootstrap/SPEC.md) is the full description.
+**A tiny agent that starts with nothing and builds its own harness.** Nano turns an Elixir
+process into an agent (a model, a mailbox and two tools) and then leaves it to build the
+rest of its harness itself, while it runs.
+
+One Docker container runs one BEAM node, and each agent is a GenServer on it. A dashboard
+and a JSON API on port 4000 show everything every agent does.
+[bootstrap/SPEC.md](bootstrap/SPEC.md) is the full design.
+
+## Design
+
+- **An embodied harness.** In the model's context, the "user" is the harness itself, not a
+  person. The agent deals with people, other agents and the outside world *through* the
+  harness, which relays what arrives and runs what the agent asks it to. The framing keeps
+  the model from taking everything the harness passes on as an instruction from its user:
+  a message from someone is something that arrived, to be weighed like anything else.
+- **Events, not chat.** The harness talks to the agent in events and tool results. When a
+  person or another agent sends the agent a message, it arrives as a message event: the
+  term exactly as Elixir prints it, with no sender attached unless the sender put one in.
+  The model's own text reaches no one; to reach anyone, it sends a message from code.
+- **Elixir/OTP as the foundation.** The agent is a GenServer process. It receives messages
+  over the BEAM like any other Elixir process, and it reaches the outside world by sending
+  them.
+- **A hyper-minimal harness that the agent builds out in flight.** An agent starts with two
+  tools: `eval`, which runs Elixir code on the node (its variables persist between calls),
+  and `idle`, which does nothing until a message arrives or, optionally, a set time has
+  passed. Everything else (file tools, a shell, sub-agents, the web) is for the agent to
+  build, as modules it calls from `eval` and loads into the running node.
+- **Full control of its machine.** The agent runs as root inside a disposable container
+  (a microVM would serve as well) and may change anything in it, including the source of
+  its own harness.
+
+## Why Elixir/OTP
+
+- **OTP is an operating system for long-running processes.** An agent is a long-running
+  process, and OTP is the battle-hardened system built for those: supervision, restarts,
+  isolation and messaging.
+- **Elixir is easy for a model to read and write.** Its syntax is simple and expressive; it
+  is functional, keeping side effects at the edges; and its process model gives a pragmatic
+  answer to state, which makes concurrency elegant and easy to reason about.
+- **The BEAM can see itself.** Its observation tools (processes, mailboxes, state, tracing)
+  are available to every process, so an agent can see what is going on around it, debug the
+  running system, and step in to fix what it finds.
+- **Hot code reloading.** The killer feature: an agent can write code and upgrade its own
+  harness in real time, without stopping.
+- **Let it fail.** Erlang's philosophy of failing fast and restarting cleanly suits the
+  experimental, iterative work of an agent that upgrades itself: mistakes are contained and
+  recovered from, not fatal.
+
+## Quick start
 
 The node runs from source in `/app`, and agents may edit and reload that source, including
 their own module. So `/app` is bind-mounted from a **dedicated git checkout**: a clone that
 exists only for the agents to scribble on, never a working copy you care about.
-
-## Quick start
 
 ```bash
 git clone git@github.com:mikekelly/lolwut.git nano && cd nano
