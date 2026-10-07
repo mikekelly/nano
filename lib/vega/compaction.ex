@@ -2,7 +2,8 @@ defmodule Vega.Compaction do
   @moduledoc """
   Automatic NanoAgent compaction policy. The harness invokes this before requests;
   agents do not need to call it. See `docs/vega-compaction.md` for configuration.
-  Summaries are separate, tool-free, output-capped OpenRouter calls. Transcript
+  Summaries are separate, tool-free calls with bounded accepted output. OpenRouter
+  has a wire cap; Codex uses a prompt limit and strict post-return cap. Transcript
   cuts never separate an assistant tool call from its results.
   """
   @prompt """
@@ -58,8 +59,7 @@ defmodule Vega.Compaction do
   end
 
   def model(agent_model) do
-    Application.get_env(:nano, :compaction_model) ||
-      if(Nano.Model.split(agent_model) |> elem(0) == :openrouter, do: agent_model)
+    Application.get_env(:nano, :compaction_model) || agent_model
   end
 
   @doc false
@@ -67,10 +67,15 @@ defmodule Vega.Compaction do
     cap =
       min(Application.get_env(:nano, :compaction_max_output, 13_000), max(128, div(window, 8)))
 
-    with true <- is_binary(model) and elem(Nano.Model.split(model), 0) == :openrouter,
+    with true <- is_binary(model),
          {:ok, entry} <- Nano.Model.lookup(model),
          messages = [
-           %{"role" => "system", "content" => @prompt},
+           %{
+             "role" => "system",
+             "content" =>
+               @prompt <>
+                 "\nOutput limit: at most #{cap} tokens (including reasoning); aim for fewer than #{div(cap, 3)} words. This is a concise summary, not an agent turn."
+           },
            %{"role" => "user", "content" => Jason.encode!(old)}
          ],
          true <- tokens(messages) + cap < entry.context_length,
@@ -79,7 +84,7 @@ defmodule Vega.Compaction do
              model,
              messages,
              [],
-             entry.default_reasoning,
+             List.first(entry.reasoning_levels),
              min(cap, entry[:max_output] || cap)
            ) do
       # Account even for a rejected/truncated response.
@@ -88,6 +93,7 @@ defmodule Vega.Compaction do
       text = r.message["content"]
 
       if is_binary(text) and String.trim(text) != "" and tokens(text) <= cap and
+           (r.usage["completion_tokens"] || 0) <= cap and
            r.finish_reason not in ["length", "max_tokens"] and
            (r.message["tool_calls"] || []) == [] do
         {:ok, text, r}
@@ -97,7 +103,7 @@ defmodule Vega.Compaction do
     else
       false ->
         {:error,
-         "a capped OpenRouter summarizer with enough context is required; configure :nano, :compaction_model"}
+         "summarizer model must have enough input context plus output reserve; configure :nano, :compaction_model"}
 
       {:error, e} ->
         {:error, inspect(e)}

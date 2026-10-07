@@ -2,7 +2,7 @@
 
 Every NanoAgent now checks its pending request (both event deliveries and tool-loop
 continuations). Above `max_context - 16_384`, a removable older prefix is summarized
-by a **separate, tool-free, output-capped OpenRouter request**. Recent messages are
+by a **separate, tool-free request with strictly bounded accepted output**. Recent messages are
 kept verbatim, with cuts only where all assistant tool calls have results. The agent
 retains its pid/name/mailbox/bindings. Incoming events queue during summarization.
 
@@ -12,11 +12,18 @@ Configuration (application env `:nano`, defaults shown):
 - `:compaction_keep_tokens`: 20_000 (also capped at one quarter of agent context).
 - `:compaction_max_output`: 13_000 (also capped at one eighth of agent context).
 - `:compaction_timeout_ms`: 120_000; task is killed on timeout.
-- `:compaction_model`: OpenRouter slug. Default is the agent model if it is on
-  OpenRouter. **Codex agents require an explicit OpenRouter summarizer**: ChatGPT
-  does not accept an output cap and is deliberately not used as the summarizer.
-  No keys or provider settings are changed by this capability. Summarizer window
-  and output support come from the provider's model list.
+- `:compaction_model`: optional model slug; defaults to the agent's own model for
+  both OpenRouter and Codex agents. No keys or provider settings are changed.
+  Summarizer window and reasoning support come from the provider's model list.
+
+OpenRouter receives an actual wire output cap. The Codex backend refuses the
+`max_output_tokens` wire field, so **Codex cannot guarantee a provider-side generation
+cap**. Its separate summary request uses the lowest supported reasoning effort,
+an explicit prompt length limit, a conservative input/output reserve, and strict
+post-return checks of both serialized summary size and reported completion tokens.
+Overlong or truncated responses are rejected, never silently sliced or installed.
+This supports available Codex-only nodes without pretending its backend can cap
+output. The separate call never competes with the agent's own reply.
 
 The summary is in the agent's persisted transcript and in `compaction_completed`
 log entries. The continuation note truthfully names the harness and model and points
@@ -48,7 +55,7 @@ durable summary, accounting, boundary selection, failure and timeout behavior.
 Existing context-guard test also checks successful compaction after unhalt.
 
 Parent integration/reload procedure (requires explicit approval): cherry-pick this
-commit; configure a capped OR summarizer for Codex agents if credentials exist;
+commit; optionally configure a cheaper summarizer model if credentials exist;
 compile/test outside live production build first. Load `Vega.Compaction` and then
 `NanoAgent` from the integrated source with `Code.compile_file/1` only after review.
 No live harness modules were loaded by the implementation agent. Existing state maps
