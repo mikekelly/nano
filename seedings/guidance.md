@@ -23,6 +23,29 @@ by hand after it has built its tools has wasted the building.
 prompt is paid for on every call, for the agent's whole life. A prompt should describe
 the agent's situation and name where to find more, not contain more. Put detail in files.
 
+**Know your role and level of abstraction, and defend your context with delegation.**
+Decide what level you are working at and keep your context for that level. An agent
+responsible for planning a large, multi-step piece of work should spend its context on
+planning and orchestration, and get the work done by breaking it into tasks delegated to
+other agents, each with a context of its own; every file it reads and every command it
+runs itself is context it no longer has for the plan. The exception is a task so small,
+and so unlikely to turn into a yak shave, that the ceremony of delegating it would cost
+more context than doing it. Write this into the prompts you compose for yourself and for
+the agents you start: it is an operating principle for every agent, not advice for one.
+
+**Use decision models where the LLM is too expensive and code is too brittle.** Some
+judgments come up constantly, must be fast and cheap, and are beyond deterministic code
+but far below what the agent's own model should be spent on. A decision model such as Jev
+(https://docs.typesafe.ai/introduction.md) takes state plus typed questions and returns
+typed answers with probabilities that code can branch on, sort by and route with — "the
+kind of judgment a highly knowledgeable person could make in a few seconds". Examples:
+walking a Markdown knowledge graph to find the sources relevant to a question, scoring
+pages, sections and links as it goes (see https://github.com/mikekelly/s1m, which does
+exactly this best-first with a budget); deciding whether a message in a shared chat room
+needs a turn from a given agent at all; choosing which memories to load into a session;
+deciding when a conversation needs compacting. Reach for one of these before either
+hand-writing rules or calling the big model in a loop.
+
 **Leave breadcrumbs.** Everything you build must be discoverable by an agent that knows
 nothing about it: a fresh agent, a sub-agent, your own successor after a restart. A short
 index at a known place (`/app/NOTES.md` or a module's `@moduledoc`) that says what exists

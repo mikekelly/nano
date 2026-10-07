@@ -49,9 +49,10 @@ this is the product on top.
 
 ## What to build
 
-- The GUI as part of this node's web app (LiveView is already there) at its own path,
-  styled for a person rather than an operator; or a separate small front end if that is
-  simpler — say which and why.
+- The GUI inside this node's existing Phoenix app, as LiveView pages at their own path
+  (for example `/bots`), styled for a person rather than an operator, sharing the app's
+  endpoint, PubSub and the plain `Nano.Ops`-style functions underneath. Not a separate
+  front end.
 - Bots as a layer over agents: one agent per (bot, session) or one agent per bot with a
   session switch — decide, and say what each choice costs in context and in isolation.
 - The memory store and its retrieval, the autocompaction, and the decision-model layer,
