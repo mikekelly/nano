@@ -267,6 +267,38 @@ defmodule Vega.BotsTest do
     assert {:error, :invalid_cursor} = Bots.get_session(s["id"], c.opts ++ [before: "unknown"])
   end
 
+  test "corrupt state starts read-only without overwriting evidence or crashing supervision", c do
+    stop_supervised(Vega.Bots.Server)
+    path = Vega.Bots.Persistence.path(c.root)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "{broken JSON}")
+
+    {:ok, pid} =
+      start_supervised(
+        {Vega.Bots.Server,
+         name: c.name, root: c.root, runtime: Vega.BotsTest.Runtime, tick_ms: 20}
+      )
+
+    opts = [server: pid]
+    assert {:error, :corrupt_store} = Bots.snapshot(opts)
+    assert {:error, :corrupt_store} = Bots.create_bot("Muse", opts)
+    assert File.read!(path) == "{broken JSON}"
+    assert Process.alive?(pid)
+    File.rm!(path)
+    assert {:ok, :reloaded} = Bots.reload(opts)
+    assert {:ok, %{"bots" => []}} = Bots.snapshot(opts)
+    assert bot("Muse", opts)["name"] == "Muse"
+    {:ok, saved} = Vega.Bots.Persistence.load(c.root)
+    # Malformed message types/references must be rejected before cache/dispatch.
+    invalid =
+      Map.put(saved, "sessions", [
+        %{"id" => "bad", "bot_ids" => ["missing"], "messages" => [123], "statuses" => %{}}
+      ])
+
+    File.write!(path, Jason.encode!(%{"version" => 1, "entries" => [invalid]}))
+    assert {:error, :corrupt_store} = Vega.Bots.Persistence.load(c.root)
+  end
+
   test "notification settings validate person controlled bounds and attachments fail closed", c do
     assert {:error, :invalid_settings} =
              Bots.update_settings(%{notification_interval_seconds: 0}, c.opts)

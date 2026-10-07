@@ -52,7 +52,16 @@ defmodule Vega.Bots.Persistence do
       end) and
       Enum.all?(d["sessions"], fn s ->
         is_binary(s["id"]) and is_list(s["messages"]) and is_list(s["bot_ids"]) and
-          is_map(s["statuses"])
+          is_map(s["statuses"]) and
+          Enum.all?(s["statuses"], fn {bid, status} ->
+            bid in s["bot_ids"] and is_map(status) and status["state"] in ~w(thinking idle error) and
+              Vega.Store.text?(status["detail"], 500)
+          end) and
+          Enum.all?(s["messages"], fn m ->
+            is_map(m) and is_binary(m["id"]) and is_binary(m["author_id"]) and
+              Vega.Store.text?(m["text"], 32_000) and is_binary(m["at"]) and
+              is_list(m["images"] || []) and is_list(m["files"] || [])
+          end)
       end) and
       Enum.all?(d["requests"], fn r ->
         is_binary(r["id"]) and r["status"] in ~w(pending answered) and is_binary(r["requester"])
@@ -60,8 +69,27 @@ defmodule Vega.Bots.Persistence do
       Enum.all?(d["outbox"], fn x ->
         is_binary(x["id"]) and is_binary(x["session_id"]) and is_binary(x["bot_id"]) and
           is_binary(x["message_id"]) and is_integer(x["retry_at"])
-      end)
+      end) and links_valid?(d)
   end
 
   defp valid?(_), do: false
+
+  defp links_valid?(d) do
+    bots = MapSet.new(Enum.map(d["bots"], & &1["id"]))
+    sessions = Map.new(d["sessions"], &{&1["id"], &1})
+
+    Enum.all?(d["sessions"], fn s -> Enum.all?(s["bot_ids"], &MapSet.member?(bots, &1)) end) and
+      Enum.all?(d["requests"], fn r ->
+        s = sessions[r["session_id"]]
+
+        is_map(s) and r["bot_id"] in s["bot_ids"] and is_binary(r["question"]) and
+          is_binary(r["created_at"])
+      end) and
+      Enum.all?(d["outbox"], fn x ->
+        s = sessions[x["session_id"]]
+
+        is_map(s) and x["bot_id"] in s["bot_ids"] and
+          Enum.any?(s["messages"], &(&1["id"] == x["message_id"] and &1["author_id"] == "person"))
+      end)
+  end
 end

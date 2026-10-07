@@ -9,7 +9,11 @@ API: `Vega.Bots` module docs; planned consumer surface `/bots`, operator dashboa
 Parent application integration: add `{Vega.Bots.Server, root: "/data/vega"}` **after**
 PubSub, StateStore and AgentSupervisor. No lazy eval-linked processes. Tests start
 supervised instances with a unique root and `name:`; callers pass `server: pid`.
-All service records have string keys. Mutations persist before broadcast/dispatch.
+All service records have string keys. Corrupt/oversized snapshots start a read-only
+stand-in returning explicit errors (no node-wide supervisor crash and no overwritten
+evidence). After operator repair, Vega.Bots.reload() safely reloads that stand-in;
+normal running services refuse arbitrary reload. Loaded message/status shapes and
+identity/session/request/outbox links are checked before caching/dispatch. Mutations persist before broadcast/dispatch.
 The durable outbox retries failures and retains inputs until a visible bot reply
 acknowledges delivery (`reply_to: message_id`; compatibility default oldest input).
 Unsolicited updates use `proactive: true` to avoid acknowledging inputs. A cast alone

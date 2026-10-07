@@ -49,6 +49,7 @@ defmodule Vega.Bots do
   def answer_request(id, answer, opts \\ []), do: call({:answer, id, answer}, opts)
   def acknowledge_answer(id, opts \\ []), do: call({:ack, id, opts[:requester]}, opts)
   def update_settings(attrs, opts \\ []), do: call({:settings, attrs}, opts)
+  def reload(opts \\ []), do: call(:reload, opts)
   def retry(session, opts \\ []), do: call({:retry, session}, opts)
 
   def remember(bot, content, opts \\ []) do
