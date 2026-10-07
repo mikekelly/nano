@@ -160,7 +160,9 @@ judgments come up constantly, must be fast and cheap, and are beyond determinist
 but far below what the agent's own model should be spent on. A decision model such as Jev
 (https://docs.typesafe.ai/introduction.md) takes state plus typed questions and returns
 typed answers with probabilities that code can branch on, sort by and route with — "the
-kind of judgment a highly knowledgeable person could make in a few seconds". Examples:
+kind of judgment a highly knowledgeable person could make in a few seconds". The operators
+may have supplied credentials for it as a node setting named `TYPESAFE_API_KEY` (the node's
+settings, `Nano.Ops.settings/0` or `GET /api/settings`, show which are set). Examples:
 walking a Markdown knowledge graph to find the sources relevant to a question, scoring
 pages, sections and links as it goes (see https://github.com/mikekelly/s1m, which does
 exactly this best-first with a budget); deciding whether a message in a shared chat room
