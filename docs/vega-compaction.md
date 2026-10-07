@@ -61,3 +61,24 @@ compile/test outside live production build first. Load `Vega.Compaction` and the
 No live harness modules were loaded by the implementation agent. Existing state maps
 need no new mandatory fields; tasks already in flight retain existing model/eval
 handlers. Do not reload a stale worktree over sibling NanoAgent edits.
+
+### Live Codex validation (2026-10-07)
+
+After parent-approved integrated harness reload, the implementation agent ran a
+real subscription test on `openai-codex/gpt-6.1-sol`, reasoning `low` (`off` is not
+supported by the live catalog), name `vega-compact-live`, context 24,000. Its lean
+system instructed idle only, never eval. A 26,999-byte inert numeric event produced
+measured context 12,273, above the 7,616 compaction threshold. A second small event
+triggered automatic compaction at a complete exchange boundary:
+
+- Summary request: 12,220 prompt + 117 completion tokens.
+- Conservative context after persisted summary: 1,090.
+- Resumed actual agent request: 470 prompt + 14 completion; measured context 484.
+- Same pid throughout; saved transcript contained the harness summary; idle/no halt.
+- Total usage 25,094 includes summarization, with two agent turns (not three).
+
+Full retained record: `/data/logs/vega-compact-live-ccb2fd.jsonl`; machine-readable
+inspected evidence: `/tmp/vega-compact-live/evidence.txt`. The test agent and its
+tasks were stopped afterwards. No node settings or credentials were changed/logged.
+Live provider returned no price, so cost remains unknown, not claimed free.
+The isolated implementation suite passed all 254 tests after the Codex follow-up.
