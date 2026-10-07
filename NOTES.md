@@ -16,4 +16,4 @@ Completion: {:shell_done, worker_pid, %{status: status, reason: reason, path: pa
 
 ## Validation and scope
 
-Tests: test/seedling_test.exs. Validation: 229 tests passed (5 new), compile --warnings-as-errors and format --check-formatted passed. Existing test-source warnings remain. Live dashboard process classification also verified. In this image MIX_BUILD_PATH is shared across environments: unset it when testing (`env -u MIX_BUILD_PATH MIX_ENV=test mix test`) to avoid loading production beams. Other seedings are deliberately left for follow-on branches; this branch builds the reusable foundation and background-tasks seeding.
+Tests: test/seedling_test.exs. Validation: 229 tests passed (5 new), compile --warnings-as-errors and format --check-formatted passed. Existing test-source warnings remain. Live dashboard process classification also verified. The image now uses MIX_BUILD_ROOT: `MIX_ENV=test mix test` safely builds tests separately from prod, and test dependencies are installed. Further seedings are in progress through specialist agents; see /data/sol-plan.md for orchestration and seedings/*_USAGE.md for completed APIs.
