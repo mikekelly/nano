@@ -138,6 +138,8 @@ defmodule Vega.Search do
 
     pid =
       spawn(fn ->
+        if leader = Process.whereis(:user), do: Process.group_leader(self(), leader)
+
         result =
           try do
             await_run(id, opts, deadline)
@@ -155,7 +157,6 @@ defmodule Vega.Search do
         )
       end)
 
-    if leader = Process.whereis(:user), do: Process.group_leader(pid, leader)
     {:ok, %{pid: pid, run_id: id, content_id: Cache.id("research:" <> id)}}
   rescue
     _ -> {:error, :watch_failed}
