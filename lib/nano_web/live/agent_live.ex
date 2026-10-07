@@ -134,7 +134,7 @@ defmodule NanoWeb.AgentLive do
     name = socket.assigns.name
     agent = Nano.Ops.agent(name)
     spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
-    socket = assign(socket, agent: agent, spawned: spawned)
+    socket = assign(socket, agent: agent, spawned: spawned, goals: Vega.Goals.review(name))
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -306,6 +306,8 @@ defmodule NanoWeb.AgentLive do
           <p :for={error <- upload_errors(@uploads.images)}>{inspect(error)}</p>
           <button type="submit">Send images</button>
         </form>
+        <Vega.GoalsView.panel review={@goals} />
+
         <nav class="views">
           <.link
             :for={{v, icon} <- [{"reading", "book"}, {"debug", "list"}]}
