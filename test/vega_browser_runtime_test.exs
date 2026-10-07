@@ -25,10 +25,23 @@ defmodule Vega.BrowserRuntimeTest do
         else:
           if(File.regular?("/data/vega-browser-tools/node22"),
             do: "/data/vega-browser-tools/node22",
-            else: System.find_executable("node")
+            else: System.find_executable("node22") || System.find_executable("node")
           )
 
     assert selected == expected
+  end
+
+  test "fresh data fallback prefers packaged Node22 over system Node20" do
+    missing =
+      Path.join(
+        System.tmp_dir!(),
+        "vega-browser-missing-runtime-" <>
+          Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)
+      )
+
+    assert Browser.runtime_fallback(missing, "/image/node22", "/system/node") == "/image/node22"
+    assert Browser.runtime_fallback(missing, nil, "/system/node") == "/system/node"
+    assert Browser.runtime_fallback("/bin/sh", "/image/node22", "/system/node") == "/bin/sh"
   end
 
   @tag skip:

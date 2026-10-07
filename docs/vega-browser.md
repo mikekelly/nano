@@ -17,7 +17,7 @@ Requires a native **Node >=22** (built-in WebSocket, no npm packages) and
 `/usr/local/bin/lightpanda`. Node lookup precedence (read-only): explicit `node:`
 option; exact string node setting `Nano.Settings.get("VEGA_BROWSER_NODE")`;
 environment `VEGA_BROWSER_NODE`; `/data/vega-browser-tools/node22` if a regular
-file; then PATH. Empty/whitespace setting/environment values mean unset. Explicit
+file; then PATH `node22` (image native pinned Node22); finally PATH `node`. Empty/whitespace setting/environment values mean unset. Explicit
 options (even nil/invalid) take precedence and fail rather than silently falling
 through. A nonblank but invalid configured path also fails honestly.
 `node_runtime/1` reports the selected path without installing/changing anything.
@@ -238,3 +238,11 @@ the stable native /data copy and evaluated 6*7=42. Resolver tests verified
 explicit option precedence, exact string node-setting precedence, and blank
 setting fallback; settings mutations were confined to that isolated test BEAM,
 never the running node. Live node settings/environment were only read, not changed.
+
+Image fallback followup: packaged `/usr/local/bin/node22` is now preferred over
+system PATH `node` when /data is fresh/empty. Exact opts/setting/env precedence
+is unchanged. The parent added a checksum-pinned Dockerfile provisioning recipe;
+that Docker build was **not** run here. Current copied native image-path Node22
+reports v22.21.1, while `/usr/bin/node` stays20 for MCP. Deterministic fallback
+tests use a missing task-local path (no shared /data files moved) to verify
+image-node22 before system-node and stable-file before image.
