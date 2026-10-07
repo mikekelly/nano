@@ -55,7 +55,27 @@ defmodule Seedling.MCP.HTTP do
         state.version
 
     state = %{state | version: version}
-    state = start_job(state, :post, message, nil)
+
+    state =
+      if modern?(version) and message["method"] == "notifications/cancelled" do
+        request_id = get_in(message, ["params", "requestId"])
+
+        jobs =
+          Enum.reduce(state.jobs, state.jobs, fn {pid, job}, jobs ->
+            if is_map(job.message) and job.message["id"] == request_id do
+              Process.exit(pid, :kill)
+              Process.demonitor(job.ref, [:flush])
+              cancel_timer(job.timer)
+              Map.delete(jobs, pid)
+            else
+              jobs
+            end
+          end)
+
+        %{state | jobs: jobs}
+      else
+        start_job(state, :post, message, nil)
+      end
 
     state =
       if not modern?(state.version) and message["method"] == "notifications/initialized" and

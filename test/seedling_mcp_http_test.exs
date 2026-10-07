@@ -279,4 +279,35 @@ defmodule Seedling.MCP.HTTPTest do
     refute_receive {:http_request, "GET", _, _}, 50
     HTTP.close(transport)
   end
+
+  test "modern cancellation closes worker without sending notification POST" do
+    url =
+      server(fn conn, _ ->
+        conn =
+          conn
+          |> Plug.Conn.put_resp_content_type("text/event-stream")
+          |> Plug.Conn.send_chunked(200)
+
+        {:ok, conn} = Plug.Conn.chunk(conn, ": keepalive\n\n")
+        Process.sleep(1000)
+        conn
+      end)
+
+    {:ok, transport} = HTTP.start_link(%{url: url}, self())
+    HTTP.set_version(transport, "2026-07-28")
+    HTTP.send_message(transport, request(42))
+    assert_receive {:http_request, "POST", _, _}, 2000
+
+    assert :ok =
+             HTTP.send_message(transport, %{
+               "jsonrpc" => "2.0",
+               "method" => "notifications/cancelled",
+               "params" => %{"requestId" => 42}
+             })
+
+    assert :sys.get_state(transport).jobs == %{}
+    refute_receive {:http_request, "POST", _, _}, 50
+    refute_receive {:mcp_transport_down, ^transport, _}, 50
+    HTTP.close(transport)
+  end
 end
