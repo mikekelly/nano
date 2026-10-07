@@ -22,6 +22,13 @@ RUN install -d /opt/nano /data/logs /data/state \
  && git config --system --add safe.directory /app \
  && openssl rand -hex 16 > /opt/nano/cookie
 
+# Lightpanda, a headless browser with JavaScript, for agents that need to read or drive
+# web pages: `lightpanda fetch --dump markdown URL`, or `lightpanda serve` for CDP on 9222.
+ARG TARGETARCH
+RUN case "$TARGETARCH" in amd64) a=x86_64 ;; arm64) a=aarch64 ;; *) echo "no lightpanda for $TARGETARCH" && exit 1 ;; esac \
+ && curl -fsSL -o /usr/local/bin/lightpanda "https://github.com/lightpanda-io/browser/releases/download/1.0.0/lightpanda-${a}-linux" \
+ && chmod +x /usr/local/bin/lightpanda
+
 COPY mix.exs mix.lock ./
 RUN mix deps.get --only prod && mix deps.compile
 

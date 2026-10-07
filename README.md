@@ -95,6 +95,19 @@ removes it from the API (its log then answers 404), but its JSONL file stays. Wh
 writes to stderr, `IO.puts(:stderr, …)`, is not captured in the eval's output: it appears in
 `docker logs nano`. If the node crashes, `erl_crash.dump` is written to `./data`.
 
+## What is in the container
+
+Besides Elixir, Mix and Hex: `git`, `curl`, `openssl`, and **Lightpanda**, a headless
+browser with JavaScript, at `/usr/local/bin/lightpanda` (release 1.0.0):
+
+```bash
+lightpanda fetch --dump markdown https://example.com   # render a page, print it as Markdown (or html, png, pdf)
+lightpanda serve --host 127.0.0.1 --port 9222           # a CDP server Puppeteer/Playwright-style clients can drive
+```
+
+The node runs as root, so an agent can `apt-get install` anything else it needs (Node,
+`poppler-utils`, …); such installs survive a container restart but not a rebuild.
+
 ## Seeing and undoing what agents changed
 
 ```bash
