@@ -1,8 +1,10 @@
 defmodule NanoWeb.StartForm do
   @moduledoc """
   The Start agent form: every option in view, prefilled with the node's defaults. The model
-  box filters OpenRouter's model list (`Nano.OpenRouter.models/0`) as you type, but takes any
-  slug; the system prompt is one of default / file / custom, so only one can be sent.
+  box filters the model list (`Nano.Model.models/0`: the ChatGPT subscription's, when one is
+  connected, then OpenRouter's) as you type, but takes any slug; the system prompt is one of
+  default / file / custom, so only one can be sent. Under the model, the ChatGPT subscription
+  control: connect (a device-code login), the code to enter while pending, then who is connected.
   `NanoWeb.ProcessLive` holds what was typed (so the once-a-second refresh keeps it) and
   calls `opts/1` and `error/1`.
   """
@@ -19,6 +21,7 @@ defmodule NanoWeb.StartForm do
   attr :start, :map, required: true, doc: "what was typed so far"
   attr :models, :list, required: true
   attr :error, :any, required: true
+  attr :chatgpt, :map, required: true, doc: "Nano.Ops.chatgpt/0"
 
   def start_form(assigns) do
     v = Map.merge(defaults(), assigns.start)
@@ -74,6 +77,7 @@ defmodule NanoWeb.StartForm do
           start idle
         </label>
       </div>
+      <.chatgpt status={@chatgpt} />
       <div class="fields">
         <label :for={{field, label, _} <- limits()} class="field">
           {label}
@@ -115,6 +119,41 @@ defmodule NanoWeb.StartForm do
         <p :if={@error} class="error">{@error}</p>
       </div>
     </form>
+    """
+  end
+
+  attr :status, :map, required: true
+
+  # Buttons of type "button", so they never submit the form around them.
+  defp chatgpt(assigns) do
+    ~H"""
+    <div id="chatgpt" class="chatgpt">
+      <span class="dim">ChatGPT subscription</span>
+      <%= case @status.status do %>
+        <% :connected -> %>
+          <span>connected{if @status.email, do: " as #{@status.email}"}{if @status.plan,
+            do: " (#{@status.plan})"} · models openai-codex/…</span>
+          <button
+            type="button"
+            class="small"
+            phx-click="chatgpt_logout"
+            data-confirm="Forget this node's ChatGPT tokens? Agents on openai-codex/ models will fail until you connect again."
+          >
+            disconnect
+          </button>
+        <% :pending -> %>
+          <span>
+            open <a href={@status.verification_url} target="_blank" rel="noopener">{@status.verification_url}</a>, sign in, and enter
+            <code class="user-code">{@status.user_code}</code>
+          </span>
+          <span class="dim">waiting for approval · expires {time(@status.expires_at)} UTC</span>
+          <button type="button" class="small" phx-click="chatgpt_logout">cancel</button>
+        <% _ -> %>
+          <button type="button" class="small" phx-click="chatgpt_login">Connect ChatGPT</button>
+          <span class="dim">flat-rate models openai-codex/… on a Plus or Pro plan</span>
+      <% end %>
+      <span :if={@status.error} class="error">{@status.error}</span>
+    </div>
     """
   end
 
@@ -211,6 +250,10 @@ defmodule NanoWeb.StartForm do
   def error(:invalid_name), do: "name must be letters, digits, _ . or -"
   def error({:already_started, _}), do: "an agent with that name is already running"
   def error(:missing_openrouter_api_key), do: "OPENROUTER_API_KEY is not set on this node"
+
+  def error(:chatgpt_not_connected),
+    do: "openai-codex/ models need a ChatGPT subscription: connect one above"
+
   def error(:missing_model), do: "no model given and DEFAULT_MODEL is not set"
 
   def error(:invalid_option),

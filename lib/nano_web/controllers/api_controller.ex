@@ -22,7 +22,9 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/agents",
      "All agents: status, halted, suspended, model, reasoning, budget used, cost, restart count."},
     {"POST", "/api/agents",
-     "Start an agent. Body: name, model (default DEFAULT_MODEL), start_idle (default true); " <>
+     "Start an agent. Body: name, model (default DEFAULT_MODEL; a slug openai-codex/<model> runs " <>
+       "on the ChatGPT subscription connected with /api/chatgpt/login, anything else on " <>
+       "OpenRouter), start_idle (default true); " <>
        "optional system_prompt (a template string) or system_prompt_file (a template file, " <>
        "relative to the app directory; system_prompt wins if both are given; default template: " <>
        "SYSTEM_PROMPT_FILE, priv/system_prompt.txt); limits max_turns (model calls), max_tokens (prompt + " <>
@@ -42,7 +44,8 @@ defmodule NanoWeb.ApiController do
      "Clear a halt. halted is budget (the agent's turns or tokens), context (its conversation " <>
        "reached max_context; it never shrinks, so un-halting allows one more model call before " <>
        "it halts again), node_budget (the node-wide " <>
-       "hourly token cap), restart_brake (3 restarts within 60 s), start_failed (its process " <>
+       "hourly token cap), usage_limit (the provider refused with a usage limit, e.g. the " <>
+       "ChatGPT subscription's; un-halt once it has reset), restart_brake (3 restarts within 60 s), start_failed (its process " <>
        "failed while starting; un-halting retries the start) or log_failed (its log could not " <>
        "be written; fix the disk first)."},
     {"GET", "/api/agents/:name/log?since=:seq",
@@ -58,7 +61,18 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/users/:name/inbox?clear=true",
      "Messages the user has received, oldest first: at, term."},
     {"POST", "/api/eval",
-     "Evaluate Elixir on the node, like bin/rpc. Body: code. Returns result (inspected) and output (printed IO)."}
+     "Evaluate Elixir on the node, like bin/rpc. Body: code. Returns result (inspected) and output (printed IO)."},
+    {"GET", "/api/chatgpt",
+     "The ChatGPT subscription agents on openai-codex/<model> run on: status (disconnected, " <>
+       "pending, connected); while pending, user_code, verification_url and expires_at; once " <>
+       "connected, email, plan and expires_at (of the access token, refreshed before then); " <>
+       "error, the last failure. Tokens are never shown."},
+    {"POST", "/api/chatgpt/login",
+     "Start a device-code login and return the status, pending: a person opens verification_url " <>
+       "in their own browser, signs in to ChatGPT and enters user_code; poll GET /api/chatgpt " <>
+       "until status is connected. 502 if no code could be had."},
+    {"POST", "/api/chatgpt/logout",
+     "Forget the subscription's tokens, or cancel a pending login."}
   ]
 
   @conventions "Pids are strings such as \"#PID<0.231.0>\". Wherever a target is expected (to), " <>
@@ -291,6 +305,22 @@ defmodule NanoWeb.ApiController do
     else
       {:error, field} -> missing(conn, field)
     end
+  end
+
+  ## ChatGPT subscription
+
+  def chatgpt(conn, _params), do: json(conn, encode(Ops.chatgpt()))
+
+  def chatgpt_login(conn, _params) do
+    case Ops.chatgpt_login() do
+      {:error, message} -> error(conn, 502, "could not start a ChatGPT login", message)
+      status -> json(conn, encode(status))
+    end
+  end
+
+  def chatgpt_logout(conn, _params) do
+    :ok = Ops.chatgpt_logout()
+    json(conn, %{ok: true})
   end
 
   ## Helpers

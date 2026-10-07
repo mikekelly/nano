@@ -1,0 +1,453 @@
+defmodule Nano.ChatGPTTest do
+  # Not async: the credentials process, its token file and the fake are node-wide.
+  use ExUnit.Case, async: false
+
+  import Phoenix.ConnTest
+  import Phoenix.LiveViewTest
+
+  alias Nano.ChatGPT.Auth
+  alias Nano.FakeChatGPT, as: Fake
+
+  @endpoint NanoWeb.Endpoint
+
+  setup do
+    Fake.start()
+    Fake.listen()
+    :ok = Auth.logout()
+    :persistent_term.erase({Nano.ChatGPT, :models})
+    saved = Application.get_env(:nano, :openrouter_backoff_ms)
+    Application.put_env(:nano, :openrouter_backoff_ms, 1)
+
+    on_exit(fn ->
+      Auth.logout()
+      :persistent_term.erase({Nano.ChatGPT, :models})
+      Application.put_env(:nano, :openrouter_backoff_ms, saved)
+    end)
+  end
+
+  defp path, do: Path.join(Application.fetch_env!(:nano, :state_dir), "chatgpt_auth.json")
+  defp saved, do: path() |> File.read!() |> Jason.decode!()
+
+  defp eventually(fun, tries \\ 250) do
+    cond do
+      fun.() -> :ok
+      tries == 0 -> flunk("condition not met")
+      true -> Process.sleep(20) && eventually(fun, tries - 1)
+    end
+  end
+
+  # Connects through the device flow, approved at the first poll; returns the token response.
+  defp connect!(tokens \\ Fake.tokens()) do
+    # Clears answers queued earlier in the test.
+    Fake.listen()
+    Fake.auth(:poll, [{200, :approved}])
+    Fake.auth(:token, [{200, tokens}])
+    assert %{status: :pending} = Auth.login()
+    eventually(fn -> Auth.status().status == :connected end)
+    flush_auth()
+    tokens
+  end
+
+  defp flush_auth do
+    receive do
+      {:chatgpt_auth, _, _} -> flush_auth()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp restart_auth do
+    old = Process.whereis(Auth)
+    Process.exit(old, :kill)
+    eventually(fn -> (pid = Process.whereis(Auth)) && pid != old end)
+  end
+
+  ## Device-code login
+
+  test "device flow: a code to enter, polling while pending, then tokens saved 0600" do
+    Fake.auth(:poll, [{403, %{}}, {200, :approved}])
+    tokens = Fake.tokens()
+    Fake.auth(:token, [{200, tokens}])
+
+    status = Auth.login()
+    assert %{status: :pending, user_code: "FAKE-CODE"} = status
+    assert status.verification_url =~ ~r"/codex/device$"
+    assert DateTime.diff(status.expires_at, DateTime.utc_now()) in 890..900
+    # A second login while one is pending shows the same code.
+    assert Auth.login().user_code == "FAKE-CODE"
+
+    assert_receive {:chatgpt_auth, :usercode, %{"client_id" => "app_EMoamEEZ73f0CkXaXp7hrann"}}
+
+    assert_receive {:chatgpt_auth, :poll,
+                    %{"device_auth_id" => "dev-1", "user_code" => "FAKE-CODE"}}
+
+    assert_receive {:chatgpt_auth, :poll, _}, 3_000
+    assert_receive {:chatgpt_auth, :token, exchange}, 3_000
+
+    assert %{
+             "grant_type" => "authorization_code",
+             "code" => "authcode",
+             "code_verifier" => "verifier",
+             "client_id" => "app_EMoamEEZ73f0CkXaXp7hrann"
+           } = exchange
+
+    assert exchange["redirect_uri"] =~ ~r"/deviceauth/callback$"
+
+    eventually(fn -> Auth.status().status == :connected end)
+
+    assert %{email: "me@example.com", plan: "plus", user_code: nil, error: nil} =
+             Nano.Ops.chatgpt()
+
+    # Saved where only the owner can read it, and never shown.
+    assert File.stat!(path()).mode |> Bitwise.band(0o777) == 0o600
+    assert saved()["refresh_token"] == tokens["refresh_token"]
+    assert saved()["account_id"] == "acct-fake"
+    refute inspect(Auth.status()) =~ tokens["access_token"]
+    refute inspect(Auth.status()) =~ tokens["refresh_token"]
+
+    assert {:ok, %{access_token: access, account_id: "acct-fake"}} = Auth.token()
+    assert access == tokens["access_token"]
+  end
+
+  test "device flow: a refused or expired code ends the login, not connected" do
+    Fake.auth(:poll, [{400, %{"error" => %{"code" => "access_denied"}}}])
+    assert %{status: :pending} = Auth.login()
+    eventually(fn -> Auth.status().status == :disconnected end)
+    assert Auth.status().error =~ "refused: HTTP 400: access_denied"
+
+    # Expiry: the deadline is 15 minutes away, so move it into the past.
+    assert %{status: :pending} = Auth.login()
+    assert_receive {:chatgpt_auth, :poll, _}
+    :sys.replace_state(Auth, &put_in(&1.login.expires_at, 0))
+    send(Auth, {:poll, :sys.get_state(Auth).login.ref})
+    eventually(fn -> Auth.status().status == :disconnected end)
+    assert Auth.status().error =~ "expired"
+    assert {:error, _} = Auth.token()
+  end
+
+  test "a login code that cannot be had is an error for the caller" do
+    Fake.auth(:usercode, [{404, %{}}])
+    assert {:error, message} = Nano.Ops.chatgpt_login()
+    assert message =~ "device-code login"
+    assert Auth.status().status == :disconnected
+  end
+
+  ## Restarts
+
+  test "credentials survive a restart of their process; a login in progress does not" do
+    tokens = connect!()
+    restart_auth()
+    assert %{status: :connected, email: "me@example.com"} = Auth.status()
+    assert {:ok, %{access_token: access}} = Auth.token()
+    assert access == tokens["access_token"]
+    refute_received {:chatgpt_auth, :usercode, _}
+
+    # Interrupted mid-login: back as it was before the login, and a new login works.
+    :ok = Auth.logout()
+    Fake.auth(:poll, List.duplicate({403, %{}}, 5))
+    assert %{status: :pending} = Auth.login()
+    restart_auth()
+    assert %{status: :disconnected, user_code: nil} = Auth.status()
+    assert {:error, _} = Auth.token()
+    connect!()
+  end
+
+  test "an unreadable token file comes up not connected" do
+    File.mkdir_p!(Path.dirname(path()))
+    File.write!(path(), "{not json")
+
+    ExUnit.CaptureLog.capture_log(fn -> restart_auth() end)
+    assert Auth.status().status == :disconnected
+  end
+
+  ## Refresh
+
+  test "a token near expiry is refreshed first, the rotated refresh token saved" do
+    first = connect!(Fake.tokens(expires_in: 100))
+    second = Fake.tokens()
+    third = Fake.tokens()
+    Fake.auth(:token, [{200, second}])
+
+    assert {:ok, %{access_token: access}} = Auth.token()
+    assert access == second["access_token"]
+    assert_receive {:chatgpt_auth, :token, refresh}
+
+    assert refresh == %{
+             "grant_type" => "refresh_token",
+             "client_id" => "app_EMoamEEZ73f0CkXaXp7hrann",
+             "refresh_token" => first["refresh_token"]
+           }
+
+    assert saved()["refresh_token"] == second["refresh_token"]
+
+    # A 401 from the backend forces one refresh, with the latest refresh token; a caller whose
+    # token is already stale gets the new one without another refresh.
+    Fake.auth(:token, [{200, third}])
+    assert {:ok, %{access_token: new}} = Auth.refresh(second["access_token"])
+    assert new == third["access_token"]
+    assert_receive {:chatgpt_auth, :token, %{"refresh_token" => rt}}
+    assert rt == second["refresh_token"]
+    assert {:ok, %{access_token: ^new}} = Auth.refresh(second["access_token"])
+    refute_receive {:chatgpt_auth, :token, _}, 50
+  end
+
+  test "a refused refresh signs out; a failed one keeps the tokens while they last" do
+    tokens = connect!(Fake.tokens(expires_in: 100))
+    Fake.auth(:token, [{503, %{}}])
+    log = ExUnit.CaptureLog.capture_log(fn -> assert {:ok, %{access_token: _}} = Auth.token() end)
+    assert log =~ "refresh failed: HTTP 503"
+    refute log =~ tokens["refresh_token"]
+    assert Auth.status().status == :connected
+    assert Auth.status().error =~ "could not refresh"
+
+    Fake.auth(:token, [{400, %{"error" => %{"code" => "refresh_token_reused"}}}])
+    ExUnit.CaptureLog.capture_log(fn -> assert {:error, _} = Auth.token() end)
+    assert %{status: :disconnected, error: error} = Auth.status()
+    assert error =~ "refresh_token_reused"
+    refute File.exists?(path())
+  end
+
+  ## Inference
+
+  defp start_agent!(opts \\ []) do
+    model = Fake.model()
+    name = "c#{System.unique_integer([:positive])}"
+    {:ok, _} = NanoAgent.start([name: name, model: "openai-codex/" <> model] ++ opts)
+
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+    id = NanoAgent.info(name).id
+    Nano.Log.subscribe(id)
+    {model, name, id}
+  end
+
+  defp request!(model) do
+    assert_receive {:chatgpt_request, ^model, body, headers}, 3_000
+    {body, Map.new(headers)}
+  end
+
+  defp entries(id, type), do: for(e <- Nano.Log.read(id), e["type"] == type, do: e)
+
+  defp await(id, type, n \\ 1) do
+    eventually(fn -> length(entries(id, type)) >= n end)
+    Enum.at(entries(id, type), n - 1)
+  end
+
+  test "agents on openai-codex/ need a connected subscription" do
+    assert NanoAgent.start(name: "nc", model: "openai-codex/gpt-5.5") ==
+             {:error, :chatgpt_not_connected}
+  end
+
+  test "a conversation round-trips: tools, calls, results, reasoning items, usage" do
+    tokens = connect!()
+    {model, name, id} = start_agent!()
+
+    Fake.push(model, calls: [eval: "1 + 1"], reasoning: "add them", usage: {1000, 50, 0})
+    Fake.push(model, text: "done", usage: {1200, 20, 1000})
+    NanoAgent.notify(name, :hi)
+
+    {first, headers} = request!(model)
+    assert headers["authorization"] == "Bearer " <> tokens["access_token"]
+    assert headers["chatgpt-account-id"] == "acct-fake"
+    assert headers["accept"] == "text/event-stream"
+    assert headers["session-id"] == first["prompt_cache_key"]
+
+    assert %{
+             "store" => false,
+             "stream" => true,
+             "include" => ["reasoning.encrypted_content"],
+             "tool_choice" => "auto",
+             "reasoning" => %{"effort" => "none"},
+             "model" => ^model
+           } = first
+
+    assert first["instructions"] == NanoAgent.info(name).system_prompt
+
+    assert [%{"type" => "function", "name" => "eval", "parameters" => _}, %{"name" => "idle"}] =
+             first["tools"]
+
+    assert [%{"type" => "message", "role" => "user", "content" => [%{"type" => "input_text"}]}] =
+             first["input"]
+
+    {second, _} = request!(model)
+    assert second["prompt_cache_key"] == first["prompt_cache_key"]
+
+    assert [
+             _user,
+             %{"type" => "reasoning", "encrypted_content" => "enc-" <> _, "summary" => [_]},
+             %{
+               "type" => "function_call",
+               "name" => "eval",
+               "call_id" => call,
+               "arguments" => args
+             },
+             %{"type" => "function_call_output", "call_id" => call, "output" => "2"}
+           ] = second["input"]
+
+    assert Jason.decode!(args) == %{"code" => "1 + 1"}
+
+    ended = await(id, "turn_ended")
+    assert ended["reason"] == "no_tool_call"
+    [r1, r2] = entries(id, "model_response")
+    assert %{"provider" => "ChatGPT", "reasoning" => "add them", "prompt_tokens" => 1000} = r1
+    assert %{"text" => "done", "cached_tokens" => 1000, "completion_tokens" => 20} = r2
+    assert r1["finish_reason"] == "tool_calls" and r2["finish_reason"] == "stop"
+
+    info = NanoAgent.info(name)
+    assert info.budget.tokens_used == 1050 + 1220
+    assert info.budget.turns_used == 2
+    assert info.budget.context_used == 1220
+    assert info.cache_hit_rate == 0.5
+
+    # The next delivery's budget line counts it.
+    Fake.push(model, text: "ok")
+    NanoAgent.notify(name, :again)
+    {third, _} = request!(model)
+    last = List.last(third["input"])["content"] |> hd() |> Map.fetch!("text")
+    assert last =~ "Used so far: 2 of 500 turns, 2270 of"
+
+    # No token in the log.
+    log = File.read!(Path.join(Application.fetch_env!(:nano, :log_dir), id <> ".jsonl"))
+    refute log =~ tokens["access_token"]
+    refute log =~ tokens["refresh_token"]
+  end
+
+  test "reasoning levels map to the backend's efforts" do
+    connect!()
+
+    for {level, effort} <- [{"minimal", "low"}, {"high", "high"}, {"max", "max"}] do
+      {model, name, _} = start_agent!(reasoning: level)
+      Fake.push(model, text: "ok")
+      NanoAgent.notify(name, :hi)
+      {body, _} = request!(model)
+      assert body["reasoning"] == %{"effort" => effort, "summary" => "auto"}
+    end
+  end
+
+  test "a usage limit halts the agent without retrying; un-halting resumes it" do
+    connect!()
+    {model, name, id} = start_agent!()
+
+    resets = System.system_time(:second) + 3600
+
+    Fake.push(model,
+      status: 429,
+      body: %{
+        "error" => %{
+          "type" => "usage_limit_reached",
+          "plan_type" => "plus",
+          "resets_at" => resets
+        }
+      }
+    )
+
+    NanoAgent.notify(name, :hi)
+    request!(model)
+    error = await(id, "model_error")
+    assert %{"status" => 429, "retry" => false} = error
+    eventually(fn -> NanoAgent.info(name).halted == :usage_limit end)
+    refute_receive {:chatgpt_request, ^model, _, _}, 100
+
+    note = List.last(entries(id, "harness_note"))["text"]
+
+    assert note =~
+             "The ChatGPT plan (plus) this node uses for you has reached its usage limit until"
+
+    assert note =~ "so I have halted you"
+
+    # Halted: events queue. Un-halted: they are delivered with the note.
+    NanoAgent.notify(name, :queued)
+    refute_receive {:chatgpt_request, ^model, _, _}, 100
+    Fake.push(model, text: "back")
+    Nano.Ops.unhalt(name)
+    {body, _} = request!(model)
+    assert List.last(body["input"])["content"] |> hd() |> Map.fetch!("text") =~ ":queued"
+  end
+
+  test "server errors and other rate limits are retried; a 401 refreshes the token once" do
+    connect!()
+    {model, name, id} = start_agent!()
+    Fake.push(model, status: 500)
+    Fake.push(model, status: 429, body: %{"error" => %{"type" => "rate_limit_exceeded"}})
+    Fake.push(model, failed: %{"code" => "server_is_overloaded", "message" => "busy"})
+    NanoAgent.notify(name, :hi)
+    for _ <- 1..3, do: request!(model)
+    await(id, "model_error", 3)
+    assert Enum.map(entries(id, "model_error"), & &1["retry"]) == [true, true, false]
+
+    fresh = Fake.tokens()
+    Fake.auth(:token, [{200, fresh}])
+    Fake.push(model, status: 401)
+    Fake.push(model, text: "ok")
+    NanoAgent.notify(name, :again)
+    request!(model)
+    {_, headers} = request!(model)
+    assert headers["authorization"] == "Bearer " <> fresh["access_token"]
+    assert_receive {:chatgpt_auth, :token, %{"grant_type" => "refresh_token"}}
+    assert await(id, "model_response")["text"] == "ok"
+  end
+
+  test "models: the backend's list when it answers, else the known list" do
+    assert Nano.ChatGPT.models() == []
+    connect!()
+
+    Fake.models([
+      %{"slug" => "gpt-x", "display_name" => "GPT-X", "context_window" => 1000},
+      %{"slug" => "hidden", "visibility" => "hide"}
+    ])
+
+    assert Nano.ChatGPT.models() == [%{id: "gpt-x", name: "GPT-X", context_length: 1000}]
+    assert %{id: "openai-codex/gpt-x"} = hd(Nano.Model.models())
+
+    :persistent_term.erase({Nano.ChatGPT, :models})
+    Fake.models(500)
+    assert %{id: "gpt-5.5", context_length: 272_000} = hd(Nano.ChatGPT.models())
+  end
+
+  ## Operator surfaces
+
+  test "the API: status, login and logout, never the tokens" do
+    tokens = Fake.tokens()
+    Fake.auth(:poll, List.duplicate({403, %{}}, 3))
+
+    assert %{"status" => "disconnected"} =
+             build_conn() |> get("/api/chatgpt") |> json_response(200)
+
+    assert %{"status" => "pending", "user_code" => "FAKE-CODE", "verification_url" => url} =
+             build_conn() |> post("/api/chatgpt/login") |> json_response(200)
+
+    assert url =~ "/codex/device"
+    assert %{"ok" => true} = build_conn() |> post("/api/chatgpt/logout") |> json_response(200)
+
+    connect!(tokens)
+    body = build_conn() |> get("/api/chatgpt") |> json_response(200)
+    assert %{"status" => "connected", "plan" => "plus", "email" => "me@example.com"} = body
+    refute Jason.encode!(body) =~ tokens["access_token"]
+
+    index = build_conn() |> get("/api") |> json_response(200)
+    assert Enum.any?(index["endpoints"], &(&1["path"] == "/api/chatgpt/login"))
+
+    Fake.auth(:usercode, [{500, %{}}])
+    :ok = Auth.logout()
+    assert %{"error" => _} = build_conn() |> post("/api/chatgpt/login") |> json_response(502)
+  end
+
+  test "the dashboard: connect shows the code and link, then who is connected" do
+    Fake.auth(:poll, List.duplicate({403, %{}}, 3))
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "Connect ChatGPT"
+
+    html = view |> element("#chatgpt button", "Connect ChatGPT") |> render_click()
+    assert html =~ "FAKE-CODE"
+    assert html =~ "/codex/device"
+
+    view |> element("#chatgpt button", "cancel") |> render_click()
+    connect!()
+    send(view.pid, :refresh)
+    html = render(view)
+    assert html =~ "connected as me@example.com (plus)"
+
+    # The subscription's models are offered in the model box.
+    html = view |> element("#start") |> render_change(%{"model" => "gpt-5.5"})
+    assert html =~ "openai-codex/gpt-5.5"
+  end
+end

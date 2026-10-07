@@ -23,11 +23,12 @@ defmodule NanoWeb.ProcessLive do
       socket
       |> assign(page_title: "nano", prev: %{}, prev_at: nil, send_to: nil, view: view(params))
       |> assign(recent: %{}, counts: %{})
-      # The model list is fetched (and cached) by Nano.OpenRouter; only a live page asks for it.
+      # The model lists are fetched (and cached) by the providers; only a live page asks for them.
       |> assign(
         start: %{},
         start_error: nil,
-        models: if(connected?(socket), do: Nano.OpenRouter.models(), else: [])
+        models: if(connected?(socket), do: Nano.Model.models(), else: []),
+        chatgpt: Nano.Ops.chatgpt()
       )
       |> mount_shared()
       |> refresh()
@@ -100,6 +101,21 @@ defmodule NanoWeb.ProcessLive do
     end
   end
 
+  def handle_event("chatgpt_login", _params, socket) do
+    case Nano.Ops.chatgpt_login() do
+      {:error, message} ->
+        {:noreply, assign(socket, chatgpt: %{Nano.Ops.chatgpt() | error: message})}
+
+      status ->
+        {:noreply, assign(socket, chatgpt: status)}
+    end
+  end
+
+  def handle_event("chatgpt_logout", _params, socket) do
+    Nano.Ops.chatgpt_logout()
+    {:noreply, refresh(socket)}
+  end
+
   def handle_event("resume", %{"name" => name}, socket) do
     Nano.Ops.resume(name)
     {:noreply, refresh(socket)}
@@ -125,8 +141,18 @@ defmodule NanoWeb.ProcessLive do
         Map.put(row, :rate, rate)
       end
 
+    chatgpt = Nano.Ops.chatgpt()
+
+    # The subscription's models join the list once it is connected, and leave when it is not.
+    models =
+      if connected?(socket) and chatgpt.status != socket.assigns.chatgpt.status,
+        do: Nano.Model.models(),
+        else: socket.assigns.models
+
     socket
     |> assign(
+      chatgpt: chatgpt,
+      models: models,
       rows: rows,
       prev: Map.new(rows, &{&1.pid, &1.reductions}),
       prev_at: now,
@@ -213,7 +239,12 @@ defmodule NanoWeb.ProcessLive do
     </header>
     <div class="layout">
       <main>
-        <NanoWeb.StartForm.start_form start={@start} models={@models} error={@start_error} />
+        <NanoWeb.StartForm.start_form
+          start={@start}
+          models={@models}
+          error={@start_error}
+          chatgpt={@chatgpt}
+        />
 
         <nav class="views">
           <.link

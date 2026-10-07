@@ -46,5 +46,9 @@ defmodule NanoWeb.Router do
     get "/users/:name/inbox", ApiController, :inbox
 
     post "/eval", ApiController, :eval
+
+    get "/chatgpt", ApiController, :chatgpt
+    post "/chatgpt/login", ApiController, :chatgpt_login
+    post "/chatgpt/logout", ApiController, :chatgpt_logout
   end
 end

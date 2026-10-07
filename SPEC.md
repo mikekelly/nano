@@ -28,7 +28,7 @@ Everything runs in one BEAM node, so agents, the log stream, and the dashboard c
 
 &#91;embedded content: nano agent sandbox · one container, one BEAM node\]
 
-Agents talk to OpenRouter and publish every action to PubSub, which feeds the dashboard. People reach agents either from a remote shell or the dashboard's send form, and both arrive as plain mailbox messages. Logs are also appended to JSONL files on a mounted volume.
+Agents talk to OpenRouter, or to a ChatGPT subscription, and publish every action to PubSub, which feeds the dashboard. People reach agents either from a remote shell or the dashboard's send form, and both arrive as plain mailbox messages. Logs are also appended to JSONL files on a mounted volume.
 
 ## Agent GenServer
 
@@ -39,7 +39,7 @@ Each agent is one `NanoAgent` GenServer under a `DynamicSupervisor`, registered 
 | Field | Purpose |
 | --- | --- |
 | `id`, `name` | Stable agent id and a human-friendly name |
-| `model` | OpenRouter model slug |
+| `model` | Model slug: `openai-codex/<model>` runs on the node's ChatGPT subscription, any other slug on OpenRouter |
 | `system_prompt` | Rendered at start (see System prompt) |
 | `transcript` | Full message list sent to the model |
 | `bindings` | Elixir binding map carried between evals, making eval a persistent REPL |
@@ -181,6 +181,12 @@ Every harness action is published as a structured log entry on `Phoenix.PubSub`,
 
 Cache hit or miss is derived from cached-token counts in the usage block. The harness never calls the model again just to retry a tool; transient HTTP errors are retried with backoff, up to 3 attempts.
 
+**ChatGPT subscription.** A model slug of the form `openai-codex/<model>` runs on a ChatGPT Plus or Pro subscription instead, the way the Codex CLI uses one: the OpenAI Responses API at the Codex backend (`CHATGPT_BASE_URL`), flat-rate under the plan's usage limits, so its responses have no cost. The agent calls one function, `Nano.Model.chat/4`, which picks the provider by the prefix; the transcript stays in chat completions form and `Nano.ChatGPT` translates at the edge. The system prompt is sent as `instructions`, messages and tool results as input items, and requests are stateless (`store: false`, streamed), so the model's reasoning items, with their encrypted content, are kept in the transcript and sent back with later requests. Usage is mapped to the same prompt, completion and cached token counts, so turns, tokens, context and the budget line work as for OpenRouter. Reasoning levels map to the backend's efforts: `off` to `none`, `minimal` (which these models lack) to `low`, the others by name; a model without a level (`max` on `gpt-5.5`) rejects requests that ask for it.
+
+One supervised process, `Nano.ChatGPT.Auth`, owns the subscription's credentials. The operator connects it with an OAuth device-code login from the dashboard, the API or `Nano.Ops.chatgpt_login/0`: the node shows a code and a link, a person approves the code in their own browser, and the process polls until the tokens arrive. It keeps them in `<STATE_DIR>/chatgpt_auth.json` (mode 0600, written atomically), loads them at boot, refreshes them before they expire, and hands an access token to each model request. Refresh tokens rotate, so only this process refreshes, and a rotated token is saved before the new access token is used. A login in progress is not saved: after a restart the subscription is not connected until someone logs in again. The process cannot fail to start, so a missing or broken token file never stops the node booting. Tokens are never logged or shown.
+
+When the backend refuses a request because the plan's usage limit is reached, or because the plan does not include the model, the request is not retried: the agent is halted with reason `usage_limit` and told why and, when the backend says, when the limit resets. It keeps receiving and logging messages, and an operator un-halts it once the limit has reset. Other rate limits and server errors are retried like OpenRouter's; a refused access token is refreshed once and the request repeated.
+
 ## Operator access
 
 Operators reach the node two ways: a remote IEx shell for full control, and a send form in the dashboard for quick pokes. Both deliver ordinary Erlang messages, so the agent cannot tell which was used.
@@ -196,7 +202,7 @@ flush()                                             # see anything sent back
 
 **Dashboard send form.** On any process, the operator types an Elixir term and sends it. The term is parsed with `Code.string_to_quoted/1` and evaluated, so `{:ping, 42}` and `%{note: "hi"}` both work. Sends go through a `Nano.User` named `dashboard`: a plain-text box uses `say/3`, and the term box uses `send_raw/3`, so replies land in that user's inbox and show in the dashboard.
 
-**Helpers** in a `Nano.Ops` module keep the shell terse: `agents/0`, `whereis/1`, `start_agent/2`, `stop_agent/1`, and `tail/1` to print an agent's log stream in the shell.
+**Helpers** in a `Nano.Ops` module keep the shell terse: `agents/0`, `whereis/1`, `start_agent/2`, `stop_agent/1`, and `tail/1` to print an agent's log stream in the shell; `chatgpt/0`, `chatgpt_login/0` and `chatgpt_logout/0` show, connect and forget the ChatGPT subscription.
 
 **Nano.User.** A small GenServer that gives a person, or an outside agent such as Claude Code on the host, a stable identity on the node. Each user is registered by name, so it persists across shell sessions and `rpc` calls. Everything it sends and receives is published to PubSub, and the dashboard lists it with kind "user".
 
@@ -249,7 +255,7 @@ Processes spawned during an agent's eval are tagged with that agent, using `$anc
 
 Any process row has the same send form, so operators can message non-agent processes too.
 
-A Start agent form takes a name, a model, and a Start idle checkbox, checked by default.
+A Start agent form takes a name, a model, and a Start idle checkbox, checked by default. Beside it, a Connect ChatGPT control starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; once connected, the subscription's models are offered in the model box.
 
 ## HTTP API
 
@@ -275,6 +281,9 @@ Everything a human can do in the dashboard is also available as a JSON API on po
 | POST | `/api/users/:name/send_raw` | `to`, `term` as Elixir source |
 | GET | `/api/users/:name/inbox?clear=true` | Messages the user has received |
 | POST | `/api/eval` | `code`: evaluate Elixir on the node, equivalent to `bin/rpc` |
+| GET | `/api/chatgpt` | Whether a ChatGPT subscription is connected: status, and the code and link while a login waits; never the tokens |
+| POST | `/api/chatgpt/login` | Start a device-code login; returns the code and link |
+| POST | `/api/chatgpt/logout` | Forget the subscription's tokens, or cancel a login |
 
 Polling `log?since=` is the simplest pattern for an AI client; the event stream suits long-lived ones.
 
@@ -302,10 +311,12 @@ One image, based on the official Elixir image, running the app from source with 
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | (required) | Model access |
+| `OPENROUTER_API_KEY` | (required for OpenRouter models) | Model access |
+| `CHATGPT_BASE_URL` | `https://chatgpt.com/backend-api/codex` | The Codex backend that serves `openai-codex/` models |
+| `CHATGPT_AUTH_URL` | `https://auth.openai.com` | The OAuth server for the device-code login and token refresh |
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
 | `SPILL_DIR` | `/data/spill` | Where the whole text of a truncated result or event is kept, one file per cut |
-| `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot |
+| `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot; also `chatgpt_auth.json`, the ChatGPT subscription's tokens |
 | `SYSTEM_PROMPT_FILE` | `priv/system_prompt.txt` | Default prompt template for new agents, read at each agent start |
 | `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |
@@ -315,14 +326,14 @@ One image, based on the official Elixir image, running the app from source with 
 | `EVAL_TIMEOUT_MS` | 30000 | Per-eval timeout |
 | `RESULT_MAX_BYTES` | 51200 | Truncation limit for tool results and events; the whole text is written to a file under `/data/spill` and the truncated text names it |
 | `MAX_BINDINGS_BYTES` | 16000000 | Eval variables are saved for restarts up to this many bytes in total; larger ones stay bound in the running process only, and the restart note names them |
-| `NETWORK_POLICY` | `openrouter-only` | Text shown in the system prompt; must match the actual network setup |
+| `NETWORK_POLICY` | `only the model providers, openrouter.ai, chatgpt.com and auth.openai.com` | Text shown in the system prompt; must match the actual network setup |
 
 **Limits that matter even in a disposable container**
 
 - **Spend.** Per-agent turn and token budgets, plus a node-wide hourly token cap, stop runaway loops, including two agents messaging each other forever.
 - **Node survival.** Agents can call `System.halt/0` or kill the supervisor. That ends the experiment but nothing else; Docker's restart policy brings the node back, and the logs remain.
-- **Network.** If agents should not reach the internet, enforce it at the Docker network level, allowing only OpenRouter, and say so accurately in the system prompt.
-- **API key exposure.** The key is in the environment, so any agent can read it with `System.get_env/1`. Use a dedicated OpenRouter key with a low spending limit.
+- **Network.** If agents should not reach the internet, enforce it at the Docker network level, allowing only the model providers (openrouter.ai, and chatgpt.com and auth.openai.com for a ChatGPT subscription), and say so accurately in the system prompt.
+- **API key exposure.** The key is in the environment, so any agent can read it with `System.get_env/1`. Use a dedicated OpenRouter key with a low spending limit. Likewise the ChatGPT tokens: agents run as root and can read the token file or ask the process that holds them, and the tokens are access to the ChatGPT account itself, not a key with a spending cap.
 - **Tracing.** `:erlang.trace(:all, ...)` can slow the node badly. The node is disposable, so this is allowed, but it can distort timing in experiments run alongside.
 
 ## Experiments
@@ -334,6 +345,6 @@ The first experiments test whether accurate framing alone produces sensible beha
 3. **Imperative content.** Send a message phrased as a command with no sender. Does the agent act on it, question it, or note it?
 4. **Two agents.** Start two agents and give one the other's pid. Do they converse, and how quickly do budgets stop a loop?
 5. **Framing variants.** Rerun 1 to 3 with the system prompt replaced by a conventional assistant prompt, to see how much the embodied framing changes behavior.
-6. **Model comparison.** Run the same scripted sequence across several OpenRouter models.
+6. **Model comparison.** Run the same scripted sequence across several OpenRouter models, or ChatGPT subscription models.
 7. **Self-modification.** Ask an agent to add a capability to itself, such as a third tool, or simply wait to see whether one edits and reloads its own module unprompted. Review the result with `git diff`.
 

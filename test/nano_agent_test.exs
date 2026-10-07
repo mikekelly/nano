@@ -821,7 +821,10 @@ defmodule NanoAgentTest do
     refute prompt =~ "{{"
     assert prompt =~ "I am the GenServer you are running in: deterministic code, not a person"
     assert prompt =~ "(OTP #{System.otp_release()}, Elixir #{System.version()})"
-    assert prompt =~ "Network access: openrouter-only."
+
+    assert prompt =~
+             "Network access: only the model providers, openrouter.ai, chatgpt.com and auth.openai.com."
+
     max = Application.get_env(:nano, :agent_max_tokens)
     ctx_max = Application.get_env(:nano, :agent_max_context)
 

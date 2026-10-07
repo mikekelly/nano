@@ -59,8 +59,8 @@ defmodule NanoAgent do
   `system_prompt:` (a template string replacing the default; same `{{placeholders}}`),
   `system_prompt_file:` (a template file, instead of `SYSTEM_PROMPT_FILE`), `max_turns:`,
   `max_tokens:`, `max_context:` (non-negative integers; 0 means no limit), `reasoning:` (one of `reasoning_levels/0`, default
-  `REASONING`). Returns `{:error, :invalid_name | :invalid_option |
-  :missing_model | :missing_openrouter_api_key}` or the supervisor's result.
+  `REASONING`). Returns `{:error, :invalid_name | :invalid_option | :missing_model}`, the
+  reason `Nano.Model.unavailable/1` gives, or the supervisor's result.
   """
   def start(opts) do
     name = opts[:name]
@@ -79,8 +79,8 @@ defmodule NanoAgent do
       model in [nil, ""] ->
         {:error, :missing_model}
 
-      env(:openrouter_api_key) in [nil, ""] ->
-        {:error, :missing_openrouter_api_key}
+      reason = Nano.Model.unavailable(model) ->
+        {:error, reason}
 
       true ->
         # The template: the agent's own string, or a file read now (and again at each restart).
@@ -153,9 +153,9 @@ defmodule NanoAgent do
 
   @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
-  while the agent is busy or suspended. `halted` is nil, `:budget`, `:node_budget`,
-  `:restart_brake`, `:start_failed` or `:log_failed`; `cache_hit_rate` is nil until the first
-  response.
+  while the agent is busy or suspended. `halted` is nil, `:budget`, `:context`, `:node_budget`,
+  `:usage_limit`, `:restart_brake`, `:start_failed` or `:log_failed`; `cache_hit_rate` is nil
+  until the first response.
   """
   def info(name) do
     with %{} = s <- Nano.StateStore.get(name) do
@@ -698,12 +698,13 @@ defmodule NanoAgent do
   def call_model(agent, tag, {model, reasoning}, messages, request_id, attempt \\ 1) do
     started = System.monotonic_time(:millisecond)
 
-    case Nano.OpenRouter.chat(model, messages, @tools, reasoning) do
+    case Nano.Model.chat(model, messages, @tools, reasoning) do
       {:ok, response} ->
         {:ok, Map.put(response, :latency_ms, System.monotonic_time(:millisecond) - started)}
 
       {:error, error} ->
-        retry = attempt < 3 and Nano.OpenRouter.transient?(error)
+        {transient, error} = Map.pop(error, :transient, false)
+        retry = attempt < 3 and transient
 
         send(
           agent,
@@ -738,6 +739,10 @@ defmodule NanoAgent do
 
     model_done(s, {:error, body})
   end
+
+  # A usage limit (the provider says which) is not retried: the agent waits halted for an operator.
+  defp model_done(s, {:error, %{limit: text}}),
+    do: s |> halt(:usage_limit, text) |> end_turn("error")
 
   defp model_done(s, {:error, _}), do: s |> check_budget() |> end_turn("error")
 

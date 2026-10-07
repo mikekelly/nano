@@ -119,6 +119,27 @@ defmodule Nano.Ops do
     end
   end
 
+  ## ChatGPT subscription
+
+  @doc """
+  Whether a ChatGPT subscription is connected, for agents on `openai-codex/<model>`: a map with
+  `status` (`:disconnected`, `:pending`, `:connected`), while pending the `user_code` to enter at
+  `verification_url` before `expires_at`, once connected `email`, `plan` and `expires_at` (the
+  access token's, refreshed before then), and `error`, the last failure in words, or nil.
+  Never the tokens themselves.
+  """
+  def chatgpt, do: Nano.ChatGPT.Auth.status()
+
+  @doc """
+  Starts a device-code login: returns the status above, pending, so a person can approve the
+  code in their own browser; the node polls until they do, or the code expires. `{:error,
+  message}` if no code could be had.
+  """
+  def chatgpt_login, do: Nano.ChatGPT.Auth.login()
+
+  @doc "Forgets the subscription's tokens (memory and file), or a pending login. Returns `:ok`."
+  def chatgpt_logout, do: Nano.ChatGPT.Auth.logout()
+
   ## Processes
 
   @doc """

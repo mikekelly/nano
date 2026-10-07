@@ -23,6 +23,19 @@ config :nano,
       "OPENROUTER_BASE_URL",
       if(test?, do: "http://127.0.0.1:1/unset", else: "https://openrouter.ai/api/v1")
     ),
+  # The ChatGPT subscription provider (models openai-codex/<model>): the Codex backend that
+  # serves inference, and the OAuth server for the device-code login and token refresh.
+  # Tests point both at scripted fakes; the test defaults refuse connections.
+  chatgpt_base_url:
+    env.(
+      "CHATGPT_BASE_URL",
+      if(test?, do: "http://127.0.0.1:1/unset", else: "https://chatgpt.com/backend-api/codex")
+    ),
+  chatgpt_auth_url:
+    env.(
+      "CHATGPT_AUTH_URL",
+      if(test?, do: "http://127.0.0.1:1/unset", else: "https://auth.openai.com")
+    ),
   # Default prompt template, read from disk each time an agent starts; relative to the app dir.
   system_prompt_file: env.("SYSTEM_PROMPT_FILE", "priv/system_prompt.txt"),
   # Model reasoning ("thinking") effort for new agents: off, minimal, low, medium, high, xhigh or max.
@@ -35,7 +48,12 @@ config :nano,
   result_max_bytes: int.("RESULT_MAX_BYTES", "51200"),
   # Eval variables are saved for restarts up to this many bytes in total; the largest are left out.
   max_bindings_bytes: int.("MAX_BINDINGS_BYTES", "16000000"),
-  network_policy: env.("NETWORK_POLICY", "openrouter-only"),
+  # Shown to agents; must be true. The default describes a network limited to the providers.
+  network_policy:
+    env.(
+      "NETWORK_POLICY",
+      "only the model providers, openrouter.ai, chatgpt.com and auth.openai.com"
+    ),
   log_dir: env.("LOG_DIR", if(config_env() == :prod, do: "/data/logs", else: "tmp/logs")),
   # Tool results and events over RESULT_MAX_BYTES are cut, and the whole text written here.
   spill_dir: env.("SPILL_DIR", if(config_env() == :prod, do: "/data/spill", else: "tmp/spill")),

@@ -359,6 +359,11 @@ defmodule NanoWeb.Components do
         "and never shrinks, so un-halting allows one more model call before it halts again"
 
   def halt_reason(:node_budget), do: "the node-wide hourly token cap was reached"
+
+  def halt_reason(:usage_limit),
+    do:
+      "the provider refused with a usage limit (e.g. the ChatGPT plan's); un-halt once it has reset"
+
   def halt_reason(:restart_brake), do: "restart brake: it restarted 3 times within 60 s"
 
   def halt_reason(:start_failed),

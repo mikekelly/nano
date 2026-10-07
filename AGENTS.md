@@ -29,6 +29,7 @@ truthfully.
 | `priv/system_prompt.txt` | The prompt template, read from disk at every agent start. |
 | `lib/nano_agent.ex` | The harness. The agent's own module; agents can read and change it. |
 | `lib/nano/ops.ex` | Everything an operator can do, as plain functions; the dashboard and the API are skins over it. |
+| `lib/nano/model.ex` | Which provider serves a model: `openai-codex/…` the ChatGPT subscription (`lib/nano/chatgpt*`), anything else OpenRouter. |
 | `data/logs/<agent-id>.jsonl` | The durable record of every agent: events, requests, responses, tool calls, results. |
 | `data/state/` | Each agent's saved state; agents are revived from here when the node boots. |
 
@@ -54,6 +55,11 @@ The container mounts a **dedicated checkout** of this repo as `/app` (default
 
 Use a dedicated OpenRouter key with a low spending limit: agents can read it from their
 environment, and with turns and tokens set to 0 the key's limit is the only hard stop.
+
+Or run agents on a ChatGPT Plus/Pro subscription: models `openai-codex/<model>`, connected
+with a device-code login from the dashboard (Connect ChatGPT) or `POST /api/chatgpt/login`.
+The tokens live in `data/state/chatgpt_auth.json`; agents can read them, and they are
+account access, not a capped key. README, "Running agents on a ChatGPT subscription".
 
 ## Spawning and prompting agents
 
@@ -124,7 +130,8 @@ have to rebuild it with `:erlang.list_to_pid/1`, since `#PID<0.1.0>` is not vali
   do not come back, even as "just the fixes". If an agent finds a real bug, re-implement
   the fix from the finding, not from its code, and credit the finding.
 - `mix test`, `mix format --check-formatted`, `mix compile --warnings-as-errors` must all
-  pass; tests run against a scripted fake OpenRouter in `test/support` and never spend.
+  pass; tests run against scripted fakes of OpenRouter and of the ChatGPT backend and its
+  OAuth server in `test/support`, and never spend.
 - SPEC.md is the source of truth. If code and spec disagree, fix one and say which.
 - The system prompt is checked against SPEC.md by a test; `priv/system_prompt.txt` and the
   spec's template block must stay byte-identical.

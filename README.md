@@ -22,10 +22,14 @@ it), builds the image, starts the container, waits for the node and prints the d
 URL, http://127.0.0.1:4000. Running it again on a running stack is fine. `docker compose
 down` stops it. New agents use `deepseek/deepseek-v4.1-flash` unless `.env` says otherwise.
 
+Agents can also run on a ChatGPT Plus or Pro subscription instead of OpenRouter; no key is
+needed for that, see [Running agents on a ChatGPT subscription](#running-agents-on-a-chatgpt-subscription).
+
 `.env` can also hold, all optional and listed with their defaults in [.env.example](.env.example):
 `DEFAULT_MODEL`, `NANO_CHECKOUT` (the checkout's path), `REASONING`, `SYSTEM_PROMPT_FILE`
 (the system prompt template, `priv/system_prompt.txt`), `STATE_DIR`, the budget and
-timeout limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL` and `NETWORK_POLICY`.
+timeout limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL`, `CHATGPT_BASE_URL`, `CHATGPT_AUTH_URL`
+and `NETWORK_POLICY`.
 
 Docker must be able to mount the checkout (colima shares only your home directory by
 default). The node runs as root inside the container: the container is the sandbox, and
@@ -130,6 +134,57 @@ boot leaves the container restarting (`docker ps` shows `Restarting`, `docker lo
 shows why). Fix it on the host with `git diff` and `git checkout` in the checkout as above.
 Docker is still retrying, so the node comes back on its own at the next attempt.
 
+## Running agents on a ChatGPT subscription
+
+A model slug that starts with `openai-codex/` runs on a ChatGPT subscription rather than
+OpenRouter, the way the Codex CLI does: `openai-codex/gpt-5.5`, `openai-codex/gpt-5.6-sol`
+and so on. Use it anywhere a model goes (the start form, `POST /api/agents`, `NanoAgent.start`,
+`DEFAULT_MODEL`). Inference is flat-rate under the plan's usage limits, so these agents show
+no cost; their tokens still count towards their budgets and the node's hourly cap.
+
+**Before you connect.** You need a ChatGPT Plus or Pro plan. The node signs in with a
+device code, which ChatGPT accepts only when *device code authorization* is switched on:
+in ChatGPT, Settings → Security → Device code authorization. In a Team, Enterprise or Edu
+workspace an administrator may have to allow it. (This setting is described by third-party
+guides, not by the Codex source; if the code is accepted but the login never completes,
+check it first.)
+
+**Connecting.** On the dashboard's home page, under the model box of the Start agent form:
+
+1. Click **Connect ChatGPT**. The form shows a link, `https://auth.openai.com/codex/device`,
+   and a one-time code, valid for 15 minutes.
+2. Open the link in your own browser, sign in to ChatGPT, and enter the code.
+3. The node polls until you have approved it, then shows `connected as <email> (<plan>)`,
+   and the model box offers the subscription's models.
+
+The same over HTTP: `curl -XPOST localhost:4000/api/chatgpt/login` returns `user_code` and
+`verification_url`; poll `curl localhost:4000/api/chatgpt` until `status` is `connected`.
+In the shell, `Nano.Ops.chatgpt_login()` and `Nano.Ops.chatgpt()`. **disconnect** (or
+`POST /api/chatgpt/logout`) forgets the tokens.
+
+The tokens are kept in `./data/state/chatgpt_auth.json` (mode 0600), so the node stays
+connected across restarts and rebuilds; it refreshes them itself before they expire. A
+login still waiting for approval when the node restarts is lost: connect again. If the
+refresh token is ever refused (expired, revoked, or used elsewhere), the node signs out and
+the dashboard says so; connect again.
+
+**What the agents can reach.** The node runs as root, and so do the agents' evals: any
+agent can read `chatgpt_auth.json`, or ask `Nano.ChatGPT.Auth.token()` for an access
+token. Those tokens are access to your ChatGPT account, not a key with a spending cap: an
+agent that takes them can use the account as you could from the Codex CLI. Connect an
+account you are willing to expose to the agents on this node, and disconnect it when the
+experiment is over. Tokens are never written to the logs or shown on the dashboard or API.
+
+**Limits and errors.** When the plan's usage limit is reached (or the plan does not include
+the model), the agent is halted with reason `usage_limit` rather than retrying; the note it
+gets, and the timeline's `model_error`, say when the limit resets if the backend said.
+Un-halt it once it has. Other rate limits and server errors are retried, up to three
+attempts, as for OpenRouter.
+
+**Reasoning.** `off` is sent as effort `none`, `minimal` as `low` (these models have no
+`minimal`), and `low` to `max` by name. `gpt-5.5` has no `max` and rejects it; the efforts
+above `max` that some models offer (`ultra`) have no level here.
+
 ## Network and the API key
 
 Agents are told their network access in the system prompt, from `NETWORK_POLICY`. **That
@@ -138,22 +193,34 @@ egress is not restricted and `docker-compose.yml` says so by default: "unrestric
 internet access". If you change the network, change the text: set `NETWORK_POLICY` in `.env`,
 or in the same override file that changes the network, as below.
 
-To allow only OpenRouter, put the node on an internal Docker network whose only exits are
-two TCP relays. Save this as `docker-compose.override.yml` next to `docker-compose.yml`:
+To allow only the model providers, put the node on an internal Docker network whose only
+exits are TCP relays: one to OpenRouter, and two for a ChatGPT subscription (drop those if
+you do not use one, and the hosts from the text). Save this as `docker-compose.override.yml`
+next to `docker-compose.yml`:
 
 ```yaml
 services:
   nano:
     ports: !reset []
     networks: [sandbox]
-    extra_hosts: ["openrouter.ai:10.99.0.2"]
+    extra_hosts: ["openrouter.ai:10.99.0.2", "chatgpt.com:10.99.0.3", "auth.openai.com:10.99.0.4"]
     environment:
-      NETWORK_POLICY: "only openrouter.ai:443 is reachable outside this container"
-  out: # the only way out: a TCP relay to openrouter.ai:443 (TLS stays end to end)
+      NETWORK_POLICY: "only openrouter.ai:443, chatgpt.com:443 and auth.openai.com:443 are reachable outside this container"
+  out: # the ways out: TCP relays to the providers' port 443 (TLS stays end to end)
     image: alpine/socat
     command: TCP-LISTEN:443,fork,reuseaddr TCP:openrouter.ai:443
     restart: unless-stopped
     networks: { sandbox: { ipv4_address: 10.99.0.2 }, default: {} }
+  out-chatgpt:
+    image: alpine/socat
+    command: TCP-LISTEN:443,fork,reuseaddr TCP:chatgpt.com:443
+    restart: unless-stopped
+    networks: { sandbox: { ipv4_address: 10.99.0.3 }, default: {} }
+  out-auth:
+    image: alpine/socat
+    command: TCP-LISTEN:443,fork,reuseaddr TCP:auth.openai.com:443
+    restart: unless-stopped
+    networks: { sandbox: { ipv4_address: 10.99.0.4 }, default: {} }
   in: # the way in: the host's localhost:4000, relayed to the node
     image: alpine/socat
     command: TCP-LISTEN:4000,fork,reuseaddr TCP:nano:4000
@@ -167,7 +234,8 @@ networks:
 ```
 
 **The API key is exposed to every agent**: it is in the node's environment, and
-`System.get_env/1` reads it. Use a dedicated OpenRouter key with a low spending limit.
+`System.get_env/1` reads it. Use a dedicated OpenRouter key with a low spending limit. So
+are a connected ChatGPT subscription's tokens (see above), which have no spending limit at all.
 
 ## Running the experiments
 
@@ -209,15 +277,16 @@ Worth knowing while you run them:
   field on `POST /api/agents`). A model whose reasoning cannot be turned off rejects every
   request while it is `off` (`deepseek/deepseek-r1` answers 400 "Reasoning is mandatory for
   this endpoint and cannot be disabled"; the agent's timeline shows the `model_error`), so
-  start such agents with a level.
+  start such agents with a level. ChatGPT subscription models map the levels as described
+  above.
 - **Three limits per agent, each settable at start, each 0 for no limit.** `max_turns`
   (default 500) counts model calls. `max_tokens` (default 30,000,000) is cumulative: prompt
   plus completion tokens over every call, with the whole transcript re-sent each turn.
   `max_context` (default 1,000,000) is the size of the conversation itself; nothing trims
   it, so this is where an otherwise unlimited agent stops. With turns and tokens unlimited,
   the node-wide hourly cap and the limit on your OpenRouter key are the only spend controls.
-- **Halted agents.** An agent whose `halted` is `budget`, `node_budget`, `restart_brake`,
-  `start_failed` or `log_failed`
+- **Halted agents.** An agent whose `halted` is `budget`, `context`, `node_budget`,
+  `usage_limit`, `restart_brake`, `start_failed` or `log_failed`
   still receives and logs messages but makes no model calls until an operator un-halts it:
   the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
   `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an

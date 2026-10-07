@@ -58,7 +58,8 @@ and say so.
     would let an agent dodge the brake by exiting itself with that reason). Agents are `:permanent`
     children; the `DynamicSupervisor` gets a generous `max_restarts` (the brake is the real limit).
 12. **`OPENROUTER_BASE_URL`** (default `https://openrouter.ai/api/v1`) exists so tests and
-    end-to-end checks can point the node at a scripted fake. It is the only test seam.
+    end-to-end checks can point the node at a scripted fake. It is the only test seam, with
+    `CHATGPT_BASE_URL` and `CHATGPT_AUTH_URL`, added with the ChatGPT subscription provider.
 13. **Prompt caching.** `cache_control: %{type: "ephemeral"}` on the system prompt and on the
     last message of the request, `usage: %{include: true}`; the transcript is append-only so the
     prefix is stable. Cache hit = `cached_tokens > 0`.
