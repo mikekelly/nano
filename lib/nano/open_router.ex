@@ -21,10 +21,12 @@ defmodule Nano.OpenRouter do
   `{:ok, %{message, finish_reason, usage, provider, cost}} | {:error, %{status, body}}`.
   `messages` are OpenAI-format maps with string keys, system message first. `reasoning` is one
   of `reasoning_levels/0`: `"off"` is sent explicitly (`reasoning.enabled: false`), since some
-  models reason by default; a level is sent as `reasoning.effort`. `status` is nil when no HTTP
-  response was received.
+  models reason by default; a level is sent as `reasoning.effort`. `max_output`, unless nil, is
+  sent as `max_tokens`: the most tokens the response may have, reasoning included on most
+  providers (OpenRouter takes up to the context length less the prompt). `status` is nil when
+  no HTTP response was received.
   """
-  def chat(model, messages, tools, reasoning \\ "off") do
+  def chat(model, messages, tools, reasoning \\ "off", max_output \\ nil) do
     key = Application.get_env(:nano, :openrouter_api_key)
 
     body = %{
@@ -34,6 +36,8 @@ defmodule Nano.OpenRouter do
       usage: %{include: true},
       reasoning: if(reasoning == "off", do: %{enabled: false}, else: %{effort: reasoning})
     }
+
+    body = if max_output, do: Map.put(body, :max_tokens, max_output), else: body
 
     opts = [json: body, auth: {:bearer, key}, retry: false, receive_timeout: 600_000]
 
@@ -62,8 +66,9 @@ defmodule Nano.OpenRouter do
   end
 
   @doc """
-  OpenRouter's models as `%{id, name, context_length, prompt_price, completion_price,
-  reasoning_levels, default_reasoning}` (prices in USD per million tokens, nil if not given;
+  OpenRouter's models as `%{id, name, context_length, max_output, prompt_price, completion_price,
+  reasoning_levels, default_reasoning}` (`max_output` the most tokens its top provider will
+  generate in one response, or nil; prices in USD per million tokens, nil if not given;
   levels as `Nano.Model.reasoning/3` gives them), sorted by id. Cached for an hour, a failure for a
   minute; `[]` if they cannot be fetched (5 s at most).
   """
@@ -104,6 +109,7 @@ defmodule Nano.OpenRouter do
           id: m["id"],
           name: m["name"],
           context_length: m["context_length"],
+          max_output: get_in(m, ["top_provider", "max_completion_tokens"]),
           prompt_price: price.(get_in(m, ["pricing", "prompt"])),
           completion_price: price.(get_in(m, ["pricing", "completion"]))
         },

@@ -22,7 +22,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   defp start!(ctx, opts \\ []) do
     Fake.listen(ctx.model)
-    {:ok, pid} = Nano.Ops.start_agent(ctx.name, [model: ctx.model] ++ opts)
+    {:ok, pid} = Nano.Ops.start_agent(ctx.name, Fake.opts(ctx.model, opts))
     id = Nano.Ops.agent(ctx.name).id
     Nano.Log.subscribe(id)
     {pid, id}
@@ -100,7 +100,7 @@ defmodule NanoWeb.AgentLiveTest do
     assert html =~ ~r|<dt>reasoning</dt>\s*<dd>off</dd>|
     assert html =~ "3 / #{max_turns}"
     assert html =~ "2,652 / #{NanoWeb.Components.int(max_tokens)}"
-    assert max_tokens == Application.fetch_env!(:nano, :agent_max_tokens)
+    assert max_tokens == 30_000_000
     assert html =~ "$0.0040"
     # One of the three responses had cached tokens.
     assert html =~ "33%"
@@ -438,12 +438,14 @@ defmodule NanoWeb.AgentLiveTest do
   end
 
   test "the header shows turns, tokens and context as used / max, ∞ for no limit", ctx do
-    {:ok, _} = Nano.Ops.start_agent(ctx.name, model: ctx.model, max_turns: 0, max_context: 5000)
+    {:ok, _} =
+      Nano.Ops.start_agent(ctx.name, Fake.opts(ctx.model, max_turns: 0, max_context: 5000))
+
     {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
 
     assert html =~ ~r|<dt>turns</dt>\s*<dd>0 / ∞</dd>|
     assert html =~ ~r|<dt>context</dt>\s*<dd>0 / 5,000</dd>|
-    tokens = NanoWeb.Components.int(Application.fetch_env!(:nano, :agent_max_tokens))
+    tokens = NanoWeb.Components.int(30_000_000)
     assert html =~ ~r|<dt>tokens</dt>\s*<dd>0 / #{tokens}</dd>|
   end
 

@@ -14,8 +14,9 @@ are expressed is yours):
   identity, the node's facts and a job body rather than written whole each time;
 - pre-reading: files the sub-agent has in its context before its first turn, marked so it
   can tell later whether a file changed;
-- which provider and model it runs on and at what reasoning effort, defaulting to the
-  node's;
+- which provider and model it runs on, at what reasoning effort and within what limits
+  (`NanoAgent.start/1` has no defaults for these, so they are always chosen by whoever
+  starts it);
 - an isolated working copy of `/app` at a given git revision when the job needs one, and
   none when it does not;
 - an optional first message, or starting idle;
@@ -28,9 +29,10 @@ sub-agent by name, and to find the message shapes it needs without being told.
 
 - Erlang messages carry no sender; a protocol has to put the reply address in the message.
   The seed's `say` convention (`%{message:, sender_pid:}`) is one precedent.
-- Budgets: sub-agents started with the default limits ran out before reporting in an
-  earlier run; whoever starts an agent is responsible for what it is allowed to spend and
-  for hearing about it when it is spent.
+- Budgets: a sub-agent whose limits are too small for its job runs out before reporting
+  in; whoever starts an agent is responsible for what it is allowed to spend and for hearing
+  about it when it is spent. `NanoAgent.start/1` refuses a start with anything missing, and
+  its message says what to give (a model's context window, its reasoning levels).
 - The seed already records which agent started which (`started_by`) and shows it on the
   dashboard; anything built should keep that true.
 - Mustache (https://mustache.github.io) is one well-known way to compose prompts from

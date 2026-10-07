@@ -5,7 +5,13 @@ defmodule Nano.Ops do
   because a suspended or busy agent cannot answer; agent state is read from `NanoAgent.info/1`.
 
       Nano.Ops.agents()
-      Nano.Ops.start_agent("alice", model: "openai/gpt-4o-mini")
+      Nano.Ops.start_agent("alice",
+        model: "deepseek/deepseek-v4.1-flash",
+        reasoning: "off",
+        max_turns: 0,
+        max_tokens: 0,
+        max_context: 1_000_000
+      )
       Nano.Ops.tail("alice")
   """
 
@@ -22,8 +28,8 @@ defmodule Nano.Ops do
   @doc "An agent's pid, or nil."
   def whereis(name), do: NanoAgent.whereis(name)
 
-  @doc "Starts an agent. `opts` as for `NanoAgent.start/1`, without `name`."
-  def start_agent(name, opts \\ []), do: NanoAgent.start([name: name] ++ opts)
+  @doc "Starts an agent. `opts` as for `NanoAgent.start/1`, without `name`; most are required."
+  def start_agent(name, opts), do: NanoAgent.start([name: name] ++ opts)
 
   @doc "Stops an agent for good: terminates its process, if running, and deletes its stored state."
   def stop_agent(name) do

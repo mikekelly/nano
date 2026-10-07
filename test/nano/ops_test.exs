@@ -15,8 +15,9 @@ defmodule Nano.OpsTest do
 
   # A real agent, started idle, so it makes no model call unless sent a message.
   defp start_agent do
+    Nano.FakeOpenRouter.start()
     name = unique("agent")
-    {:ok, pid} = Ops.start_agent(name)
+    {:ok, pid} = Ops.start_agent(name, Nano.FakeOpenRouter.opts(Nano.FakeOpenRouter.model()))
     on_exit(fn -> Ops.stop_agent(name) end)
     {name, pid}
   end
@@ -43,7 +44,7 @@ defmodule Nano.OpsTest do
     model = Nano.FakeOpenRouter.model()
     for response <- responses, do: Nano.FakeOpenRouter.push(model, response)
     name = unique("agent")
-    {:ok, pid} = Ops.start_agent(name, model: model)
+    {:ok, pid} = Ops.start_agent(name, Nano.FakeOpenRouter.opts(model))
     on_exit(fn -> Ops.stop_agent(name) end)
     Nano.Log.subscribe(Ops.agent(name).id)
     {name, pid, model}
@@ -275,7 +276,10 @@ defmodule Nano.OpsTest do
       assert name in Enum.map(Ops.agents(), & &1.name)
       assert [%{"type" => "agent_started", "seq" => seq} | _] = Ops.log(name, 0)
       assert Ops.log(name, seq) |> Enum.all?(&(&1["seq"] > seq))
-      assert {:error, {:already_started, ^pid}} = Ops.start_agent(name)
+      model = Ops.agent(name).model
+
+      assert {:error, {:already_started, ^pid}} =
+               Ops.start_agent(name, Nano.FakeOpenRouter.opts(model))
     end
 
     test "restart kills the process and the supervisor brings it back under the same name" do

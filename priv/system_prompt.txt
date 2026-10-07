@@ -37,9 +37,10 @@ Network access: {{network_policy}}. Your limits: {{max_turns}}
 turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
 tokens. Each call to the model counts as one turn, tokens are counted
 across all calls, and the context is the size of this conversation, which
-only grows. When a limit is reached I stop calling the model. Whenever I
-deliver events or a note of my own, I tell you how much of each you have
-used.
+only grows. When a limit is reached I stop calling the model, and I make
+no call that might not fit in your context with room for your reply.
+Whenever I deliver events or a note of my own, I tell you how much of each
+you have used.
 
 If your process dies, I restart it, restore your history and bindings,
 and tell you what happened. Your pid will change; your name will not.

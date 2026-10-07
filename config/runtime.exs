@@ -16,7 +16,6 @@ int = fn name, default -> name |> env.(default) |> String.to_integer() end
 config :nano,
   # "Required", but only when an agent is started: the harness reports it then, so the node boots without.
   openrouter_api_key: env.("OPENROUTER_API_KEY", if(test?, do: "test-key")),
-  default_model: env.("DEFAULT_MODEL", if(test?, do: "test/model")),
   # Tests must point this at a scripted fake; the test default refuses connections.
   openrouter_base_url:
     env.(
@@ -41,11 +40,8 @@ config :nano,
   chatgpt_client_version: env.("CHATGPT_CLIENT_VERSION", "0.160.1"),
   # Default prompt template, read from disk each time an agent starts; relative to the app dir.
   system_prompt_file: env.("SYSTEM_PROMPT_FILE", "priv/system_prompt.txt"),
-  # Model reasoning ("thinking") effort for new agents: off, minimal, low, medium, high, xhigh or max.
-  reasoning: env.("REASONING", "off"),
-  agent_max_turns: int.("AGENT_MAX_TURNS", "500"),
-  agent_max_tokens: int.("AGENT_MAX_TOKENS", "30000000"),
-  agent_max_context: int.("AGENT_MAX_CONTEXT", "1000000"),
+  # Each agent's model, reasoning level and limits are given when it is started: no defaults.
+  # This is a node-wide brake, across all agents.
   node_max_tokens_per_hour: int.("NODE_MAX_TOKENS_PER_HOUR", "100000000"),
   eval_timeout_ms: int.("EVAL_TIMEOUT_MS", "30000"),
   result_max_bytes: int.("RESULT_MAX_BYTES", "51200"),

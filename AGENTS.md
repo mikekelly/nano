@@ -43,11 +43,11 @@ bin/up                        # creates ../nano-checkout, builds, starts, prints
 open http://localhost:4000
 ```
 
-Everything else has a default: the model is `deepseek/deepseek-v4.1-flash`
-(`DEFAULT_MODEL`), reasoning is off (`REASONING`), agents get 500 turns, 30,000,000 tokens
-and a 1,000,000-token context (`AGENT_MAX_TURNS`, `AGENT_MAX_TOKENS`, `AGENT_MAX_CONTEXT`;
-0 means no limit), and the node is capped at 100,000,000 tokens an hour
-(`NODE_MAX_TOKENS_PER_HOUR`). `.env.example` lists them all.
+The node's settings have defaults (`.env.example` lists them; the node is capped at
+100,000,000 tokens an hour, `NODE_MAX_TOKENS_PER_HOUR`). Agents have none: each is started
+with its model, reasoning level and limits spelled out (below), checked against the model's
+provider's list, and refused with a message saying what to give if anything is missing or
+does not fit the model.
 
 The container mounts a **dedicated checkout** of this repo as `/app` (default
 `../nano-checkout`, made for you by `bin/up`). Agents edit that checkout, not this one.
@@ -67,8 +67,10 @@ Three surfaces, all calling the same `Nano.Ops` functions: the dashboard, the HT
 port 4000, and a shell on the node. Nothing is authenticated; the port is bound to
 localhost.
 
-**Dashboard.** The start form takes a name, a provider and one of its models, Start idle (on by default), and
-optional limits, reasoning level, a system prompt template or a prompt file. Each agent's
+**Dashboard.** The start form takes a name, a provider and one of its models, a reasoning
+level (preset to the model's default), the limits (turns and tokens preset to 0, no limit;
+context to the model's window), Start idle (on by default), and the system prompt: the
+default template, a prompt file or a template of your own. Each agent's
 page has a *reading* view (what arrived, what the model said, each eval with its result) and
 a *debug* view (every log entry), both streaming live, plus a text box (`say`) and a term
 box (`send_raw`) for sending it messages, and Stop / Restart / Resume / Un-halt.
@@ -76,12 +78,13 @@ box (`send_raw`) for sending it messages, and Stop / Restart / Resume / Un-halt.
 **HTTP API.** `GET /api` describes every endpoint. The usual sequence:
 
 ```bash
-# start an agent (all fields except name are optional)
+# start an agent: model, reasoning and the three limits are required (0 = no limit for
+# turns and tokens; max_context at most the model's window); the rest is optional
 curl -s -XPOST localhost:4000/api/agents -H 'content-type: application/json' -d '{
-  "name": "alice", "max_turns": 0, "max_tokens": 0, "max_context": 1000000,
-  "reasoning": "off", "start_idle": true,
-  "system_prompt_file": "priv/system_prompt.txt"
-}'
+  "name": "alice", "model": "deepseek/deepseek-v4.1-flash", "reasoning": "off",
+  "max_turns": 0, "max_tokens": 0, "max_context": 1000000,
+  "start_idle": true, "system_prompt_file": "priv/system_prompt.txt"
+}'                                   # a 422 says what was missing or does not fit the model
 
 # give yourself an identity on the node, then talk to the agent
 curl -s -XPOST localhost:4000/api/users -H 'content-type: application/json' -d '{"name":"me"}'
@@ -104,7 +107,9 @@ has started — useful for seeing what it does with nothing to do.
 `docker exec nano bin/rpc 'EXPR'` evaluates one expression for scripts:
 
 ```elixir
-NanoAgent.start(name: "alice", max_turns: 0, system_prompt_file: "my_variant.txt")   # a template you wrote
+NanoAgent.start(name: "alice", model: "openai-codex/gpt-6.1-sol", reasoning: "low",
+  max_turns: 0, max_tokens: 0, max_context: 272_000,
+  system_prompt_file: "my_variant.txt")                     # a template you wrote
 send(NanoAgent.whereis("alice"), {:hello, self(), "are you there?"})
 Nano.Ops.tail("alice")        # print the log stream in this shell
 Nano.Ops.agents()             # every agent's info map
@@ -122,7 +127,8 @@ have to rebuild it with `:erlang.list_to_pid/1`, since `#PID<0.1.0>` is not vali
 
 ## Planting a seeding
 
-Start a fresh agent with generous limits (turns and tokens 0, context 1,000,000) and send
+Start a fresh agent with generous limits (turns and tokens 0, context the model's whole
+window) and send
 it, from an operator user, a first message that points at the files rather than pasting
 them — the agent reads what it needs:
 
@@ -158,4 +164,4 @@ seeding, which model, what grew, cost), then `bin/reset` for a clean node.
 - Config is read once at boot (`config/runtime.exs`). After changing it, restart the
   container; a hot reload will not pick it up.
 - Live model calls cost money. Use the fake in tests; when something needs a real model,
-  say so, use the default model, and keep budgets small.
+  say so, use a cheap model, and keep budgets small.

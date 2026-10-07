@@ -1,26 +1,26 @@
 defmodule NanoWeb.StartForm do
   @moduledoc """
-  The Start agent form: every option in view, prefilled with the node's defaults. A provider
-  is chosen first, OpenRouter or the ChatGPT subscription, and the model box offers only that
-  provider's models (`Nano.OpenRouter.models/0` or `Nano.ChatGPT.models/0`), filtering them as
-  you type but taking any name; a ChatGPT model is shown without its `openai-codex/` prefix and
-  sent with it. The reasoning select offers the chosen model's levels, if its provider lists
-  it; whenever the model changes, the select is set to `Nano.Model.default_reasoning/1`'s
-  level and max context to the model's context window. With ChatGPT chosen, its connection
-  sits under the model: connect (a device-code login), the code to enter while pending, then
-  who is connected; Start waits for it. The system prompt is one of default / file / custom,
-  so only one can be sent.
+  The Start agent form: every option in view and prefilled, all of it sent, since an agent
+  has no defaults (`NanoAgent.start/1`). A provider is chosen first, OpenRouter or the ChatGPT
+  subscription, and the model box offers only that provider's models (`Nano.OpenRouter.models/0`
+  or `Nano.ChatGPT.models/0`), filtering them as you type but taking any name; a ChatGPT model
+  is shown without its `openai-codex/` prefix and sent with it. The reasoning select offers the
+  chosen model's levels, if its provider lists it; whenever the model changes, the select is
+  set to the model's default level and max context to its context window. Max turns and max
+  tokens start at 0, no limit. With ChatGPT chosen, its connection sits under the model:
+  connect (a device-code login), the code to enter while pending, then who is connected; Start
+  waits for it. The system prompt is one of default / file / custom, so only one can be sent.
   `NanoWeb.ProcessLive` holds what was typed (so the once-a-second refresh keeps it) and calls
-  `draft/1`, `opts/1` and `error/1`.
+  `draft/1`, `opts/1` and `error/1`; what `NanoAgent.start/1` refuses is shown under the form.
   """
   use Phoenix.Component
 
   import NanoWeb.Components
 
   @limits [
-    {"max_turns", "max turns", :agent_max_turns},
-    {"max_tokens", "max tokens", :agent_max_tokens},
-    {"max_context", "max context", :agent_max_context}
+    {"max_turns", "max turns"},
+    {"max_tokens", "max tokens"},
+    {"max_context", "max context"}
   ]
 
   # The fields a model sets when it is chosen.
@@ -38,10 +38,10 @@ defmodule NanoWeb.StartForm do
     v = Map.put_new(v, "model", default_model(v["provider"], models))
     model = Enum.find(models, &(&1.id == v["model"]))
 
-    # What the model sets, unless typed since it was chosen: its reasoning level, and its
-    # context window as max context (else the node's default).
+    # What the model sets, unless typed since it was chosen: its default reasoning level, and
+    # its context window as max context.
     set = %{
-      "reasoning" => Nano.Model.default_reasoning(model),
+      "reasoning" => (model && model.default_reasoning) || v["reasoning"],
       "max_context" => to_string((model && model.context_length) || v["max_context"])
     }
 
@@ -57,6 +57,7 @@ defmodule NanoWeb.StartForm do
             %{reasoning_levels: [_ | _] = levels} -> levels
             _ -> reasoning_levels()
           end,
+        window: model && model.context_length,
         matches: matches(models, v["model"]),
         blocked: chatgpt? and assigns.chatgpt.status != :connected
       )
@@ -118,10 +119,16 @@ defmodule NanoWeb.StartForm do
       </div>
       <.chatgpt :if={@chatgpt?} status={@chatgpt} />
       <div class="fields">
-        <label :for={{field, label, _} <- limits()} class="field">
+        <label :for={{field, label} <- limits()} class="field">
           {label}
           <input type="number" name={field} value={@v[field]} min="0" />
-          <span class="hint">0 = no limit</span>
+          <span class="hint">
+            {cond do
+              field != "max_context" -> "0 = no limit"
+              @window -> "at most #{int(@window)}, the model's window"
+              true -> "at most the model's window"
+            end}
+          </span>
         </label>
       </div>
       <div class="field prompt">
@@ -205,36 +212,24 @@ defmodule NanoWeb.StartForm do
 
   defp limits, do: @limits
 
-  # What the form shows before anything is typed: the node's defaults, as values. The model is
-  # `default_model/2`'s, for the provider chosen; the model then sets the reasoning level and
-  # max context.
+  # What the form shows before anything is typed. The model is `default_model/2`'s, for the
+  # provider chosen; the model then sets the reasoning level and max context.
   defp defaults do
-    limits =
-      for {field, _, env} <- @limits,
-          into: %{},
-          do: {field, to_string(Application.get_env(:nano, env))}
-
-    {provider, _} = Nano.Model.split(Application.get_env(:nano, :default_model) || "")
-
-    Map.merge(limits, %{
+    %{
       "name" => "",
-      "provider" => Atom.to_string(provider),
+      "provider" => "openrouter",
+      "max_turns" => "0",
+      "max_tokens" => "0",
+      "max_context" => "",
       "start_idle" => "true",
       "prompt" => "default"
-    })
+    }
   end
 
-  # DEFAULT_MODEL, if it is this provider's; else, for ChatGPT, the first model the
-  # subscription lists (the catalog's highest priority).
-  defp default_model(provider, models) do
-    {default, model} = Nano.Model.split(Application.get_env(:nano, :default_model) || "")
-
-    cond do
-      provider == Atom.to_string(default) -> model
-      provider == "chatgpt" and models != [] -> hd(models).id
-      true -> ""
-    end
-  end
+  # For ChatGPT, the first model the subscription lists (the catalog's highest priority); for
+  # OpenRouter none, since it lists hundreds.
+  defp default_model("chatgpt", [first | _]), do: first.id
+  defp default_model(_, _), do: ""
 
   @doc "What was typed, less the model and what it sets: the form shows the provider's default."
   def unchosen(params), do: Map.drop(params, ["model" | @set_by_model])
@@ -309,9 +304,7 @@ defmodule NanoWeb.StartForm do
 
     model =
       case {params["provider"], blank_to_nil(params["model"])} do
-        # None, rather than OpenRouter's default.
-        {"chatgpt", nil} -> ""
-        {"chatgpt", model} -> Nano.Model.slug(:chatgpt, model)
+        {"chatgpt", model} when model != nil -> Nano.Model.slug(:chatgpt, model)
         {_, model} -> model
       end
 
@@ -336,7 +329,7 @@ defmodule NanoWeb.StartForm do
   end
 
   # A whole number as an integer; anything else typed is passed on as typed, for
-  # `NanoAgent.start/1` to reject as it would from the API. Blank means the default.
+  # `NanoAgent.start/1` to reject as it would from the API. Blank is missing.
   defp number(value) do
     value = blank_to_nil(value)
 
@@ -346,18 +339,8 @@ defmodule NanoWeb.StartForm do
     end
   end
 
-  @doc "Why the agent could not be started, in words."
-  def error(:invalid_name), do: "name must be letters, digits, _ . or -"
+  @doc "Why the agent could not be started, in words: `NanoAgent.start/1`'s message."
   def error({:already_started, _}), do: "an agent with that name is already running"
-  def error(:missing_openrouter_api_key), do: "OPENROUTER_API_KEY is not set on this node"
-
-  def error(:chatgpt_not_connected),
-    do: "the ChatGPT subscription is not connected: connect it above"
-
-  def error(:missing_model), do: "choose a model"
-
-  def error(:invalid_option),
-    do: "max turns, max tokens and max context must be whole numbers, 0 or more (0 = no limit)"
-
-  def error(reason), do: refusal(reason)
+  def error(message) when is_binary(message), do: message
+  def error(reason), do: inspect(reason)
 end

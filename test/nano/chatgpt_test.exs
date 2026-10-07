@@ -214,7 +214,8 @@ defmodule Nano.ChatGPTTest do
   defp start_agent!(opts \\ []) do
     model = Fake.model()
     name = "c#{System.unique_integer([:positive])}"
-    {:ok, _} = NanoAgent.start([name: name, model: "openai-codex/" <> model] ++ opts)
+    opts = Nano.FakeOpenRouter.opts("openai-codex/" <> model, [max_context: 272_000] ++ opts)
+    {:ok, _} = NanoAgent.start([name: name] ++ opts)
 
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     id = NanoAgent.info(name).id
@@ -235,8 +236,41 @@ defmodule Nano.ChatGPTTest do
   end
 
   test "agents on openai-codex/ need a connected subscription" do
-    assert NanoAgent.start(name: "nc", model: "openai-codex/gpt-5.5") ==
-             {:error, :chatgpt_not_connected}
+    assert {:error, "the ChatGPT subscription is not connected: connect it from the " <> _} =
+             NanoAgent.start([name: "nc"] ++ Nano.FakeOpenRouter.opts("openai-codex/gpt-5.5"))
+  end
+
+  test "agents on openai-codex/ are checked against the subscription's models" do
+    connect!()
+    model = "openai-codex/" <> Fake.model()
+    opts = Nano.FakeOpenRouter.opts(model, max_context: 272_000)
+    start = &NanoAgent.start([name: "nc"] ++ Keyword.merge(opts, &1))
+
+    assert {:error,
+            "unknown model openai-codex/gpt-none: the ChatGPT subscription offers " <> ids} =
+             start.(model: "openai-codex/gpt-none")
+
+    assert model in String.split(ids, ", ")
+
+    assert start.(max_context: 272_001) ==
+             {:error,
+              "max_context must be a whole number of tokens from 1 to 272000, #{model}'s " <>
+                "context window (there is no unlimited context), not 272001"}
+
+    assert start.(reasoning: "ultra") ==
+             {:error,
+              ~s(reasoning "ultra" is not supported by #{model}; supported: off, minimal, ) <>
+                "low, medium, high, xhigh, max"}
+  end
+
+  test "no bound on the response is sent: the backend refuses max_output_tokens" do
+    connect!()
+    {model, name, _} = start_agent!(max_context: 10_000)
+    Fake.push(model, text: "ok")
+    NanoAgent.notify(name, :hi)
+    {body, _} = request!(model)
+    refute Map.has_key?(body, "max_output_tokens")
+    refute Map.has_key?(body, "max_tokens")
   end
 
   test "a conversation round-trips: tools, calls, results, reasoning items, usage" do
@@ -510,7 +544,8 @@ defmodule Nano.ChatGPTTest do
         "display_name" => "GPT-6 Luna",
         "priority" => 4,
         "supported_reasoning_levels" => levels,
-        "default_reasoning_level" => "medium"
+        "default_reasoning_level" => "medium",
+        "context_window" => 128_000
       },
       %{
         "slug" => "gpt-6.1-sol",
@@ -528,12 +563,14 @@ defmodule Nano.ChatGPTTest do
     assert has_element?(view, "#chatgpt", "connected as me@example.com (plus)")
     refute has_element?(view, "#start button.primary[disabled]")
     # The box left blank gets the subscription's first model, shown without its prefix, and
-    # the reasoning select only that model's levels, set to its default (REASONING, "off" here,
-    # is not one of them); max context is its context window.
+    # the reasoning select only that model's levels, set to its default; max context is its
+    # context window, and turns and tokens are 0, no limit.
     assert has_element?(view, "#start input[name=model][value='gpt-6.1-sol']")
     assert levels(view) == ~w(low medium high xhigh max)
     assert has_element?(view, "#start option[selected][value=low]")
     assert has_element?(view, "#start input[name=max_context][value='272000']")
+    assert has_element?(view, "#start input[name=max_turns][value='0']")
+    assert has_element?(view, "#start input[name=max_tokens][value='0']")
 
     # Only the subscription's models are offered, by name.
     view |> form("#start", %{model: "luna"}) |> render_change(%{_target: ["model"]})
@@ -555,14 +592,18 @@ defmodule Nano.ChatGPTTest do
     assert {:error, {:live_redirect, _}} =
              view |> form("#start", %{name: name, model: "gpt-6-luna"}) |> render_submit()
 
-    assert %{model: "openai-codex/gpt-6-luna", reasoning: "max"} = Nano.Ops.agent(name)
+    assert %{
+             model: "openai-codex/gpt-6-luna",
+             reasoning: "max",
+             context_window: 128_000,
+             budget: %{max_context: 128_000, max_turns: 0, max_tokens: 0}
+           } = Nano.Ops.agent(name)
 
-    # Back to OpenRouter: its default model, and nothing about the subscription.
+    # Back to OpenRouter: no model chosen, and nothing about the subscription.
     {:ok, view, _} = live(build_conn(), "/")
     view |> form("#start", %{provider: "chatgpt"}) |> render_change(%{_target: ["provider"]})
     view |> form("#start", %{provider: "openrouter"}) |> render_change(%{_target: ["provider"]})
-    default = Application.fetch_env!(:nano, :default_model)
-    assert has_element?(view, "#start input[name=model][value='#{default}']")
+    assert has_element?(view, "#start input[name=model][value='']")
     refute has_element?(view, "#chatgpt")
   end
 
@@ -602,8 +643,8 @@ defmodule Nano.ChatGPTTest do
     assert opts.("chatgpt", "openai-codex/gpt-5.5")[:model] == "openai-codex/gpt-5.5"
     assert opts.("chatgpt", "gpt-5.5")[:model] == "openai-codex/gpt-5.5"
     assert opts.("openrouter", "a/b")[:model] == "a/b"
-    # Blank under ChatGPT is no model, not OpenRouter's default.
-    assert opts.("chatgpt", " ")[:model] == ""
+    # Blank is no model, which the start refuses.
+    assert opts.("chatgpt", " ")[:model] == nil
     assert opts.("openrouter", "")[:model] == nil
   end
 end

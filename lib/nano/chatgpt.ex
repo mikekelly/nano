@@ -10,8 +10,9 @@ defmodule Nano.ChatGPT do
   messages become input items; the tools become Responses function tools. Requests are
   stateless and streamed (`store: false`, `stream: true`), as both clients always send them,
   so each response's reasoning items, with their encrypted content, are kept in the assistant
-  message's `reasoning_details` and sent back in later requests. The event stream is read
-  whole and returned in the shape `Nano.OpenRouter.chat/4` returns.
+  message's `reasoning_details` and sent back in later requests. No bound on the response is
+  sent: the backend refuses `max_output_tokens` with a 400, and neither client sends it. The
+  event stream is read whole and returned in the shape `Nano.OpenRouter.chat/5` returns.
 
   Sources: openai/codex `codex-rs/core/src/client.rs`, `codex-rs/codex-api/src/sse/`, and
   badlogic/pi-mono `packages/ai/src/api/openai-codex-responses.ts`.
@@ -32,7 +33,7 @@ defmodule Nano.ChatGPT do
            }
          )
 
-  @doc "As `Nano.Model.chat/4`, for `model` without its `openai-codex/` prefix."
+  @doc "As `Nano.Model.chat/5`, for `model` without its `openai-codex/` prefix, and unbounded."
   def chat(model, messages, tools, reasoning) do
     case Nano.ChatGPT.Auth.token() do
       {:ok, creds} -> request(model, messages, tools, reasoning, creds, true)

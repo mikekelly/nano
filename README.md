@@ -63,16 +63,17 @@ bin/up
 `bin/up` clones this repo to `../nano-checkout` if it is not there yet (the dedicated
 checkout the agents edit, mounted at `/app`; they can read every doc in it), builds the image, starts the container, waits for the node and prints the dashboard
 URL, http://127.0.0.1:4000. Running it again on a running stack is fine. `docker compose
-down` stops it. New agents use `deepseek/deepseek-v4.1-flash` unless `.env` says otherwise.
+down` stops it. Each agent's model, reasoning level and limits are chosen when it is started;
+there are no defaults for them.
 
 Agents can also run on a ChatGPT Plus or Pro subscription instead of OpenRouter; no key is
 needed for that, see [Running agents on a ChatGPT subscription](#running-agents-on-a-chatgpt-subscription).
 
 `.env` can also hold, all optional and listed with their defaults in [.env.example](.env.example):
-`DEFAULT_MODEL`, `NANO_CHECKOUT` (the checkout's path), `REASONING`, `SYSTEM_PROMPT_FILE`
-(the system prompt template, `priv/system_prompt.txt`), `STATE_DIR`, the budget and
-timeout limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL`, `CHATGPT_BASE_URL`, `CHATGPT_AUTH_URL`, `CHATGPT_CLIENT_VERSION`
-and `NETWORK_POLICY`.
+`NANO_CHECKOUT` (the checkout's path), `SYSTEM_PROMPT_FILE` (the system prompt template,
+`priv/system_prompt.txt`), `STATE_DIR`, the node-wide hourly token cap and the timeout and
+size limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL`, `CHATGPT_BASE_URL`, `CHATGPT_AUTH_URL`,
+`CHATGPT_CLIENT_VERSION` and `NETWORK_POLICY`.
 
 Docker must be able to mount the checkout (colima shares only your home directory by
 default). The node runs as root inside the container: the container is the sandbox, and
@@ -90,7 +91,7 @@ The image also carries its own committed copy of the source, so it runs without 
 ```bash
 docker build -t nano .
 docker run -d --init --name nano --restart unless-stopped -p 127.0.0.1:4000:4000 \
-  -v nano-data:/data -e OPENROUTER_API_KEY -e DEFAULT_MODEL nano
+  -v nano-data:/data -e OPENROUTER_API_KEY nano
 ```
 
 Every setting is an environment variable; the table is in
@@ -185,8 +186,8 @@ Docker is still retrying, so the node comes back on its own at the next attempt.
 
 A model slug that starts with `openai-codex/` runs on a ChatGPT subscription rather than
 OpenRouter, the way the Codex CLI does: `openai-codex/gpt-6.1-sol`, `openai-codex/gpt-6-sol`
-and so on. Use it anywhere a model goes (the start form, `POST /api/agents`, `NanoAgent.start`,
-`DEFAULT_MODEL`). Inference is flat-rate under the plan's usage limits, so these agents show
+and so on. Use it anywhere a model goes (the start form, `POST /api/agents`, `NanoAgent.start`).
+Inference is flat-rate under the plan's usage limits, so these agents show
 no cost; their tokens still count towards their budgets and the node's hourly cap.
 
 **Before you connect.** You need a ChatGPT Plus or Pro plan. The node signs in with a
@@ -230,10 +231,15 @@ gets, and the timeline's `model_error`, say when the limit resets if the backend
 Un-halt it once it has. Other rate limits and server errors are retried, up to three
 attempts, as for OpenRouter.
 
-**Reasoning.** `off` is sent as effort `none`, `minimal` as `low` (these models have no
-`minimal`), and `low` to `max` by name. The gpt-6.x models have no `none` and reject `off`
-(so with `REASONING` at its default, give them a level); `gpt-5.5` has no `max` and rejects it; the efforts
-above `max` that some models offer (`ultra`) have no level here.
+**Reasoning.** `off` is sent as effort `none`, `minimal` as `low`, and `low` to `max` by
+name. An agent can only be started with a level the subscription lists for its model: the
+gpt-6.x models have no `none`, so `off` is refused for them, and the efforts above `max` that
+some models offer (`ultra`) have no level here.
+
+**Context.** The subscription lists each model's `context_window` (272,000 for the gpt-6.x
+models), the input the Codex CLI works within; the larger `max_context_window` is not used.
+The backend accepts no bound on a response's length, so the node keeps the request itself
+within the agent's `max_context` (see "Three limits per agent" below).
 
 ## Network and the API key
 
@@ -298,30 +304,37 @@ are a connected ChatGPT subscription's tokens (see above), which have no spendin
   starts or restarts, so edit it (or point `SYSTEM_PROMPT_FILE` at a variant) and the next
   agent gets it, no reload needed. Per agent: `system_prompt: "..."` or
   `system_prompt_file: "path"` at start, also on the dashboard form and `POST /api/agents`.
-- **Reasoning is off by default.** Requests tell the model not to reason ("think") first.
-  Set `REASONING` for the node to `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, or start
-  one agent with `reasoning: "high"` (also a choice on the dashboard's start form and a
-  field on `POST /api/agents`). A model whose reasoning cannot be turned off rejects every
-  request while it is `off` (`deepseek/deepseek-r1` answers 400 "Reasoning is mandatory for
-  this endpoint and cannot be disabled"; the agent's timeline shows the `model_error`), so
-  start such agents with a level. ChatGPT subscription models map the levels as described
-  above. The start form offers only the levels the provider lists for the chosen model, and
-  preselects `REASONING` if the model has it, else the model's own default (`low` for
-  `gpt-6.1-sol`, which cannot reason `off`); the API and the shell do not check.
-- **Three limits per agent, each settable at start, each 0 for no limit.** `max_turns`
-  (default 500) counts model calls. `max_tokens` (default 30,000,000) is cumulative: prompt
-  plus completion tokens over every call, with the whole transcript re-sent each turn.
-  `max_context` (default 1,000,000) is the size of the conversation itself; nothing trims
-  it, so this is where an otherwise unlimited agent stops. On the start form it defaults to
-  the chosen model's context window, where its provider lists one (272,000 for the ChatGPT
-  models, whose larger `max_context_window` is not used). With turns and tokens unlimited,
-  the node-wide hourly cap and the limit on your OpenRouter key are the only spend controls.
+- **Nothing about an agent has a default.** `model`, `reasoning`, `max_turns`, `max_tokens`
+  and `max_context` must all be given, from the start form, `POST /api/agents` or
+  `NanoAgent.start/1`, and are checked against the model's provider's list: the model must be
+  listed, the reasoning level one the provider lists for it, `max_context` no more than its
+  window. A refusal says what to give instead, e.g. `missing max_context:
+  openai-codex/gpt-6.1-sol's context window is 272000; …`. If the provider's list cannot be
+  fetched, nothing can be started on it, since its limits cannot be checked. An agent can
+  start another the same way, from its eval, and must say all of this too.
+- **Reasoning** (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is how hard the
+  model thinks before answering; `off` asks it not to. The levels a model has come from its
+  provider's list (OpenRouter's `reasoning` block, the subscription's levels); a model whose
+  reasoning cannot be turned off has no `off`. The start form offers only the chosen model's
+  levels and preselects its own default.
+- **Three limits per agent.** `max_turns` counts model calls and `max_tokens` is cumulative:
+  prompt plus completion tokens over every call, with the whole transcript re-sent each turn;
+  0 is no limit for either (the start form starts them at 0). `max_context` is the size of the
+  conversation itself, from 1 to the model's window (the start form fills in the window);
+  nothing trims it, so this is where an otherwise unlimited agent stops. The node never sends
+  a request that could pass it: before each call it estimates the request (the context the
+  provider last measured, plus a token for every 2 bytes added since) and halts the agent,
+  reason `context`, if that would leave less than 4,096 tokens for the reply; on OpenRouter
+  the reply is also bounded (`max_tokens`) by the room left. With turns and tokens unlimited,
+  the node-wide hourly cap (`NODE_MAX_TOKENS_PER_HOUR`) and the limit on your OpenRouter key
+  are the only spend controls.
 - **Halted agents.** An agent whose `halted` is `budget`, `context`, `node_budget`,
   `usage_limit`, `restart_brake`, `start_failed` or `log_failed`
   still receives and logs messages but makes no model calls until an operator un-halts it:
   the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
   `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an
-  operator's Restart counts.
+  operator's Restart counts. The conversation does not shrink, so an agent halted for its
+  context is halted again, before calling the model, as soon as it is un-halted.
 - **Agents can read this repository, and `/data`.** `/app` is the checkout, so an agent that
   looks will find every doc in it; anything about runs or what is being tested lives on the
   `runs` branch instead. `bin/reset` clears what a run leaves behind: it archives `data/`

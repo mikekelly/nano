@@ -3,6 +3,7 @@ defmodule Nano.Model do
   Which provider serves a model, by the slug's prefix: `openai-codex/<model>` runs on the
   ChatGPT subscription connected to this node (`Nano.ChatGPT`), anything else on OpenRouter
   (`Nano.OpenRouter`). Both take and return the same shapes, so the agent need not know which.
+  The model lists of both are checked here, in one place, before an agent starts (`check/3`).
   The start form picks a provider, then a model there, and joins them back into a slug.
   """
 
@@ -12,24 +13,120 @@ defmodule Nano.Model do
   One model call: `{:ok, %{message, finish_reason, usage, provider, cost}}` or `{:error, %{status,
   body}}`, with `message` and `usage` in OpenRouter's chat completions shape. An error may also
   carry `transient: true` (worth retrying) and `limit:` (a sentence saying which usage limit was
-  reached, for the agent's halt note).
+  reached, for the agent's halt note). `max_output` bounds the response's tokens, reasoning
+  included, on OpenRouter (`max_tokens`). The ChatGPT subscription is sent no bound: its backend
+  refuses `max_output_tokens` with a 400 (the Codex CLI and pi never send it), and the window
+  its list gives is the input Codex works within, below the model's whole window.
   """
-  def chat(@prefix <> model, messages, tools, reasoning),
+  def chat(@prefix <> model, messages, tools, reasoning, _max_output),
     do: Nano.ChatGPT.chat(model, messages, tools, reasoning)
 
-  def chat(model, messages, tools, reasoning) do
-    with {:error, error} <- Nano.OpenRouter.chat(model, messages, tools, reasoning),
+  def chat(model, messages, tools, reasoning, max_output) do
+    with {:error, error} <- Nano.OpenRouter.chat(model, messages, tools, reasoning, max_output),
          do: {:error, Map.put(error, :transient, Nano.OpenRouter.transient?(error))}
   end
 
-  @doc "Why an agent on `model` could not call it now, or nil: what `NanoAgent.start/1` checks."
-  def unavailable(@prefix <> _) do
-    if Nano.ChatGPT.Auth.status().status != :connected, do: :chatgpt_not_connected
+  @doc """
+  What `NanoAgent.start/1` checks of an agent's model, against its provider's model list: that
+  the provider can be called now and lists the model, that `reasoning` is one of the model's
+  levels, and that `max_context` is from 1 to the model's context window. `{:ok, entry}`, the
+  model's entry in the list, or `{:error, message}` saying what to do instead. A model whose
+  limits cannot be verified, because the list cannot be had or gives no window, is refused.
+  """
+  def check(model, reasoning, max_context) do
+    with {:ok, entry} <- lookup(model) do
+      levels = Enum.join(entry.reasoning_levels, ", ")
+      window = entry.context_length
+
+      cond do
+        reasoning == nil ->
+          {:error,
+           "missing reasoning: #{model} supports #{levels} (its default is #{entry.default_reasoning})"}
+
+        reasoning not in entry.reasoning_levels ->
+          {:error,
+           "reasoning #{inspect(reasoning)} is not supported by #{model}; supported: #{levels}"}
+
+        not is_integer(window) ->
+          {:error,
+           "could not verify the context window of #{model}: its provider lists none, so no " <>
+             "agent can be started on it"}
+
+        max_context == nil ->
+          {:error,
+           "missing max_context: #{model}'s context window is #{window}; give a number of " <>
+             "tokens from 1 to #{window}"}
+
+        not (is_integer(max_context) and max_context in 1..window) ->
+          {:error,
+           "max_context must be a whole number of tokens from 1 to #{window}, #{model}'s " <>
+             "context window (there is no unlimited context), not #{inspect(max_context)}"}
+
+        true ->
+          {:ok, entry}
+      end
+    end
   end
 
-  def unavailable(_) do
+  @doc "A model's entry in its provider's list (see `check/3`), or `{:error, message}`."
+  def lookup(model) when model in [nil, ""],
+    do:
+      {:error,
+       "missing model: give a model slug, openai-codex/<model> for the ChatGPT subscription " <>
+         "or an OpenRouter model id such as deepseek/deepseek-v4.1-flash"}
+
+  def lookup(model) when not is_binary(model),
+    do: {:error, "model must be a slug (a string), not #{inspect(model)}"}
+
+  def lookup(model) do
+    {provider, id} = split(model)
+
+    with nil <- unavailable(provider) do
+      models = models(provider)
+
+      case Enum.find(models, &(&1.id == id)) do
+        _ when models == [] ->
+          {:error,
+           "could not verify #{model}'s context window and reasoning levels: " <>
+             "#{name(provider)}'s model list could not be fetched; try again in a minute"}
+
+        nil when provider == :chatgpt ->
+          ids = Enum.map_join(models, ", ", &slug(:chatgpt, &1.id))
+          {:error, "unknown model #{model}: the ChatGPT subscription offers #{ids}"}
+
+        nil ->
+          {:error,
+           "unknown model #{model}: OpenRouter does not list it; its model ids are at " <>
+             "https://openrouter.ai/models"}
+
+        entry ->
+          {:ok, entry}
+      end
+    end
+  end
+
+  @doc "A provider's model list: `Nano.OpenRouter.models/0` or `Nano.ChatGPT.models/0`."
+  def models(:openrouter), do: Nano.OpenRouter.models()
+  def models(:chatgpt), do: Nano.ChatGPT.models()
+
+  defp name(:openrouter), do: "OpenRouter"
+  defp name(:chatgpt), do: "the ChatGPT subscription"
+
+  # Why the provider cannot be called now, as {:error, message}, or nil.
+  defp unavailable(:chatgpt) do
+    if Nano.ChatGPT.Auth.status().status != :connected,
+      do:
+        {:error,
+         "the ChatGPT subscription is not connected: connect it from the dashboard's start " <>
+           "form (Connect ChatGPT) or with POST /api/chatgpt/login"}
+  end
+
+  defp unavailable(:openrouter) do
     if Application.get_env(:nano, :openrouter_api_key) in [nil, ""],
-      do: :missing_openrouter_api_key
+      do:
+        {:error,
+         "OPENROUTER_API_KEY is not set on this node: set it in .env and restart the " <>
+           "container, or use an openai-codex/ model"}
   end
 
   @doc """
@@ -53,18 +150,6 @@ defmodule Nano.Model do
 
   defp level("none"), do: "off"
   defp level(effort), do: if(effort in NanoAgent.reasoning_levels(), do: effort)
-
-  @doc """
-  The level the start form chooses for an entry of a model list (or nil, a model not listed):
-  `REASONING` if the model supports it, else the model's default (if it has any level here).
-  """
-  def default_reasoning(model) do
-    level = Application.get_env(:nano, :reasoning)
-
-    if model == nil or level in model.reasoning_levels,
-      do: level,
-      else: model.default_reasoning || level
-  end
 
   @doc """
   A slug as its provider and the model's name there: `{:chatgpt, "gpt-5.5"}` for

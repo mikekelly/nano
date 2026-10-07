@@ -18,6 +18,10 @@ defmodule NanoAgent do
 
   @log_failed "I could not write the harness log, the durable record of what you do"
 
+  # The least room for its response a request must leave in the context; with less, the agent
+  # is halted instead of called. Enough for a tool call after some reasoning.
+  @reply_room 4_096
+
   @tools [
     %{
       type: "function",
@@ -54,80 +58,101 @@ defmodule NanoAgent do
   ## API
 
   @doc """
-  Starts an agent under `Nano.AgentSupervisor`. Options: `name:` (required; letters, digits,
-  `_`, `.`, `-`), `model:` (default `DEFAULT_MODEL`), `start_idle:` (boolean, default true),
-  `system_prompt:` (a template string replacing the default; same `{{placeholders}}`),
-  `system_prompt_file:` (a template file, instead of `SYSTEM_PROMPT_FILE`), `max_turns:`,
-  `max_tokens:`, `max_context:` (non-negative integers; 0 means no limit), `reasoning:` (one of `reasoning_levels/0`, default
-  `REASONING`). Returns `{:error, :invalid_name | :invalid_option | :missing_model}`, the
-  reason `Nano.Model.unavailable/1` gives, or the supervisor's result.
+  Starts an agent under `Nano.AgentSupervisor`. There are no defaults for what an agent runs on
+  or may spend; these are required:
+
+    * `name:` letters, digits, `_`, `.`, `-`
+    * `model:` a slug its provider lists (`Nano.Model.check/3`)
+    * `reasoning:` one of the model's reasoning levels
+    * `max_turns:`, `max_tokens:` whole numbers; 0 means no limit
+    * `max_context:` from 1 to the model's context window
+
+  Optional: `start_idle:` (boolean, default true), `system_prompt:` (a template string
+  replacing the default; same `{{placeholders}}`), `system_prompt_file:` (a template file,
+  instead of `SYSTEM_PROMPT_FILE`). Returns the supervisor's result, or `{:error, message}`
+  saying what was missing or wrong and what to give instead.
   """
   def start(opts) do
     name = opts[:name]
-    model = opts[:model] || Application.get_env(:nano, :default_model)
-    # An invalid REASONING default surfaces here, as an invalid option.
-    opts =
-      if opts[:reasoning] == nil, do: Keyword.put(opts, :reasoning, env(:reasoning)), else: opts
 
-    cond do
-      not (is_binary(name) and name =~ ~r/^[\w.-]+$/) ->
-        {:error, :invalid_name}
-
-      not valid_options?(opts) ->
-        {:error, :invalid_option}
-
-      model in [nil, ""] ->
-        {:error, :missing_model}
-
-      reason = Nano.Model.unavailable(model) ->
-        {:error, reason}
-
-      true ->
-        # The template: the agent's own string, or a file read now (and again at each restart).
-        file =
-          if opts[:system_prompt],
-            do: nil,
-            else: opts[:system_prompt_file] || env(:system_prompt_file)
-
-        with {:ok, template} <- if(file, do: File.read(file), else: {:ok, opts[:system_prompt]}) do
-          more = [model: model, id: new_id(name), template: template, prompt_file: file]
-          # Called from an agent's eval: the eval task's first caller is that agent.
-          parent =
-            with [pid | _] <- Process.get(:"$callers"),
-                 [{:agent, n}] <- Registry.keys(Nano.Registry, pid) do
-              n
-            else
-              _ -> nil
-            end
-
-          more = Keyword.put(more, :started_by, parent)
-
-          case DynamicSupervisor.start_child(
-                 Nano.AgentSupervisor,
-                 {__MODULE__, Keyword.merge(opts, more)}
-               ) do
-            :ignore -> {:error, :start_failed}
-            result -> result
+    with :ok <-
+           if(is_binary(name) and name =~ ~r/^[\w.-]+$/,
+             do: :ok,
+             else:
+               {:error,
+                "name must be letters, digits, _ . or - (it is how the agent is addressed), " <>
+                  "not #{inspect(name)}"}
+           ),
+         {:ok, entry} <- Nano.Model.check(opts[:model], opts[:reasoning], opts[:max_context]),
+         :ok <- limit_option(opts, :max_turns, "the number of model calls"),
+         :ok <- limit_option(opts, :max_tokens, "prompt and completion tokens, summed"),
+         :ok <- other_options(opts),
+         {:ok, template, file} <- template(opts) do
+      more = [
+        id: new_id(name),
+        template: template,
+        prompt_file: file,
+        context_window: entry.context_length,
+        max_output: entry[:max_output],
+        # Called from an agent's eval: the eval task's first caller is that agent.
+        started_by:
+          with [pid | _] <- Process.get(:"$callers"),
+               [{:agent, n}] <- Registry.keys(Nano.Registry, pid) do
+            n
+          else
+            _ -> nil
           end
-        else
-          {:error, reason} -> {:error, {:system_prompt_file, reason}}
-        end
+      ]
+
+      case DynamicSupervisor.start_child(
+             Nano.AgentSupervisor,
+             {__MODULE__, Keyword.merge(opts, more)}
+           ) do
+        :ignore -> {:error, "the agent's process failed to start; the node's log says why"}
+        result -> result
+      end
     end
   end
 
   @doc "The `reasoning:` settings an agent can be started with: `\"off\"`, then effort levels, lowest first."
   defdelegate reasoning_levels, to: Nano.OpenRouter
 
-  defp valid_options?(opts) do
-    Enum.all?(
-      [:max_turns, :max_tokens, :max_context],
-      &(opts[&1] == nil or (is_integer(opts[&1]) and opts[&1] >= 0))
-    ) and
-      opts[:start_idle] in [nil, true, false] and opts[:reasoning] in reasoning_levels() and
-      Enum.all?(
-        [:model, :system_prompt, :system_prompt_file],
-        &(opts[&1] == nil or is_binary(opts[&1]))
+  defp limit_option(opts, key, what) do
+    case opts[key] do
+      nil -> {:error, "missing #{key}: #{what} before the agent is halted, or 0 for no limit"}
+      n when is_integer(n) and n >= 0 -> :ok
+      n -> {:error, "#{key} must be a whole number, 0 or more (0 = no limit), not #{inspect(n)}"}
+    end
+  end
+
+  defp other_options(opts) do
+    text =
+      Enum.find(
+        [:system_prompt, :system_prompt_file],
+        &(opts[&1] != nil and not is_binary(opts[&1]))
       )
+
+    cond do
+      text -> {:error, "#{text} must be a string, not #{inspect(opts[text])}"}
+      opts[:start_idle] in [nil, true, false] -> :ok
+      true -> {:error, "start_idle must be true or false, not #{inspect(opts[:start_idle])}"}
+    end
+  end
+
+  # The template: the agent's own string, or a file read now (and again at each restart).
+  defp template(opts) do
+    file =
+      if opts[:system_prompt],
+        do: nil,
+        else: opts[:system_prompt_file] || env(:system_prompt_file)
+
+    case if(file, do: File.read(file), else: {:ok, opts[:system_prompt]}) do
+      {:ok, template} ->
+        {:ok, template, file}
+
+      {:error, e} ->
+        {:error, "cannot read the system prompt file #{file}: #{:file.format_error(e)}"}
+    end
   end
 
   @doc false
@@ -154,8 +179,9 @@ defmodule NanoAgent do
   @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
   while the agent is busy or suspended. `halted` is nil, `:budget`, `:context`, `:node_budget`,
-  `:usage_limit`, `:restart_brake`, `:start_failed` or `:log_failed`; `cache_hit_rate` is nil
-  until the first response.
+  `:usage_limit`, `:restart_brake`, `:start_failed` or `:log_failed`; `context_window` is the
+  model's, as its provider listed it at start (nil if it could not be had for an agent saved
+  before it was recorded); `cache_hit_rate` is nil until the first response.
   """
   def info(name) do
     with %{} = s <- Nano.StateStore.get(name) do
@@ -179,6 +205,7 @@ defmodule NanoAgent do
         restart_count: s.restart_count,
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
+        context_window: Map.get(s, :context_window),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -203,13 +230,12 @@ defmodule NanoAgent do
   end
 
   @doc """
-  Starts, under `sup`, every agent saved in `Nano.StateStore` that has no live process, with
-  the options it was started with; each comes back through the restart path, with its history.
+  Starts, under `sup`, every agent saved in `Nano.StateStore` that has no live process; each
+  comes back through the restart path, with its history and the options it was started with.
   """
   def revive(sup) do
     for s <- Nano.StateStore.all(), whereis(s.name) == nil do
-      keys = [:name, :id, :model, :max_turns, :max_tokens, :max_context, :reasoning]
-      opts = s |> Map.take(keys) |> Keyword.new()
+      opts = s |> Map.take([:name, :id]) |> Keyword.new()
       DynamicSupervisor.start_child(sup, {__MODULE__, opts})
     end
 
@@ -287,7 +313,7 @@ defmodule NanoAgent do
       id: opts[:id],
       name: opts[:name],
       model: opts[:model],
-      reasoning: opts[:reasoning] || env(:reasoning),
+      reasoning: opts[:reasoning],
       pid: self(),
       tag: make_ref(),
       # The template text last read, and the file it came from (nil: given as a string).
@@ -301,11 +327,12 @@ defmodule NanoAgent do
       status: :idle,
       pending: [],
       halted: nil,
-      max_turns: opts[:max_turns] || env(:agent_max_turns),
-      max_tokens: opts[:max_tokens] || env(:agent_max_tokens),
-      max_context: opts[:max_context] || env(:agent_max_context),
+      max_turns: opts[:max_turns],
+      max_tokens: opts[:max_tokens],
+      max_context: opts[:max_context],
       turns_used: 0,
       tokens_used: 0,
+      # The conversation's size in tokens as the provider last measured it.
       context_used: 0,
       cost: 0,
       responses: 0,
@@ -325,7 +352,21 @@ defmodule NanoAgent do
   end
 
   defp fresh(opts) do
-    s = base(opts)
+    # Not in base/1, so that a stand-in built over an entry saved before these existed still
+    # lacks them, and upgrade/1 fills them in when the entry is restored.
+    s =
+      opts
+      |> base()
+      |> Map.merge(%{
+        # The model's, as its provider listed them at start: the context window, which
+        # max_context cannot exceed, and the most it generates in one response (or nil).
+        context_window: opts[:context_window],
+        max_output: opts[:max_output],
+        # The size in bytes of the conversation context_used measured: what a request adds
+        # is estimated from the growth since (estimate/1).
+        measured_bytes: 0
+      })
+
     s = %{s | system_prompt: render(s)}
     # Clears any saved by an earlier agent of the same name.
     Nano.StateStore.put_bindings(s.name, [])
@@ -343,6 +384,7 @@ defmodule NanoAgent do
   end
 
   defp restore(saved) do
+    saved = upgrade(saved)
     reason = Nano.StateStore.exit_reason(saved.name, saved.pid) || :unknown
     # Revived at boot from the agent's state file: the whole node stopped, not just the process.
     node_restart? = reason == :node_restart
@@ -441,6 +483,28 @@ defmodule NanoAgent do
       else: s
   end
 
+  # State saved before the model's limits were recorded at start. The window and output bound
+  # come from the model's list if it can be had, and the window then caps max_context (which
+  # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
+  # measured is the conversation up to its last response.
+  defp upgrade(%{context_window: _} = s), do: s
+
+  defp upgrade(s) do
+    entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
+    window = entry[:context_length]
+    max = Map.get(s, :max_context, 0)
+    measured = s.transcript |> Enum.reverse() |> Enum.drop_while(&(&1["role"] != "assistant"))
+
+    Map.merge(s, %{
+      context_window: window,
+      max_output: entry[:max_output],
+      max_context: if(window && (max == 0 or max > window), do: window, else: max),
+      context_used: Map.get(s, :context_used, 0),
+      measured_bytes:
+        if(measured == [], do: 0, else: bytes(s.system_prompt, Enum.reverse(measured)))
+    })
+  end
+
   # The fields that belong to a process rather than to the agent's history.
   defp new_process(s),
     do: %{
@@ -537,8 +601,8 @@ defmodule NanoAgent do
         :context ->
           {s,
            " This conversation does not shrink: its context is still " <>
-             "#{used(b.context_used, b.max_context, "tokens")}, so I will halt you again " <>
-             "after my next call to the model."}
+             "#{used(b.context_used, b.max_context, "tokens")}, so unless your limit has been " <>
+             "raised I will halt you again before my next call to the model, without making it."}
 
         _ ->
           {s, ""}
@@ -646,6 +710,8 @@ defmodule NanoAgent do
   defp maybe_start_turn(s), do: s
 
   defp request(s, new_turn?) do
+    # State from an older version of this module, still running after a reload.
+    s = upgrade(s)
     node_used = Nano.StateStore.node_tokens_last_hour()
     cap = env(:node_max_tokens_per_hour)
 
@@ -672,33 +738,89 @@ defmodule NanoAgent do
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
         user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        s = if new_turn?, do: %{append(s, user) | pending: []}, else: s
-        messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
-        id = s.request_id + 1
-        size = div(byte_size(Jason.encode!(messages)), 4)
-        fields = %{request_id: id, model: s.model, message_count: length(messages)}
-        fields = if new_turn?, do: Map.put(fields, :budget_note, line), else: fields
+        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        estimate = estimate(next)
+        room = b.max_context - estimate
 
-        # No model call whose record could not be written.
-        if log(s, :model_request, Map.put(fields, :approx_input_tokens, size)) == :ok do
-          s = save(%{s | status: :thinking, request_id: id, turns_used: s.turns_used + 1})
-          # Map.get: state saved by an older version of this module has no :reasoning.
-          args = [self(), s.tag, {s.model, Map.get(s, :reasoning, "off")}, messages, id]
-          task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :call_model, args)
-          %{s | task: %{kind: :model, task: task}}
-        else
-          s |> halt(:log_failed, @log_failed) |> end_turn("error")
-        end
+        if b.max_context > 0 and room < @reply_room,
+          do: s |> context_halt(estimate) |> end_turn("budget"),
+          else: call(next, new_turn? && line, estimate, room)
+    end
+  end
+
+  # Tokens a request for this conversation may take, at most: what the provider measured for
+  # the conversation at its last response, plus one token for every 2 bytes it has grown by
+  # since, as JSON (before a first response, all of it). Tokenizers average 3.5 to 4.5 bytes
+  # a token on English and code, about 3 on JSON, hex, base64 and CJK text, so this
+  # overestimates all but byte sequences built to tokenize badly; the overestimate lasts only
+  # until the next response measures the conversation again.
+  defp estimate(s),
+    do:
+      s.context_used + div(max(bytes(s.system_prompt, s.transcript) - s.measured_bytes, 0) + 1, 2)
+
+  # The size, as JSON, of the tools and messages of a request: what the estimate scales.
+  defp bytes(system_prompt, transcript),
+    do:
+      byte_size(
+        Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
+      )
+
+  defp context_halt(s, estimate) do
+    b = budget(s)
+    log(s, :budget_exhausted, Map.merge(b, %{scope: "context", estimate: estimate}))
+
+    halt(
+      s,
+      :context,
+      "Your next call to the model might not fit in your context of #{b.max_context} tokens: " <>
+        "with what has arrived since your last response, this conversation could now be up to " <>
+        "about #{estimate} tokens, which leaves less than #{@reply_room} for your reply"
+    )
+  end
+
+  # Starts the model request. The response is bounded by the room left in the context (and
+  # by what the model generates at most), so that the request and its response fit.
+  defp call(s, line, estimate, room) do
+    messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
+    id = s.request_id + 1
+    output = if s.max_context > 0, do: min(room, s.max_output || room), else: s.max_output
+
+    fields = %{
+      request_id: id,
+      model: s.model,
+      message_count: length(messages),
+      approx_input_tokens: estimate,
+      max_output: output
+    }
+
+    fields = if line, do: Map.put(fields, :budget_note, line), else: fields
+
+    # No model call whose record could not be written.
+    if log(s, :model_request, fields) == :ok do
+      s = save(%{s | status: :thinking, request_id: id, turns_used: s.turns_used + 1})
+      # Map.get: state saved by an older version of this module has no :reasoning.
+      args = [self(), s.tag, {s.model, Map.get(s, :reasoning, "off"), output}, messages, id]
+      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :call_model, args)
+      %{s | task: %{kind: :model, task: task}}
+    else
+      s |> halt(:log_failed, @log_failed) |> end_turn("error")
     end
   end
 
   @doc false
   # Runs in a task: one model call with up to 3 attempts for transient errors. Failed attempts
   # are reported to the agent, which logs them.
-  def call_model(agent, tag, {model, reasoning}, messages, request_id, attempt \\ 1) do
+  def call_model(
+        agent,
+        tag,
+        {model, reasoning, max_output} = how,
+        messages,
+        request_id,
+        attempt \\ 1
+      ) do
     started = System.monotonic_time(:millisecond)
 
-    case Nano.Model.chat(model, messages, @tools, reasoning) do
+    case Nano.Model.chat(model, messages, @tools, reasoning, max_output) do
       {:ok, response} ->
         {:ok, Map.put(response, :latency_ms, System.monotonic_time(:millisecond) - started)}
 
@@ -714,7 +836,7 @@ defmodule NanoAgent do
 
         if retry do
           Process.sleep(Application.get_env(:nano, :openrouter_backoff_ms, 1_000) * attempt)
-          call_model(agent, tag, {model, reasoning}, messages, request_id, attempt + 1)
+          call_model(agent, tag, how, messages, request_id, attempt + 1)
         else
           {:error, error}
         end
@@ -789,6 +911,9 @@ defmodule NanoAgent do
       # this response's prompt plus its completion, which the next request at least contains.
       |> Map.put(:context_used, prompt + completion)
       |> append(message)
+
+    s =
+      %{s | measured_bytes: bytes(s.system_prompt, s.transcript)}
       |> check_budget()
       |> save()
 
@@ -796,6 +921,8 @@ defmodule NanoAgent do
   end
 
   # Halts when one of the agent's own limits is reached; tool calls already returned still run.
+  # The context limit is held before each call (request/2); this catches a response that went
+  # past it anyway (the estimate fell short, or the provider takes no bound on the response).
   defp check_budget(%{halted: nil} = s) do
     b = budget(s)
 
@@ -825,12 +952,13 @@ defmodule NanoAgent do
 
   defp check_budget(s), do: s
 
-  # Limits and use. State saved by an older version of this module has no context fields.
+  # Limits and use. State saved by an older version of this module may have no context fields
+  # until the agent is restarted (upgrade/1).
   defp budget(s) do
     s
     |> Map.take([:max_turns, :max_tokens, :turns_used, :tokens_used])
     |> Map.merge(%{
-      max_context: Map.get(s, :max_context, env(:agent_max_context)),
+      max_context: Map.get(s, :max_context, 0),
       context_used: Map.get(s, :context_used, 0)
     })
   end

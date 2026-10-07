@@ -20,10 +20,15 @@ defmodule NanoWeb.ProcessLiveTest do
   defp start_agent(ctx, opts \\ []) do
     name = unique("agent")
     Fake.listen(ctx.model)
-    {:ok, pid} = Nano.Ops.start_agent(name, [model: ctx.model] ++ opts)
+    {:ok, pid} = Nano.Ops.start_agent(name, Fake.opts(ctx.model, opts))
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     {name, pid}
   end
+
+  # Types a model into the start form's box, as a person would before starting: the model
+  # then sets the reasoning level and max context.
+  defp choose(view, model),
+    do: view |> form("#start", %{model: model}) |> render_change(%{_target: ["model"]})
 
   # A process of kind :other that forwards whatever it receives to the test.
   defp other_process do
@@ -138,10 +143,11 @@ defmodule NanoWeb.ProcessLiveTest do
     name = unique("started")
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     Fake.listen(ctx.model)
+    choose(view, ctx.model)
 
     assert {:error, {:live_redirect, %{to: "/agents/" <> ^name}}} =
              view
-             |> form("#start", %{name: name, model: ctx.model, start_idle: "true"})
+             |> form("#start", %{name: name, start_idle: "true"})
              |> render_submit()
 
     assert %{model: model, status: :idle} = Nano.Ops.agent(name)
@@ -168,13 +174,16 @@ defmodule NanoWeb.ProcessLiveTest do
     name = unique("busy")
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     Fake.listen(ctx.model)
+    choose(view, ctx.model)
 
     view
-    |> form("#start", %{name: name, model: ctx.model, start_idle: "false", max_turns: "3"})
+    |> form("#start", %{name: name, start_idle: "false", max_turns: "3"})
     |> render_submit()
 
     assert_receive {:openrouter_request, _, _}, 2_000
-    assert %{budget: %{max_turns: 3}} = Nano.Ops.agent(name)
+
+    assert %{budget: %{max_turns: 3, max_tokens: 0, max_context: 1_000_000}} =
+             Nano.Ops.agent(name)
   end
 
   test "the start form shows why an agent could not start", ctx do
@@ -182,9 +191,20 @@ defmodule NanoWeb.ProcessLiveTest do
     html = view |> form("#start", %{name: "no spaces"}) |> render_submit()
     assert html =~ "name must be letters, digits"
 
+    html = view |> form("#start", %{name: "fine"}) |> render_submit()
+    assert html =~ "missing model: give a model slug"
+
     {agent, _} = start_agent(ctx)
+    choose(view, ctx.model)
     html = view |> form("#start", %{name: agent}) |> render_submit()
     assert html =~ "already running"
+
+    html =
+      view |> form("#start", %{name: unique("agent"), max_context: "1000001"}) |> render_submit()
+
+    assert html =~ "max_context must be a whole number of tokens from 1 to 1000000"
+    # What was typed is kept, to be corrected.
+    assert has_element?(view, "#start input[name=max_context][value='1000001']")
   end
 
   test "the layout carries a banner that app.css shows only while the page is disconnected" do
@@ -204,13 +224,14 @@ defmodule NanoWeb.ProcessLiveTest do
     refute css =~ ".phx-loading"
   end
 
-  test "the start form's reasoning level: node default preselected, kept across re-renders, passed on",
+  test "the start form's reasoning level: the model's default preselected, kept across re-renders, passed on",
        ctx do
     level = hd(NanoAgent.reasoning_levels() -- ["off"])
     selected = &"#start select[name=reasoning] option[selected][value='#{&1}']"
 
     {:ok, view, _} = live(ctx.conn, "/?view=debug")
-    assert has_element?(view, selected.(Application.fetch_env!(:nano, :reasoning)))
+    choose(view, ctx.model)
+    assert has_element?(view, selected.("off"))
 
     for l <- ["off" | NanoAgent.reasoning_levels()],
         do: assert(has_element?(view, "#start select[name=reasoning] option[value='#{l}']"))
@@ -223,10 +244,11 @@ defmodule NanoWeb.ProcessLiveTest do
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
       {:ok, view, _} = live(ctx.conn, "/?view=debug")
+      choose(view, ctx.model)
 
       assert {:error, {:live_redirect, _}} =
                view
-               |> form("#start", %{name: name, model: ctx.model, reasoning: reasoning})
+               |> form("#start", %{name: name, reasoning: reasoning})
                |> render_submit()
 
       assert Nano.Ops.agent(name).reasoning == reasoning
@@ -278,37 +300,33 @@ defmodule NanoWeb.ProcessLiveTest do
     name = unique("agent")
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     {:ok, view, _} = live(ctx.conn, "/")
+    choose(view, ctx.model)
     view |> form("#start", %{prompt: "file"}) |> render_change()
 
     assert {:error, {:live_redirect, _}} =
              view
-             |> form("#start", %{
-               name: name,
-               model: ctx.model,
-               prompt: "file",
-               system_prompt_file: file
-             })
+             |> form("#start", %{name: name, prompt: "file", system_prompt_file: file})
              |> render_submit()
 
     assert Nano.Ops.agent(name).system_prompt == "You are #{name}, from the form's file."
 
     {:ok, view, _} = live(ctx.conn, "/")
+    choose(view, ctx.model)
     view |> form("#start", %{prompt: "file"}) |> render_change()
 
     html =
       view
       |> form("#start", %{
         name: unique("agent"),
-        model: ctx.model,
         prompt: "file",
         system_prompt_file: "tmp/none.txt"
       })
       |> render_submit()
 
-    assert html =~ "cannot read system_prompt_file: no such file or directory"
+    assert html =~ "cannot read the system prompt file tmp/none.txt: no such file or directory"
   end
 
-  test "the model box: default preselected, a fuzzy filter over the model list, any slug accepted",
+  test "the model box: empty at first, a fuzzy filter over the model list, unlisted slugs refused",
        ctx do
     :persistent_term.erase({Nano.OpenRouter, :models})
     on_exit(fn -> :persistent_term.erase({Nano.OpenRouter, :models}) end)
@@ -328,8 +346,7 @@ defmodule NanoWeb.ProcessLiveTest do
     ])
 
     {:ok, view, _} = live(ctx.conn, "/")
-    default = Application.fetch_env!(:nano, :default_model)
-    assert has_element?(view, "#start input[name=model][value='#{default}']")
+    assert has_element?(view, "#start input[name=model][value='']")
     assert has_element?(view, "#start select[name=reasoning]")
     refute has_element?(view, "#start details")
 
@@ -345,14 +362,13 @@ defmodule NanoWeb.ProcessLiveTest do
     assert has_element?(view, "#start input[name=model][value='anthropic/claude-haiku-4.5']")
     refute has_element?(view, "#start .matches")
 
-    # A slug that is not in the list is still accepted.
+    # A slug that is not in the list can be typed, but no agent starts on it.
     name = unique("agent")
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
-
-    assert {:error, {:live_redirect, _}} =
-             view |> form("#start", %{name: name, model: ctx.model}) |> render_submit()
-
-    assert Nano.Ops.agent(name).model == ctx.model
+    choose(view, "fake/unlisted")
+    html = view |> form("#start", %{name: name, max_context: "1000"}) |> render_submit()
+    assert html =~ "unknown model fake/unlisted: OpenRouter does not list it"
+    assert Nano.Ops.agent(name) == nil
   end
 
   test "the chosen model sets the reasoning select (its levels, its default) and max context",
@@ -382,15 +398,17 @@ defmodule NanoWeb.ProcessLiveTest do
       &has_element?(view, "#start select[name=reasoning] option[selected][value='#{&1}']")
 
     context = &has_element?(view, "#start input[name=max_context][value='#{&1}']")
-    node_context = Application.fetch_env!(:nano, :agent_max_context)
 
-    # REASONING ("off" here) where the model has it, else the model's default.
-    assert Application.fetch_env!(:nano, :reasoning) == "off"
+    # Before a model is chosen: every level, and no max context.
+    assert levels(view) == NanoWeb.Components.reasoning_levels()
+    assert context.("")
 
+    # The model's own default level.
     model.("deepseek/deepseek-v4.1-flash")
     assert levels(view) == ~w(off low high max)
-    assert selected.("off")
+    assert selected.("high")
     assert context.(1_048_576)
+    assert has_element?(view, "#start .hint", "at most 1,048,576, the model's window")
 
     model.("openai/gpt-6.1-sol")
     assert levels(view) == ~w(low medium high max)
@@ -407,10 +425,11 @@ defmodule NanoWeb.ProcessLiveTest do
     assert selected.("max")
     assert context.(5000)
 
-    # No reasoning block: only "off". No context length: the node's default.
+    # No reasoning block: only "off". No context length: nothing to fill in (and the model
+    # cannot be started on: its window is not known).
     model.("anthropic/claude-haiku-4.5")
     assert levels(view) == ["off"]
-    assert context.(node_context)
+    assert context.("")
 
     # Picked from the list, the same; a model not in the list offers every level.
     model.("6.1")
@@ -419,8 +438,7 @@ defmodule NanoWeb.ProcessLiveTest do
     assert context.(400_000)
     model.(ctx.model)
     assert levels(view) == NanoWeb.Components.reasoning_levels()
-    assert selected.("off")
-    assert context.(node_context)
+    assert context.("")
   end
 
   defp levels(view) do
@@ -428,37 +446,26 @@ defmodule NanoWeb.ProcessLiveTest do
     for [_, level] <- Regex.scan(~r/<option[^>]*value="([^"]+)"/, html), do: level
   end
 
-  test "the start form rejects a limit that is not a whole number, 0 or more", ctx do
-    {:ok, view, _} = live(ctx.conn, "/?view=debug")
-
+  test "the start form rejects a limit that is not a whole number in range", ctx do
     for {field, value} <- [max_turns: "abc", max_tokens: "1.5", max_context: "x", max_turns: "-3"] do
+      {:ok, view, _} = live(ctx.conn, "/?view=debug")
+      choose(view, ctx.model)
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
-
-      html =
-        view
-        |> form("#start", %{:name => name, :model => ctx.model, field => value})
-        |> render_submit()
-
-      assert html =~ "max turns, max tokens and max context must be whole numbers, 0 or more"
+      html = view |> form("#start", %{:name => name, field => value}) |> render_submit()
+      assert html =~ "#{field} must be a whole number"
       assert Nano.Ops.agent(name) == nil
     end
   end
 
-  test "the start form's three limits are prefilled with the node's defaults, accept 0, and are passed on",
+  test "the start form's limits: turns and tokens 0 (no limit), context the model's window; all passed on",
        ctx do
     {:ok, view, _} = live(ctx.conn, "/")
-
-    for {field, env} <- [
-          max_turns: :agent_max_turns,
-          max_tokens: :agent_max_tokens,
-          max_context: :agent_max_context
-        ] do
-      value = Application.fetch_env!(:nano, env)
-      assert has_element?(view, "#start input[name=#{field}][min='0'][value='#{value}']")
-    end
-
+    assert has_element?(view, "#start input[name=max_turns][min='0'][value='0']")
+    assert has_element?(view, "#start input[name=max_tokens][min='0'][value='0']")
     assert has_element?(view, "#start .hint", "0 = no limit")
+    choose(view, ctx.model)
+    assert has_element?(view, "#start input[name=max_context][value='1000000']")
 
     view |> form("#start", %{name: "typing", max_context: "1234"}) |> render_change()
     send(view.pid, :refresh)
@@ -469,9 +476,7 @@ defmodule NanoWeb.ProcessLiveTest do
     limits = %{max_turns: "0", max_tokens: "0", max_context: "4321"}
 
     assert {:error, {:live_redirect, _}} =
-             view
-             |> form("#start", Map.merge(%{name: name, model: ctx.model}, limits))
-             |> render_submit()
+             view |> form("#start", Map.put(limits, :name, name)) |> render_submit()
 
     assert %{max_turns: 0, max_tokens: 0, max_context: 4321} = Nano.Ops.agent(name).budget
   end
@@ -746,7 +751,7 @@ defmodule NanoWeb.ProcessLiveTest do
     on_exit(fn -> Nano.Ops.stop_agent(child) end)
 
     turn(parent, ctx.model,
-      eval: ~s|{:ok, _} = NanoAgent.start(name: "#{child}", model: "#{ctx.model}")|
+      eval: "{:ok, _} = NanoAgent.start(#{inspect([name: child] ++ Fake.opts(ctx.model))})"
     )
 
     assert Nano.Ops.agent(child).started_by == parent

@@ -4,13 +4,13 @@ defmodule Nano.FakeOpenRouter do
   random localhost port, so agents exercise the whole `Req` path (bootstrap/PLAN.md decision 12).
 
       Nano.FakeOpenRouter.start()           # idempotent; points :openrouter_base_url at the fake
-      model = Nano.FakeOpenRouter.model()   # a fresh slug; responses are queued per model, so
-                                            # tests using different models don't interfere
+      model = Nano.FakeOpenRouter.model()   # a fresh slug, listed; responses are queued per
+                                            # model, so tests using different models don't interfere
       Nano.FakeOpenRouter.push(model, calls: [eval: "1 + 1"])
       Nano.FakeOpenRouter.push(model, calls: [{:eval, "x = 1"}, {:idle, 50}])  # idle: nil = no wakeup
       Nano.FakeOpenRouter.push(model, text: "done")
       Nano.FakeOpenRouter.push(model, status: 500)                      # an HTTP error
-      {:ok, _pid} = NanoAgent.start(name: "alice", model: model)
+      {:ok, _pid} = NanoAgent.start([name: "alice"] ++ Nano.FakeOpenRouter.opts(model))
       NanoAgent.notify("alice", :hi)
       assert_receive {:openrouter_request, ^model, body}                # decoded JSON body
 
@@ -38,8 +38,35 @@ defmodule Nano.FakeOpenRouter do
     Application.put_env(:nano, :openrouter_base_url, "http://127.0.0.1:#{port}/api/v1")
   end
 
-  @doc "A fresh model slug."
-  def model, do: "fake/model-#{System.unique_integer([:positive])}"
+  @doc """
+  A fresh model slug, added to the models `GET /models` lists (as `entry` there, by default
+  with a 1,000,000-token window and every reasoning level), and the node's cached list dropped,
+  so that agents can be started on it.
+  """
+  def model(entry \\ %{}) do
+    slug = "fake/model-#{System.unique_integer([:positive])}"
+    defaults = %{"context_length" => 1_000_000, "reasoning" => %{"supported_efforts" => []}}
+    GenServer.call(__MODULE__, {:list, Map.merge(defaults, Map.put(entry, "id", slug))})
+    :persistent_term.erase({Nano.OpenRouter, :models})
+    slug
+  end
+
+  @doc """
+  `NanoAgent.start/1` options for an agent on `model`, which has no defaults: reasoning off,
+  500 turns, 30,000,000 tokens and a 1,000,000-token context, unless `overrides` say otherwise.
+  """
+  def opts(model, overrides \\ []) do
+    Keyword.merge(
+      [
+        model: model,
+        reasoning: "off",
+        max_turns: 500,
+        max_tokens: 30_000_000,
+        max_context: 1_000_000
+      ],
+      overrides
+    )
+  end
 
   @doc "Queues one response for model; the caller receives that model's requests."
   def push(model, response),
@@ -67,6 +94,9 @@ defmodule Nano.FakeOpenRouter do
   def handle_call(:port, _from, s), do: {:reply, s.port, s}
 
   def handle_call({:models, list}, _from, s), do: {:reply, :ok, %{s | list: list}}
+
+  def handle_call({:list, entry}, _from, s),
+    do: {:reply, :ok, %{s | list: if(is_list(s.list), do: s.list, else: []) ++ [entry]}}
 
   def handle_call(:list, _from, s) do
     reply =

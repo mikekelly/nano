@@ -13,14 +13,9 @@ services:
       - ./data:/data # JSONL logs in ./data/logs, agents' saved state in ./data/state
     environment:
       - OPENROUTER_API_KEY
-      - DEFAULT_MODEL=${DEFAULT_MODEL:-deepseek/deepseek-v4.1-flash}
       - NODE_COOKIE
-      - REASONING
       - SYSTEM_PROMPT_FILE
       - STATE_DIR
-      - AGENT_MAX_TURNS
-      - AGENT_MAX_TOKENS
-      - AGENT_MAX_CONTEXT
       - NODE_MAX_TOKENS_PER_HOUR
       - EVAL_TIMEOUT_MS
       - RESULT_MAX_BYTES

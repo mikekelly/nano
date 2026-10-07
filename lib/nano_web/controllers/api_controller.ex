@@ -22,17 +22,17 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/agents",
      "All agents: status, halted, suspended, model, reasoning, budget used, cost, restart count."},
     {"POST", "/api/agents",
-     "Start an agent. Body: name, model (default DEFAULT_MODEL; a slug openai-codex/<model> runs " <>
-       "on the ChatGPT subscription connected with /api/chatgpt/login, anything else on " <>
-       "OpenRouter), start_idle (default true); " <>
-       "optional system_prompt (a template string) or system_prompt_file (a template file, " <>
-       "relative to the app directory; system_prompt wins if both are given; default template: " <>
-       "SYSTEM_PROMPT_FILE, priv/system_prompt.txt); limits max_turns (model calls), max_tokens (prompt + " <>
-       "completion tokens, summed) and max_context (tokens in the conversation sent to the " <>
-       "model), each a non-negative integer where 0 means no limit, defaults AGENT_MAX_TURNS, " <>
-       "AGENT_MAX_TOKENS, AGENT_MAX_CONTEXT; and reasoning " <>
-       "(how hard the model thinks before answering, a string: {reasoning_levels}; " <>
-       "default REASONING, \"off\")."},
+     "Start an agent. Nothing has a default; required: name; model (a slug its provider " <>
+       "lists: openai-codex/<model> runs on the ChatGPT subscription connected with " <>
+       "/api/chatgpt/login, anything else on OpenRouter); reasoning (how hard the model thinks " <>
+       "before answering: one of the model's levels, from {reasoning_levels}); max_turns (model " <>
+       "calls) and max_tokens (prompt + completion tokens, summed), each a non-negative integer " <>
+       "where 0 means no limit; max_context (tokens in the conversation sent to the model, from " <>
+       "1 to the model's context window: no request is made that could pass it, reply " <>
+       "included). Optional: start_idle (default true); system_prompt (a template string) or " <>
+       "system_prompt_file (a template file, relative to the app directory; system_prompt wins " <>
+       "if both are given; default template: SYSTEM_PROMPT_FILE, priv/system_prompt.txt). " <>
+       "A refusal (422) says what was missing or wrong."},
     {"GET", "/api/agents/:name",
      "One agent: status, system prompt, budget (turns, tokens and context: used and max, " <>
        "0 = no limit), restart count."},
@@ -41,9 +41,9 @@ defmodule NanoWeb.ApiController do
      "Kill the agent with reason :operator_restart; it restarts with its history."},
     {"POST", "/api/agents/:name/resume", "Resume an agent suspended with :sys.suspend/1."},
     {"POST", "/api/agents/:name/unhalt",
-     "Clear a halt. halted is budget (the agent's turns or tokens), context (its conversation " <>
-       "reached max_context; it never shrinks, so un-halting allows one more model call before " <>
-       "it halts again), node_budget (the node-wide " <>
+     "Clear a halt. halted is budget (the agent's turns or tokens), context (its next request, " <>
+       "with room for the reply, might not fit in max_context, or a response passed it; the " <>
+       "conversation never shrinks, so it halts again before the next model call), node_budget (the node-wide " <>
        "hourly token cap), usage_limit (the provider refused with a usage limit, e.g. the " <>
        "ChatGPT subscription's; un-halt once it has reset), restart_brake (3 restarts within 60 s), start_failed (its process " <>
        "failed while starting; un-halting retries the start) or log_failed (its log could not " <>
@@ -147,12 +147,8 @@ defmodule NanoWeb.ApiController do
         {:error, {:already_started, _}} ->
           error(conn, 409, "agent already started: #{name}")
 
-        {:error, reason} ->
-          error(
-            conn,
-            422,
-            "could not start agent: #{NanoWeb.Components.refusal(reason)}"
-          )
+        {:error, message} ->
+          error(conn, 422, "could not start agent: #{message}")
       end
     else
       {:error, field} -> missing(conn, field)

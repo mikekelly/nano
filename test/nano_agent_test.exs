@@ -22,7 +22,7 @@ defmodule NanoAgentTest do
 
   defp start!(ctx, opts \\ []) do
     Fake.listen(ctx.model)
-    {:ok, pid} = NanoAgent.start([name: ctx.name, model: ctx.model] ++ opts)
+    {:ok, pid} = NanoAgent.start([name: ctx.name] ++ Fake.opts(ctx.model, opts))
 
     on_exit(fn ->
       if pid = NanoAgent.whereis(ctx.name) do
@@ -502,7 +502,7 @@ defmodule NanoAgentTest do
     NanoAgent.unhalt(ctx.name)
     body = request!(ctx.model)
     assert [halt, more, unhalt] = String.split(delivery(List.last(body["messages"])), "\n")
-    max = Application.get_env(:nano, :agent_max_tokens)
+    max = 30_000_000
     assert halt =~ "You have used 2 of 2 turns and 220 of #{max} tokens, so I have halted you"
     assert more =~ ":more"
 
@@ -510,7 +510,7 @@ defmodule NanoAgentTest do
              "<harness>An operator un-halted you. Your turn and token counters are reset to zero.</harness>"
 
     # The budget line shows the counters as reset.
-    ctx_max = Application.get_env(:nano, :agent_max_context)
+    ctx_max = 1_000_000
 
     assert budget_line(List.last(body["messages"])) ==
              "<harness>Used so far: 0 of 2 turns, 0 of #{max} tokens, context 110 of #{ctx_max} tokens.</harness>"
@@ -751,44 +751,104 @@ defmodule NanoAgentTest do
     assert Nano.Log.read(id, length(all)) == []
   end
 
-  test "start/1 validates its options; info/1 and list/0 read the store", ctx do
-    assert NanoAgent.start(name: "bad name", model: ctx.model) == {:error, :invalid_name}
-    assert NanoAgent.start(model: ctx.model) == {:error, :invalid_name}
+  # The message start/1 refuses opts with, the agent's name added.
+  defp refusal(ctx, opts) do
+    assert {:error, message} = NanoAgent.start([name: ctx.name] ++ opts)
+    assert is_binary(message)
+    message
+  end
 
-    for bad <- [
-          [max_turns: "1"],
-          [max_turns: -1],
-          [max_tokens: -1],
-          [max_context: -1],
-          [max_context: "1"],
-          [max_tokens: 1.5],
-          [start_idle: "false"],
-          [system_prompt: :x],
-          [reasoning: "on"],
-          [reasoning: true],
-          [reasoning: false]
-        ],
-        do:
-          assert(
-            NanoAgent.start([name: ctx.name, model: ctx.model] ++ bad) ==
-              {:error, :invalid_option}
-          )
+  test "start/1 requires model, reasoning and every limit, and says what to give", ctx do
+    all = Fake.opts(ctx.model)
+    m = ctx.model
 
-    for {key, error} <- [
-          default_model: :missing_model,
-          openrouter_api_key: :missing_openrouter_api_key
-        ] do
-      saved = Application.get_env(:nano, key)
-      Application.put_env(:nano, key, nil)
-      model = if key == :default_model, do: nil, else: ctx.model
-      assert NanoAgent.start(name: ctx.name, model: model) == {:error, error}
-      Application.put_env(:nano, key, saved)
+    assert refusal(%{ctx | name: "bad name"}, all) =~
+             ~s|name must be letters, digits, _ . or - (it is how the agent is addressed), not "bad name"|
+
+    assert refusal(%{ctx | name: nil}, all) =~ "name must be"
+    assert refusal(ctx, Keyword.delete(all, :model)) =~ "missing model: give a model slug"
+    assert refusal(ctx, Keyword.put(all, :model, :x)) =~ "model must be a slug"
+
+    assert refusal(ctx, Keyword.delete(all, :reasoning)) ==
+             "missing reasoning: #{m} supports off, minimal, low, medium, high, xhigh, max " <>
+               "(its default is off)"
+
+    assert refusal(ctx, Keyword.delete(all, :max_turns)) ==
+             "missing max_turns: the number of model calls before the agent is halted, " <>
+               "or 0 for no limit"
+
+    assert refusal(ctx, Keyword.delete(all, :max_tokens)) =~ "missing max_tokens: "
+
+    assert refusal(ctx, Keyword.delete(all, :max_context)) ==
+             "missing max_context: #{m}'s context window is 1000000; give a number of " <>
+               "tokens from 1 to 1000000"
+
+    for {key, value} <- [max_turns: "1", max_turns: -1, max_tokens: -1, max_tokens: 1.5] do
+      assert refusal(ctx, Keyword.put(all, key, value)) ==
+               "#{key} must be a whole number, 0 or more (0 = no limit), not #{inspect(value)}"
     end
 
+    for value <- [0, -1, "1", 1_000_001] do
+      assert refusal(ctx, Keyword.put(all, :max_context, value)) ==
+               "max_context must be a whole number of tokens from 1 to 1000000, #{m}'s " <>
+                 "context window (there is no unlimited context), not #{inspect(value)}"
+    end
+
+    for value <- ["on", true, false] do
+      assert refusal(ctx, Keyword.put(all, :reasoning, value)) ==
+               "reasoning #{inspect(value)} is not supported by #{m}; supported: off, " <>
+                 "minimal, low, medium, high, xhigh, max"
+    end
+
+    assert refusal(ctx, all ++ [start_idle: "false"]) ==
+             ~s(start_idle must be true or false, not "false")
+
+    assert refusal(ctx, all ++ [system_prompt: :x]) == "system_prompt must be a string, not :x"
+
+    # Checked against the model's own entry in its provider's list.
+    thinker =
+      Fake.model(%{
+        "context_length" => 2000,
+        "reasoning" => %{"mandatory" => true, "supported_efforts" => ["high", "low"]}
+      })
+
+    assert refusal(ctx, Fake.opts(thinker, max_context: 2000)) ==
+             ~s(reasoning "off" is not supported by #{thinker}; supported: low, high)
+
+    assert refusal(ctx, Fake.opts(thinker, reasoning: "low")) =~
+             "max_context must be a whole number of tokens from 1 to 2000"
+
+    assert refusal(ctx, Fake.opts(Fake.model(%{"context_length" => nil}))) =~
+             "could not verify the context window of fake/model-"
+
+    assert refusal(ctx, Fake.opts("fake/unlisted")) ==
+             "unknown model fake/unlisted: OpenRouter does not list it; its model ids are at " <>
+               "https://openrouter.ai/models"
+
+    saved = Application.get_env(:nano, :openrouter_api_key)
+    Application.put_env(:nano, :openrouter_api_key, nil)
+    on_exit(fn -> Application.put_env(:nano, :openrouter_api_key, saved) end)
+    assert refusal(ctx, all) =~ "OPENROUTER_API_KEY is not set on this node"
+    Application.put_env(:nano, :openrouter_api_key, saved)
+
+    # A list that cannot be had verifies nothing, so nothing starts.
+    Fake.models(503)
+    :persistent_term.erase({Nano.OpenRouter, :models})
+
+    assert refusal(ctx, all) ==
+             "could not verify #{m}'s context window and reasoning levels: OpenRouter's model " <>
+               "list could not be fetched; try again in a minute"
+
+    assert NanoAgent.whereis(ctx.name) == nil
+  end
+
+  test "an agent started records its model's window; info/1 and list/0 read the store", ctx do
     {pid, _} =
       start!(ctx, max_turns: 7, system_prompt: "{{name}} on {{node}}, {{max_turns}} turns")
 
-    assert {:error, {:already_started, ^pid}} = NanoAgent.start(name: ctx.name, model: ctx.model)
+    assert {:error, {:already_started, ^pid}} =
+             NanoAgent.start([name: ctx.name] ++ Fake.opts(ctx.model))
+
     assert NanoAgent.whereis(ctx.name) == pid
     assert ctx.name in NanoAgent.list()
 
@@ -805,11 +865,12 @@ defmodule NanoAgentTest do
              cost: 0,
              cache_hit_rate: nil,
              reasoning: "off",
+             context_window: 1_000_000,
              budget: %{max_turns: 7, max_tokens: max_tokens, turns_used: 0, tokens_used: 0}
            } = NanoAgent.info(ctx.name)
 
     assert {name, model, max_tokens} ==
-             {ctx.name, ctx.model, Application.get_env(:nano, :agent_max_tokens)}
+             {ctx.name, ctx.model, 30_000_000}
 
     assert prompt == "#{ctx.name} on #{node()}, 7 turns"
     assert NanoAgent.info("nobody") == nil
@@ -825,8 +886,8 @@ defmodule NanoAgentTest do
     assert prompt =~
              "Network access: only the model providers, openrouter.ai, chatgpt.com and auth.openai.com."
 
-    max = Application.get_env(:nano, :agent_max_tokens)
-    ctx_max = Application.get_env(:nano, :agent_max_context)
+    max = 30_000_000
+    ctx_max = 1_000_000
 
     assert prompt =~
              "Your limits: 500\nturns, #{max} tokens in total, and a context of #{ctx_max}\ntokens."
@@ -1000,10 +1061,10 @@ defmodule NanoAgentTest do
   end
 
   test "a refused connection is retried, every attempt logged", ctx do
+    {pid, id} = start!(ctx)
     saved = Application.get_env(:nano, :openrouter_base_url)
     Application.put_env(:nano, :openrouter_base_url, "http://127.0.0.1:1")
     on_exit(fn -> Application.put_env(:nano, :openrouter_base_url, saved) end)
-    {pid, id} = start!(ctx)
     send(pid, :go)
     assert await(id, :turn_ended)["reason"] == "error"
 
@@ -1072,7 +1133,8 @@ defmodule NanoAgentTest do
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        assert NanoAgent.start(name: ctx.name, model: ctx.model) == {:error, :start_failed}
+        assert NanoAgent.start([name: ctx.name] ++ Fake.opts(ctx.model)) ==
+                 {:error, "the agent's process failed to start; the node's log says why"}
       end)
 
     assert log =~ "network_policy"
@@ -1363,14 +1425,9 @@ defmodule NanoAgentTest do
   test "the reasoning level is sent on every request and survives a restart", ctx do
     assert NanoAgent.reasoning_levels() == ~w(off minimal low medium high xhigh max)
 
-    for {opts, sent} <- [
-          {[reasoning: "off"], %{"enabled" => false}},
-          {[reasoning: "high"], %{"effort" => "high"}},
-          {[], %{"enabled" => false}}
-        ] do
-      level = opts[:reasoning] || "off"
-      ctx = %{ctx | name: "#{ctx.name}r#{level}#{length(opts)}", model: Fake.model()}
-      {pid, id} = start!(ctx, opts)
+    for {level, sent} <- [{"off", %{"enabled" => false}}, {"high", %{"effort" => "high"}}] do
+      ctx = %{ctx | name: "#{ctx.name}r#{level}", model: Fake.model()}
+      {pid, id} = start!(ctx, reasoning: level)
       send(pid, :go)
       assert request!(ctx.model)["reasoning"] == sent
       assert NanoAgent.info(ctx.name).reasoning == level
@@ -1381,17 +1438,6 @@ defmodule NanoAgentTest do
         assert request!(ctx.model)["reasoning"] == %{"effort" => "high"}
       end
     end
-  end
-
-  test "an invalid REASONING default is rejected when an agent is started with it", ctx do
-    saved = Application.get_env(:nano, :reasoning)
-    Application.put_env(:nano, :reasoning, "loud")
-    on_exit(fn -> Application.put_env(:nano, :reasoning, saved) end)
-    assert NanoAgent.start(name: ctx.name, model: ctx.model) == {:error, :invalid_option}
-    Application.put_env(:nano, :reasoning, "low")
-    {pid, _id} = start!(ctx)
-    send(pid, :go)
-    assert request!(ctx.model)["reasoning"] == %{"effort" => "low"}
   end
 
   test "eval errors from matches, module bodies and arithmetic show only the model's frames",
@@ -1534,7 +1580,7 @@ defmodule NanoAgentTest do
 
   test "each delivery ends with one line of budget used so far; tool results never carry it",
        ctx do
-    max = Application.get_env(:nano, :agent_max_tokens)
+    max = 30_000_000
     {pid, id} = start!(ctx)
     Fake.push(ctx.model, calls: [eval: "1"])
     Fake.push(ctx.model, text: "done")
@@ -1542,7 +1588,7 @@ defmodule NanoAgentTest do
     body = request!(ctx.model)
 
     # Counts before the call the delivery starts.
-    ctx_max = Application.get_env(:nano, :agent_max_context)
+    ctx_max = 1_000_000
 
     line =
       "<harness>Used so far: 0 of 500 turns, 0 of #{max} tokens, context 0 of #{ctx_max} tokens.</harness>"
@@ -1591,83 +1637,137 @@ defmodule NanoAgentTest do
     assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
 
     assert NanoAgent.info(ctx.name).system_prompt =~
-             "Whenever I\ndeliver events or a note of my own, I tell you"
+             "When a limit is reached I stop calling the model, and I make\nno call that " <>
+               "might not fit in your context with room for your reply.\nWhenever I deliver"
   end
 
   ## Unlimited limits and the context limit
 
-  test "unlimited turns, tokens and context never halt, and say so", ctx do
-    {pid, id} = start!(ctx, max_turns: 0, max_tokens: 0, max_context: 0)
+  test "unlimited turns and tokens never halt, and say so", ctx do
+    {pid, id} = start!(ctx, max_turns: 0, max_tokens: 0)
     prompt = NanoAgent.info(ctx.name).system_prompt
 
     assert prompt =~
-             "Your limits: unlimited\nturns, unlimited tokens in total, and a context of unlimited\ntokens."
+             "Your limits: unlimited\nturns, unlimited tokens in total, and a context of 1000000\ntokens."
 
-    # More turns, tokens and context than the default limits allow.
-    for _ <- 1..54, do: Fake.push(ctx.model, calls: [eval: "1"], usage: {60_000, 10, 0})
-    Fake.push(ctx.model, calls: [eval: "1"], usage: {2_000_000, 10, 0})
+    for _ <- 1..55, do: Fake.push(ctx.model, calls: [eval: "1"], usage: {100_000, 10, 0})
     Fake.push(ctx.model, text: "done")
     send(pid, :go)
 
     body = request!(ctx.model)
 
     assert budget_line(List.last(body["messages"])) ==
-             "<harness>Used so far: 0 turns (no limit), 0 tokens (no limit), context 0 tokens (no limit).</harness>"
+             "<harness>Used so far: 0 turns (no limit), 0 tokens (no limit), context 0 of 1000000 tokens.</harness>"
 
     for _ <- 1..55, do: request!(ctx.model)
     assert await(id, :turn_ended)["reason"] == "no_tool_call"
     assert entries(id, :budget_exhausted) == []
     :sys.get_state(pid)
 
-    assert %{
-             halted: nil,
-             budget: %{
-               turns_used: 56,
-               max_turns: 0,
-               max_tokens: 0,
-               max_context: 0,
-               context_used: 110
-             }
-           } = NanoAgent.info(ctx.name)
+    assert %{halted: nil, budget: %{turns_used: 56, max_turns: 0, max_tokens: 0}} =
+             NanoAgent.info(ctx.name)
 
     assert NanoAgent.info(ctx.name).budget.tokens_used > 5_000_000
   end
 
-  test "the context limit halts with :context; un-halting does not shrink it", ctx do
-    {pid, id} = start!(ctx, max_context: 150)
-    Fake.push(ctx.model, calls: [eval: "1"], usage: {100, 10, 0})
-    Fake.push(ctx.model, calls: [eval: "2"], usage: {140, 20, 0})
+  test "each request bounds its response by the room left in the context", ctx do
+    {pid, id} = start!(ctx, max_context: 100_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {50_000, 1_000, 0})
+    Fake.push(ctx.model, text: "done")
+    send(pid, :go)
+
+    # Before a first response, all of the request is estimated, at a token per 2 bytes.
+    first = request!(ctx.model)
+    estimate = await(id, :model_request)["approx_input_tokens"]
+
+    assert_in_delta estimate,
+                    byte_size(Jason.encode!([first["tools"] | first["messages"]])) / 2,
+                    400
+
+    assert first["max_tokens"] == 100_000 - estimate
+    assert %{"max_output" => max} = await(id, :model_request)
+    assert max == first["max_tokens"]
+
+    # After it, the context it measured plus what was added since: here one tool result.
+    second = request!(ctx.model)
+    estimate = await(id, :model_request, &(&1["request_id"] == 2))["approx_input_tokens"]
+    assert estimate in 51_000..51_100
+    assert second["max_tokens"] == 100_000 - estimate
+
+    # Never more than the model generates at most, as its provider lists it.
+    small = %{
+      ctx
+      | name: ctx.name <> "s",
+        model: Fake.model(%{"top_provider" => %{"max_completion_tokens" => 8_000}})
+    }
+
+    {pid, _} = start!(small)
+    Fake.push(small.model, text: "ok")
+    send(pid, :go)
+    assert request!(small.model)["max_tokens"] == 8_000
+  end
+
+  test "a request that might not fit in the context is never sent: the agent halts", ctx do
+    {pid, id} = start!(ctx, max_context: 20_000)
+    # A result of 30,000 bytes may be 15,000 tokens: with the 4,000 measured that leaves
+    # less than 4,096 for the reply.
+    Fake.push(ctx.model, calls: [eval: ~s|String.duplicate("x", 30_000)|], usage: {3_900, 100, 0})
     send(pid, :go)
     request!(ctx.model)
+
+    assert %{
+             "scope" => "context",
+             "context_used" => 4_000,
+             "max_context" => 20_000,
+             "estimate" => estimate
+           } =
+             await(id, :budget_exhausted)
+
+    assert estimate > 20_000 - 4_096
+    assert await(id, :turn_ended, &(&1["reason"] == "budget"))
+    refute_receive {:openrouter_request, _, _}, 100
+    :sys.get_state(pid)
+    assert %{halted: :context, budget: %{context_used: 4_000}} = NanoAgent.info(ctx.name)
+    assert length(entries(id, :model_request)) == 1
+
+    assert List.last(entries(id, :harness_note))["text"] ==
+             "Your next call to the model might not fit in your context of 20000 tokens: with " <>
+               "what has arrived since your last response, this conversation could now be up " <>
+               "to about #{estimate} tokens, which leaves less than 4096 for your reply, so I " <>
+               "have halted you: I will not call the model until an operator un-halts you."
+
+    # Un-halting does not shrink it: halted again, still without a call.
+    NanoAgent.unhalt(ctx.name)
+    await_nth(id, :budget_exhausted, 2)
+    refute_receive {:openrouter_request, _, _}, 100
+    :sys.get_state(pid)
+    assert NanoAgent.info(ctx.name).halted == :context
+
+    assert Enum.at(entries(id, :harness_note), -2)["text"] =~
+             "An operator un-halted you. This conversation does not shrink: its context is " <>
+               "still 4000 of 20000 tokens, so unless your limit has been raised I will halt " <>
+               "you again before my next call to the model, without making it."
+  end
+
+  test "a response that takes the context past its limit halts the agent", ctx do
+    {pid, id} = start!(ctx, max_context: 10_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {9_000, 1_500, 0})
+    send(pid, :go)
     request!(ctx.model)
 
-    assert %{"scope" => "context", "context_used" => 160, "max_context" => 150} =
+    assert %{"scope" => "context", "context_used" => 10_500, "max_context" => 10_000} =
              await(id, :budget_exhausted)
 
     assert await(id, :turn_ended, &(&1["reason"] == "budget"))
+    # The eval that response asked for still ran; nothing more was asked.
+    assert Enum.map(entries(id, :tool_result), & &1["result"]) == ["1"]
+    refute_receive {:openrouter_request, _, _}, 100
+
+    assert List.last(entries(id, :harness_note))["text"] =~
+             "This conversation's context has reached 10500 of 10000 tokens, so I have halted you"
+
     :sys.get_state(pid)
-
-    assert %{halted: :context, budget: %{context_used: 160, max_context: 150}} =
-             NanoAgent.info(ctx.name)
-
-    Fake.push(ctx.model, text: "still here", usage: {170, 5, 0})
-    NanoAgent.unhalt(ctx.name)
-    last = List.last(request!(ctx.model)["messages"])
-    max = Application.get_env(:nano, :agent_max_tokens)
-
-    assert delivery(last) ==
-             "<harness>This conversation's context has reached 160 of 150 tokens, so I have halted you: " <>
-               "I will not call the model until an operator un-halts you.</harness>\n" <>
-               "<harness>An operator un-halted you. This conversation does not shrink: its context is " <>
-               "still 160 of 150 tokens, so I will halt you again after my next call to the model.</harness>"
-
-    assert budget_line(last) ==
-             "<harness>Used so far: 2 of 500 turns, 270 of #{max} tokens, context 160 of 150 tokens.</harness>"
-
-    # As it said: halted again after that call.
-    await_nth(id, :budget_exhausted, 2)
-    :sys.get_state(pid)
-    assert %{halted: :context, budget: %{context_used: 175}} = NanoAgent.info(ctx.name)
+    assert NanoAgent.info(ctx.name).halted == :context
   end
 
   test "a node-wide hourly cap of 0 is no cap", ctx do
@@ -1682,23 +1782,30 @@ defmodule NanoAgentTest do
     assert entries(id, :budget_exhausted) == []
   end
 
-  test "state saved by the previous version (no context fields) keeps working", ctx do
+  # An entry as an older version of this module saved it: no recorded window or measure, and
+  # perhaps no context fields at all.
+  @newer [:context_window, :max_output, :measured_bytes]
+
+  test "state saved by an older version (no context fields) keeps working", ctx do
     {pid, id} = start!(ctx)
-    old = fn s -> Map.drop(s, [:max_context, :context_used]) end
+    old = fn s -> Map.drop(s, [:max_context, :context_used | @newer]) end
     :sys.replace_state(pid, old)
     Nano.StateStore.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
     {mod, bin, file} = :code.get_object_code(NanoAgent)
     for _ <- 1..2, do: {:module, NanoAgent} = :code.load_binary(mod, file, bin)
 
-    ctx_max = Application.get_env(:nano, :agent_max_context)
-    assert %{budget: %{context_used: 0, max_context: ^ctx_max}} = NanoAgent.info(ctx.name)
+    # No limit until the model's window is found: at the next request.
+    assert %{budget: %{context_used: 0, max_context: 0}} = NanoAgent.info(ctx.name)
     Fake.push(ctx.model, text: "ok")
     send(pid, :go)
 
     assert budget_line(List.last(request!(ctx.model)["messages"])) =~
-             "context 0 of #{ctx_max} tokens"
+             "context 0 of 1000000 tokens"
 
     await(id, :turn_ended)
+
+    assert %{context_window: 1_000_000, budget: %{max_context: 1_000_000}} =
+             NanoAgent.info(ctx.name)
 
     # And through a restart, from an old-shape entry.
     :sys.replace_state(pid, old)
@@ -1706,7 +1813,7 @@ defmodule NanoAgentTest do
     Fake.push(ctx.model, text: "ok")
     kill(ctx, id)
     assert delivery(List.last(request!(ctx.model)["messages"])) =~ "Your process exited"
-    assert NanoAgent.info(ctx.name).system_prompt =~ "a context of #{ctx_max}\ntokens"
+    assert NanoAgent.info(ctx.name).system_prompt =~ "a context of 1000000\ntokens"
   end
 
   ## The template file
@@ -1761,11 +1868,11 @@ defmodule NanoAgentTest do
   end
 
   test "a missing or invalid template file fails the start", ctx do
-    assert NanoAgent.start(name: ctx.name, model: ctx.model, system_prompt_file: "/no/such/file") ==
-             {:error, {:system_prompt_file, :enoent}}
+    assert refusal(ctx, Fake.opts(ctx.model, system_prompt_file: "/no/such/file")) ==
+             "cannot read the system prompt file /no/such/file: no such file or directory"
 
-    assert NanoAgent.start(name: ctx.name, model: ctx.model, system_prompt_file: :x) ==
-             {:error, :invalid_option}
+    assert refusal(ctx, Fake.opts(ctx.model, system_prompt_file: :x)) ==
+             "system_prompt_file must be a string, not :x"
 
     assert NanoAgent.whereis(ctx.name) == nil
   end
@@ -1895,6 +2002,53 @@ defmodule NanoAgentTest do
     refute_receive {:openrouter_request, _, _}, 100
   end
 
+  # Rewrites the agent's state file as an older version of this module wrote it, as `fun` says.
+  defp old_state_file(ctx, fun) do
+    pid = NanoAgent.whereis(ctx.name)
+    :sys.get_state(pid)
+    old = ctx.name |> Nano.StateStore.get() |> Map.drop(@newer) |> fun.()
+    :sys.replace_state(pid, fn _ -> old end)
+    Nano.StateStore.put(ctx.name, old)
+  end
+
+  test "an old state file revives: the window from the model's list caps the limit", ctx do
+    {pid, id} = start!(ctx, max_context: 50_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {3_000, 100, 0})
+    Fake.push(ctx.model, text: "ok", usage: {3_200, 10, 0})
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+    await(id, :turn_ended)
+
+    # Saved when 0 meant no limit: the window, 1,000,000 here, becomes the limit.
+    old_state_file(ctx, &%{&1 | max_context: 0})
+    Fake.push(ctx.model, text: "back")
+    node_restart(ctx, id)
+
+    assert %{context_window: 1_000_000, budget: %{max_context: 1_000_000, context_used: 3_210}} =
+             NanoAgent.info(ctx.name)
+
+    # What was measured is the conversation up to the last response, so the estimate is
+    # that measure plus the note delivered since.
+    body = request!(ctx.model)
+    estimate = await(id, :model_request, &(&1["request_id"] == 3))["approx_input_tokens"]
+    assert estimate in 3_210..3_600
+    assert body["max_tokens"] == 1_000_000 - estimate
+  end
+
+  test "an old state file revives without the model's list: its max_context is the ceiling",
+       ctx do
+    {_, id} = start!(ctx, max_context: 50_000)
+    old_state_file(ctx, & &1)
+    Fake.models(503)
+    :persistent_term.erase({Nano.OpenRouter, :models})
+    Fake.push(ctx.model, text: "back")
+    node_restart(ctx, id)
+
+    assert %{context_window: nil, budget: %{max_context: 50_000}} = NanoAgent.info(ctx.name)
+    assert request!(ctx.model)["max_tokens"] < 50_000
+  end
+
   test "an unreadable state file is skipped at boot, with an error logged", ctx do
     dir = Application.get_env(:nano, :state_dir)
     File.mkdir_p!(dir)
@@ -1930,7 +2084,7 @@ defmodule NanoAgentTest do
 
     child = %{ctx | name: ctx.name <> "c", model: Fake.model()}
     Fake.listen(child.model)
-    code = ~s|{:ok, _} = NanoAgent.start(name: "#{child.name}", model: "#{child.model}")|
+    code = "{:ok, _} = NanoAgent.start(#{inspect([name: child.name] ++ Fake.opts(child.model))})"
     Fake.push(ctx.model, calls: [eval: code])
     Fake.push(ctx.model, text: "ok")
     send(pid, :go)

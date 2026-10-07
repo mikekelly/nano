@@ -341,12 +341,6 @@ defmodule NanoWeb.Components do
   @doc "Keeps a `<details>` element's open/closed state across the page's periodic re-renders."
   def keep_open, do: JS.ignore_attributes("open")
 
-  @doc "Why `NanoAgent.start/1` refused, as text: the prompt file's error in words, anything else inspected."
-  def refusal({:system_prompt_file, reason}) when is_atom(reason),
-    do: "cannot read system_prompt_file: #{:file.format_error(reason)}"
-
-  def refusal(reason), do: inspect(reason)
-
   @doc "The reasoning levels an agent can be started with, \"off\" first."
   def reasoning_levels, do: Enum.uniq(["off" | NanoAgent.reasoning_levels()])
 
@@ -355,8 +349,9 @@ defmodule NanoWeb.Components do
 
   def halt_reason(:context),
     do:
-      "context limit reached: the conversation sent to the model is as large as it may get " <>
-        "and never shrinks, so un-halting allows one more model call before it halts again"
+      "context limit reached: the next request, with room for the reply, might not fit in " <>
+        "max context, and the conversation never shrinks, so un-halting halts it again " <>
+        "before the next model call"
 
   def halt_reason(:node_budget), do: "the node-wide hourly token cap was reached"
 

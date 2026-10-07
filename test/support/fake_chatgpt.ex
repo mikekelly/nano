@@ -39,7 +39,26 @@ defmodule Nano.FakeChatGPT do
     Application.put_env(:nano, :chatgpt_auth_url, "http://127.0.0.1:#{port}")
   end
 
-  def model, do: "gpt-fake-#{System.unique_integer([:positive])}"
+  @doc """
+  A fresh model name (without the openai-codex/ prefix), added to the models `GET /models`
+  lists (a 272,000-token window, every reasoning level, default "none"), and the node's cached
+  list dropped, so that agents can be started on it once the subscription is connected.
+  """
+  def model do
+    slug = "gpt-fake-#{System.unique_integer([:positive])}"
+    efforts = for e <- ~w(none minimal low medium high xhigh max), do: %{"effort" => e}
+
+    entry = %{
+      "slug" => slug,
+      "context_window" => 272_000,
+      "supported_reasoning_levels" => efforts,
+      "default_reasoning_level" => "none"
+    }
+
+    GenServer.call(__MODULE__, {:list, entry})
+    :persistent_term.erase({Nano.ChatGPT, :models})
+    slug
+  end
 
   @doc "Makes the caller receive every request; clears the auth queues."
   def listen, do: GenServer.call(__MODULE__, {:listen, self()})
@@ -93,6 +112,9 @@ defmodule Nano.FakeChatGPT do
     do: {:reply, :ok, update_in(s.auth[endpoint], &((&1 || []) ++ answers))}
 
   def handle_call({:models, list}, _from, s), do: {:reply, :ok, %{s | list: list}}
+
+  def handle_call({:list, entry}, _from, s),
+    do: {:reply, :ok, %{s | list: if(is_list(s.list), do: s.list, else: []) ++ [entry]}}
 
   def handle_call({:push, model, response}, _from, s) do
     m = Map.get(s.models, model, %{queue: [], waiting: []})

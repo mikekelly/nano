@@ -23,10 +23,19 @@ defmodule NanoWeb.ApiControllerTest do
 
   defp start_agent do
     name = unique("agent")
-    {:ok, pid} = Nano.Ops.start_agent(name)
+    {:ok, pid} = Nano.Ops.start_agent(name, Nano.FakeOpenRouter.opts(fake_model()))
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     {name, pid}
   end
+
+  defp fake_model do
+    Nano.FakeOpenRouter.start()
+    Nano.FakeOpenRouter.model()
+  end
+
+  # A POST /api/agents body with every required field, for a listed model.
+  defp agent_body(name, fields \\ %{}),
+    do: fake_model() |> Nano.FakeOpenRouter.opts(name: name) |> Map.new() |> Map.merge(fields)
 
   defp path_pid(pid), do: URI.encode_www_form(inspect(pid))
 
@@ -260,56 +269,72 @@ defmodule NanoWeb.ApiControllerTest do
     test "POST /api/agents starts an agent; duplicates are 409, bad names 422" do
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
-
-      body =
-        post_json("/api/agents", %{name: name, model: "test/other", start_idle: true})
-        |> json_response(201)
+      request = agent_body(name, %{start_idle: true})
+      body = post_json("/api/agents", request) |> json_response(201)
+      model = request.model
 
       assert %{
                "name" => ^name,
-               "model" => "test/other",
+               "model" => ^model,
                "status" => "idle",
-               "pid" => "#PID<" <> _
+               "pid" => "#PID<" <> _,
+               "context_window" => 1_000_000
              } = body
 
       assert %{
-               "budget" => %{"max_turns" => _, "turns_used" => 0},
+               "budget" => %{"max_turns" => 500, "turns_used" => 0},
                "halted" => nil,
                "suspended" => false
              } = body
 
       assert %{"error" => "agent already started: " <> _} =
-               post_json("/api/agents", %{name: name}) |> json_response(409)
+               post_json("/api/agents", request) |> json_response(409)
 
-      assert %{"error" => "could not start agent: :invalid_name"} =
-               post_json("/api/agents", %{name: "a b"}) |> json_response(422)
+      assert %{"error" => "could not start agent: name must be letters, digits, _ . or -" <> _} =
+               post_json("/api/agents", %{request | name: "a b"}) |> json_response(422)
 
       assert %{"error" => "name is required" <> _} =
                post_json("/api/agents", %{}) |> json_response(422)
     end
 
-    test "reasoning is a level passed through as given; absent means the node default" do
-      level = hd(NanoAgent.reasoning_levels() -- ["off"])
-      default = Application.fetch_env!(:nano, :reasoning)
+    test "every field but the name is required too, and a refusal says what to give" do
+      body = agent_body(unique("agent"))
 
-      for {body, expected} <- [
-            {%{}, default},
-            {%{reasoning: "off"}, "off"},
-            {%{reasoning: level}, level}
+      for {key, start} <- [
+            model: "missing model: give a model slug",
+            reasoning: "missing reasoning: #{body.model} supports off, minimal",
+            max_turns: "missing max_turns: ",
+            max_tokens: "missing max_tokens: ",
+            max_context: "missing max_context: #{body.model}'s context window is 1000000"
           ] do
+        assert %{"error" => "could not start agent: " <> message} =
+                 post_json("/api/agents", Map.delete(body, key)) |> json_response(422)
+
+        assert String.starts_with?(message, start)
+      end
+
+      assert %{"error" => "could not start agent: unknown model nobody/nothing: " <> _} =
+               post_json("/api/agents", %{body | model: "nobody/nothing"}) |> json_response(422)
+    end
+
+    test "reasoning is a level of the model's, passed through as given" do
+      level = hd(NanoAgent.reasoning_levels() -- ["off"])
+
+      for expected <- ["off", level] do
         name = unique("agent")
         on_exit(fn -> Nano.Ops.stop_agent(name) end)
 
         assert %{"reasoning" => ^expected} =
-                 post_json("/api/agents", Map.put(body, :name, name)) |> json_response(201)
+                 post_json("/api/agents", agent_body(name, %{reasoning: expected}))
+                 |> json_response(201)
 
         assert %{"reasoning" => ^expected} =
                  build_conn() |> get("/api/agents/#{name}") |> json_response(200)
       end
 
       for bad <- ["turbo", true, false] do
-        assert %{"error" => "could not start agent: :invalid_option"} =
-                 post_json("/api/agents", %{name: unique("agent"), reasoning: bad})
+        assert %{"error" => "could not start agent: reasoning " <> _} =
+                 post_json("/api/agents", agent_body(unique("agent"), %{reasoning: bad}))
                  |> json_response(422)
       end
 
@@ -329,19 +354,20 @@ defmodule NanoWeb.ApiControllerTest do
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
 
       assert %{"system_prompt" => "You are " <> rest} =
-               post_json("/api/agents", %{name: name, system_prompt_file: file})
+               post_json("/api/agents", agent_body(name, %{system_prompt_file: file}))
                |> json_response(201)
 
       assert rest == "#{name}, read from a file."
 
       assert %{
                "error" =>
-                 "could not start agent: cannot read system_prompt_file: no such file or directory"
+                 "could not start agent: cannot read the system prompt file " <>
+                   "tmp/no_such_prompt.txt: no such file or directory"
              } =
-               post_json("/api/agents", %{
-                 name: unique("agent"),
-                 system_prompt_file: "tmp/no_such_prompt.txt"
-               })
+               post_json(
+                 "/api/agents",
+                 agent_body(unique("agent"), %{system_prompt_file: "tmp/no_such_prompt.txt"})
+               )
                |> json_response(422)
 
       %{"endpoints" => endpoints} = build_conn() |> get("/api") |> json_response(200)
@@ -353,19 +379,24 @@ defmodule NanoWeb.ApiControllerTest do
     test "the three limits are passed through; 0 means no limit, a negative is 422" do
       name = unique("agent")
       on_exit(fn -> Nano.Ops.stop_agent(name) end)
-
-      body =
-        post_json("/api/agents", %{name: name, max_turns: 0, max_tokens: 0, max_context: 777})
-        |> json_response(201)
+      limits = %{max_turns: 0, max_tokens: 0, max_context: 777}
+      body = post_json("/api/agents", agent_body(name, limits)) |> json_response(201)
 
       assert %{"max_turns" => 0, "max_tokens" => 0, "max_context" => 777, "context_used" => 0} =
                body["budget"]
 
       for key <- [:max_turns, :max_tokens, :max_context] do
-        assert %{"error" => "could not start agent: :invalid_option"} =
-                 post_json("/api/agents", %{:name => unique("agent"), key => -1})
+        assert %{"error" => "could not start agent: " <> message} =
+                 post_json("/api/agents", agent_body(unique("agent"), %{key => -1}))
                  |> json_response(422)
+
+        assert message =~ "#{key} must be a whole number"
       end
+
+      # No unlimited context: the model's window is the ceiling.
+      assert %{"error" => "could not start agent: max_context must be" <> _} =
+               post_json("/api/agents", agent_body(unique("agent"), %{max_context: 0}))
+               |> json_response(422)
 
       %{"endpoints" => endpoints} = build_conn() |> get("/api") |> json_response(200)
       start = Enum.find(endpoints, &(&1["method"] == "POST" and &1["path"] == "/api/agents"))
@@ -385,8 +416,11 @@ defmodule NanoWeb.ApiControllerTest do
         name = unique("agent")
         on_exit(fn -> Nano.Ops.stop_agent(name) end)
 
-        assert %{"error" => "could not start agent: :invalid_option"} =
-                 post_json("/api/agents", %{:name => name, key => value}) |> json_response(422)
+        assert %{"error" => "could not start agent: " <> message} =
+                 post_json("/api/agents", agent_body(name, %{key => value}))
+                 |> json_response(422)
+
+        assert message =~ "#{key} must be"
       end
     end
 

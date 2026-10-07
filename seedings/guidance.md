@@ -107,7 +107,8 @@ more context than doing it. Write this into the prompts you compose for yourself
 the agents you start: it is an operating principle for every agent, not advice for one.
 
 **Hand over before your context runs out, not when it does.** Your context only grows, and
-when it reaches your limit the harness stops calling the model: you cannot then do anything,
+when it nears your limit (when the next call, with room for a reply, might not fit) the
+harness stops calling the model: you cannot then do anything,
 including hand over. Compacting your context, or handing the baton to a successor agent that starts
 fresh with your notes, your plan and the job of reporting to whoever you report to, is
 itself work that needs room: a turn that reads what it must and writes the summary or the

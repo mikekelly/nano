@@ -45,7 +45,8 @@ Each agent is one `NanoAgent` GenServer under a `DynamicSupervisor`, registered 
 | `bindings` | Elixir binding map carried between evals, making eval a persistent REPL |
 | `status` | `:idle`, `:thinking`, or `:running_tool` |
 | `pending` | Events received while busy, delivered as one batch |
-| `budget` | Remaining turns and tokens before the agent is halted |
+| `budget` | The limits it was started with (turns, tokens, context) and how much of each it has used |
+| `context_window` | The model's context window as its provider listed it at start, so restarts never need the list |
 
 **Message intake.** Any message the process receives that is not an internal harness message becomes an event, via `handle_info/2` for raw `send/2` messages and `handle_cast/2` for `NanoAgent.notify/2`. The harness adds no sender identity, because Erlang messages carry none. Each event is rendered with `inspect/2` (bounded `limit` and `printable_limit`) inside a tag with a sequence number and receive time:
 
@@ -70,7 +71,18 @@ If the agent is idle, the event starts a new turn. If the agent is busy, it is a
 
 Erlang is reachable from Elixir eval (`:erlang`, `:ets`, `:sys`), so a separate Erlang eval tool is not needed.
 
-**Lifecycle.** Agents are started from the dashboard or the shell with `NanoAgent.start(name: ..., model: ...)`. Agents start idle by default and wait for their first message; passing `start_idle: false` instead begins the first turn immediately with a `<harness>` note saying the agent has started. A crash restarts the process with its history restored (see Failure handling). An agent that exhausts its budget logs the reason and stops making model calls, but keeps receiving and logging messages.
+**Lifecycle.** Agents are started from the dashboard, the API or the shell with `NanoAgent.start/1`. Nothing about what an agent runs on or may spend has a default, because a silent default is a surprise later: `name`, `model`, `reasoning`, `max_turns`, `max_tokens` and `max_context` are all required, and `start_idle`, `system_prompt` and `system_prompt_file` are optional. Agents start idle by default and wait for their first message; passing `start_idle: false` instead begins the first turn immediately with a `<harness>` note saying the agent has started. A crash restarts the process with its history restored (see Failure handling). An agent that exhausts its budget logs the reason and stops making model calls, but keeps receiving and logging messages.
+
+**Start options are checked against the model's provider.** `Nano.Model` checks both providers' models in one place, against the list the provider gives (OpenRouter's `/models`, the subscription's `/models`; each cached for an hour):
+
+- `model` must be in its provider's list, and the provider callable (OpenRouter's key set, the subscription connected).
+- `reasoning` must be one of the levels the list gives that model (see Web dashboard).
+- `max_turns` and `max_tokens` are whole numbers, 0 meaning no limit.
+- `max_context` is from 1 to the model's context window. There is no unlimited context: the window is the ceiling.
+
+A model whose limits cannot be verified, because the list cannot be had or gives the model no window, is refused rather than started on a guess. Any refusal is `{:error, message}`, and the message says what was missing or wrong and what to give instead (for example `missing max_context: openai-codex/gpt-6.1-sol's context window is 272000; …`); the API returns it with a 422. The model's window is recorded in the agent's state, so restarts and revivals never need the list. An agent saved before it was recorded gets the window from the list when it is restored, which then caps a `max_context` of 0 or more than the window; if the list cannot be had, its `max_context` is the ceiling.
+
+**The context ceiling.** A model given more than its context window may not refuse the request, only behave strangely, so the harness never makes a request that could pass the agent's `max_context`. Before each model call it estimates the request: the context the provider measured at the last response (its prompt plus completion tokens), plus one token for every 2 bytes the conversation has grown since, as JSON (the whole request before a first response). Tokenizers average 3.5 to 4.5 bytes a token on English and code, and about 3 on JSON, hex, base64 and CJK text, so this overestimates all but text built to tokenize badly, and only until the next response measures the conversation again. If the estimate leaves less than 4,096 tokens for the response, the agent is halted with reason `context` instead of called. Otherwise the response is bounded by the room left (OpenRouter's `max_tokens`, also capped by the most its top provider generates), so the request and its response fit. The ChatGPT backend accepts no such bound (it refuses `max_output_tokens`), but the window its list gives is the input Codex works within, below the model's whole window. After each response, if the measured context has reached `max_context` anyway, the agent is halted the same way. The conversation never shrinks, so un-halting an agent halted for its context halts it again before its next call.
 
 ## Failure handling
 
@@ -147,9 +159,10 @@ Network access: {{network_policy}}. Your limits: {{max_turns}}
 turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
 tokens. Each call to the model counts as one turn, tokens are counted
 across all calls, and the context is the size of this conversation, which
-only grows. When a limit is reached I stop calling the model. Whenever I
-deliver events or a note of my own, I tell you how much of each you have
-used.
+only grows. When a limit is reached I stop calling the model, and I make
+no call that might not fit in your context with room for your reply.
+Whenever I deliver events or a note of my own, I tell you how much of each
+you have used.
 
 If your process dies, I restart it, restore your history and bindings,
 and tell you what happened. Your pid will change; your name will not.
@@ -171,17 +184,17 @@ Every harness action is published as a structured log entry on `Phoenix.PubSub`,
 | --- | --- |
 | `agent_started` | Agent id, name, pid, model, rendered system prompt |
 | `event_received` | Sequence number, raw message (inspected), queue length |
-| `model_request` | Request id, model, message count, approximate input tokens |
+| `model_request` | Request id, model, message count, estimated input tokens (see The context ceiling), the bound on output tokens |
 | `model_response` | Request id, latency, finish reason, assistant text, tool calls, provider, prompt / completion / cached tokens, cost |
 | `model_error` | Request id, HTTP status, error body, retry decision |
 | `tool_call` | Tool name, arguments, start time |
 | `tool_result` | Duration, result or exception, captured IO, truncation flag |
 | `turn_ended` | Reason (`idle`, no tool call, budget, error) |
-| `budget_exhausted` | Turns and tokens used |
+| `budget_exhausted` | Scope (`agent`, `context` or `node`), the limits and what is used; for a request that might not fit, its estimate |
 
 Cache hit or miss is derived from cached-token counts in the usage block. The harness never calls the model again just to retry a tool; transient HTTP errors are retried with backoff, up to 3 attempts.
 
-**ChatGPT subscription.** A model slug of the form `openai-codex/<model>` runs on a ChatGPT Plus or Pro subscription instead, the way the Codex CLI uses one: the OpenAI Responses API at the Codex backend (`CHATGPT_BASE_URL`), flat-rate under the plan's usage limits, so its responses have no cost. The agent calls one function, `Nano.Model.chat/4`, which picks the provider by the prefix; the transcript stays in chat completions form and `Nano.ChatGPT` translates at the edge. The system prompt is sent as `instructions`, messages and tool results as input items, and requests are stateless (`store: false`, streamed), so the model's reasoning items, with their encrypted content, are kept in the transcript and sent back with later requests. Usage is mapped to the same prompt, completion and cached token counts, so turns, tokens, context and the budget line work as for OpenRouter. Reasoning levels map to the backend's efforts: `off` to `none`, `minimal` (which these models lack) to `low`, the others by name; a model without a level (`max` on `gpt-5.5`) rejects requests that ask for it.
+**ChatGPT subscription.** A model slug of the form `openai-codex/<model>` runs on a ChatGPT Plus or Pro subscription instead, the way the Codex CLI uses one: the OpenAI Responses API at the Codex backend (`CHATGPT_BASE_URL`), flat-rate under the plan's usage limits, so its responses have no cost. The agent calls one function, `Nano.Model.chat/5`, which picks the provider by the prefix; the transcript stays in chat completions form and `Nano.ChatGPT` translates at the edge. The system prompt is sent as `instructions`, messages and tool results as input items, and requests are stateless (`store: false`, streamed), so the model's reasoning items, with their encrypted content, are kept in the transcript and sent back with later requests. Usage is mapped to the same prompt, completion and cached token counts, so turns, tokens, context and the budget line work as for OpenRouter. Reasoning levels map to the backend's efforts: `off` to `none`, `minimal` to `low`, the others by name. An agent can only be started with a level the model's list gives it, so `off` is refused for a model that does not list effort `none`; the mapping still covers agents started before that was checked. No bound on the response is sent (see The context ceiling).
 
 One supervised process, `Nano.ChatGPT.Auth`, owns the subscription's credentials. The operator connects it with an OAuth device-code login from the dashboard, the API or `Nano.Ops.chatgpt_login/0`: the node shows a code and a link, a person approves the code in their own browser, and the process polls until the tokens arrive. It keeps them in `<STATE_DIR>/chatgpt_auth.json` (mode 0600, written atomically), loads them at boot, refreshes them before they expire, and hands an access token to each model request. Refresh tokens rotate, so only this process refreshes, and a rotated token is saved before the new access token is used. A login in progress is not saved: after a restart the subscription is not connected until someone logs in again. The process cannot fail to start, so a missing or broken token file never stops the node booting. Tokens are never logged or shown.
 
@@ -255,7 +268,7 @@ Processes spawned during an agent's eval are tagged with that agent, using `$anc
 
 Any process row has the same send form, so operators can message non-agent processes too.
 
-A Start agent form takes a name, a provider (OpenRouter or the ChatGPT subscription), a model, and a Start idle checkbox, checked by default. The model box offers only the chosen provider's models, and a ChatGPT model by its name alone: the form sends the slug, `openai-codex/` included. Its reasoning select offers only the levels the provider's list gives the chosen model (from OpenRouter's `reasoning` block, or the subscription's `supported_reasoning_levels`; effort `none` is `off`, and a model OpenRouter lists without the block has only `off`), and every level for a model not listed. Whenever the model changes, the select is set to `REASONING` if the model has that level, else to the model's default, and max context to the model's context window as its provider lists it (OpenRouter's `context_length`, the subscription's `context_window`), or `AGENT_MAX_CONTEXT` when it lists none; either can be changed, and is kept until the model changes again. With ChatGPT chosen, a Connect ChatGPT control under the model starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; until then the form cannot start the agent.
+A Start agent form takes a name, a provider (OpenRouter or the ChatGPT subscription), a model, a reasoning level, the three limits, the system prompt, and a Start idle checkbox, checked by default; everything is filled in and sent, since an agent has no defaults. The model box starts empty for OpenRouter and with the subscription's first model for ChatGPT, and offers only the chosen provider's models, a ChatGPT model by its name alone: the form sends the slug, `openai-codex/` included. Its reasoning select offers only the levels the provider's list gives the chosen model (from OpenRouter's `reasoning` block, or the subscription's `supported_reasoning_levels`; effort `none` is `off`, and a model OpenRouter lists without the block has only `off`), and every level for a model not listed. Max turns and max tokens start at 0, no limit. Whenever the model changes, the select is set to the model's default level and max context to the model's context window as its provider lists it (OpenRouter's `context_length`, the subscription's `context_window`); either can be changed, and is kept until the model changes again. When a start is refused, the refusal's message is shown under the form, with what was typed kept. With ChatGPT chosen, a Connect ChatGPT control under the model starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; until then the form cannot start the agent.
 
 ## HTTP API
 
@@ -271,7 +284,7 @@ Everything a human can do in the dashboard is also available as a JSON API on po
 | GET | `/api/processes` | Non-standard processes, with the dashboard's columns |
 | GET | `/api/processes/:pid` | `Process.info` detail for one process |
 | GET | `/api/agents` | Agents with status, model, and budget used |
-| POST | `/api/agents` | Start an agent (optional `start_idle`, default true): `name`, `model` |
+| POST | `/api/agents` | Start an agent: `name`, `model`, `reasoning`, `max_turns`, `max_tokens`, `max_context` (all required); optional `start_idle` (default true), `system_prompt`, `system_prompt_file`. A refusal is a 422 saying what to give |
 | GET | `/api/agents/:name` | Status, system prompt, budget, restart count |
 | POST | `/api/agents/:name/stop`, `/restart`, `/resume`, `/unhalt` | Lifecycle controls, as in the dashboard |
 | GET | `/api/agents/:name/log?since=:seq` | Log entries after a sequence number |
@@ -315,15 +328,11 @@ One image, based on the official Elixir image, running the app from source with 
 | `CHATGPT_BASE_URL` | `https://chatgpt.com/backend-api/codex` | The Codex backend that serves `openai-codex/` models |
 | `CHATGPT_AUTH_URL` | `https://auth.openai.com` | The OAuth server for the device-code login and token refresh |
 | `CHATGPT_CLIENT_VERSION` | `0.160.1` | The Codex CLI version reported when listing models: the backend lists only the models released to clients at least this new, so keep it at Codex's latest release |
-| `DEFAULT_MODEL` | (required) | Model slug for new agents |
 | `SPILL_DIR` | `/data/spill` | Where the whole text of a truncated result or event is kept, one file per cut |
 | `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot; also `chatgpt_auth.json`, the ChatGPT subscription's tokens |
 | `SYSTEM_PROMPT_FILE` | `priv/system_prompt.txt` | Default prompt template for new agents, read at each agent start |
-| `REASONING` | `off` | How much new agents ask the model to reason ("think") before answering: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; settable per agent at start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |
-| `AGENT_MAX_TURNS` | 500 | Model calls per agent before halting; 0 means no limit |
-| `AGENT_MAX_TOKENS` | 30000000 | Total tokens per agent before halting (prompt + completion, summed over every model call); 0 means no limit |
-| `AGENT_MAX_CONTEXT` | 1000000 | Size of one agent's conversation, in tokens, at which it is halted; 0 means no limit (the model's own limit then applies) |
+| `NODE_MAX_TOKENS_PER_HOUR` | 100000000 | Tokens all agents together may use in an hour; an agent about to call the model past it is halted (`node_budget`). A node-wide brake, not a default for agents; 0 means no limit |
 | `EVAL_TIMEOUT_MS` | 30000 | Per-eval timeout |
 | `RESULT_MAX_BYTES` | 51200 | Truncation limit for tool results and events; the whole text is written to a file under `/data/spill` and the truncated text names it |
 | `MAX_BINDINGS_BYTES` | 16000000 | Eval variables are saved for restarts up to this many bytes in total; larger ones stay bound in the running process only, and the restart note names them |
