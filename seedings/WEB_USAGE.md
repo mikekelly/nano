@@ -11,7 +11,29 @@ Seedling.Web.evidence(page.id, "exact passage from text")
 Seedling.Web.search("Elixir documentation")
 ```
 
-Results include source URL, fetched_at (Unix seconds), stable id, text, total bytes,
+## Search → fetch → cite
+
+Search results use string keys and provider IDs. Web reads use the **cache ID
+returned by `Web.fetch`**, not a search-provider ID. Pass a returned URL to fetch:
+
+```elixir
+{:ok, found} = Seedling.Web.search("Elixir official documentation", num_results: 2)
+# Handle an empty results list before selecting a URL.
+[first | _] = found["results"]
+{:ok, page} = Seedling.Web.fetch(first["url"])
+{:ok, next} = Seedling.Web.read(page.id, offset: page.next_offset)
+# Choose an actual verbatim passage from page.text or next.text:
+Seedling.Web.evidence(page.id, passage)
+```
+
+`Seedling.Search.contents/2` is an alternative provider-backed read, not an entry
+in the Web cache. Search keys, provider costs and asynchronous research behavior
+are documented in [SEARCH_USAGE.md](SEARCH_USAGE.md). Web `timeout:` is seconds;
+Search `timeout:` is milliseconds. Options passed to `Web.search/2` are Search
+options, not Web fetch options. No model is called by Web fetch/read/evidence.
+
+Results include source URL,
+ fetched_at (Unix seconds), stable id, text, total bytes,
 byte offset, next_offset, more, rendered, truncated and cached. `truncated` marks
 a clipped stored document (distinct from `more`, which marks a page boundary). Pages default to 12 KB and are
 hard-capped at 24 KB; offsets must be UTF-8 byte boundaries. Evidence returns an

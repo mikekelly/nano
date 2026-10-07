@@ -92,7 +92,7 @@ Provider docs read from the node on 2026-10-07:
 - https://exa.ai/docs/exa-spec.yaml (including contents, Agent run schemas/statuses/cancel)
 - https://exa.ai/docs/agent/quickstart.md
 
-Fake tests: `env -u MIX_BUILD_PATH MIX_ENV=test mix test test/seedling_search_test.exs`.
+Fake tests: `MIX_ENV=test mix test test/seedling_search_test.exs`.
 `transport: fn req_options -> {:ok, %{status: integer, body: map}} end` injects a fake
 without touching global configuration. Additional transport options: `api_key`,
 `base_url` (trusted endpoint only; receives your key), and per-call `timeout`.
