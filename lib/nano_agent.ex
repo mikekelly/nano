@@ -81,6 +81,10 @@ defmodule NanoAgent do
   replacing the default; same `{{placeholders}}`), `system_prompt_file:` (a template file,
   instead of `SYSTEM_PROMPT_FILE`). Returns the supervisor's result, or `{:error, message}`
   saying what was missing or wrong and what to give instead.
+
+  `context_policy:` optionally names a persisted deterministic module with
+  `before_request/1`, for safe request-boundary transcript compaction. See
+  `docs/nova-context-policy.md` for the bounded callback contract and limitations.
   """
   def start(opts) do
     name = opts[:name]
@@ -144,9 +148,23 @@ defmodule NanoAgent do
       )
 
     cond do
-      text -> {:error, "#{text} must be a string, not #{inspect(opts[text])}"}
-      opts[:start_idle] in [nil, true, false] -> :ok
-      true -> {:error, "start_idle must be true or false, not #{inspect(opts[:start_idle])}"}
+      opts[:context_policy] != nil and
+          (not is_atom(opts[:context_policy]) or opts[:context_policy] in [true, false]) ->
+        {:error, "context_policy must be a module atom or nil"}
+
+      opts[:context_policy] != nil and
+          not (Code.ensure_loaded?(opts[:context_policy]) and
+                   function_exported?(opts[:context_policy], :before_request, 1)) ->
+        {:error, "context_policy must be a loaded module exporting before_request/1"}
+
+      text ->
+        {:error, "#{text} must be a string, not #{inspect(opts[text])}"}
+
+      opts[:start_idle] in [nil, true, false] ->
+        :ok
+
+      true ->
+        {:error, "start_idle must be true or false, not #{inspect(opts[:start_idle])}"}
     end
   end
 
@@ -334,6 +352,8 @@ defmodule NanoAgent do
       prompt_file: opts[:prompt_file],
       # The agent whose eval started this one, or nil (an operator did).
       started_by: opts[:started_by],
+      # Optional persisted module, never a closure. Invoked only at balanced request boundaries.
+      context_policy: opts[:context_policy],
       system_prompt: nil,
       transcript: [],
       bindings: [],
@@ -776,6 +796,7 @@ defmodule NanoAgent do
   ## The loop
 
   defp maybe_start_turn(%{status: :idle, halted: nil, pending: [_ | _]} = s), do: request(s, true)
+
   defp maybe_start_turn(s), do: s
 
   defp request(s, new_turn?) do
@@ -785,7 +806,9 @@ defmodule NanoAgent do
     cap = env(:node_max_tokens_per_hour)
 
     cond do
-      s.halted ->
+      s.halted != nil and
+          not (s.halted == :context and is_atom(s[:context_policy]) and
+                   s[:context_policy] != nil) ->
         end_turn(s, if(s.halted == :log_failed, do: "error", else: "budget"))
 
       reached?(node_used, cap) ->
@@ -811,14 +834,127 @@ defmodule NanoAgent do
           |> with_images(s.pending_images)
 
         next = if new_turn?, do: %{append(s, user) | pending: [], pending_images: []}, else: s
+        next = apply_context_policy(next)
         estimate = estimate(next)
         room = b.max_context - estimate
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        cond do
+          next.halted ->
+            stopped = if next.halted == :context, do: s, else: next
+            end_turn(stopped, if(stopped.halted == :log_failed, do: "error", else: "budget"))
+
+          b.max_context > 0 and room < @reply_room ->
+            s |> context_halt(estimate) |> end_turn("budget")
+
+          true ->
+            call(next, new_turn? && line, estimate, room)
+        end
     end
   end
+
+  # A policy is opt-in, persisted by module name, and runs in a disposable task.
+  # It cannot interrupt a provider request or tool: request/2 is entered after calls=[]
+  # and every tool result has been appended. Only complete plain text messages may replace
+  # that balanced history. The full old transcript remains in the harness log.
+  defp apply_context_policy(%{task: nil, calls: [], halted: halted} = s)
+       when halted in [nil, :context] do
+    case s[:context_policy] do
+      module when is_atom(module) and module not in [nil, true, false] ->
+        if unanswered(s.transcript) == [] do
+          snapshot =
+            Map.take(s, [:name, :system_prompt, :transcript, :context_used, :max_context])
+
+          snapshot = Map.put(snapshot, :estimate, estimate(s))
+
+          task =
+            Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+              try do
+                case module.before_request(snapshot) do
+                  :keep -> :keep
+                  {:replace_transcript, messages} -> validate_context_messages(messages)
+                  _ -> {:error, :invalid_return}
+                end
+              rescue
+                _ -> {:error, :callback_failed}
+              catch
+                _, _ -> {:error, :callback_failed}
+              end
+            end)
+
+          result = Task.yield(task, 50) || Task.shutdown(task, :brutal_kill)
+
+          case result do
+            {:ok, {:replace_transcript, messages}} ->
+              replacement = %{s | transcript: messages, context_used: 0, measured_bytes: 0}
+              estimated = estimate(replacement)
+
+              if s.max_context > 0 and s.max_context - estimated >= @reply_room do
+                if log(s, :context_compacted, %{
+                     previous_estimate: snapshot.estimate,
+                     estimate: estimated,
+                     policy: inspect(module),
+                     message_count: length(messages)
+                   }) == :ok do
+                  pending =
+                    if s.halted == :context do
+                      Enum.reject(s.pending, fn text ->
+                        String.starts_with?(
+                          text,
+                          "<harness>This conversation's context has reached "
+                        ) or
+                          String.starts_with?(
+                            text,
+                            "<harness>Your next call to the model might not fit "
+                          )
+                      end)
+                    else
+                      s.pending
+                    end
+
+                  %{replacement | halted: nil, pending: pending} |> save()
+                else
+                  halt(s, :log_failed, @log_failed)
+                end
+              else
+                log(s, :context_policy_error, %{reason: "replacement_does_not_fit"})
+                s
+              end
+
+            {:ok, :keep} ->
+              s
+
+            _ ->
+              log(s, :context_policy_error, %{reason: "callback_failed_invalid_or_timed_out"})
+              s
+          end
+        else
+          s
+        end
+
+      _ ->
+        s
+    end
+  end
+
+  defp apply_context_policy(s), do: s
+
+  defp validate_context_messages(messages) when is_list(messages) do
+    # Bound both traversal and encoded result before sending a task result back.
+    valid =
+      length(Enum.take(messages, 65)) in 1..64 and
+        Enum.all?(messages, fn message ->
+          is_map(message) and map_size(message) == 2 and
+            message["role"] in ["user", "assistant"] and
+            is_binary(message["content"]) and String.valid?(message["content"]) and
+            byte_size(message["content"]) <= 65_536
+        end)
+
+    if valid and byte_size(Jason.encode!(messages)) <= 65_536,
+      do: {:replace_transcript, messages},
+      else: {:error, :invalid_or_oversized_messages}
+  end
+
+  defp validate_context_messages(_), do: {:error, :invalid_messages}
 
   # Tokens a request for this conversation may take, at most: what the provider measured for
   # the conversation at its last response, plus one token for every 2 bytes it has grown by
