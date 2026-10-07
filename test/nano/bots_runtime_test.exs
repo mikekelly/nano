@@ -157,6 +157,111 @@ defmodule Nano.BotsRuntimeTest do
     assert final.calls == []
   end
 
+  test "worker throw and exit reconcile to unavailable", %{s: s} do
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+
+    for runner <- [fn _, _, _, _ -> throw(:bad) end, fn _, _, _, _ -> exit(:bad) end] do
+      :sys.replace_state(s, &%{&1 | runner: runner})
+      send(s, {:deliver, chat.id, a.id, "test"})
+      eventually(fn -> Nano.Bots.snapshot(s).sessions[chat.id].status[a.id] == :unavailable end)
+    end
+  end
+
+  test "preparation disk failure retains failed item and labels status", %{s: s} do
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+
+    :sys.replace_state(s, fn state ->
+      %{
+        state
+        | path: Path.join(state.path, "impossible"),
+          preparing: MapSet.put(state.preparing, chat.id),
+          work_queues: %{chat.id => ["next"]}
+      }
+    end)
+
+    send(s, {:prepared, chat.id, 0, chat, "failed"})
+    eventually(fn -> Nano.Bots.snapshot(s).sessions[chat.id].status[a.id] == :unavailable end)
+    state = :sys.get_state(s)
+    assert state.work_queues[chat.id] == ["failed", "next"]
+    refute MapSet.member?(state.preparing, chat.id)
+  end
+
+  test "bootstrap failure with zero turns is not stuck thinking", %{s: s} do
+    model = Fake.model()
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+    name = "bot-#{a.id}-#{chat.id}-0"
+    {:ok, _} = NanoAgent.start(Keyword.merge(Fake.opts(model), name: name))
+
+    on_exit(fn ->
+      Nano.Ops.stop_agent(name)
+      Nano.StateStore.delete(name)
+    end)
+
+    saved = Nano.StateStore.get(name)
+
+    Nano.StateStore.put(name, %{
+      saved
+      | status: :idle,
+        halted: :start_failed,
+        turns_used: 0,
+        task: nil,
+        calls: [],
+        pending: []
+    })
+
+    :sys.replace_state(s, fn state ->
+      %{state | data: put_in(state.data, [:sessions, chat.id, :status, a.id], :thinking)}
+    end)
+
+    send(s, :monitor)
+    eventually(fn -> Nano.Bots.snapshot(s).sessions[chat.id].status[a.id] == :unavailable end)
+  end
+
+  test "failed archive does not stop old agent or start a fresh budget", %{s: s} do
+    model = Fake.model()
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s, agent_options: Fake.opts(model))
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+    name = "bot-#{a.id}-#{chat.id}-0"
+    {:ok, pid} = NanoAgent.start(Keyword.merge(Fake.opts(model), name: name))
+
+    on_exit(fn ->
+      Nano.Ops.stop_agent(name)
+      Nano.StateStore.delete(name)
+    end)
+
+    :sys.replace_state(s, &%{&1 | path: Path.join(&1.path, "impossible")})
+
+    assert {:error, :bot_budget_archive_unavailable} =
+             Nano.Bots.Runtime.deliver(
+               Map.put(a, :server, s),
+               %{chat | generation: 1},
+               "test",
+               []
+             )
+
+    assert Process.alive?(pid)
+    assert NanoAgent.whereis("bot-#{a.id}-#{chat.id}-1") == nil
+  end
+
+  test "missing or corrupt prior archive fails closed", %{s: s} do
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+
+    :sys.replace_state(s, fn state ->
+      %{state | data: put_in(state.data, [:sessions, chat.id, :generation], 1)}
+    end)
+
+    assert {:error, :missing_budget_archive} = Nano.Bots.usage(chat.id, a.id, s)
+    state = :sys.get_state(s)
+    path = Path.join([Path.dirname(state.path), "checkpoints", "#{chat.id}-0.term"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "corrupt")
+    assert {:error, :invalid_budget_archive} = Nano.Bots.usage(chat.id, a.id, s)
+  end
+
   test "provider settings
 
  are durable and secrets are rejected",

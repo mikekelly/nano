@@ -186,26 +186,7 @@ defmodule Nano.Bots do
     case s.data.sessions[sid] do
       %{generation: generation, bots: bots} when generation > 0 ->
         if bid in bots do
-          usage =
-            Enum.reduce(0..(generation - 1), %{turns: 0, tokens: 0}, fn gen, acc ->
-              case File.read(checkpoint_path(s.path, sid, gen)) do
-                {:ok, bytes} ->
-                  state =
-                    bytes
-                    |> :erlang.binary_to_term([:safe])
-                    |> Enum.find(&(&1.name == "bot-#{bid}-#{sid}-#{gen}"))
-
-                  if state,
-                    do: %{
-                      turns: acc.turns + state.turns_used,
-                      tokens: acc.tokens + state.tokens_used
-                    },
-                    else: acc
-
-                _ ->
-                  acc
-              end
-            end)
+          usage = archived_usage(s.path, sid, bid, generation)
 
           {:reply, usage, s}
         else
@@ -227,10 +208,7 @@ defmodule Nano.Bots do
           Enum.map(chat.bots, &Nano.StateStore.get("bot-#{&1}-#{sid}-#{generation}"))
           |> Enum.reject(&is_nil/1)
 
-        result =
-          if states != [],
-            do: persist(checkpoint_path(s.path, sid, generation), states),
-            else: :ok
+        result = persist_archive(s.path, sid, generation, states)
 
         {:reply, result, s}
     end
@@ -382,7 +360,18 @@ defmodule Nano.Bots do
 
   def handle_call({:say, sid, text}, _, s) do
     with true <- valid?(text), %{} = chat <- s.data.sessions[sid] do
+      previous = chat
       chat = append(chat, :human, text) |> compact(nil)
+
+      chat =
+        if chat.generation != previous.generation and archive_transition(s.path, previous) != :ok,
+          do: %{
+            chat
+            | generation: previous.generation,
+              context_bytes: previous.context_bytes + byte_size(text)
+          },
+          else: chat
+
       data = put_in(s.data, [:sessions, sid], chat)
 
       case persist(s.path, data) do
@@ -551,18 +540,24 @@ defmodule Nano.Bots do
         current
       end
 
+    archive_result =
+      if chat.generation != current.generation, do: archive_transition(s.path, current), else: :ok
+
     data = put_in(s.data, [:sessions, sid], chat)
 
-    case persist(s.path, data) do
+    case if(archive_result == :ok, do: persist(s.path, data), else: archive_result) do
       :ok ->
         for bid <- chat.bots, do: send(self(), {:deliver, sid, bid, text})
         s = %{s | data: data, preparing: MapSet.delete(s.preparing, sid)}
         {:noreply, start_preparation(s, sid)}
 
       _ ->
-        {:noreply, %{s | preparing: MapSet.delete(s.preparing, sid)}}
+        {:noreply, preparation_failed(s, sid, text)}
     end
   end
+
+  def handle_info({:preparation_failed, sid, text}, s),
+    do: {:noreply, preparation_failed(s, sid, text)}
 
   def handle_info({:deliver, sid, bid, text}, s) do
     parent = self()
@@ -575,6 +570,8 @@ defmodule Nano.Bots do
           s.runner.(bot, chat, text, relevant(bot.memories, text, s.decision))
         rescue
           e -> {:error, Exception.message(e)}
+        catch
+          kind, _ -> {:error, kind}
         end
 
       send(parent, {:delivery_result, sid, bid, chat.generation, result})
@@ -649,11 +646,12 @@ defmodule Nano.Bots do
   defp reconcile_status(s, sid, bid, name) do
     case Nano.StateStore.get(name) do
       %{status: :idle, task: nil, calls: [], pending: [], turns_used: turns, halted: halted}
-      when turns > 0 ->
+      when turns > 0 or halted != nil ->
         current = s.data.sessions[sid].status[bid]
 
         status =
           cond do
+            halted == :start_failed -> :unavailable
             halted != nil -> :paused
             current == :thinking -> :no_reply
             true -> current
@@ -798,24 +796,30 @@ defmodule Nano.Bots do
         chat = s.data.sessions[sid]
 
         spawn(fn ->
-          prepared = compact(chat, s.decision)
-          # Hard rollover already installed an excerpt. Upgrade it semantically in
-          # this worker before dispatch, never blocking the state owner/UI.
-          prepared =
-            if chat.generation > 0 and chat.context_bytes == 0 do
-              recent =
-                Enum.take(chat.messages, -20) |> Enum.map_join("\n", &"#{&1.who}: #{&1.text}")
+          try do
+            prepared = compact(chat, s.decision)
+            # Hard rollover already installed an excerpt. Upgrade it semantically in
+            # this worker before dispatch, never blocking the state owner/UI.
+            prepared =
+              if chat.generation > 0 and chat.context_bytes == 0 do
+                recent =
+                  Enum.take(chat.messages, -20) |> Enum.map_join("\n", &"#{&1.who}: #{&1.text}")
 
-              brief = decide(s.decision, :summary, %{previous: chat.brief, recent: recent}, nil)
+                brief = decide(s.decision, :summary, %{previous: chat.brief, recent: recent}, nil)
 
-              if is_binary(brief) and byte_size(brief) <= 12_000,
-                do: %{prepared | brief: brief},
-                else: prepared
-            else
-              prepared
-            end
+                if is_binary(brief) and byte_size(brief) <= 12_000,
+                  do: %{prepared | brief: brief},
+                  else: prepared
+              else
+                prepared
+              end
 
-          send(parent, {:prepared, sid, chat.generation, prepared, text})
+            send(parent, {:prepared, sid, chat.generation, prepared, text})
+          rescue
+            _ -> send(parent, {:preparation_failed, sid, text})
+          catch
+            _, _ -> send(parent, {:preparation_failed, sid, text})
+          end
         end)
 
         %{
@@ -1006,6 +1010,68 @@ defmodule Nano.Bots do
           Nano.Bots.Context.clip(text, max(0, byte_size(text) - max(1, div(byte_size(text), 4)))),
           cap
         )
+  end
+
+  defp preparation_failed(s, sid, text) do
+    data =
+      update_in(s.data, [:sessions, sid, :status], fn status ->
+        Enum.reduce(s.data.sessions[sid].bots, status, &Map.put(&2, &1, :unavailable))
+      end)
+
+    persist(s.path, data)
+    broadcast(%{session: sid})
+
+    %{
+      s
+      | data: data,
+        preparing: MapSet.delete(s.preparing, sid),
+        work_queues: Map.update(s.work_queues, sid, [text], &[text | &1])
+    }
+  end
+
+  defp archive_transition(path, chat) do
+    states =
+      Enum.map(chat.bots, &Nano.StateStore.get("bot-#{&1}-#{chat.id}-#{chat.generation}"))
+      |> Enum.reject(&is_nil/1)
+
+    persist_archive(path, chat.id, chat.generation, states)
+  end
+
+  defp persist_archive(path, sid, generation, states) do
+    target = checkpoint_path(path, sid, generation)
+    if states == [] and File.regular?(target), do: :ok, else: persist(target, states)
+  end
+
+  defp archived_usage(path, sid, bid, generation) do
+    Enum.reduce_while(0..(generation - 1), %{turns: 0, tokens: 0}, fn gen, acc ->
+      result =
+        try do
+          with {:ok, bytes} <- File.read(checkpoint_path(path, sid, gen)),
+               states when is_list(states) <- :erlang.binary_to_term(bytes, [:safe]) do
+            state = Enum.find(states, &(&1.name == "bot-#{bid}-#{sid}-#{gen}"))
+
+            if state do
+              if is_integer(state.turns_used) and state.turns_used >= 0 and
+                   is_integer(state.tokens_used) and state.tokens_used >= 0,
+                 do:
+                   {:ok,
+                    %{turns: acc.turns + state.turns_used, tokens: acc.tokens + state.tokens_used}},
+                 else: {:error, :invalid_budget_archive}
+            else
+              {:ok, acc}
+            end
+          else
+            _ -> {:error, :missing_budget_archive}
+          end
+        rescue
+          _ -> {:error, :invalid_budget_archive}
+        end
+
+      case result do
+        {:ok, usage} -> {:cont, usage}
+        error -> {:halt, error}
+      end
+    end)
   end
 
   defp checkpoint_path(path, sid, generation),

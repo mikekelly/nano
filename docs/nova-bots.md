@@ -113,7 +113,12 @@ The UI distinguishes a silent completed turn (`no_reply`) from a budget-halted
 turn (`paused`) and from unavailable model configuration. A context halt alone
 never makes an active eval safe to retire: idle status, `task: nil`, and `calls: []`
 are all required. Request-boundary compaction runs only after completed tools and
-preserves cumulative generation turn/token accounting.
+preserves cumulative generation turn/token accounting. Generation changes first
+write an archive (including an explicit empty archive when no agent ran). Missing
+or corrupt prior budget archives fail closed: no fresh bot generation starts.
+Archive failure never retires an old agent. Delivery worker exceptions, exits and
+throws surface unavailable status; failed preparation retains queued work for a
+later retry and does not busy-loop on a failing disk.
 
 ## Cheap typed decision adapter
 
