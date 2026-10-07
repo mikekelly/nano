@@ -50,4 +50,30 @@ defmodule Vega.FilesTest do
     assert F.sh("printf \"$HELLO\"", cwd: c.dir, env: [{"HELLO", "world"}], output_dir: c.dir).output ==
              "world"
   end
+
+  test "byte paging never skips content across CRLF and Unicode boundaries", c do
+    original = "é\r\nß\nlast"
+    File.write!(c.p, original)
+    assert {:ok, %{text: one, next: 2}} = F.read(c.p, max_bytes: 4)
+    assert {:ok, %{text: two, next: 3}} = F.read(c.p, offset: 2, max_bytes: 4)
+    assert {:ok, %{text: three, next: nil}} = F.read(c.p, offset: 3, max_bytes: 4)
+    assert one <> two <> three == original
+    File.write!(c.p, "ok\n" <> String.duplicate("x", 100_000))
+    assert {:ok, %{text: "ok\n", next: 2}} = F.read(c.p, max_bytes: 10)
+    assert {:error, {:line_exceeds_max_bytes, 2}} = F.read(c.p, offset: 2, max_bytes: 10)
+  end
+
+  test "large single-line tail is byte bounded and syntax error keeps exit diagnostic", c do
+    File.write!(c.p, String.duplicate("x", 2_000_000) <> "END")
+
+    assert {:ok, %{output: output, truncated: true, bytes: 2_000_003}} =
+             F.tail(c.p, max_bytes: 64)
+
+    assert byte_size(output) == 64
+    assert String.ends_with?(output, "END")
+    result = F.sh("if", cwd: c.dir, output_dir: c.dir)
+    assert result.status != 0
+    assert result.diagnostic != ""
+    assert File.exists?(result.path)
+  end
 end
