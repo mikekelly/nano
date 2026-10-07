@@ -20,7 +20,7 @@ defmodule Vega.Bots.Server do
     with pid when is_pid(pid) <- GenServer.whereis(server),
          table when not is_nil(table) <- :persistent_term.get({__MODULE__, pid}, nil),
          [{:snapshot, data}] <- :ets.lookup(table, :snapshot) do
-      {:ok, data}
+      if is_map(data), do: {:ok, data}, else: data
     else
       _ -> {:error, :not_started}
     end
@@ -30,13 +30,15 @@ defmodule Vega.Bots.Server do
 
   def session(server, sid, opts) do
     if opts[:before] == nil and Keyword.get(opts, :limit, 80) == 80 do
-      with pid when is_pid(pid) <- GenServer.whereis(server),
+      with {:ok, _} <- snapshot(server),
+           pid when is_pid(pid) <- GenServer.whereis(server),
            table when not is_nil(table) <- :persistent_term.get({__MODULE__, pid}, nil) do
         case :ets.lookup(table, {:session, sid}) do
           [{_, page}] -> {:ok, page}
           _ -> {:error, :not_found}
         end
       else
+        {:error, _} = error -> error
         _ -> {:error, :not_started}
       end
     else
@@ -52,41 +54,67 @@ defmodule Vega.Bots.Server do
   def init(opts) do
     root = Keyword.get(opts, :root, "/data/vega")
 
-    with {:ok, saved} <- Vega.Bots.Persistence.load(root) do
-      data =
-        saved ||
-          %{
-            "bots" => [],
-            "sessions" => [],
-            "requests" => [],
-            "settings" => @settings,
-            "outbox" => []
-          }
+    {saved, load_error} =
+      case Vega.Bots.Persistence.load(root) do
+        {:ok, data} -> {data, nil}
+        {:error, reason} -> {nil, reason}
+      end
 
-      table = :ets.new(__MODULE__, [:set, :protected, read_concurrency: true])
-      :persistent_term.put({__MODULE__, self()}, table)
-      cache(table, data)
-      send(self(), :tick)
+    data =
+      saved ||
+        %{
+          "bots" => [],
+          "sessions" => [],
+          "requests" => [],
+          "settings" => @settings,
+          "outbox" => []
+        }
 
-      {:ok,
-       %{
-         table: table,
-         root: root,
-         data: data,
-         runtime: Keyword.get(opts, :runtime, Vega.Bots.Runtime),
-         topic: "vega:bots:" <> Path.expand(root),
-         tasks: %{},
-         tick_ms: Keyword.get(opts, :tick_ms, 1000),
-         answer_retry_ms: Keyword.get(opts, :answer_retry_ms, 30_000),
-         delivered: %{}
-       }}
-    end
+    table = :ets.new(__MODULE__, [:set, :protected, read_concurrency: true])
+    :persistent_term.put({__MODULE__, self()}, table)
+    cache(table, data)
+    if load_error, do: :ets.insert(table, {:snapshot, {:error, load_error}})
+    send(self(), :tick)
+
+    {:ok,
+     %{
+       load_error: load_error,
+       table: table,
+       root: root,
+       data: data,
+       runtime: Keyword.get(opts, :runtime, Vega.Bots.Runtime),
+       topic: "vega:bots:" <> Path.expand(root),
+       tasks: %{},
+       tick_ms: Keyword.get(opts, :tick_ms, 1000),
+       answer_retry_ms: Keyword.get(opts, :answer_retry_ms, 30000),
+       delivered: %{}
+     }}
   end
 
   @impl true
   def handle_call(:snapshot, _, s) do
     {:reply, snapshot(self()), s}
   end
+
+  def handle_call(:reload, _, %{load_error: error} = s) when not is_nil(error) do
+    case Vega.Bots.Persistence.load(s.root) do
+      {:ok, saved} ->
+        data = saved || s.data
+        :ets.delete_all_objects(s.table)
+        cache(s.table, data)
+        next = %{s | data: data, load_error: nil}
+        Phoenix.PubSub.broadcast(Nano.PubSub, s.topic, {:vega_bots, event("reloaded")})
+        {:reply, {:ok, :reloaded}, next}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, s}
+    end
+  end
+
+  def handle_call(:reload, _, s), do: {:reply, {:error, :not_read_only}, s}
+
+  def handle_call(_, _, %{load_error: error} = s) when not is_nil(error),
+    do: {:reply, {:error, error}, s}
 
   def handle_call({:session, sid, opts}, _, s) do
     result =
