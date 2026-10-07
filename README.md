@@ -28,7 +28,7 @@ needed for that, see [Running agents on a ChatGPT subscription](#running-agents-
 `.env` can also hold, all optional and listed with their defaults in [.env.example](.env.example):
 `DEFAULT_MODEL`, `NANO_CHECKOUT` (the checkout's path), `REASONING`, `SYSTEM_PROMPT_FILE`
 (the system prompt template, `priv/system_prompt.txt`), `STATE_DIR`, the budget and
-timeout limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL`, `CHATGPT_BASE_URL`, `CHATGPT_AUTH_URL`
+timeout limits, `NODE_COOKIE`, `OPENROUTER_BASE_URL`, `CHATGPT_BASE_URL`, `CHATGPT_AUTH_URL`, `CHATGPT_CLIENT_VERSION`
 and `NETWORK_POLICY`.
 
 Docker must be able to mount the checkout (colima shares only your home directory by
@@ -137,7 +137,7 @@ Docker is still retrying, so the node comes back on its own at the next attempt.
 ## Running agents on a ChatGPT subscription
 
 A model slug that starts with `openai-codex/` runs on a ChatGPT subscription rather than
-OpenRouter, the way the Codex CLI does: `openai-codex/gpt-5.5`, `openai-codex/gpt-5.6-sol`
+OpenRouter, the way the Codex CLI does: `openai-codex/gpt-6.1-sol`, `openai-codex/gpt-6-sol`
 and so on. Use it anywhere a model goes (the start form, `POST /api/agents`, `NanoAgent.start`,
 `DEFAULT_MODEL`). Inference is flat-rate under the plan's usage limits, so these agents show
 no cost; their tokens still count towards their budgets and the node's hourly cap.
@@ -156,8 +156,8 @@ provider; the subscription's status appears under the model box:
    and a one-time code, valid for 15 minutes.
 2. Open the link in your own browser, sign in to ChatGPT, and enter the code.
 3. The node polls until you have approved it, then shows `connected as <email> (<plan>)`,
-   and the model box offers the subscription's models, by name (`gpt-5.5`; the form sends
-   `openai-codex/gpt-5.5`).
+   and the model box offers the subscription's models, by name (`gpt-6.1-sol`; the form sends
+   `openai-codex/gpt-6.1-sol`).
 
 The same over HTTP: `curl -XPOST localhost:4000/api/chatgpt/login` returns `user_code` and
 `verification_url`; poll `curl localhost:4000/api/chatgpt` until `status` is `connected`.

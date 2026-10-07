@@ -29,6 +29,7 @@ services:
       - OPENROUTER_BASE_URL
       - CHATGPT_BASE_URL
       - CHATGPT_AUTH_URL
+      - CHATGPT_CLIENT_VERSION
       # For seedings that need them (see seedings/): unused by the seed itself.
       - EXA_API_KEY
       - LANGFUSE_PUBLIC_KEY

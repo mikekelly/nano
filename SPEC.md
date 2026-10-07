@@ -314,6 +314,7 @@ One image, based on the official Elixir image, running the app from source with 
 | `OPENROUTER_API_KEY` | (required for OpenRouter models) | Model access |
 | `CHATGPT_BASE_URL` | `https://chatgpt.com/backend-api/codex` | The Codex backend that serves `openai-codex/` models |
 | `CHATGPT_AUTH_URL` | `https://auth.openai.com` | The OAuth server for the device-code login and token refresh |
+| `CHATGPT_CLIENT_VERSION` | `0.160.1` | The Codex CLI version reported when listing models: the backend lists only the models released to clients at least this new, so keep it at Codex's latest release |
 | `DEFAULT_MODEL` | (required) | Model slug for new agents |
 | `SPILL_DIR` | `/data/spill` | Where the whole text of a truncated result or event is kept, one file per cut |
 | `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot; also `chatgpt_auth.json`, the ChatGPT subscription's tokens |

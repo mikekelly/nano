@@ -36,6 +36,9 @@ config :nano,
       "CHATGPT_AUTH_URL",
       if(test?, do: "http://127.0.0.1:1/unset", else: "https://auth.openai.com")
     ),
+  # The Codex CLI version the node reports when listing models; the backend lists only the
+  # models released to clients at least this new.
+  chatgpt_client_version: env.("CHATGPT_CLIENT_VERSION", "0.160.1"),
   # Default prompt template, read from disk each time an agent starts; relative to the app dir.
   system_prompt_file: env.("SYSTEM_PROMPT_FILE", "priv/system_prompt.txt"),
   # Model reasoning ("thinking") effort for new agents: off, minimal, low, medium, high, xhigh or max.

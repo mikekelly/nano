@@ -17,14 +17,11 @@ defmodule Nano.ChatGPT do
   badlogic/pi-mono `packages/ai/src/api/openai-codex-responses.ts`.
   """
 
-  # Models the catalog lists for clients at least this new (codex-rs/models-manager/models.json).
-  @client_version "0.155.0"
-
-  # Used when the backend's own list cannot be had: the listed models in the Codex CLI's
-  # bundled catalog, October 2026 (codex-rs/models-manager/models.json).
+  # Used when the backend's own list cannot be had: the models it listed on 2026-10-07, in its
+  # order of priority (gpt-5.5, hidden then, retires on 2026-10-14).
   @known for(
            id <-
-             ~w(gpt-5.5 gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-6-sol gpt-6.1-sol gpt-6-astra gpt-6-luna),
+             ~w(gpt-6.1-sol gpt-6-astra gpt-6-sol gpt-6-luna gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna),
            do: %{id: id, name: id, context_length: 272_000}
          )
 
@@ -288,7 +285,7 @@ defmodule Nano.ChatGPT do
     opts = [headers: headers(creds), retry: false, receive_timeout: 5_000]
 
     {:ok, %{status: 200, body: %{"models" => models}}} =
-      Req.get(url("/models?client_version=#{@client_version}"), opts)
+      Req.get(url("/models?client_version=#{client_version()}"), opts)
 
     # In the catalog's `priority` order, lowest first, as the Codex CLI's picker lists them.
     for m <- Enum.sort_by(models, & &1["priority"]), m["visibility"] in [nil, "list"] do
@@ -297,6 +294,10 @@ defmodule Nano.ChatGPT do
   catch
     _, _ -> []
   end
+
+  # The backend lists only the models released to clients at least this new: on 2026-10-07,
+  # gpt-6.1-sol from 0.159.0. Keep it at the Codex CLI's latest release.
+  defp client_version, do: Application.fetch_env!(:nano, :chatgpt_client_version)
 
   defp url(path), do: Application.fetch_env!(:nano, :chatgpt_base_url) <> path
   defp sha(text), do: Base.encode16(:crypto.hash(:sha256, text), case: :lower)

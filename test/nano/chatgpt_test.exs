@@ -411,7 +411,7 @@ defmodule Nano.ChatGPTTest do
 
     :persistent_term.erase({Nano.ChatGPT, :models})
     Fake.models(500)
-    assert %{id: "gpt-5.5", context_length: 272_000} = hd(Nano.ChatGPT.models())
+    assert %{id: "gpt-6.1-sol", context_length: 272_000} = hd(Nano.ChatGPT.models())
   end
 
   ## Operator surfaces
