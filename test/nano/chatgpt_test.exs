@@ -104,6 +104,8 @@ defmodule Nano.ChatGPTTest do
     assert saved()["account_id"] == "acct-fake"
     refute inspect(Auth.status()) =~ tokens["access_token"]
     refute inspect(Auth.status()) =~ tokens["refresh_token"]
+    # Nor in what a crash report or :sys.get_status prints of the process.
+    refute inspect(:sys.get_status(Auth)) =~ tokens["refresh_token"]
 
     assert {:ok, %{access_token: access, account_id: "acct-fake"}} = Auth.token()
     assert access == tokens["access_token"]

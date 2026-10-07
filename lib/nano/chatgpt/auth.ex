@@ -87,6 +87,15 @@ defmodule Nano.ChatGPT.Auth do
   end
 
   @impl true
+  # Crash reports and :sys.get_status print the state: never the tokens.
+  def format_status(status) do
+    Map.update(status, :state, nil, fn
+      %{tokens: %{}} = s -> %{s | tokens: :redacted}
+      s -> s
+    end)
+  end
+
+  @impl true
   def handle_call(:login, _from, %{login: %{}} = s), do: {:reply, public(s), s}
 
   def handle_call(:login, _from, s) do
