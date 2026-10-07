@@ -37,7 +37,29 @@ defmodule NanoWeb.BotMessage do
     """
   end
 
+  attr :artifact, :any, default: nil
+
+  def attachment(assigns) do
+    artifact =
+      case assigns.artifact do
+        %{"id" => id, "filename" => filename} = artifact when is_binary(filename) ->
+          if Seedling.BotArtifacts.valid_id?(id) and String.valid?(filename), do: artifact
+
+        _ ->
+          nil
+      end
+
+    assigns = assign(assigns, :safe_artifact, artifact)
+
+    ~H"""
+    <a :if={@safe_artifact} href={"/bots/artifacts/" <> @safe_artifact["id"]} download>
+      Download {@safe_artifact["filename"]}
+    </a>
+    """
+  end
+
   @doc "Parses bounded chat text into plain data; never produces HTML."
+
   def parse(text) when is_binary(text) do
     text
     |> String.split(~r/\r\n|\n|\r/)
