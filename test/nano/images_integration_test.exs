@@ -201,6 +201,39 @@ defmodule Vega.ImagesIntegrationTest do
     refute inspect(state) =~ Base.encode64(png())
   end
 
+  test "eval reference views attach canonical pixels once after all tool outputs" do
+    {name, _, model} = start_agent(true)
+    {:ok, ref} = Vega.Images.import_bytes(png())
+    spoof = Map.put(ref, "width", 9999)
+
+    Fake.push(model,
+      calls: [
+        eval: "Vega.Images.view(#{inspect(spoof)})",
+        eval: "Vega.Images.view(%{\"type\" => \"image_ref\", \"id\" => \"invalid\"})"
+      ]
+    )
+
+    Fake.push(model, text: "done")
+    NanoAgent.notify(name, :reference_view)
+    assert_receive {:openrouter_request, ^model, _}, 2000
+    assert_receive {:openrouter_request, ^model, body}, 2000
+
+    assert [
+             %{"role" => "system"},
+             %{"role" => "user"},
+             %{"role" => "assistant"},
+             %{"role" => "tool"},
+             %{"role" => "tool", "content" => invalid},
+             %{"role" => "user", "content" => [_, %{"type" => "image_url"}]}
+           ] = body["messages"]
+
+    assert invalid =~ "invalid image reference"
+    wait(fn -> NanoAgent.info(name).status == :idle end)
+    results = Enum.filter(Nano.Ops.log(name), &(&1["type"] == "tool_result"))
+    assert Enum.map(results, & &1["images"]) == [[ref], []]
+    refute Jason.encode!(results) =~ "data:image"
+  end
+
   test "nonvision receives explicit notice and no pixels" do
     {name, _, model} = start_agent(false)
     {:ok, ref} = Vega.Images.import_bytes(png())

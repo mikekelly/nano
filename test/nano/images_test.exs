@@ -130,6 +130,17 @@ defmodule Vega.ImagesTest do
     assert notice2 =~ "unavailable"
   end
 
+  test "view composes with immutable references, canonicalizes metadata, and rejects invalid types" do
+    {:ok, ref} = Images.import_bytes(png(58, 61))
+    assert {:ok, ^ref} = Images.view(Map.put(ref, "width", 9999))
+    assert Images.take_views() == [ref]
+    assert {:error, _} = Images.view(%{"type" => "image_ref", "id" => "missing"})
+    assert {:error, _} = Images.view(%{image: ref})
+    assert {:error, _} = Images.view(7)
+    assert {:error, _} = Images.view(nil)
+    assert Images.take_views() == []
+  end
+
   test "JPEG GIF and WebP dimensions" do
     assert {:ok, "image/jpeg", 12, 8} =
              Images.dimensions(<<255, 216, 255, 192, 8::16, 8, 8::16, 12::16, 0>>)

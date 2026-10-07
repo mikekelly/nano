@@ -9,11 +9,19 @@ defmodule Vega.Images do
   @max_side 2_000
   @tokens 4_800
 
-  def view(path) do
-    with {:ok, ref} <- import_file(path) do
-      Process.put({__MODULE__, :views}, Process.get({__MODULE__, :views}, []) ++ [ref])
-      {:ok, ref}
-    end
+  def view(ref) when is_map(ref) do
+    with {:ok, [canonical]} <- validate_refs([ref]), do: queue_view(canonical)
+  end
+
+  def view(path) when is_binary(path) do
+    with {:ok, ref} <- import_file(path), do: queue_view(ref)
+  end
+
+  def view(_), do: {:error, "view expects a file path string or an image reference map"}
+
+  defp queue_view(ref) do
+    Process.put({__MODULE__, :views}, Process.get({__MODULE__, :views}, []) ++ [ref])
+    {:ok, ref}
   end
 
   def take_views, do: Process.delete({__MODULE__, :views}) || []
