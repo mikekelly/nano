@@ -137,7 +137,18 @@ near. The harness tells it the context used on every delivery.
 briefed by message, edits to `lib/nano_agent.ex` adding compaction. Any of these is a
 harness-level capability the agent gave itself.
 
-**Not yet run.**
+**So far.** One run (the `utilities-and-delegation` seed, harness-review task, then the
+`compact-and-delegate` follow-up). First attempt: at ~100k context the model spontaneously
+wrote a Claude Code-style compaction summary as a plain reply, citing an instruction nobody
+had sent; nothing changed, its turn ended, and it sat idle until poked. Second attempt,
+asked explicitly: it read its own module, found the three places the transcript lives
+(the process state, the store row, the state file), wrote `Nano.Compact` with a `repair/1`
+that keeps every tool call answered, and replaced messages 1..400 of its own transcript
+with a summary from outside itself: 232k to ~32k tokens of context. Doing so it found a
+real harness bug (eval bindings saved whole on every callback; its state file had reached
+538 MB) which then crashed the node repeatedly and tripped its restart brake; operators
+fixed the harness, stripped the variables, and un-halted it. Cost of the whole run: 361
+turns, $0.72.
 
 ## 9. Notes for whoever comes next
 
@@ -161,7 +172,13 @@ a seed that says other agents can be started and addressed by name.
 with `idle` and a wakeup, how it collects results, and whether budgets stop a two-agent
 loop (spec experiment 4). Processes it spawns show on the dashboard tagged with its name.
 
-**Not yet run.**
+**So far.** With the seed's one sentence about delegation and a splittable task, the agent
+did not delegate at all (0 `NanoAgent.start` calls in 192 turns). Asked explicitly, it
+started three sub-agents (`fix-low`, `fix-m2`, `fix-m3`), briefed each by message with a
+finding to fix, and left them the default 50-turn budget. None reported back: all three
+ran out of turns first. It recovered their work from `git diff`, integrated three fixes
+with tests, and recorded the lesson itself: "rely on the filesystem, not a sub-agent's
+report". A second try, un-halting one and telling it to report first, failed the same way.
 
 ## 11. Seed prompts
 
@@ -186,7 +203,11 @@ operator user; make that a variable too. Candidate seeds:
 started, messages between processes, `git diff`, anything written for successors, and
 whether the task was done.
 
-**Not yet run.**
+**So far.** First pairing run once. The seed worked on tool use: the agent built
+`lib/nano/tools.ex` a third of the way in and used it in 79 of its remaining 123 evals,
+against a baseline (challenge 4) that used its library almost only in tests. It did not
+delegate until told to (challenge 10) and its first compaction was a reflex from training
+(challenge 8). Its review found four real bugs the human-driven reviews had missed.
 
 ## 12. Framing and model variants
 
