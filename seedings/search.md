@@ -18,7 +18,7 @@ for it.
 ## Considerations
 
 - Exa (https://exa.ai; API described at https://exa.ai/docs/llms.txt) is the provider the
-  operators have a key for. Its API at `https://api.exa.ai` offers search with clean page
+  operators are most likely to have supplied a key for. Its API at `https://api.exa.ai` offers search with clean page
   content, contents for given URLs, grounded answers with citations, and asynchronous
   research runs that return structured output. Read its docs from the node; they change.
 - Search results are large; by default return titles, highlights and ids, and fetch full
