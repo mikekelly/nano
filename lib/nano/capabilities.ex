@@ -18,7 +18,10 @@ defmodule Nano.Capabilities do
     {:memory, Nano.Memory, "Durable cross-session knowledge", "docs/nova-goals.md"},
     {:decisions, Nano.Bots.Decision, "Optional typed small-model judgements",
      "docs/nova-bots.md"},
-    {:bots, Nano.Bots, "Consumer chat sessions, identity and human requests", "docs/nova-bots.md"}
+    {:context_policy, Nano.Bots.Context, "Bounded compaction at answered-tool request boundaries",
+     "docs/nova-context-policy.md"},
+    {:bots, Nano.Bots, "Consumer chat sessions, identity, files and human requests",
+     "docs/nova-bots.md"}
   ]
   def entries do
     Enum.map(@entries, fn {name, mod, description, guide} ->
@@ -67,6 +70,8 @@ defmodule Nano.Capabilities do
     Interactive JavaScript/click/form browser sessions are in `docs/nova-browser.md`.
     The consumer chat UI is `/bots`; `docs/nova-bots.md` describes bot/session creation,
     per-bot model configuration, memory, context rollover and human requests.
+
+    Integration and verification: `docs/nova-integration.md`.
 
     ## Boundaries
 

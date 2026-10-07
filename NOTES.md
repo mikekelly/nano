@@ -15,7 +15,8 @@ search: Nano.Search — Exa search and asynchronous research (requires key) (doc
 goals: Nano.Goals — Durable goal trees and concise reviews (docs/nova-goals.md; loaded)
 memory: Nano.Memory — Durable cross-session knowledge (docs/nova-goals.md; loaded)
 decisions: Nano.Bots.Decision — Optional typed small-model judgements (docs/nova-bots.md; loaded)
-bots: Nano.Bots — Consumer chat sessions, identity and human requests (docs/nova-bots.md; loaded)
+context_policy: Nano.Bots.Context — Bounded compaction at answered-tool request boundaries (docs/nova-context-policy.md; loaded)
+bots: Nano.Bots — Consumer chat sessions, identity, files and human requests (docs/nova-bots.md; loaded)
 
 ## Start here (from eval)
 
@@ -36,6 +37,8 @@ For isolated child agents and acknowledged durable results, read
 Interactive JavaScript/click/form browser sessions are in `docs/nova-browser.md`.
 The consumer chat UI is `/bots`; `docs/nova-bots.md` describes bot/session creation,
 per-bot model configuration, memory, context rollover and human requests.
+
+Integration and verification: `docs/nova-integration.md`.
 
 ## Boundaries
 
