@@ -20,11 +20,9 @@ it needs, following `guidance.md`, which goes with every seeding.
 | [`mcp.md`](mcp.md) | Speak MCP: use servers' tools and resources, receive their events as mailbox events |
 | [`web-access.md`](web-access.md) | Browse and search the web (a port of pi-web-access) |
 | [`search.md`](search.md) | Search and research with Exa, including handing work to its research agent |
-| [`tracing.md`](tracing.md) | Trace every model call and tool call into Langfuse |
 | [`goals.md`](goals.md) | Set, keep and review goals across turns, restarts and agents |
 | [`background-tasks.md`](background-tasks.md) | Run shell commands in the background and be told when they finish |
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
 Some seedings need something only the operators can supply, and say so at the top: an API
-key in `.env` (`EXA_API_KEY`), or a service started next to the node (Langfuse). Keep every
-seeding true of the running system.
+key in `.env` (`EXA_API_KEY`). Keep every seeding true of the running system.
