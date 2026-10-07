@@ -76,8 +76,24 @@ defmodule Vega.Bots do
   def status(session, bot, state, opts \\ []),
     do: call({:status, session, bot, state, opts}, opts)
 
+  def get_request(id, opts \\ []), do: call({:get_request, id}, opts)
+
+  def request_setting(bot, key, question, opts \\ []),
+    do: Vega.Bots.Credentials.request_setting(bot, key, question, opts)
+
+  def answer_setting(id, password, opts \\ []),
+    do: Vega.Bots.Credentials.answer_setting(id, password, opts)
+
   def request_human(bot, question, opts \\ []), do: call({:request, bot, question, opts}, opts)
-  def answer_request(id, answer, opts \\ []), do: call({:answer, id, answer}, opts)
+
+  def answer_request(id, answer, opts \\ []) do
+    with {:ok, request} <- get_request(id, opts) do
+      if request["kind"] == "setting",
+        do: {:error, :use_setting_form},
+        else: call({:answer, id, answer}, opts)
+    end
+  end
+
   def acknowledge_answer(id, opts \\ []), do: call({:ack, id, opts[:requester]}, opts)
   def update_settings(attrs, opts \\ []), do: call({:settings, attrs}, opts)
   def reload(opts \\ []), do: call(:reload, opts)
