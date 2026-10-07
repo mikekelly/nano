@@ -13,7 +13,9 @@ are expressed is yours):
 
 - a system prompt composed from reusable parts (an identity, the node's facts, a job body)
   rather than written whole each time. What every sub-agent needs (its role and level, how
-  and to whom it reports, when to hand over) is then written once and stays consistent; a
+  and to whom it reports, when to hand over, and that it shares the machine; see
+  [guidance.md](guidance.md), "You share this machine": a child knows only what its prompt
+  gives it) is then written once and stays consistent; a
   brief written whole drifts, drops what matters, and costs the parent output tokens on
   every delegation. A shared prefix also caches well, and improving one part improves
   every agent started after it;
@@ -60,7 +62,7 @@ agent or a successor, not the one that built them).
 - Git worktrees (`git worktree add`) are cheap and share the repository, so a sub-agent's
   commits are visible to the parent. A directory does not isolate builds: Mix writes them
   to `MIX_BUILD_ROOT/<env>` (`/opt/nano/_build`) wherever the source is, and the default
-  `MIX_ENV` is the running node's, `prod`.
+  `MIX_ENV` is the running node's, `prod`; only test builds stay in the checkout.
 - The parent's context is the thing being protected: measure what a delegation costs it in
   tokens, not just whether it works; one that returns a transcript, not a result, saves
   nothing.

@@ -122,6 +122,23 @@ The budget line delivered with your events tells you where you are. Put the same
 the prompts of the agents you start: an agent halted for its context cannot report what it
 found.
 
+**You share this machine.** Other agents work on this node while you do: in `/app` (the
+running node's source), in worktrees, under `/data` and `/tmp`, on the same ports and in the
+same BEAM. Nothing stops agents colliding except each one taking care, so:
+- edit only the files your task owns, and say which; make edits that need isolation in a
+  worktree;
+- put what you write under `/data` and `/tmp` in a directory named for you or your task;
+- keep your tests safe to run in parallel (see "Tests and honesty");
+- leave node-wide state as it is unless asked, or restore it in the same eval: application
+  env (API keys, base URLs), global names, other agents' processes, the node itself, and its
+  prod build, which `mix compile` in `/app` rewrites under the image's `MIX_ENV=prod`;
+- when something shared breaks, suspect concurrent work before the code, and tell whoever
+  is affected.
+
+Once you start sub-agents, the collisions are between your own agents, and each knows only
+what its prompt tells it. So this belongs in the shared part of every prompt you compose,
+beside role, reporting and handover, for them to pass on to theirs.
+
 **Use decision models where the LLM is too expensive and code is too brittle.** Some
 judgments come up constantly, must be fast and cheap, and are beyond deterministic code
 but far below what the agent's own model should be spent on. A decision model such as Jev
@@ -159,7 +176,11 @@ agent's own saved state. Assume restarts.
 **Tests and honesty.** Test what you build, run the tests, and report what actually passes.
 If a spec asks for something the node cannot do (no key, no network, no service), say so
 rather than fake it: other agents build on what you report, and a faked capability fails
-them later, where it is harder to find than a missing one.
+them later, where it is harder to find than a missing one. The seed's suite is safe to
+run several times at once, and tests you write should be too, since several agents test at
+once on one machine: write to a temp directory unique to the run (not `/data`, and not
+ExUnit's `@tag :tmp_dir`, which is the same path in every run of a checkout) and listen on
+port 0.
 
 **Record what you learn.** Add to `/app/NOTES.md`: what you built, how to call it, what
 did not work and why. The next agent starts from there.
