@@ -189,9 +189,11 @@ report". A second try, un-halting one and telling it to report first, failed the
 **Goal.** Which seedings (framings planted before a task) produce the most interesting
 building behaviour?
 
-**Run.** Same task, different seedings, one agent each on a clean node. Seedings and tasks
-live in `seedings/` (see `seedings/README.md`); the first pairing is `utilities-and-delegation` with
-`tasks/review-the-harness`. Put the seeding either as a paragraph after the factual prompt ("The people who run
+**Run.** Seedings are now design specs for harness capabilities (`seedings/README.md`):
+delegation, MCP, web access, search, tracing, goals, background tasks, each with the
+guidance in `seedings/guidance.md`. Plant one per agent on a clean node and compare what
+grows. The first run used the earlier, advice-style seeding `utilities-and-delegation`
+with `tasks/review-the-harness`. Put the seeding either as a paragraph after the factual prompt ("The people who run
 this node would like you to…", via `system_prompt_file`) or as the first message from an
 operator user; make that a variable too. Candidate seedings:
 

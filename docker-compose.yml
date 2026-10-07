@@ -26,6 +26,11 @@ services:
       - RESULT_MAX_BYTES
       - MAX_BINDINGS_BYTES
       - OPENROUTER_BASE_URL
+      # For seedings that need them (see seedings/): unused by the seed itself.
+      - EXA_API_KEY
+      - LANGFUSE_PUBLIC_KEY
+      - LANGFUSE_SECRET_KEY
+      - LANGFUSE_HOST
       # Shown to agents in their system prompt, so it must be true. This file does not
       # restrict egress; if you do (see README), set NETWORK_POLICY to text that matches.
       - NETWORK_POLICY=${NETWORK_POLICY:-unrestricted outbound internet access}

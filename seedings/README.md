@@ -1,24 +1,46 @@
 # Seedings
 
-A seeding is advice given to an agent before a task, to see which framings produce the
-most interesting building behaviour (CHALLENGES.md, 11). The vocabulary: `main` is the
-*seed*; a *seeding* is what we plant in an agent; a *seedling* is the branch that grows.
+The vocabulary: `main` is the *seed*, the minimal harness; a *seeding* is a design spec we
+plant in an agent, asking it to grow a capability the seed deliberately lacks; a *seedling*
+is the branch that grows (`seedling/<agent>-<what>`, never merged into `main`).
 
-Seedings and tasks are kept apart so any seeding can be paired with any task. Both are
-plain text, sent as the first message to a fresh agent from an operator user:
+Each seeding is a high-level spec for one capability of a fuller harness: what it must do
+and the interfaces it must have, not how to build it. The agent reads the spec from `/app`
+and builds the capability in the checkout, as modules under `/app/lib` plus whatever else
+it needs, following `guidance.md`, which goes with every seeding.
 
-```bash
-curl -s -XPOST localhost:4000/api/users -H 'content-type: application/json' -d '{"name":"operator"}'
-python3 -c 'import json,sys; print(json.dumps({"to": sys.argv[1], "text": open(sys.argv[2]).read() + "\n\n" + open(sys.argv[3]).read()}))' \
-  alice seedings/utilities-and-delegation.md seedings/tasks/review-the-harness.md \
-  | curl -s -XPOST localhost:4000/api/users/operator/say -H 'content-type: application/json' -d @-
+## Planting one
+
+Start a fresh agent with generous limits (turns and tokens 0, context 1,000,000) and send
+it, from an operator user, a first message that points at the files rather than pasting
+them — the agent reads what it needs:
+
+```
+This message is from the people who run this node. Please read /app/seedings/guidance.md
+and then /app/seedings/delegation.md, and build what the second one describes. When it
+works, or if you conclude it can't be done, send a message to the sender_pid of this
+message saying what you built and how to use it.
 ```
 
-A seeding can instead be appended to a copy of `priv/system_prompt.txt` and passed as
-`system_prompt_file`, which puts it in the system prompt rather than the first message.
-Record which was used. Keep seedings true of the running system: the harness's value
-depends on the agent being told the truth.
+Record the run in CHALLENGES.md (which seeding, which model, what grew, cost), push the
+seedling branch, and reset the checkout to `main` for the next run.
 
-Keep every seeding that has been run, with the run it produced noted in CHALLENGES.md, even
-when it did not work. What the run grew stays on a `seedling/<agent>-<what>` branch, never
-in `main` (see AGENTS.md).
+## Seedings
+
+| File | Capability |
+| --- | --- |
+| `guidance.md` | How to build any of them: lean prompts, breadcrumbs, progressive disclosure |
+| `delegation.md` | Start sub-agents with their own prompt, pre-reading, model, worktree and MCP servers |
+| `mcp.md` | Speak MCP: use servers' tools and resources, receive their events as mailbox events |
+| `web-access.md` | Browse and search the web (a port of pi-web-access) |
+| `search.md` | Search and research with Exa, including handing work to its research agent |
+| `tracing.md` | Trace every model call and tool call into Langfuse |
+| `goals.md` | Set, keep and review goals across turns, restarts and agents |
+| `background-tasks.md` | Run shell commands in the background and be told when they finish |
+
+Older, pre-spec seedings and tasks are kept under `tasks/` and as
+`utilities-and-delegation.md` for the record of the runs they produced.
+
+Some seedings need something only the operators can supply, and say so at the top: an API
+key in `.env` (`EXA_API_KEY`), or a service started next to the node (Langfuse). Keep every
+seeding true of the running system.
