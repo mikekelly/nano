@@ -5,11 +5,7 @@ defmodule Vega.Bots.Runtime do
 
     with :ok <- ensure_agent(name, bot, session),
          {:ok, memories} <-
-           Vega.Memory.retrieve("bot:" <> bot["id"], message["text"],
-             root: root,
-             limit: 4,
-             max_bytes: 5000
-           ) do
+           Vega.Bots.Relevance.retrieve(bot["id"], message["text"], root) do
       event = %{
         bot_session: session["id"],
         bot_identity: bot["id"],

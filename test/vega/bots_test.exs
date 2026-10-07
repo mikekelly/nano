@@ -199,7 +199,7 @@ defmodule Vega.BotsTest do
     assert {:ok, ^b} = Bots.get_bot(b["id"], opts)
     assert {:ok, restored} = Bots.get_session(s["id"], opts)
     assert restored["messages"] == [m]
-    {:ok, bytes} = File.read(elem(Vega.Store.path("bots", "state", root: c.root), 1))
+    {:ok, bytes} = File.read(Vega.Bots.Persistence.path(c.root))
     assert {:ok, %{"entries" => [_]}} = Jason.decode(bytes)
   end
 
