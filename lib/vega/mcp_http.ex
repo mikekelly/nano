@@ -9,7 +9,23 @@ defmodule Vega.MCP.HTTP do
     Process.put(:mcp_buffer, "")
     Process.put(:mcp_sse, false)
     Process.put(:mcp_headers, false)
-    headers = Map.get(config, "headers", %{}) |> Map.to_list()
+
+    headers =
+      Map.get(config, "headers", %{})
+      |> Map.to_list()
+      |> Enum.reject(fn {key, _} ->
+        key = String.downcase(key)
+
+        key in [
+          "accept",
+          "content-type",
+          "mcp-method",
+          "mcp-name",
+          "mcp-protocol-version",
+          "mcp-session-id",
+          "last-event-id"
+        ] or String.starts_with?(key, "mcp-param-")
+      end)
 
     headers =
       headers ++
@@ -24,7 +40,15 @@ defmodule Vega.MCP.HTTP do
         do: headers ++ [{"last-event-id", config["_last_event_id"]}],
         else: headers
 
-    headers = if session, do: headers ++ [{"mcp-session-id", session}], else: headers
+    headers =
+      if is_binary(session) and version != Vega.MCP.Protocol.modern(),
+        do: headers ++ [{"mcp-session-id", session}],
+        else: headers
+
+    headers =
+      if version == Vega.MCP.Protocol.modern() and msg,
+        do: headers ++ Vega.MCP.Protocol.headers(msg, Map.get(config, "_schemas", %{})),
+        else: headers
 
     opts = [
       url: config["url"],
@@ -33,7 +57,9 @@ defmodule Vega.MCP.HTTP do
       retry: false,
       redirect: false,
       decode_body: false,
-      receive_timeout: 120_000,
+      # Connection timers own finite RPC deadlines; long-lived listen/GET streams
+      # may legitimately be quiet indefinitely and must not impose a 2min cap.
+      receive_timeout: :infinity,
       into: fn {:data, data}, {request, response} ->
         unless Process.get(:mcp_headers) do
           Process.put(:mcp_headers, true)
@@ -73,7 +99,18 @@ defmodule Vega.MCP.HTTP do
         :ok
 
       {:ok, %{status: status}} ->
-        {:error, {:http_status, status}}
+        if version == Vega.MCP.Protocol.modern() do
+          case Jason.decode(Process.get(:mcp_buffer)) do
+            {:ok, %{"error" => _, "id" => _} = error} ->
+              send(owner, {:wire, gen, error})
+              :ok
+
+            _ ->
+              {:error, {:http_status, status}}
+          end
+        else
+          {:error, {:http_status, status}}
+        end
 
       {:error, error} ->
         {:error, {:http_transport, Exception.message(error)}}

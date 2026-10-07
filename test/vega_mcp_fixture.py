@@ -59,6 +59,11 @@ def handle(msg):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Expected when a client cancels a request-scoped SSE stream.
     def log_message(self, *args):
         pass
     def do_POST(self):

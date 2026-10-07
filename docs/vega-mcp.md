@@ -24,8 +24,9 @@ Vega.MCP.disconnect("server")
 
 `{:ok, value}` / `{:error, reason}` throughout; subscription/watch mutations return
 `:ok`. List functions fetch **one** page. Pass the returned `nextCursor` to the same
-list function to continue. `request/4` exposes other legacy JSON-RPC methods; unknown
-client requests get a JSON-RPC MethodNotFound response, except `ping` is answered.
+list function to continue. `request/4` exposes other JSON-RPC methods. In legacy mode unknown
+client requests get a JSON-RPC MethodNotFound response, except `ping` is answered. Modern server-initiated requests are forbidden by the
+protocol and cause a reported disconnect, not a client response.
 No sampling, elicitation, roots, or tasks capabilities are advertised.
 
 ## Protocol source and revision (network read 2026-10-07)
@@ -36,21 +37,59 @@ Fetched authoritative pages using HTTPS:
 - https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle.md
 - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports.md
 - https://modelcontextprotocol.io/specification/2025-11-25/basic/transports.md
+- https://modelcontextprotocol.io/specification/2026-07-28/server/discover.md
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions.md
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http.md
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio.md
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/index.md
 
-**Important revision mismatch:** latest now identifies **2026-07-28**, a breaking
-stateless/per-request-metadata protocol with `server/discover` and no initialization
-handshake. This implementation deliberately provides the seeding's initialization,
-persistent connection and subscription semantics for **2025-11-25**, negotiating
-**2025-06-18** or **2025-03-26** when the server selects one. It does **not** claim to
-implement the modern 2026-07-28 protocol. A modern-only server is unsupported; a
-server exposing a legacy compatibility endpoint is usable. Updating to modern
-requests/metadata and streaming subscriptions is future work, not silently emulated.
-The old 2024 HTTP+SSE two-endpoint transport is also unsupported.
+**Current revision support:** **2026-07-28** is implemented as an explicit modern
+mode alongside legacy **2025-11-25**, **2025-06-18**, and **2025-03-26**. The default
+remains legacy for existing ecosystem/reference compatibility. Set a server definition's
+`"protocol": "2026-07-28"` to select the current protocol:
+
+```elixir
+Vega.MCP.connect("current", %{"url" => "https://example.test/mcp",
+  "protocol" => "2026-07-28"})
+# stdio uses exactly the same protocol option.
+```
+
+Modern mode probes `server/discover` (not `initialize`), supplies required version /
+capabilities metadata plus client identity on **every** request, and uses mandatory
+`Mcp-Method` / `Mcp-Name` HTTP headers with ASCII/base64 sentinel encoding. Modern
+connections never issue `notifications/initialized`, GET streams, session IDs, or
+`Last-Event-ID`. `connect` returns the discovered capabilities/identity with a normalized
+`protocolVersion` field for callers. Unsupported modern versions return an explicit error;
+there is no automatic era guessing/fallback. To change a live named connection's
+configuration/protocol, disconnect it before connecting again. Choose a legacy protocol option for a
+legacy-only server. Legacy negotiation can accept any of the three supported legacy
+revisions. The old 2024 HTTP+SSE two-endpoint transport is unsupported.
+
+Modern `subscribe` / `watch` use long-lived **`subscriptions/listen`** requests (POST
+SSE or stdio) with explicit URI / list-change filters. Their acknowledgment and every
+pushed notification are correlated by `io.modelcontextprotocol/subscriptionId`.
+Notifications before ACK, stale IDs, and events outside the acknowledged filter are
+ignored. ACK subset omissions produce `subscription/failed`; a rejected URI returns
+`:subscription_not_acknowledged`, while its durable interest remains visible and can be
+removed with `unsubscribe`. Modern subscriptions cancel by closing the HTTP stream or
+sending stdio cancellation, and reopen after transport/server/graceful stream closure.
+No unadvertised sampling, roots, elicitation, tasks or MRTR capabilities are claimed;
+modern input-required workflows / extensions need a future adapter.
+
+Modern HTTP supports tool parameter **`x-mcp-header`** annotations, including nested
+properties, safe primitive types and exact paths. Invalid names/types/placement or
+case-insensitive duplicate headers exclude the invalid tool from `tools/list`, log a
+warning and emit `tool/rejected` to watchers. Tool calls automatically discover schemas
+(including at most 32 pages) when needed before issuing a side-effecting call. Discovery
+and the eventual tool share the original request deadline; timed-out discovery never
+launches a delayed tool. List-change events invalidate the header-schema cache. Header
+mismatch errors are returned for explicit caller review/retry, never silently replayed.
 
 ## Transports and configuration
 
+
 stdio definitions have `command`, optional string-list `args`, optional string-map
-`env`, optional `cwd`, and optional integer `result_limit`. Arguments go directly to
+`env`, optional `cwd`, and optional integer `result_limit` and `protocol`. Arguments go directly to
 `Port.open` without a shell; stderr is not mixed into protocol stdout. As normal
 subprocesses, servers inherit the VM environment plus configured overrides. Run only
 trusted server executables and avoid giving untrusted servers sensitive environment.
@@ -58,14 +97,14 @@ The example uses `npx`, which requires Node/npm installed; dependencies are not
 installed implicitly by Vega.MCP. Pin package versions for production.
 
 Streamable HTTP definitions have `url` (`http` or `https`), optional `headers` map,
-and `result_limit`. Example (no keys in git):
+`result_limit`, and `protocol`. Example (no keys in git):
 
 ```elixir
 Vega.MCP.connect("remote", %{"url" => "https://example.test/mcp",
   "headers" => %{"authorization" => "Bearer " <> System.fetch_env!("MCP_TOKEN")}})
 ```
 
-Supports one POST per message, JSON and incrementally parsed SSE responses, a
+**Legacy HTTP** supports one POST per message, JSON and incrementally parsed SSE responses, a
 long-lived GET SSE notification stream, session ID/version headers, and HTTP 405
 (no independent stream). SSE GET reconnect uses `Last-Event-ID` and `retry` when
 provided. No automatic POST retries: tool side effects must not run twice. Errors,
@@ -77,11 +116,11 @@ rather than being replayed. No exactly-once event guarantee during transport dow
 
 Connections are independently supervised with exponential reconnect (250ms to 30s),
 request timeouts/cancellation, death notifications, and subscription restoration.
-`connect` waits for initialization and returns an error promptly on failed launch;
+`connect` waits for initialization or modern discovery and returns an error promptly on failed launch;
 the worker continues retrying until `disconnect`. A call in downtime returns
 `:not_ready`; it is not invisibly queued or replayed. Up to 128 generic RPC requests
-are pending; further requests return `:busy`. Concurrent mutations for the same
-resource return `:subscription_busy`, so retry after the earlier operation finishes.
+are pending; further requests return `:busy`. Concurrent legacy mutations for the same
+resource (or any modern mutation while its listen ACK is pending) return `:subscription_busy`, so retry after the earlier operation finishes.
 
 `Vega.MCP.start/0` lazily starts an unlinked supervision tree for eval use. For an
 application-managed lifecycle, integrate `{Vega.MCP.Supervisor, []}` into the parent
@@ -134,7 +173,7 @@ results directory as appropriate. State/spill filesystem errors are reported.
 
 ```sh
 MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-mcp-build ERL_FLAGS='+S 4:4' \
-  mix test test/vega_mcp_test.exs test/vega_mcp_reference_test.exs
+  mix test test/vega_mcp_test.exs test/vega_mcp_modern_test.exs test/vega_mcp_reference_test.exs
 ```
 
 Hermetic integration uses a real Python OS subprocess and localhost HTTP server on
@@ -160,13 +199,36 @@ wire server; the official filesystem reference does not advertise subscriptions.
 
 ### Verified on 2026-10-07
 
-- MCP focused suite with reference enabled: **17 passed** (16 hermetic + 1 official).
+- MCP focused suite with reference enabled after modern followup: **26 passed**
+  (16 legacy hermetic + 9 current hermetic + 1 official legacy-compatible server).
 - Official `@modelcontextprotocol/server-filesystem` version **2026.8.31**, run by
   Node **v20.19.2**; legacy negotiation/discovery/write/read/path-denial all passed.
-- Final full repository suite with the reference enabled: **264 passed**, no skips
-  (25.4 seconds). Without the opt-in reference environment, that one test is
+- Final full repository suite with the reference enabled: **273 passed**, no skips
+  (26.9 seconds), including current-protocol stream-closure tests. Without the opt-in reference environment, that one test is
   explicitly skipped.
 - Node runtime was installed as an allowed system package; npm dependencies were
   installed only under `/tmp/vega-mcp-tools`. No harness modules were loaded into
   the live VM, no live application settings were changed, and no credentials were
   needed. Production use of the `npx` sample still requires npm/npx on PATH.
+
+## Eval-safe deadlines and background completion
+
+Default generic/tool RPC deadline is **20 seconds** (21-second call envelope), and
+connect/subscribe/watch envelopes are at most **25 seconds**, below the harness's
+usual 30-second eval limit. Discovery/ACK deadlines are 15 seconds. Explicit request
+`timeout:` accepts 1..300000ms. Longer work should use the supervised background API,
+which returns immediately and reports to a **name**, so agent/eval exit does not kill it:
+
+```elixir
+{:ok, ref} = Vega.MCP.call_tool_async("server", "slow_tool", %{}, "agent-name",
+  timeout: 120_000)
+# Or Vega.MCP.request_async(server, method, params, agent_name, opts)
+# Later event:
+%{mcp: "server", method: "request/completed", request_method: "tools/call",
+  ref: ref, result: {:ok, bounded_result}}
+```
+
+The MCP supervisor and children use the stable `:user` group leader, not a transient
+eval IO process. Background requests are under their own Task.Supervisor and reset
+their group leader as well. A completion still can be lost if no agent process owns
+the target name at that precise delivery time; no offline queue is claimed.
