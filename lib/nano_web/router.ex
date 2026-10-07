@@ -19,6 +19,7 @@ defmodule NanoWeb.Router do
     pipe_through :browser
 
     live "/", ProcessLive
+    live "/bots", BotsLive
     live "/agents/:name", AgentLive
   end
 
