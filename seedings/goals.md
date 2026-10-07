@@ -4,8 +4,8 @@
 
 Agents can set goals, keep them across turns, restarts and node restarts, break them
 down, review them cheaply, and show them. A goal kept only in the conversation sinks as
-the context grows and is lost to a successor; one broken into steps can be checked off and
-handed over a piece at a time. When this is done, an agent given a vague brief writes
+the context grows and is lost when it is compacted; one broken into steps can be checked
+off and shared a piece at a time. When this is done, an agent given a vague brief writes
 goals, works through them over several turns and a restart, marks them done, a fresh
 agent can read what was being pursued and why (the why is what lets it judge whether a
 goal still applies), and the agent's open goals are visible on its page, so operators can

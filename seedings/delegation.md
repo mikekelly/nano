@@ -41,7 +41,7 @@ are expressed is yours):
 The parent must be able to wait for a result without spending turns (each turn re-sends
 its whole context), to address the sub-agent by name (a restarted agent has a new pid),
 and to find the message shapes it needs without being told (the parent may be a fresh
-agent or a successor, not the one that built them).
+agent, not the one that built them).
 
 ## Considerations
 

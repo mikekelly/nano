@@ -122,13 +122,8 @@ when it nears your limit (when the next call, with room for a reply, might not f
 harness stops calling the model: you cannot then do anything, including shrink it. The seed
 has no compaction, so an agent that will run long needs one: its conversation replaced by
 a summary of what matters (decisions, commitments, open questions, where things are), while
-it stays the same agent. That last part is the point. Your name, pid and mailbox are how
-people, your sub-agents and whoever started you reach you, and what you have started
-reports back to you; compaction keeps all of that. Handing the work to a fresh successor
-does not: it is a different agent, so messages, reports and replies addressed to you no
-longer reach whoever is doing the work, and the chain of who started whom forks. Pass work
-to a successor only when the work itself is being handed on, not as a way to get more
-context.
+it stays the same agent, with the same name, pid and mailbox, so the people, sub-agents and
+processes that reach you, and the ones you started that report to you, carry on as before.
 
 Compaction is itself work that needs room, so build it while you have plenty, keep it
 cheap by keeping your notes and goals current as you go, and act on a threshold set short
@@ -173,7 +168,7 @@ deciding when a conversation needs compacting. Reach for one of these before eit
 hand-writing rules or calling the big model in a loop.
 
 **Leave breadcrumbs.** Everything you build must be discoverable by an agent that knows
-nothing about it: a fresh agent, a sub-agent, your own successor after a restart. A short
+nothing about it: a fresh agent, a sub-agent, yourself after a restart or a compaction. A short
 index at a known place (`/app/NOTES.md` or a module's `@moduledoc`) that says what exists
 and where, with one example each, is worth more than any amount of documentation that
 nobody is pointed at.
