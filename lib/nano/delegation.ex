@@ -272,18 +272,25 @@ defmodule Nano.Delegation do
     adapter = opts[:adapter] || NanoAgent
     path = manifest_path(handle.id, handle[:storage_dir])
 
-    case Registry.lookup(Nano.Registry, {:delegation, handle.id}) do
-      [{pid, _}] ->
+    case watcher_lookup(handle.id, 100) do
+      {:ok, pid} ->
         {:ok, pid}
 
-      [] ->
+      :missing ->
         with :ok <- File.mkdir_p(Path.dirname(path)),
              :ok <- initialize_manifest(path, handle) do
           case Nano.Delegation.Watcher.start(handle, adapter, opts) do
-            {:error, {:already_started, pid}} -> {:ok, pid}
-            result -> result
+            {:error, {:already_started, _pid}} ->
+              # Registration can race another restore; recheck rather than return a stale pid.
+              watch(handle, opts)
+
+            result ->
+              result
           end
         end
+
+      error ->
+        error
     end
   end
 
@@ -293,6 +300,26 @@ defmodule Nano.Delegation do
 
     for path <- Path.wildcard(Path.join(dir, "*.term")) do
       restore_manifest(path, opts)
+    end
+  end
+
+  defp watcher_lookup(id, retries) do
+    case Registry.lookup(Nano.Registry, {:delegation, id}) do
+      [] ->
+        :missing
+
+      [{pid, _}] ->
+        cond do
+          Process.alive?(pid) ->
+            {:ok, pid}
+
+          retries > 0 ->
+            Process.sleep(1)
+            watcher_lookup(id, retries - 1)
+
+          true ->
+            {:error, :stale_watcher_registration}
+        end
     end
   end
 
