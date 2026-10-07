@@ -140,7 +140,10 @@ defmodule NanoAgent do
   summary. Summaries must be nonblank UTF-8, at most 64,000 bytes. Options are a keyword
   list accepting that hash and optional `retained:` metadata (a list). The durable
   `:compacted` log entry must succeed before history is changed; original logs are untouched.
-  Halt reasons are not cleared, and no turn is started by compaction.
+  Halt reasons are not cleared, and no turn is started by compaction by default.
+  With `resume_context: true`, only a `:context` halt is cleared, atomically after the
+  durable record succeeds and the new context is below its limit (or unlimited). Pending
+  events can then start a turn; all other halt reasons are preserved.
 
   Returns `{:ok, info}` or `{:error, reason}` where reason is `:not_found`, `:busy`,
   `:stale`, `:invalid_summary`, `:invalid_option`, `:unanswered_tools`, or `:log_failed`.
@@ -613,7 +616,7 @@ defmodule NanoAgent do
       true ->
         case do_compact(s, summary, opts) do
           {:ok, next} ->
-            next = save(next)
+            next = next |> resume_compacted_context(opts) |> save()
             {:reply, {:ok, info(next.name)}, next}
 
           {:error, reason} ->
@@ -1034,6 +1037,15 @@ defmodule NanoAgent do
 
   def transcript_hash(%{transcript: transcript}), do: hash_transcript(transcript)
 
+  defp resume_compacted_context(s, opts) do
+    if opts[:resume_context] == true and s.halted == :context and
+         not reached?(s.context_used, budget(s).max_context) do
+      maybe_start_turn(%{s | halted: nil})
+    else
+      s
+    end
+  end
+
   defp hash_transcript(transcript) when is_list(transcript), do: :erlang.phash2(transcript)
 
   defp validate_compaction(summary, opts) do
@@ -1057,6 +1069,7 @@ defmodule NanoAgent do
         case k do
           :expected_transcript_hash -> not (is_integer(v) and v >= 0 and v < 134_217_728)
           :retained -> not is_list(v)
+          :resume_context -> not is_boolean(v)
           _ -> true
         end
       end) ->

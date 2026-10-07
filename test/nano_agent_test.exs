@@ -2138,4 +2138,30 @@ defmodule NanoAgentTest do
       File.rm!(file)
     end
   end
+
+  test "compact context resume is opt-in and never clears unrelated halts", ctx do
+    {pid, _} = start!(ctx)
+
+    for reason <- [:budget, :usage_limit, :restart_brake, :log_failed, :context] do
+      :sys.replace_state(pid, &%{&1 | halted: reason})
+      assert {:ok, _} = NanoAgent.compact(ctx.name, "summary")
+      assert :sys.get_state(pid).halted == reason
+      assert {:ok, _} = NanoAgent.compact(ctx.name, "summary", resume_context: true)
+      assert :sys.get_state(pid).halted == if(reason == :context, do: nil, else: reason)
+    end
+
+    :sys.replace_state(pid, &%{&1 | halted: :context, max_context: 1})
+    assert {:ok, _} = NanoAgent.compact(ctx.name, "summary", resume_context: true)
+    assert :sys.get_state(pid).halted == :context
+
+    assert {:error, :invalid_option} =
+             NanoAgent.compact(ctx.name, "summary", resume_context: :yes)
+
+    :sys.replace_state(pid, &%{&1 | max_context: 0})
+    send(pid, :pending_resume)
+    :sys.get_state(pid)
+    Fake.push(ctx.model, text: "done")
+    assert {:ok, _} = NanoAgent.compact(ctx.name, "summary", resume_context: true)
+    assert text(List.last(request!(ctx.model)["messages"])) =~ ":pending_resume"
+  end
 end
