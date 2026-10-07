@@ -1,0 +1,33 @@
+# Vega images
+
+`Vega.Images.view("/tmp/screenshot.png")` inside an agent eval imports an immutable
+image and queues it for the model (harness integration uses `take_views/0`).
+`import_file/1` and `import_bytes/1` return `{:ok, ref}` without attaching. References
+are plain JSON metadata (`type: image_ref`, SHA256 id, MIME, dimensions, byte count).
+No base64 belongs in state, bindings, transcripts or timeline logs.
+
+API: `POST /api/images` with JSON `{ "data": "<base64>" }` returns the reference;
+`POST /api/users/:name/say` accepts `images: [ref]` beside `to` and `text`.
+`GET /api/images/:id` serves verified immutable bytes. Agent dashboard has an image
+upload form and timeline previews. The API is the seed's unauthenticated operator
+API: image URLs are not access-controlled. Do not put secret pictures on this node.
+
+Images are content-addressed under `<state_dir>/images`; refs do not authorize arbitrary
+filesystem paths. Fetch verifies the hash and errors on missing/corrupt data. PNG,
+JPEG, GIF and WebP headers supply the MIME and dimensions, independent of filename.
+Maximum 3,750,000 binary bytes (5 MB base64), 2,000 pixels per side, positive dimensions;
+these conservative limits also hold after a transcript grows beyond 20 pictures.
+Adapters accept at most 20 images per message. Image headers are inspected; this is not
+a full image decoder or malware scanner. Images are retained indefinitely: garbage
+collection is intentionally absent while persisted transcripts may refer to them.
+
+Provider catalogs retain `input_modalities`; unknown/fallback entries are text-only,
+not guessed vision-capable. Harness saves modalities at start and appends a truthful
+vision note. Text-only models get explicit inability notices and metadata, not pixels.
+Only request builders hydrate image refs: OpenRouter `image_url` user parts; Codex
+`input_image` user parts. Eval images must be appended after all tool outputs, in a
+user message, to support every OpenRouter backend. Error bodies redact data URLs.
+Estimation uses 4,800 tokens per image; provider usage corrects it on the next response.
+
+Tests: `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-images/_build mix test` in this worktree
+(the project makes test builds checkout-local). Tests use run-unique temp state dirs.

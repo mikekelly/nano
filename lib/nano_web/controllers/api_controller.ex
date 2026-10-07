@@ -12,6 +12,10 @@ defmodule NanoWeb.ApiController do
 
   @endpoints [
     {"GET", "/api", "This index."},
+    {"POST", "/api/images",
+     "Import image bytes: JSON data (base64); returns immutable image reference."},
+    {"GET", "/api/images/:id",
+     "Immutable image bytes by SHA256 id. Say accepts optional images: [references]."},
     {"GET", "/api/processes",
      "Live processes outside the standard set (boot-time, OTP and dashboard processes), agents first. " <>
        "Each: pid, name, kind (agent | user | spawned_by | other), spawned_by (agent name), " <>
@@ -246,6 +250,33 @@ defmodule NanoWeb.ApiController do
     end
   end
 
+  ## Images (bytes exist only at upload/request edges)
+
+  def upload_image(conn, params) do
+    with data when is_binary(data) <- params["data"],
+         {:ok, bytes} <- Base.decode64(data),
+         {:ok, ref} <- Vega.Images.import_bytes(bytes) do
+      conn |> put_status(201) |> json(ref)
+    else
+      {:error, reason} when is_binary(reason) -> error(conn, 422, reason)
+      _ -> error(conn, 422, "data must be base64 image bytes")
+    end
+  end
+
+  def image(conn, %{"id" => id}) do
+    case Vega.Images.fetch(id) do
+      {:ok, bytes, mime} ->
+        conn
+        |> put_resp_content_type(mime)
+        |> put_resp_header("x-content-type-options", "nosniff")
+        |> put_resp_header("cache-control", "public, max-age=31536000, immutable")
+        |> send_resp(200, bytes)
+
+      {:error, reason} ->
+        error(conn, 404, reason)
+    end
+  end
+
   ## Users
 
   def start_user(conn, params) do
@@ -256,9 +287,18 @@ defmodule NanoWeb.ApiController do
   end
 
   def say(conn, %{"name" => name} = params) do
-    case strings(params, ["to", "text"]) do
-      {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
-      {:error, field} -> missing(conn, field)
+    with {:ok, [to, text]} <- strings(params, ["to", "text"]),
+         {:ok, refs} <- Vega.Images.validate_refs(params["images"] || []) do
+      result =
+        if refs == [],
+          do: User.say(name, to, text),
+          else:
+            User.send_raw(name, to, %{sender_pid: User.pid(name), message: text, images: refs})
+
+      sent(conn, name, to, result)
+    else
+      {:error, field} when field in ["to", "text"] -> missing(conn, field)
+      {:error, reason} -> error(conn, 422, reason)
     end
   end
 
