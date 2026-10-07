@@ -47,7 +47,6 @@ Each agent is one `NanoAgent` GenServer under a `DynamicSupervisor`, registered 
 | `pending` | Events received while busy, delivered as one batch |
 | `budget` | The limits it was started with (turns, tokens, context) and how much of each it has used |
 | `context_window` | The model's context window as its provider listed it at start, so restarts never need the list |
-| `images` | Whether the model takes image input, as its provider listed it at start (see Images) |
 
 **Message intake.** Any message the process receives that is not an internal harness message becomes an event, via `handle_info/2` for raw `send/2` messages and `handle_cast/2` for `NanoAgent.notify/2`. The harness adds no sender identity, because Erlang messages carry none. Each event is rendered with `inspect/2` (bounded `limit` and `printable_limit`) inside a tag with a sequence number and receive time:
 
@@ -83,9 +82,7 @@ Erlang is reachable from Elixir eval (`:erlang`, `:ets`, `:sys`), so a separate 
 
 A model whose limits cannot be verified, because the list cannot be had or gives the model no window, is refused rather than started on a guess. Any refusal is `{:error, message}`, and the message says what was missing or wrong and what to give instead (for example `missing max_context: openai-codex/gpt-6.1-sol's context window is 272000; …`); the API returns it with a 422. The model's window is recorded in the agent's state, so restarts and revivals never need the list. An agent saved before it was recorded gets the window from the list when it is restored, which then caps a `max_context` of 0 or more than the window; if the list cannot be had, its `max_context` is the ceiling.
 
-**The context ceiling.** A model given more than its context window may not refuse the request, only behave strangely, so the harness never makes a request that could pass the agent's `max_context`. Before each model call it estimates the request: the context the provider measured at the last response (its prompt plus completion tokens), plus one token for every 2 bytes the conversation has grown since, as JSON (the whole request before a first response). Tokenizers average 3.5 to 4.5 bytes a token on English and code, and about 3 on JSON, hex, base64 and CJK text, so this overestimates all but text built to tokenize badly, and only until the next response measures the conversation again. If the estimate leaves less than 4,096 tokens for the response, the agent is halted with reason `context` instead of called. Otherwise the response is bounded by the room left (OpenRouter's `max_tokens`, also capped by the most its top provider generates), so the request and its response fit. The ChatGPT backend accepts no such bound (it refuses `max_output_tokens`), but the window its list gives is the input Codex works within, below the model's whole window. After each response, if the measured context has reached `max_context` anyway, the agent is halted the same way. The conversation never shrinks, so un-halting an agent halted for its context halts it again before its next call. An image (see Images) counts 5,000 tokens in the estimate, and its base64 nothing: more than the providers' published formulas give an image at the detail sent, `high` (Claude at most 4,784 tokens, OpenAI's gpt-6 at most 3,000, Gemini 3 at most 2,240), and corrected, like text, by the next response.
-
-**Images.** An image is a `%Nano.Image{}`, made with `Nano.Image.new/1` from image data or a path on the node: the type is read from the first bytes (PNG, JPEG, GIF or WebP, the four every provider takes), it is at most 3,750,000 bytes (so its base64 is within the strictest provider limit, 5 MB for Claude on Bedrock and Vertex), and its bytes are stored once, never changed, as `<IMAGE_DIR>/<sha256>.<ext>`. The struct holds the hash, type, size and path, never the bytes, and prints as `#Nano.Image</data/images/<sha256>.png, 41213 bytes>`. Images reach an agent two ways: in a message, anywhere in its term, and in an eval's result, which is how an agent looks at a file (`Nano.Image.new("/tmp/shot.png")`). Up to 8 distinct images from each event or result are attached for the model to see, after the delivery's text or after the tool results; the event or result is rendered as text as always, and any past 8 are named as not shown. A model whose provider does not list image input is sent none, and its delivery says so (`<harness>Event 3: 1 image not shown: this model cannot see images.</harness>`, or the same in brackets after a result). The transcript, the saved state and the log keep only each image's reference (hash, type, size); the request is built from the store, reading the file each time, so the same images give the same request and a provider's cache still matches. An image whose file is gone is replaced in the request by a note saying so.
+**The context ceiling.** A model given more than its context window may not refuse the request, only behave strangely, so the harness never makes a request that could pass the agent's `max_context`. Before each model call it estimates the request: the context the provider measured at the last response (its prompt plus completion tokens), plus one token for every 2 bytes the conversation has grown since, as JSON (the whole request before a first response). Tokenizers average 3.5 to 4.5 bytes a token on English and code, and about 3 on JSON, hex, base64 and CJK text, so this overestimates all but text built to tokenize badly, and only until the next response measures the conversation again. If the estimate leaves less than 4,096 tokens for the response, the agent is halted with reason `context` instead of called. Otherwise the response is bounded by the room left (OpenRouter's `max_tokens`, also capped by the most its top provider generates), so the request and its response fit. The ChatGPT backend accepts no such bound (it refuses `max_output_tokens`), but the window its list gives is the input Codex works within, below the model's whole window. After each response, if the measured context has reached `max_context` anyway, the agent is halted the same way. The conversation never shrinks, so un-halting an agent halted for its context halts it again before its next call.
 
 ## Failure handling
 
@@ -156,8 +153,6 @@ your turn. Running code with eval is the only way you can affect anything
 outside this conversation: to reach another process, send it a message
 from eval.
 
-{{images}}
-
 This node runs in a disposable Docker container, which is yours to change,
 including installing system packages. You run as {{os_user}} on {{os}}.
 Network access: {{network_policy}}. Your limits: {{max_turns}}
@@ -177,29 +172,29 @@ The source code for this node, including your own module, is in /app
 node runs.
 ```
 
-Placeholders (`{{pid}}`, `{{name}}`, `{{node}}`, `{{otp_release}}`, `{{elixir_version}}`, `{{os_user}}`, `{{os}}`, `{{network_policy}}`, `{{max_turns}}`, `{{max_tokens}}`, `{{max_context}}`, `{{result_max_bytes}}`, `{{images}}`) are filled from `System.otp_release/0`, `System.version/0`, `node/0`, `self/0`, and container env vars. `{{images}}` is one of two sentences, by whether the model takes images: "An event or eval result whose term holds %Nano.Image{} values comes with those images attached (up to 8 each), so you see them. To look at an image file on this node, evaluate Nano.Image.new(path)." or "This model cannot see images: %Nano.Image{} values in events and eval results reach you only as text." The template is a plain text file, `priv/system_prompt.txt` by default (`SYSTEM_PROMPT_FILE` points elsewhere), read from disk each time an agent starts or restarts, so it can be edited, including by an agent, without recompiling anything. Experiments can swap in variant prompts per agent (`system_prompt:` as a string, or `system_prompt_file:` as a path), and the prompt actually used is written to the log at agent start.
+Placeholders (`{{pid}}`, `{{name}}`, `{{node}}`, `{{otp_release}}`, `{{elixir_version}}`, `{{os_user}}`, `{{os}}`, `{{network_policy}}`, `{{max_turns}}`, `{{max_tokens}}`, `{{max_context}}`, `{{result_max_bytes}}`) are filled from `System.otp_release/0`, `System.version/0`, `node/0`, `self/0`, and container env vars. The template is a plain text file, `priv/system_prompt.txt` by default (`SYSTEM_PROMPT_FILE` points elsewhere), read from disk each time an agent starts or restarts, so it can be edited, including by an agent, without recompiling anything. Experiments can swap in variant prompts per agent (`system_prompt:` as a string, or `system_prompt_file:` as a path), and the prompt actually used is written to the log at agent start.
 
 ## OpenRouter and the harness log
 
-Agents call OpenRouter's OpenAI-compatible chat completions endpoint with `Req`, using `OPENROUTER_API_KEY` from the environment. The model is set per agent so different models can be compared on the same node. Requests use tool calling for `eval` and `idle`, and request usage accounting so token counts and cache figures come back with each response. Prompt caching is enabled where the chosen provider supports it, with the system prompt and transcript prefix kept stable so cache hits are possible. Images go as `image_url` content parts with a base64 `data:` URL and `detail: "high"`, after the message's text, each after a text part with how it prints. Tool messages cannot carry images on every provider, so the images of a run of tool results follow it in one user message, `<harness>The images in the results above:</harness>`. Whether a model takes images is `"image"` in its `architecture.input_modalities` on OpenRouter's list.
+Agents call OpenRouter's OpenAI-compatible chat completions endpoint with `Req`, using `OPENROUTER_API_KEY` from the environment. The model is set per agent so different models can be compared on the same node. Requests use tool calling for `eval` and `idle`, and request usage accounting so token counts and cache figures come back with each response. Prompt caching is enabled where the chosen provider supports it, with the system prompt and transcript prefix kept stable so cache hits are possible.
 
 Every harness action is published as a structured log entry on `Phoenix.PubSub`, on topic `agent:<id>`, and appended to a per-agent JSONL file under `/data/logs`. The file is the durable record; PubSub feeds the dashboard.
 
 | Entry type | Contents |
 | --- | --- |
 | `agent_started` | Agent id, name, pid, model, rendered system prompt |
-| `event_received` | Sequence number, raw message (inspected), queue length; the images in it (hash, type, size, never the data) and what of them the model was not shown |
+| `event_received` | Sequence number, raw message (inspected), queue length |
 | `model_request` | Request id, model, message count, estimated input tokens (see The context ceiling), the bound on output tokens |
 | `model_response` | Request id, latency, finish reason, assistant text, tool calls, provider, prompt / completion / cached tokens, cost |
 | `model_error` | Request id, HTTP status, error body, retry decision |
 | `tool_call` | Tool name, arguments, start time |
-| `tool_result` | Duration, result or exception, captured IO, truncation flag; images, as for events |
+| `tool_result` | Duration, result or exception, captured IO, truncation flag |
 | `turn_ended` | Reason (`idle`, no tool call, budget, error) |
 | `budget_exhausted` | Scope (`agent`, `context` or `node`), the limits and what is used; for a request that might not fit, its estimate |
 
 Cache hit or miss is derived from cached-token counts in the usage block. The harness never calls the model again just to retry a tool; transient HTTP errors are retried with backoff, up to 3 attempts.
 
-**ChatGPT subscription.** A model slug of the form `openai-codex/<model>` runs on a ChatGPT Plus or Pro subscription instead, the way the Codex CLI uses one: the OpenAI Responses API at the Codex backend (`CHATGPT_BASE_URL`), flat-rate under the plan's usage limits, so its responses have no cost. The agent calls one function, `Nano.Model.chat/5`, which picks the provider by the prefix; the transcript stays in chat completions form and `Nano.ChatGPT` translates at the edge. The system prompt is sent as `instructions`, messages and tool results as input items, and requests are stateless (`store: false`, streamed), so the model's reasoning items, with their encrypted content, are kept in the transcript and sent back with later requests. Usage is mapped to the same prompt, completion and cached token counts, so turns, tokens, context and the budget line work as for OpenRouter. Reasoning levels map to the backend's efforts: `off` to `none`, `minimal` to `low`, the others by name. An agent can only be started with a level the model's list gives it, so `off` is refused for a model that does not list effort `none`; the mapping still covers agents started before that was checked. No bound on the response is sent (see The context ceiling). Images are `input_image` items (a base64 `data:` URL, `detail: "high"`) in the user message they arrived with, or in the `function_call_output` of the result they came in, whose `output` is then a list of content items, as the Codex CLI's `view_image` sends one; a model takes images unless its `input_modalities` leaves out `"image"` (an entry without them takes text and images, as Codex reads it).
+**ChatGPT subscription.** A model slug of the form `openai-codex/<model>` runs on a ChatGPT Plus or Pro subscription instead, the way the Codex CLI uses one: the OpenAI Responses API at the Codex backend (`CHATGPT_BASE_URL`), flat-rate under the plan's usage limits, so its responses have no cost. The agent calls one function, `Nano.Model.chat/5`, which picks the provider by the prefix; the transcript stays in chat completions form and `Nano.ChatGPT` translates at the edge. The system prompt is sent as `instructions`, messages and tool results as input items, and requests are stateless (`store: false`, streamed), so the model's reasoning items, with their encrypted content, are kept in the transcript and sent back with later requests. Usage is mapped to the same prompt, completion and cached token counts, so turns, tokens, context and the budget line work as for OpenRouter. Reasoning levels map to the backend's efforts: `off` to `none`, `minimal` to `low`, the others by name. An agent can only be started with a level the model's list gives it, so `off` is refused for a model that does not list effort `none`; the mapping still covers agents started before that was checked. No bound on the response is sent (see The context ceiling).
 
 One supervised process, `Nano.ChatGPT.Auth`, owns the subscription's credentials. The operator connects it with an OAuth device-code login from the dashboard, the API or `Nano.Ops.chatgpt_login/0`: the node shows a code and a link, a person approves the code in their own browser, and the process polls until the tokens arrive. It keeps them in `<STATE_DIR>/chatgpt_auth.json` (mode 0600, written atomically), loads them at boot, refreshes them before they expire, and hands an access token to each model request. Refresh tokens rotate, so only this process refreshes, and a rotated token is saved before the new access token is used. A login in progress is not saved: after a restart the subscription is not connected until someone logs in again. The process cannot fail to start, so a missing or broken token file never stops the node booting. Tokens are never logged or shown.
 
@@ -227,7 +222,7 @@ flush()                                             # see anything sent back
 | Function | Behavior |
 | --- | --- |
 | `Nano.User.start(name)` | Starts and registers a user process; returns its pid |
-| `Nano.User.say(name, to, text, images \\ [])` | Sends `%{sender_pid: user_pid, message: text}` to `to`, a pid or agent name; with images (`%Nano.Image{}` values), the message also carries `images: [...]` |
+| `Nano.User.say(name, to, text)` | Sends `%{sender_pid: user_pid, message: text}` to `to`, a pid or agent name |
 | `Nano.User.send_raw(name, to, term)` | Sends `term` exactly as given, with no sender added |
 | `Nano.User.inbox(name, opts)` | Returns received messages with timestamps, oldest first; `clear: true` empties it |
 | `Nano.User.pid(name)` | Returns the user's pid, for raw messages that should include a reply address |
@@ -264,12 +259,12 @@ Processes spawned during an agent's eval are tagged with that agent, using `$anc
 
 **Agent view.** Clicking an agent opens a live, streaming timeline of its log entries:
 
-- Events, shown as the raw term received, with thumbnails of the images in them (from `GET /api/images/:file`).
+- Events, shown as the raw term received.
 - Model turns, showing assistant text and token usage, with tool calls collapsed inline.
-- Eval calls with code highlighted, followed by the result (and thumbnails of its images), captured IO, and duration.
+- Eval calls with code highlighted, followed by the result, captured IO, and duration.
 - A header bar with model, status, turns and tokens used against budget, total cost, and cache hit rate.
 - The rendered system prompt, collapsible at the top.
-- The send form described in Operator access, whose text box can attach up to 8 images (a LiveView upload, stored with `Nano.Image.new/1` and sent with `say/4`), plus Stop, Restart, Resume (for a suspended agent), and Un-halt buttons.
+- The send form described in Operator access, plus Stop, Restart, Resume (for a suspended agent), and Un-halt buttons.
 
 Any process row has the same send form, so operators can message non-agent processes too.
 
@@ -295,10 +290,9 @@ Everything a human can do in the dashboard is also available as a JSON API on po
 | GET | `/api/agents/:name/log?since=:seq` | Log entries after a sequence number |
 | GET | `/api/agents/:name/stream` | The same entries live, as server-sent events |
 | POST | `/api/users` | Start a user: `name` |
-| POST | `/api/users/:name/say` | `to`, `text`; optional `images`, a list of `{"data": base64, "mime": optional}` or `{"path": a file on the node}`, sent as `%Nano.Image{}` values (a refused image is a 422 saying why) |
+| POST | `/api/users/:name/say` | `to`, `text` |
 | POST | `/api/users/:name/send_raw` | `to`, `term` as Elixir source |
 | GET | `/api/users/:name/inbox?clear=true` | Messages the user has received |
-| GET | `/api/images/:file` | An image from the store by its file name, `<sha256>.<ext>`; nothing else is served |
 | POST | `/api/eval` | `code`: evaluate Elixir on the node, equivalent to `bin/rpc` |
 | GET | `/api/chatgpt` | Whether a ChatGPT subscription is connected: status, and the code and link while a login waits; never the tokens |
 | POST | `/api/chatgpt/login` | Start a device-code login; returns the code and link |
@@ -335,7 +329,6 @@ One image, based on the official Elixir image, running the app from source with 
 | `CHATGPT_AUTH_URL` | `https://auth.openai.com` | The OAuth server for the device-code login and token refresh |
 | `CHATGPT_CLIENT_VERSION` | `0.160.1` | The Codex CLI version reported when listing models: the backend lists only the models released to clients at least this new, so keep it at Codex's latest release |
 | `SPILL_DIR` | `/data/spill` | Where the whole text of a truncated result or event is kept, one file per cut |
-| `IMAGE_DIR` | `/data/images` | The image store: each image once, named by its SHA-256, never changed |
 | `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot; also `chatgpt_auth.json`, the ChatGPT subscription's tokens |
 | `SYSTEM_PROMPT_FILE` | `priv/system_prompt.txt` | Default prompt template for new agents, read at each agent start |
 | `NODE_COOKIE` | random at build | Distribution cookie for remote shells |

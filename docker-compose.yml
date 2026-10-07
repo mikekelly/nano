@@ -21,7 +21,6 @@ services:
       - RESULT_MAX_BYTES
       - MAX_BINDINGS_BYTES
       - SPILL_DIR
-      - IMAGE_DIR
       - OPENROUTER_BASE_URL
       - CHATGPT_BASE_URL
       - CHATGPT_AUTH_URL

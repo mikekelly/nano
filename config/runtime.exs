@@ -13,7 +13,7 @@ end
 
 int = fn name, default -> name |> env.(default) |> String.to_integer() end
 
-# Where the node writes its logs, state, spills and images: the data volume in the container,
+# Where the node writes its logs, state and spills: the data volume in the container,
 # tmp/ in a dev checkout. A test run gets a fresh directory of its own, which the app boots
 # from and test/test_helper.exs removes: several suites may run at once on one machine, in one
 # checkout or several, and agent ids repeat between runs.
@@ -75,8 +75,6 @@ config :nano,
   log_dir: env.("LOG_DIR", Path.join(data, "logs")),
   # Tool results and events over RESULT_MAX_BYTES are cut, and the whole text written here.
   spill_dir: env.("SPILL_DIR", Path.join(data, "spill")),
-  # The image store: each image once, named by its SHA-256, never changed (Nano.Image).
-  image_dir: env.("IMAGE_DIR", Path.join(data, "images")),
   # Each agent's state is written here on every save and revived from here at boot.
   state_dir: env.("STATE_DIR", Path.join(data, "state"))
 

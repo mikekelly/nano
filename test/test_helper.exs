@@ -1,5 +1,5 @@
-# config/runtime.exs gave this run a fresh directory, where the app writes its logs, state,
-# spills and images. Tests put their own files there too (Application.fetch_env!(:nano,
+# config/runtime.exs gave this run a fresh directory, where the app writes its logs, state
+# and spills. Tests put their own files there too (Application.fetch_env!(:nano,
 # :test_dir)): other suites may be running at once, in this checkout or another.
 run = Application.fetch_env!(:nano, :test_dir)
 File.mkdir_p!(run)

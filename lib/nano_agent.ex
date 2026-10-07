@@ -22,16 +22,6 @@ defmodule NanoAgent do
   # is halted instead of called. Enough for a tool call after some reasoning.
   @reply_room 4_096
 
-  # Images attached from one event or one eval result, at most.
-  @max_images 8
-
-  # What the context estimate counts for an image, in tokens: more than the providers' published
-  # formulas give one at the detail sent ("high"): Claude at most 4,784 (its high-resolution
-  # models, 2576 px), OpenAI's gpt-6 at most 3,000 (2,500 patches at 1.2), Gemini 3 at most
-  # 2,240. A model with a formula of its own may count a very large image as more, until the
-  # next response measures it, as with text built to tokenize badly.
-  @image_tokens 5_000
-
   @tools [
     %{
       type: "function",
@@ -104,7 +94,6 @@ defmodule NanoAgent do
         prompt_file: file,
         context_window: entry.context_length,
         max_output: entry[:max_output],
-        images: entry[:images] == true,
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
           with [pid | _] <- Process.get(:"$callers"),
@@ -192,8 +181,7 @@ defmodule NanoAgent do
   while the agent is busy or suspended. `halted` is nil, `:budget`, `:context`, `:node_budget`,
   `:usage_limit`, `:restart_brake`, `:start_failed` or `:log_failed`; `context_window` is the
   model's, as its provider listed it at start (nil if it could not be had for an agent saved
-  before it was recorded), and `images` whether it takes images; `cache_hit_rate` is nil until
-  the first response.
+  before it was recorded); `cache_hit_rate` is nil until the first response.
   """
   def info(name) do
     with %{} = s <- Nano.StateStore.get(name) do
@@ -218,7 +206,6 @@ defmodule NanoAgent do
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
-        images: Map.get(s, :images),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -375,10 +362,6 @@ defmodule NanoAgent do
         # max_context cannot exceed, and the most it generates in one response (or nil).
         context_window: opts[:context_window],
         max_output: opts[:max_output],
-        # Whether the model takes images, as its provider listed it at start.
-        images: opts[:images],
-        # Image references from events waiting in pending, for the next delivery.
-        pending_images: [],
         # The size in bytes of the conversation context_used measured: what a request adds
         # is estimated from the growth since (estimate/1).
         measured_bytes: 0
@@ -500,19 +483,14 @@ defmodule NanoAgent do
       else: s
   end
 
-  defp upgrade(%{context_window: _, images: _} = s), do: s
-
-  # State saved before images were: the model's list says whether it takes them (no, if it
-  # cannot be had), and none are pending.
-  defp upgrade(%{context_window: _} = s),
-    do: Map.merge(s, %{images: entry(s)[:images] == true, pending_images: []})
-
   # State saved before the model's limits were recorded at start. The window and output bound
   # come from the model's list if it can be had, and the window then caps max_context (which
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
+  defp upgrade(%{context_window: _} = s), do: s
+
   defp upgrade(s) do
-    entry = entry(s)
+    entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
     window = entry[:context_length]
     max = Map.get(s, :max_context, 0)
     measured = s.transcript |> Enum.reverse() |> Enum.drop_while(&(&1["role"] != "assistant"))
@@ -520,16 +498,12 @@ defmodule NanoAgent do
     Map.merge(s, %{
       context_window: window,
       max_output: entry[:max_output],
-      images: entry[:images] == true,
-      pending_images: [],
       max_context: if(window && (max == 0 or max > window), do: window, else: max),
       context_used: Map.get(s, :context_used, 0),
       measured_bytes:
         if(measured == [], do: 0, else: bytes(s.system_prompt, Enum.reverse(measured)))
     })
   end
-
-  defp entry(s), do: with({:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{}))
 
   # The fields that belong to a process rather than to the agent's history.
   defp new_process(s),
@@ -575,25 +549,13 @@ defmodule NanoAgent do
       "max_turns" => limit(s.max_turns),
       "max_tokens" => limit(s.max_tokens),
       "max_context" => limit(budget(s).max_context),
-      "result_max_bytes" => env(:result_max_bytes),
-      "images" => images_sentence(s)
+      "result_max_bytes" => env(:result_max_bytes)
     }
 
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
     end)
   end
-
-  defp images_sentence(%{images: true}),
-    do:
-      "An event or eval result whose term holds %Nano.Image{} values comes with\n" <>
-        "those images attached (up to #{@max_images} each), so you see them. To look at an\n" <>
-        "image file on this node, evaluate Nano.Image.new(path)."
-
-  defp images_sentence(_),
-    do:
-      "This model cannot see images: %Nano.Image{} values in events and eval\n" <>
-        "results reach you only as text."
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
   # saved before this was recorded used the default file unless it had a string.
@@ -701,20 +663,15 @@ defmodule NanoAgent do
   def handle_info(msg, s), do: noreply(event(s, msg))
 
   defp event(s, term) do
-    s = upgrade(s)
     seq = s.event_seq + 1
     {text, truncated, spill} = truncate(inspect(term, inspect_opts()), {s.id, "event-#{seq}"})
     at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-    {shown, unseen} = images(s, term)
-    event = ~s(<event seq="#{seq}" at="#{at}">#{text}</event>)
-    event = if unseen, do: event <> "\n<harness>Event #{seq}: #{unseen}.</harness>", else: event
 
     s = %{
       s
       | event_seq: seq,
         wakeup: nil,
-        pending: s.pending ++ [event],
-        pending_images: s.pending_images ++ shown
+        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
     }
 
     # queue_length: events waiting for the next turn, this one included.
@@ -729,35 +686,9 @@ defmodule NanoAgent do
         queue_length: queued,
         truncated: truncated
       })
-      |> logged_images(term, unseen)
     )
 
     maybe_start_turn(s)
-  end
-
-  # The images in a term: the references of those the model is shown, and a note on those it
-  # is not (or nil): all, if the model cannot see images; any past @max_images.
-  defp images(s, term) do
-    found = Nano.Image.find(term)
-    shown = if s.images, do: Enum.take(found, @max_images), else: []
-
-    unseen =
-      case length(found) - length(shown) do
-        0 -> nil
-        1 when shown == [] -> "1 image not shown: this model cannot see images"
-        n when shown == [] -> "#{n} images not shown: this model cannot see images"
-        n -> "#{n} more images not shown: at most #{@max_images} are shown from each"
-      end
-
-    {Enum.map(shown, &Nano.Image.ref/1), unseen}
-  end
-
-  # The log references a term's images (sha, mime, bytes), never their data.
-  defp logged_images(fields, term, unseen) do
-    case Enum.map(Nano.Image.find(term), &Nano.Image.ref/1) do
-      [] -> fields
-      refs -> Map.merge(fields, %{images: refs, images_note: unseen})
-    end
   end
 
   # Harness notes queue up with events, in the order things happened.
@@ -806,11 +737,8 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user =
-          %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-          |> with_images(s.pending_images)
-
-        next = if new_turn?, do: %{append(s, user) | pending: [], pending_images: []}, else: s
+        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
+        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -825,18 +753,17 @@ defmodule NanoAgent do
   # since, as JSON (before a first response, all of it). Tokenizers average 3.5 to 4.5 bytes
   # a token on English and code, about 3 on JSON, hex, base64 and CJK text, so this
   # overestimates all but byte sequences built to tokenize badly; the overestimate lasts only
-  # until the next response measures the conversation again. An image counts @image_tokens
-  # (as 2 * @image_tokens bytes), its base64 nothing: the transcript holds only its reference.
+  # until the next response measures the conversation again.
   defp estimate(s),
     do:
       s.context_used + div(max(bytes(s.system_prompt, s.transcript) - s.measured_bytes, 0) + 1, 2)
 
   # The size, as JSON, of the tools and messages of a request: what the estimate scales.
-  defp bytes(system_prompt, transcript) do
-    json = Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
-    images = Enum.sum(for m <- transcript, do: length(m["images"] || []))
-    byte_size(json) + images * 2 * @image_tokens
-  end
+  defp bytes(system_prompt, transcript),
+    do:
+      byte_size(
+        Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
+      )
 
   defp context_halt(s, estimate) do
     b = budget(s)
@@ -1175,14 +1102,13 @@ defmodule NanoAgent do
     {output, spawned} = release(io, gl, self())
 
     case result do
-      {:ok, value, bindings, warnings, _} -> {{:ok, value, bindings}, output <> warnings, spawned}
+      {:ok, value, bindings, warnings} -> {{:ok, value, bindings}, output <> warnings, spawned}
       error -> {error, output, spawned}
     end
   end
 
   @doc false
-  # {:ok, inspected, bindings, warnings, images} | {:error, formatted}, with io as the group
-  # leader; images are the %Nano.Image{} values in the result.
+  # {:ok, inspected, bindings, warnings} | {:error, formatted}, with io as the group leader.
   def eval(code, bindings, io) do
     Process.group_leader(self(), io)
 
@@ -1191,9 +1117,7 @@ defmodule NanoAgent do
       Code.with_diagnostics(fn ->
         try do
           {value, bindings} = Code.eval_string(code, bindings)
-
-          {:ok, inspect(value, [pretty: true] ++ inspect_opts()), bindings,
-           Nano.Image.find(value)}
+          {:ok, inspect(value, [pretty: true] ++ inspect_opts()), bindings}
         catch
           kind, reason -> {:error, kind, reason, __STACKTRACE__}
         end
@@ -1202,7 +1126,7 @@ defmodule NanoAgent do
     diagnostics = Enum.map_join(diagnostics, &"#{&1.severity}: #{&1.message}#{where(&1)}\n")
 
     case result do
-      {:ok, value, bindings, images} -> {:ok, value, bindings, diagnostics, images}
+      {:ok, value, bindings} -> {:ok, value, bindings, diagnostics}
       {:error, kind, reason, stack} -> {:error, format_error(kind, reason, stack, diagnostics)}
     end
   end
@@ -1288,10 +1212,9 @@ defmodule NanoAgent do
     s = %{s | spawned: s.spawned ++ spawned}
 
     case result do
-      {:ok, value, bindings, warnings, images} ->
+      {:ok, value, bindings, warnings} ->
         Nano.StateStore.put_bindings(s.name, bindings)
-        s = %{s | bindings: bindings}
-        tool_result(s, call, started, true, value, output <> warnings, images)
+        tool_result(%{s | bindings: bindings}, call, started, true, value, output <> warnings)
 
       {:error, error} ->
         tool_result(s, call, started, false, error, output)
@@ -1307,13 +1230,11 @@ defmodule NanoAgent do
     |> run_calls()
   end
 
-  # The model sees the result followed by any captured IO, truncated as a whole, and then the
-  # images in the result; the log keeps result and IO apart for the dashboard.
-  defp tool_result(s, call, started, ok, result, io \\ "", images \\ []) do
+  # The model sees the result followed by any captured IO, truncated as a whole; the log
+  # keeps result and IO apart for the dashboard.
+  defp tool_result(s, call, started, ok, result, io \\ "") do
     whole = if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io
     {text, truncated, spill} = truncate(whole, {s.id, "call-#{s.call_seq}"})
-    {shown, unseen} = images(s, images)
-    text = if unseen, do: text <> "\n\n[#{unseen}]", else: text
 
     log(
       s,
@@ -1327,18 +1248,13 @@ defmodule NanoAgent do
         io: elem(truncate(io), 0),
         truncated: truncated
       })
-      |> logged_images(images, unseen)
     )
 
-    append(s, with_images(tool_message(call, text), shown))
+    append(s, tool_message(call, text))
   end
 
   defp tool_message(call, text),
     do: %{"role" => "tool", "tool_call_id" => call["id"], "content" => text}
-
-  # A message's images are kept as references; the providers send them (Nano.Image.parts/1).
-  defp with_images(message, []), do: message
-  defp with_images(message, refs), do: Map.put(message, "images", refs)
 
   ## Helpers
 

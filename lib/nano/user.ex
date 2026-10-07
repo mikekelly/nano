@@ -20,12 +20,8 @@ defmodule Nano.User do
   @doc false
   def start_link(name), do: GenServer.start_link(__MODULE__, name, name: via(name))
 
-  @doc """
-  Sends `%{sender_pid: user_pid, message: text}` to `to`: a pid, agent name, user name, or
-  registered name. Given images (`%Nano.Image{}` values, from `Nano.Image.new/1`), the message
-  also carries them, as `images:`; an agent whose model can see images is shown them.
-  """
-  def say(name, to, text, images \\ []), do: deliver(name, to, {:say, text, images})
+  @doc "Sends `%{sender_pid: user_pid, message: text}` to `to`: a pid, agent name, user name, or registered name."
+  def say(name, to, text), do: deliver(name, to, {:say, text})
 
   @doc "Sends `term` to `to` exactly as given, with no sender added."
   def send_raw(name, to, term), do: deliver(name, to, {:raw, term})
@@ -74,11 +70,8 @@ defmodule Nano.User do
   def init(name), do: {:ok, %{name: name, inbox: []}}
 
   @impl true
-  def handle_call({:send, target, {:say, text, images}}, _from, state) when is_pid(target) do
-    message = %{sender_pid: self(), message: text}
-    message = if images == [], do: message, else: Map.put(message, :images, images)
-    deliver_now(state, target, message)
-  end
+  def handle_call({:send, target, {:say, text}}, _from, state) when is_pid(target),
+    do: deliver_now(state, target, %{sender_pid: self(), message: text})
 
   def handle_call({:send, target, {:raw, term}}, _from, state) when is_pid(target),
     do: deliver_now(state, target, term)

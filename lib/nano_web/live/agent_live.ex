@@ -29,11 +29,6 @@ defmodule NanoWeb.AgentLive do
       |> stream_configure(:entries, dom_id: &"e-#{&1["seq"]}")
       |> stream(:entries, [])
       |> mount_shared()
-      |> allow_upload(:images,
-        accept: ~w(.png .jpg .jpeg .gif .webp),
-        max_entries: 8,
-        max_file_size: 3_750_000
-      )
       |> sync()
 
     {:ok, socket}
@@ -62,15 +57,8 @@ defmodule NanoWeb.AgentLive do
 
   # A send from the bar's panels: on success the panel closes and the bar says what was sent.
   def handle_event("send", params, socket) do
-    text? = Map.has_key?(params, "text")
-
-    socket =
-      case if(text?, do: attach(socket, params), else: {:ok, params}) do
-        {:ok, params} -> handle_shared("send", params, socket)
-        {:error, message} -> assign(socket, sent: {:error, message})
-      end
-
-    panel = if text?, do: "say-menu", else: "raw-menu"
+    socket = handle_shared("send", params, socket)
+    panel = if Map.has_key?(params, "text"), do: "say-menu", else: "raw-menu"
 
     case socket.assigns.sent do
       {:ok, _} = sent ->
@@ -95,19 +83,6 @@ defmodule NanoWeb.AgentLive do
 
   def handle_event("unhalt", _, socket),
     do: lifecycle(socket, Nano.Ops.unhalt(socket.assigns.name), "un-halted")
-
-  # Images attached to the text box are stored with Nano.Image.new/1, like any other.
-  defp attach(socket, params) do
-    images =
-      consume_uploaded_entries(socket, :images, fn %{path: path}, _entry ->
-        {:ok, Nano.Image.new(path)}
-      end)
-
-    case for({:error, message} <- images, do: message) do
-      [] -> {:ok, Map.put(params, "images", for({:ok, image} <- images, do: image))}
-      errors -> {:error, Enum.join(errors, "; ")}
-    end
-  end
 
   defp lifecycle(socket, result, done) do
     notice =
@@ -250,14 +225,7 @@ defmodule NanoWeb.AgentLive do
             <details id="say-menu" class="dropdown" phx-mounted={keep_open()}>
               <summary class="button"><.icon name="send" /> Send message</summary>
               <div class="panel">
-                <.send_form
-                  id="send"
-                  to={@name}
-                  draft={@draft}
-                  sent={@sent}
-                  boxes={["text"]}
-                  upload={@uploads.images}
-                />
+                <.send_form id="send" to={@name} draft={@draft} sent={@sent} boxes={["text"]} />
               </div>
             </details>
             <details id="raw-menu" class="dropdown" phx-mounted={keep_open()}>
@@ -347,7 +315,6 @@ defmodule NanoWeb.AgentLive do
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
       <pre>{txt(@e["message"])}</pre>
-      <.thumbs refs={@e["images"]} note={@e["images_note"]} />
     </li>
     """
   end
@@ -465,7 +432,6 @@ defmodule NanoWeb.AgentLive do
       <.meta e={@e} label={"#{txt(@e["name"])} result"}>{txt(@e["duration_ms"])} ms</.meta>
       <pre class={if !@e["ok"], do: "error"}>{txt(@e["result"])}</pre>
       <pre :if={@e["io"] not in [nil, ""]}>{txt(@e["io"])}</pre>
-      <.thumbs refs={@e["images"]} note={@e["images_note"]} />
     </li>
     """
   end
@@ -520,7 +486,6 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <div class="result">
       <pre class={if !@result["ok"], do: "error"}>{txt(@result["result"])}</pre>
-      <.thumbs refs={@result["images"]} note={@result["images_note"]} />
       <div :if={@result["io"] not in [nil, ""]} class="io">
         <span class="dim">captured IO</span>
         <pre>{txt(@result["io"])}</pre>
@@ -540,7 +505,6 @@ defmodule NanoWeb.AgentLive do
     <li id={@id} class="r event">
       <div class="r-label">received <time>{time(@e["at"])}</time></div>
       <pre>{txt(@e["message"])}</pre>
-      <.thumbs refs={@e["images"]} note={@e["images_note"]} />
     </li>
     """
   end

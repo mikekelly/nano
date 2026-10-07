@@ -10,14 +10,11 @@ defmodule Nano.ChatGPT do
   messages become input items; the tools become Responses function tools. Requests are
   stateless and streamed (`store: false`, `stream: true`), as both clients always send them,
   so each response's reasoning items, with their encrypted content, are kept in the assistant
-  message's `reasoning_details` and sent back in later requests. A message's images (its
-  `"images"`, `Nano.Image` references) are `input_image` items with a base64 `data:` URL, in
-  the user message or the `function_call_output` they belong to. No bound on the response is
+  message's `reasoning_details` and sent back in later requests. No bound on the response is
   sent: the backend refuses `max_output_tokens` with a 400, and neither client sends it. The
   event stream is read whole and returned in the shape `Nano.OpenRouter.chat/5` returns.
 
-  Sources: openai/codex `codex-rs/core/src/client.rs`, `codex-rs/codex-api/src/sse/`,
-  `codex-rs/protocol/src/models.rs` and `codex-rs/core/src/tools/handlers/view_image.rs`, and
+  Sources: openai/codex `codex-rs/core/src/client.rs`, `codex-rs/codex-api/src/sse/`, and
   badlogic/pi-mono `packages/ai/src/api/openai-codex-responses.ts`.
   """
 
@@ -31,7 +28,6 @@ defmodule Nano.ChatGPT do
              id: id,
              name: id,
              context_length: 272_000,
-             images: true,
              reasoning_levels: ~w(low medium high xhigh max),
              default_reasoning: if(id == "gpt-6.1-sol", do: "low", else: "medium")
            }
@@ -105,8 +101,8 @@ defmodule Nano.ChatGPT do
 
   ## Chat messages to Responses input items
 
-  defp input(%{"role" => "user", "content" => text} = m),
-    do: [%{type: "message", role: "user", content: content(text, m["images"])}]
+  defp input(%{"role" => "user", "content" => text}),
+    do: [%{type: "message", role: "user", content: [%{type: "input_text", text: text}]}]
 
   # Reasoning first, as the model produced it, then the text, then the calls.
   defp input(%{"role" => "assistant"} = m) do
@@ -132,22 +128,8 @@ defmodule Nano.ChatGPT do
     reasoning ++ text ++ calls
   end
 
-  # A result with images is a list of content items, as the Codex CLI's view_image sends one.
-  defp input(%{"role" => "tool"} = m) do
-    output = if m["images"], do: content(m["content"], m["images"]), else: m["content"]
-    [%{type: "function_call_output", call_id: m["tool_call_id"], output: output}]
-  end
-
-  # Text, then each image after a text item saying how it prints. Detail "high", the Codex
-  # CLI's default, which bounds what an image counts (never "original").
-  defp content(text, refs) do
-    for part <- [{:text, text} | Nano.Image.parts(refs || [])] do
-      case part do
-        {:text, text} -> %{type: "input_text", text: text}
-        {:image, url} -> %{type: "input_image", image_url: url, detail: "high"}
-      end
-    end
-  end
+  defp input(%{"role" => "tool"} = m),
+    do: [%{type: "function_call_output", call_id: m["tool_call_id"], output: m["content"]}]
 
   ## The event stream to a chat completions response
 
@@ -278,7 +260,7 @@ defmodule Nano.ChatGPT do
   ## Models
 
   @doc """
-  The models the connected subscription offers, as `%{id, name, context_length, images,
+  The models the connected subscription offers, as `%{id, name, context_length,
   reasoning_levels, default_reasoning}` (ids without the `openai-codex/` prefix; levels as
   `Nano.Model.reasoning/3` gives them): the backend's list (`GET /models`, as the Codex CLI
   fetches it, in its order of priority), or the Codex CLI's bundled list if that cannot be had;
@@ -325,9 +307,7 @@ defmodule Nano.ChatGPT do
         %{
           id: m["slug"],
           name: m["display_name"] || m["slug"],
-          context_length: m["context_window"],
-          # As the Codex CLI reads it: a model that lists no modalities takes text and images.
-          images: "image" in (m["input_modalities"] || ["text", "image"])
+          context_length: m["context_window"]
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )

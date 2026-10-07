@@ -43,7 +43,7 @@ input[type="text"], input[type="number"], textarea {
   border-radius: 3px;
   padding: 0.2rem 0.4rem;
 }
-button, summary.button, label.button {
+button, summary.button {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -54,7 +54,7 @@ button, summary.button, label.button {
   padding: 0.2rem 0.7rem;
   cursor: pointer;
 }
-button:hover, summary.button:hover, label.button:hover { background: var(--panel); }
+button:hover, summary.button:hover { background: var(--panel); }
 summary.button { list-style: none; }
 summary.button::-webkit-details-marker { display: none; }
 button.primary { background: var(--fg); border-color: var(--fg); color: #fff; padding: 0.35rem 1rem; }
@@ -197,13 +197,6 @@ tr.send-row td { background: var(--panel); white-space: normal; }
 .sent { margin: 0; white-space: pre-wrap; }
 .sent.ok { color: var(--idle); }
 .sent.error { color: var(--halted); }
-.send label.attach { cursor: pointer; }
-.send label.attach input { display: none; }
-.send .error { color: var(--halted); }
-
-/* Images in events and results, from the image store */
-.thumbs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.4rem; margin: 0.3rem 0; }
-.thumbs img { display: block; max-height: 160px; max-width: 240px; border: 1px solid var(--line); border-radius: 4px; }
 
 /* Inbox */
 /* The dashboard user's inbox: an icon fixed at the top right, its messages dropping down. */
