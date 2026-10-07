@@ -62,10 +62,13 @@ repository and video processing is deferred; textual GitHub raw URLs work normal
 all Exa operations return `{:error, :missing_api_key}`; there is no substitute
 search-engine scraper. Search requests five results by default (`limit`), asks
 only for highlights and discards full text. Output is capped at ten results,
-titles at 300 characters, and two 500-character highlights per hit. Contents
-stores clean text and returns readable page handles, not unbounded bodies.
+titles at 256 UTF-8 bytes, and two 384-byte highlights per hit; ids, URLs and
+other metadata are byte-bounded too. Contents
+stores clean text and returns page descriptors (`id`, `total_lines`,
+`fetched_at`) without inline text, keeping multi-page aggregate output bounded.
+Read each `result.page.id` with `Nano.Web.read/2`.
 Answers preserve provider citation ids/URLs and bound answer text to 12,000
-characters, citations to ten. These are provider-grounded results, not a promise
+UTF-8 bytes, citations to ten. These are provider-grounded results, not a promise
 of truth: open cited URLs and verify the relevant passages.
 
 Optional `params` map passes provider parameters to search, answer and research.
@@ -110,9 +113,9 @@ explicit status lets callers recover, without hiding billable retries.
 
 - Isolated `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-web/_build mix test`: 255 passed
   (including the original 10 new mocked tests); existing suite warnings only.
-- Final expanded targeted suite: 16 passed (concurrent store, ephemeral eval
+- Final expanded targeted suite: 17 passed (concurrent store, ephemeral eval
   task, replacement named target, worker exception, HTTP and browser byte caps
-  and browser timeout regressions included).
+  browser timeout, Unicode and multi-page aggregate output regressions included).
 - Real HTTP example.com fetch: success, bounded readable text.
 - Real Lightpanda example.com render: success, bounded markdown.
 - Real Exa search: two official Elixir URLs returned.
