@@ -67,7 +67,7 @@ defmodule Nano.Tools do
 
         text3 =
           if byte_size(text2) > cap,
-            do: binary_part(text2, byte_size(text2) - cap, cap),
+            do: utf8_tail(binary_part(text2, byte_size(text2) - cap, cap)),
             else: text2
 
         {:ok,
@@ -135,15 +135,11 @@ defmodule Nano.Tools do
         limit = Keyword.get(opts, :limit, 500)
         entries = Enum.sort(entries)
 
-        {:ok,
-         %{
-           entries:
-             entries
-             |> Enum.take(limit)
-             |> Enum.map(fn e -> e <> if(File.dir?(Path.join(path, e)), do: "/", else: "") end),
-           truncated: length(entries) > limit,
-           next: "increase limit"
-         }}
+        bounded(
+          Enum.map(entries, fn e -> e <> if(File.dir?(Path.join(path, e)), do: "/", else: "") end),
+          :entries,
+          Keyword.put_new(opts, :limit, limit)
+        )
       end
     end)
   end
@@ -158,12 +154,7 @@ defmodule Nano.Tools do
         |> Enum.reject(&ignored?(&1, root, opts))
         |> Enum.sort()
 
-      {:ok,
-       %{
-         paths: Enum.take(paths, limit),
-         truncated: length(paths) > limit,
-         next: "narrow glob or increase limit"
-       }}
+      bounded(paths, :paths, Keyword.put_new(opts, :limit, limit))
     end)
   end
 
@@ -211,14 +202,9 @@ defmodule Nano.Tools do
               []
           end
         end)
-        |> Enum.take(limit + 1)
+        |> Enum.take(Keyword.get(opts, :offset, 1) + limit)
 
-      {:ok,
-       %{
-         matches: Enum.take(matches, limit),
-         truncated: length(matches) > limit,
-         next: "narrow pattern/glob or increase limit"
-       }}
+      bounded(matches, :matches, Keyword.put_new(opts, :limit, limit))
     end)
   end
 
@@ -234,6 +220,40 @@ defmodule Nano.Tools do
       end
     end
   end
+
+  defp bounded(items, key, opts) do
+    offset = Keyword.get(opts, :offset, 1)
+    limit = Keyword.get(opts, :limit, 100)
+    cap = Keyword.get(opts, :max_bytes, 16_000)
+
+    unless positive(offset) and positive(limit) and positive(cap),
+      do: throw({:error, "offset, limit and max_bytes must be positive integers"})
+
+    selected = Enum.slice(items, offset - 1, limit)
+
+    {kept, _} =
+      Enum.reduce_while(selected, {[], 0}, fn item, {acc, size} ->
+        n = byte_size(inspect(item, limit: :infinity, printable_limit: :infinity)) + 2
+        if n + size <= cap, do: {:cont, {[item | acc], n + size}}, else: {:halt, {acc, size}}
+      end)
+
+    if kept == [] and selected != [],
+      do: throw({:error, "first result exceeds max_bytes; increase max_bytes"})
+
+    next = offset + length(kept)
+    more = next - 1 < length(items)
+
+    {:ok,
+     %{
+       key => Enum.reverse(kept),
+       :truncated => more,
+       :next_offset => if(more, do: next),
+       :next => "repeat with offset=#{next}; increase max_bytes for oversized results"
+     }}
+  end
+
+  defp utf8_tail(<<byte, rest::binary>>) when byte >= 128 and byte < 192, do: utf8_tail(rest)
+  defp utf8_tail(text), do: text
 
   defp ignored?(path, root, opts) do
     if Keyword.get(opts, :respect_gitignore, true) and File.dir?(root) do

@@ -28,7 +28,7 @@ when inside a repository (`respect_gitignore: false` disables). Grep supports re
 literal, ignore_case, glob, limit and line_limit; context lines are not implemented.
 Results are maps for branching, not formatted CLI output. Read/tail currently load
 whole files; find enumerates the glob before capping. Result bounds do not imply
-bounded input memory or search runtime. Tail byte slicing may split UTF-8.
+bounded input memory or search runtime. Tail byte slicing drops incomplete leading UTF-8 characters.
 
 Background workers and the manager are unlinked to evals. Worker ancestry includes
 caller chains for dashboard attribution even after the eval dies. Default notify
@@ -44,3 +44,5 @@ manual cleanup/node exit; there is no retention scheduler. Jobs survive agent re
 not node/container restart. Do not write secrets to commands/output.
 
 Tests: `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-tools/_build mix test test/nano/tools_test.exs test/nano/background_test.exs`.
+
+Listings, find and grep also cap aggregate inspected item bytes at 16KB (`max_bytes`), with `offset`/`next_offset` for exact continuation. A single oversized item errors. Tail can be continued by `read(path, offset: 1)` or increasing `limit`/`max_bytes`; full output remains at path.

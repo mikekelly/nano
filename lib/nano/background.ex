@@ -15,6 +15,25 @@ defmodule Nano.Background do
 
       timeout = Keyword.get(opts, :timeout, 30_000)
       unless is_integer(timeout) and timeout > 0, do: raise("timeout must be a positive integer")
+
+      for key <- [:cwd, :output_dir] do
+        value = Keyword.get(opts, key)
+        unless is_nil(value) or is_binary(value), do: raise("#{key} must be a path string")
+      end
+
+      target = Keyword.get(opts, :notify)
+
+      unless is_nil(target) or is_binary(target) or is_pid(target),
+        do: raise("notify must be a pid, agent name or nil")
+
+      env = Keyword.get(opts, :env, [])
+
+      unless is_list(env) and
+               Enum.all?(env, fn
+                 {k, v} when is_binary(k) and is_binary(v) -> true
+                 _ -> false
+               end), do: raise("env must be a list of string pairs")
+
       ensure_started()
       callers = [self() | List.wrap(Process.get(:"$callers"))]
 

@@ -58,7 +58,38 @@ defmodule Nano.ToolsTest do
     assert {:ok, %{matches: []}} = Nano.Tools.grep("needle", path: dir)
   end
 
-  test "shell exit, environment and bounded output", %{dir: dir} do
+  test "byte caps, continuation and UTF8 tail", %{dir: dir} do
+    p = Path.join(dir, "unicode")
+    Nano.Tools.write(p, "αβγ")
+    assert {:ok, %{text: text, truncated: true}} = Nano.Tools.tail(p, max_bytes: 3)
+    assert text == "γ"
+    assert String.valid?(text)
+
+    for i <- 1..30,
+        do:
+          Nano.Tools.write(
+            Path.join(dir, "long-name-#{i}"),
+            "needle " <> String.duplicate("λ", 100)
+          )
+
+    assert {:ok, %{entries: entries, next_offset: n, truncated: true}} =
+             Nano.Tools.ls(dir, max_bytes: 100)
+
+    assert byte_size(inspect(entries)) <= 100
+    assert {:ok, %{entries: rest}} = Nano.Tools.ls(dir, offset: n)
+    assert MapSet.disjoint?(MapSet.new(entries), MapSet.new(rest))
+
+    assert {:ok, %{matches: matches, next_offset: n, truncated: true}} =
+             Nano.Tools.grep("needle", path: dir, max_bytes: 1000)
+
+    assert byte_size(inspect(matches, limit: :infinity)) <= 1000
+    assert {:ok, %{matches: rest}} = Nano.Tools.grep("needle", path: dir, offset: n)
+    refute hd(matches).path == hd(rest).path
+  end
+
+  test "shell exit
+, environment and bounded output",
+       %{dir: dir} do
     assert {:ok, %{exit_status: 7, text: "yes", path: path}} =
              Nano.Tools.sh("printf \"$TEST_VALUE\"; exit 7",
                cwd: dir,
