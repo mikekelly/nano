@@ -35,7 +35,7 @@ defmodule Vega.Files do
           else: result(acc, nil, line - 1, false)
 
       {:error, reason} ->
-        {:error, {reason, line}}
+        if acc == [], do: {:error, {reason, line}}, else: result(acc, line, nil, true)
 
       {:ok, text, rest} ->
         cond do
@@ -173,6 +173,7 @@ defmodule Vega.Files do
 
     with :ok <- File.mkdir_p(dir) do
       path = Path.join(dir, Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false))
+      :ok = File.write(path, "")
       started = System.monotonic_time(:millisecond)
       timeout = Keyword.get(opts, :timeout, 20_000)
 
@@ -199,7 +200,12 @@ defmodule Vega.Files do
           timed_out: status in [124, 137],
           path: path,
           duration_ms: System.monotonic_time(:millisecond) - started,
-          diagnostic: diagnostic
+          diagnostic:
+            binary_part(
+              diagnostic,
+              max(0, byte_size(diagnostic) - 2000),
+              min(2000, byte_size(diagnostic))
+            )
         })
       end
     end

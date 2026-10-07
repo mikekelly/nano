@@ -114,5 +114,138 @@ defmodule Vega.DelegationTest do
     assert NanoAgent.info(c.name).system_prompt =~ "mcp-ready"
   end
 
+  test "watcher supervision and durable reattachment", c do
+    dir = Path.join(Application.fetch_env!(:nano, :test_dir), "monitors")
+    # Named parent persists; use an existing idle child as reply address.
+    assert {:ok, _} =
+             Vega.Delegation.subagent(
+               c.name,
+               Fake.opts(c.model) ++ [parent: c.name, state_dir: dir]
+             )
+
+    path = Path.join(dir, c.name <> ".json")
+    assert File.exists?(path)
+    watcher = :global.whereis_name({Vega.Delegation.Watcher, c.name})
+    Process.exit(watcher, :kill)
+    Process.sleep(50)
+    new = :global.whereis_name({Vega.Delegation.Watcher, c.name})
+    assert is_pid(new) and new != watcher
+    assert Process.info(new, :group_leader) == {:group_leader, Process.whereis(:user)}
+    # Simulate full watcher service loss, not just one watcher restart.
+    DynamicSupervisor.terminate_child(Vega.Delegation.Supervisor, new)
+    assert [{:ok, restored}] = Vega.Delegation.restore(dir)
+    assert is_pid(restored)
+
+    assert {:error, :result_too_large_use_artifact_path} =
+             Vega.Delegation.report(c.name, %{summary: String.duplicate("x", 20_000)})
+
+    assert :ok = Vega.Delegation.report(c.name, %{summary: "done"})
+    assert [{:ok, :completed}] = Vega.Delegation.restore(dir)
+    assert :ok = Vega.Delegation.unwatch(c.name)
+    assert :undefined == :global.whereis_name({Vega.Delegation.Watcher, c.name})
+    refute File.exists?(path)
+  end
+
+  test "starts in parent's eval so harness preserves started_by", c do
+    parent = c.name <> "-parent"
+    child_opts = Fake.opts(c.model) ++ [job: "wait"]
+    code = "Vega.Delegation.subagent(#{inspect(c.name)}, #{inspect(child_opts)})"
+    Fake.push(c.model, calls: [eval: code])
+    assert {:ok, pp} = NanoAgent.start([name: parent] ++ Fake.opts(c.model, start_idle: false))
+
+    on_exit(fn ->
+      if p = NanoAgent.whereis(parent),
+        do: DynamicSupervisor.terminate_child(Nano.AgentSupervisor, p)
+
+      NanoAgent.kill_tasks(pp)
+      Nano.StateStore.delete(parent)
+    end)
+
+    wait_for_child(c.name, 100)
+    assert NanoAgent.info(c.name).started_by == parent
+    assert NanoAgent.info(c.name).system_prompt =~ "parent: #{inspect(parent)}"
+  end
+
+  defp wait_for_child(_, 0), do: flunk("child not started")
+
+  defp wait_for_child(name, n) do
+    if NanoAgent.whereis(name),
+      do: :ok,
+      else:
+        (
+          Process.sleep(10)
+          wait_for_child(name, n - 1)
+        )
+  end
+
+  test "invalid configuration and unreadable pre-read are errors before start", c do
+    assert {:error, :explicit_model_and_limits_required} =
+             Vega.Delegation.subagent(c.name, parent: self())
+
+    assert {:error, {:pre_read, _, _}} =
+             Vega.Delegation.subagent(
+               c.name,
+               Fake.opts(c.model) ++ [parent: self(), pre: ["/nonexistent-vega-input"]]
+             )
+
+    assert {:error, :poll_ms_must_be_at_least_10} =
+             Vega.Delegation.subagent(c.name, Fake.opts(c.model) ++ [parent: self(), poll_ms: 0])
+
+    refute NanoAgent.whereis(c.name)
+  end
+
+  test "absent named parent queues result on disk and receives it when available", c do
+    parent = c.name <> "-late"
+    dir = Path.join(Application.fetch_env!(:nano, :test_dir), "late-monitors")
+
+    assert {:ok, _} =
+             Vega.Delegation.subagent(
+               c.name,
+               Fake.opts(c.model) ++ [parent: parent, poll_ms: 10, state_dir: dir]
+             )
+
+    assert :ok = Vega.Delegation.report(c.name, %{summary: "retained"})
+    watcher = :global.whereis_name({Vega.Delegation.Watcher, c.name})
+    DynamicSupervisor.terminate_child(Vega.Delegation.Supervisor, watcher)
+    assert [{:ok, _}] = Vega.Delegation.restore(dir)
+
+    File.read!(Path.join(dir, c.name <> ".json"))
+    |> Jason.decode!()
+    |> Map.fetch!("pending")
+    |> length()
+    |> then(&assert(&1 == 1))
+
+    Fake.listen(c.model)
+    assert :yes = Nano.Names.register_name({:agent, parent}, self())
+    on_exit(fn -> Nano.Names.unregister_name({:agent, parent}) end)
+
+    assert_receive {:"$gen_cast",
+                    {:notify, %{delegation: :result, result: %{summary: "retained"}}}},
+                   1000
+
+    # Disk queue is cleared after delivery and terminal jobs don't keep polling.
+    Process.sleep(30)
+    assert Jason.decode!(File.read!(Path.join(dir, c.name <> ".json")))["pending"] == []
+  end
+
+  test "watcher startup failure rolls back the already-created child", c do
+    path =
+      Path.join(
+        Application.fetch_env!(:nano, :test_dir),
+        "not-a-directory-#{System.unique_integer([:positive])}"
+      )
+
+    File.write!(path, "file")
+
+    assert {:error, _} =
+             Vega.Delegation.subagent(
+               c.name,
+               Fake.opts(c.model) ++ [parent: c.name <> "-parent", state_dir: path]
+             )
+
+    refute NanoAgent.whereis(c.name)
+    refute NanoAgent.info(c.name)
+  end
+
   def mcp, do: {:ok, "mcp-ready"}
 end
