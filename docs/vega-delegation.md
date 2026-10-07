@@ -118,6 +118,29 @@ so prefer conventional keys and strings. No node restart was performed during te
 
 ## Optional MCP startup
 
+Direct sibling integration is supported:
+
+```elixir
+mcp_servers: ["configured-filesystem", {"job-tools", %{"command" => "my-server", "args" => []}}]
+```
+
+A string looks up the server in `/app/priv/vega_mcp.json`; a tuple supplies its config.
+Delegation invokes `Vega.MCP.connect(name, config)` before launch and
+`Vega.MCP.watch(server, child_name)` after child registration but before the first
+message. The child sees only server names and library discovery/call APIs, **not**
+configs, connect metadata, headers or secrets. Watch failure or exception rolls back
+the child/watcher/worktree and unregisters watches. Connections are shared named
+services and intentionally remain available; parent owns their later disconnect and
+unwatch cleanup. `mcp_module:` accepts an API-compatible adapter (used by tests).
+If MCP isn't loaded, requesting servers returns a startup error, not fake tools.
+These connection/watch ordering, credential omission and rollback paths are tested
+with a deterministic adapter. An additional optional integration test (skipped when
+MCP is absent) was run in an isolated test VM with sibling MCP modules: a real Python
+stdio JSON-RPC server connected before the child's first turn; the actual NanoAgent
+child invoked its MCP tool and reported the tool response. That integration passed.
+MCP's own transport suite tests its broader transports.
+
+
 `mcp_hook: {Module, :function, args}` calls an adapter **before** launching the child;
 `{:error, reason}` refuses startup, `{:ok, info}` injects info into the child's prompt.
 Use it to connect servers under known names and provide the eval API/tool index:
@@ -129,12 +152,13 @@ mcp_hook: {MyMCPAdapter, :connect_for, ["scout", server_configs]}
 The named child address is explicitly passed in adapter args. Hooks may use any MCP
 library, but this module does not implement transports or assume a sibling API that
 is not yet present. The hook must leave compact, credential-free info and own cleanup
-of any external server it starts if later model startup fails. No real external MCP
-server was used here; a hook fixture was exercised end-to-end.
+of any external server it starts if later model startup fails. The custom hook fixture was exercised end-to-end; direct mcp_servers integration
+was also verified against the real local stdio server described above (not a
+credentialed external hosted service).
 
 ## Evidence
 
-14 focused tests exercise real harness child start, fake-provider HTTP response,
+16 focused tests exercise real harness child start, fake-provider HTTP response,
 eval report back to parent; budget halt; forced death/name restart; hashed inputs;
 real git worktree isolation; MCP hook; parent started_by; supervised watcher kill;
 persist/recovery; absent parent delivery; report bound; partial-start rollback.
