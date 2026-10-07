@@ -94,6 +94,7 @@ defmodule NanoAgent do
         prompt_file: file,
         context_window: entry.context_length,
         input_modalities: entry[:input_modalities] || ["text"],
+        input_modalities_version: 1,
         max_output: entry[:max_output],
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
@@ -369,6 +370,7 @@ defmodule NanoAgent do
         # max_context cannot exceed, and the most it generates in one response (or nil).
         context_window: opts[:context_window],
         input_modalities: opts[:input_modalities] || ["text"],
+        input_modalities_version: 1,
         max_output: opts[:max_output],
         # The size in bytes of the conversation context_used measured: what a request adds
         # is estimated from the growth since (estimate/1).
@@ -497,18 +499,22 @@ defmodule NanoAgent do
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
   defp upgrade(%{context_window: _} = s) do
-    missing? = not Map.has_key?(s, :input_modalities)
+    missing? = Map.get(s, :input_modalities_version) != 1
 
     s =
-      s
-      |> Map.put_new_lazy(:input_modalities, fn ->
-        case Nano.Model.lookup(s.model) do
-          {:ok, entry} -> entry[:input_modalities] || ["text"]
-          _ -> ["text"]
-        end
-      end)
-      |> Map.put_new(:pending_images, [])
-      |> Map.put_new(:tool_images, [])
+      if missing? do
+        modalities =
+          case Nano.Model.lookup(s.model) do
+            {:ok, entry} -> entry[:input_modalities] || ["text"]
+            _ -> ["text"]
+          end
+
+        s |> Map.put(:input_modalities, modalities) |> Map.put(:input_modalities_version, 1)
+      else
+        s
+      end
+
+    s = s |> Map.put_new(:pending_images, []) |> Map.put_new(:tool_images, [])
 
     if missing?, do: %{s | system_prompt: render(s)}, else: s
   end
@@ -522,6 +528,7 @@ defmodule NanoAgent do
     Map.merge(s, %{
       context_window: window,
       input_modalities: entry[:input_modalities] || ["text"],
+      input_modalities_version: 1,
       pending_images: [],
       tool_images: [],
       max_output: entry[:max_output],

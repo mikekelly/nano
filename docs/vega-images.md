@@ -34,11 +34,13 @@ Tests: `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-images/_build mix test` in this wo
 
 ## Migration and verification
 
-Pre-image saved states that lack `input_modalities` look up the provider catalog once
-on upgrade, record the answer, and re-render the prompt without resetting history.
-If verification is unavailable they record text-only conservatively; they must be
-restarted as a new agent once the catalog works to acquire vision. Already recorded
-modalities never re-fetch at restart. Model-list cache keys include a schema marker so
+Saved states without `input_modalities_version: 1` look up the provider catalog once
+on upgrade, record the answer with version provenance, and re-render the prompt
+without resetting history. This includes interim deployments that wrote a text-only
+placeholder before modality-aware catalog caches existed. If verification is unavailable
+they record text-only conservatively; start a new agent once the catalog works to acquire
+vision. Versioned modalities never re-fetch even through catalog outages/restarts.
+Model-list cache keys include a schema marker so
 an in-memory pre-image catalog does not disable vision for fresh agents after reload.
 Active model calls finish with their existing request; no transcript/tool exchange is
 rewritten to inject images mid-flight.
