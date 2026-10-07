@@ -5,10 +5,12 @@ defmodule Nano.Capabilities do
     {:background, Nano.Background, "Restart-safe commands and completion events", "docs/nova-tools.md"},
     {:delegation, Nano.Delegation, "Composed prompts, isolated children and lifecycle reports", "docs/nova-delegation.md"},
     {:mcp, Nano.MCP, "MCP tools, resources, prompts and mailbox notifications", "docs/nova-mcp.md"},
+    {:browser, Nano.Browser, "Interactive Lightpanda CDP browser sessions", "docs/nova-browser.md"},
     {:web, Nano.Web, "HTTP/JavaScript pages, cached paging and citations", "docs/nova-web.md"},
     {:search, Nano.Search, "Exa search and asynchronous research (requires key)", "docs/nova-web.md"},
     {:goals, Nano.Goals, "Durable goal trees and concise reviews", "docs/nova-goals.md"},
     {:memory, Nano.Memory, "Durable cross-session knowledge", "docs/nova-goals.md"},
+    {:decisions, Nano.Bots.Decision, "Optional typed small-model judgements", "docs/nova-bots.md"},
     {:bots, Nano.Bots, "Consumer chat sessions, identity and human requests", "docs/nova-bots.md"}
   ]
   def entries do
