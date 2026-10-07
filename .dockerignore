@@ -6,3 +6,4 @@ deps
 data
 tmp
 erl_crash.dump
+archive

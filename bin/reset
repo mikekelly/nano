@@ -1,0 +1,49 @@
+#!/bin/sh
+# Reset the sandbox to a clean seed: no agents, no traces of earlier runs, the checkout at main.
+#
+#   1. Refuses if the agents' checkout has uncommitted work, or a branch that is not pushed to
+#      this repo: commit a run to seedling/<agent>-<what> and push it first.
+#   2. Stops the node and moves everything in data/ (logs, saved agent state, spill files,
+#      whatever agents wrote there) to archive/<time>/, keeping only the ChatGPT tokens.
+#   3. Resets the checkout to main, removes untracked files and tmp/, deletes every other
+#      branch, and makes it fetch main only, so other branches are not one `git branch -a` away.
+#   4. Recreates the container (dropping packages agents installed) and starts the node.
+cd "$(dirname "$0")/.." || exit 1
+checkout=${NANO_CHECKOUT:-$(sed -n 's/^NANO_CHECKOUT=//p' .env 2>/dev/null)}; checkout=${checkout:-../nano-checkout}
+git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1 || { echo "no checkout at $checkout" >&2; exit 1; }
+
+git -C "$checkout" fetch -q origin main || exit 1
+if [ -n "$(git -C "$checkout" status --porcelain)" ]; then
+  echo "$checkout has uncommitted changes; commit them to a seedling branch and push first:" >&2
+  git -C "$checkout" status --short >&2; exit 1
+fi
+for b in $(git -C "$checkout" for-each-ref --format='%(refname:short)' refs/heads); do
+  [ "$b" = main ] && continue
+  [ "$(git rev-parse -q --verify "refs/heads/$b")" = "$(git -C "$checkout" rev-parse "$b")" ] ||
+    { echo "branch $b in $checkout is not in this repo at the same commit; push it first" >&2; exit 1; }
+done
+[ -z "$(git -C "$checkout" rev-list -n 1 origin/main..main 2>/dev/null)" ] ||
+  { echo "main in $checkout has commits that are not on main here; move them to a seedling branch first" >&2; exit 1; }
+
+docker compose stop -t 5 >/dev/null 2>&1
+
+if [ -d data ] && [ -n "$(ls -A data)" ]; then
+  archive="archive/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$archive" && mv data/* "$archive"/ || exit 1
+  mkdir -p data/state
+  [ -f "$archive/state/chatgpt_auth.json" ] && mv "$archive/state/chatgpt_auth.json" data/state/
+  echo "archived data/ to $archive"
+fi
+
+git -C "$checkout" checkout -q -f main &&
+  git -C "$checkout" reset -q --hard origin/main || exit 1
+git -C "$checkout" clean -qfd && rm -rf "$checkout/tmp"
+git -C "$checkout" config remote.origin.fetch +refs/heads/main:refs/remotes/origin/main
+for r in $(git -C "$checkout" for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags); do
+  case "$r" in refs/heads/main | refs/remotes/origin/main) ;; *) git -C "$checkout" update-ref -d "$r" ;; esac
+done
+git -C "$checkout" reflog expire --expire=now --all && git -C "$checkout" gc -q --prune=now
+echo "checkout reset to $(git -C "$checkout" log --oneline -1)"
+
+docker compose up -d --force-recreate >/dev/null 2>&1 || { echo "docker compose up failed" >&2; exit 1; }
+exec bin/up

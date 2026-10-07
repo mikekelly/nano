@@ -1,6 +1,6 @@
 defmodule NanoAgent do
   @moduledoc """
-  One LLM agent as a GenServer (SPEC.md "Agent GenServer"). The harness does three things:
+  One LLM agent as a GenServer (bootstrap/SPEC.md "Agent GenServer"). The harness does three things:
   deliver mailbox messages as events, run the model's tool calls, and log everything.
 
   Model requests and evals run in tasks under `Nano.EvalSupervisor` and come back as messages,

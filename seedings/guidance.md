@@ -117,4 +117,4 @@ did not work and why. The next agent starts from there.
 ## Related
 
 - The seedings these principles apply to: [README.md](README.md) lists them. Each links back here.
-- The seed's own rules: [AGENTS.md](../AGENTS.md) (main stays minimal; seedlings never merge), [SPEC.md](../SPEC.md) (the thesis; simplicity).
+- The seed's own rules: [AGENTS.md](../AGENTS.md) (main stays minimal; seedlings never merge), [SPEC.md](../bootstrap/SPEC.md) (the thesis; simplicity).

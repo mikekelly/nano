@@ -27,7 +27,7 @@ numbers the dashboard shows, and sending traces never slows or blocks an agent.
 
 ## Inspiration
 
-- The log entry table in [SPEC.md](../SPEC.md#openrouter-and-the-harness-log).
+- The log entry table in [SPEC.md](../bootstrap/SPEC.md#openrouter-and-the-harness-log).
 - Langfuse's data model: traces, observations (generations, spans, events), scores.
 
 How you build it is yours to decide.

@@ -1,7 +1,7 @@
 defmodule Nano.FakeOpenRouter do
   @moduledoc """
   A scripted stand-in for OpenRouter's chat completions endpoint: a real HTTP server on a
-  random localhost port, so agents exercise the whole `Req` path (PLAN.md decision 12).
+  random localhost port, so agents exercise the whole `Req` path (bootstrap/PLAN.md decision 12).
 
       Nano.FakeOpenRouter.start()           # idempotent; points :openrouter_base_url at the fake
       model = Nano.FakeOpenRouter.model()   # a fresh slug; responses are queued per model, so

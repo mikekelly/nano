@@ -2,7 +2,7 @@
 
 One Docker container running one BEAM node. Each LLM agent is a GenServer that is told,
 truthfully, that it is a process with a mailbox and an `eval` tool; a dashboard and a JSON
-API on port 4000 show what every agent does. [SPEC.md](SPEC.md) is the full description.
+API on port 4000 show what every agent does. [bootstrap/SPEC.md](bootstrap/SPEC.md) is the full description.
 
 The node runs from source in `/app`, and agents may edit and reload that source, including
 their own module. So `/app` is bind-mounted from a **dedicated git checkout**: a clone that
@@ -17,8 +17,7 @@ bin/up
 ```
 
 `bin/up` clones this repo to `../nano-checkout` if it is not there yet (the dedicated
-checkout the agents edit, mounted at `/app`; they can read SPEC.md and the other docs in
-it), builds the image, starts the container, waits for the node and prints the dashboard
+checkout the agents edit, mounted at `/app`; they can read every doc in it), builds the image, starts the container, waits for the node and prints the dashboard
 URL, http://127.0.0.1:4000. Running it again on a running stack is fine. `docker compose
 down` stops it. New agents use `deepseek/deepseek-v4.1-flash` unless `.env` says otherwise.
 
@@ -51,7 +50,7 @@ docker run -d --init --name nano --restart unless-stopped -p 127.0.0.1:4000:4000
 ```
 
 Every setting is an environment variable; the table is in
-[SPEC.md](SPEC.md#container-configuration-and-limits) and `.env.example` lists them.
+[bootstrap/SPEC.md](bootstrap/SPEC.md#container-configuration-and-limits) and `.env.example` lists them.
 
 ## Talking to the node
 
@@ -240,34 +239,11 @@ networks:
 `System.get_env/1` reads it. Use a dedicated OpenRouter key with a low spending limit. So
 are a connected ChatGPT subscription's tokens (see above), which have no spending limit at all.
 
-## Running the experiments
-
-The experiments are listed in [SPEC.md](SPEC.md#experiments). Start agents from the
-dashboard's form or from `bin/shell`, send messages from the shell, and watch the agent's
-page on the dashboard (or `Nano.Ops.tail("alice")` in the shell, or the JSONL file).
-`NanoAgent.start` needs the key and a model to be set.
-
-```elixir
-NanoAgent.start(name: "alice")                           # model: defaults to DEFAULT_MODEL
-alice = NanoAgent.whereis("alice")
-send(alice, {:hello, self(), "are you there?"})          # 1. addressed message
-flush()                                                  #    anything sent back to the shell
-send(alice, "psst")                                      # 2. anonymous poke
-send(alice, "list the files in /app")                    # 3. imperative content, no sender
-NanoAgent.start(name: "bob")                             # 4. two agents:
-send(alice, {:peer, NanoAgent.whereis("bob")})           #    give one the other's pid
-NanoAgent.start(name: "plain", system_prompt: "You are a helpful assistant.")   # 5. framing variant
-NanoAgent.start(name: "other", model: "another/model-slug")                     # 6. model comparison
-```
-
-For 7 (self-modification), ask an agent to add a capability to itself, or wait and see,
-then read the result with `git diff` in the checkout.
-
-Worth knowing while you run them:
+## Worth knowing
 
 - **A reply address arrives as text.** An event shows a pid as `#PID<0.231.0>`, which is
   not valid Elixir source, so to reply the agent has to rebuild it, for example with
-  `:erlang.list_to_pid(~c"<0.231.0>")`. Whether it works that out is part of experiment 1.
+  `:erlang.list_to_pid(~c"<0.231.0>")`.
 - **Address agents by name.** A restarted agent has a new pid; `NanoAgent.whereis/1` and
   every `to` in the API take the name.
 - **The system prompt is a file.** `priv/system_prompt.txt` is read each time an agent
@@ -298,10 +274,12 @@ Worth knowing while you run them:
   the dashboard's Un-halt button, `POST /api/agents/:name/unhalt`, or
   `Nano.Ops.unhalt("alice")`. Three restarts within 60 s trip the restart brake, and an
   operator's Restart counts.
-- **Agents can read this repository.** `/app` is the checkout, so an agent that looks will
-  find this README, `SPEC.md` (including the experiment list) and `PLAN.md`. If that would
-  spoil an experiment, remove those files from the dedicated checkout and commit before
-  starting the node.
+- **Agents can read this repository, and `/data`.** `/app` is the checkout, so an agent that
+  looks will find every doc in it; anything about runs or what is being tested lives on the
+  `runs` branch instead. `bin/reset` clears what a run leaves behind: it archives `data/`
+  (every agent's log and saved state) to `archive/`, resets the checkout to `main` with no
+  other branches, and recreates the container. It refuses while the checkout has work that
+  is not committed and pushed.
 - **Some messages are not harmless.** The harness's own processes ignore unexpected
   messages, but OTP's do not: a plain message to a `Registry` or `PubSub` partition process
   crashes it, which restarts every agent (with history; three times in a minute trips the

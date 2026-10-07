@@ -1,7 +1,7 @@
 # Seedings
 
-The thesis and the spec's own experiments are in SPEC.md; the vocabulary: `main` is the *seed*, the minimal harness; a *seeding* is a design spec we
-plant in an agent, asking it to grow a capability the seed deliberately lacks; a *seedling*
+The vocabulary: `main` is the *seed*, the minimal harness; a *seeding* is a design spec
+planted in an agent, asking it to grow a capability the seed deliberately lacks; a *seedling*
 is the branch that grows (`seedling/<agent>-<what>`, never merged into `main`).
 
 Each seeding is a high-level spec for one capability of a fuller harness. It states the
@@ -10,22 +10,6 @@ weighing and **inspiration** worth reading, and stops there: how to get to the o
 the agent's decision, and every seeding says so. The agent reads the spec from `/app`
 and builds the capability in the checkout, as modules under `/app/lib` plus whatever else
 it needs, following `guidance.md`, which goes with every seeding.
-
-## Planting one
-
-Start a fresh agent with generous limits (turns and tokens 0, context 1,000,000) and send
-it, from an operator user, a first message that points at the files rather than pasting
-them — the agent reads what it needs:
-
-```
-This message is from the people who run this node. Please read /app/seedings/guidance.md
-and then /app/seedings/delegation.md, and build what the second one describes. When it
-works, or if you conclude it can't be done, send a message to the sender_pid of this
-message saying what you built and how to use it.
-```
-
-Record the run in `RUNS.md` on the `runs` branch, not here (which seeding, which model, what
-grew, cost), push the seedling branch, and reset the checkout to `main` for the next run.
 
 ## Seedings
 

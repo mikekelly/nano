@@ -1582,9 +1582,9 @@ defmodule NanoAgentTest do
     assert budget_line(last) =~ "Used so far: 1 of 500 turns, 110 of"
   end
 
-  test "the default template file is the one in SPEC.md, and agents render it", ctx do
+  test "the default template file is the one in bootstrap/SPEC.md, and agents render it", ctx do
     start!(ctx)
-    [_, spec] = Regex.run(~r/## System prompt.*?```\n(.*?)```/s, File.read!("SPEC.md"))
+    [_, spec] = Regex.run(~r/## System prompt.*?```\n(.*?)```/s, File.read!("bootstrap/SPEC.md"))
     assert File.read!("priv/system_prompt.txt") == spec
     assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
     pattern = spec |> Regex.escape() |> String.replace(~r/\\\{\\\{\w+\\\}\\\}/, ".+?")
