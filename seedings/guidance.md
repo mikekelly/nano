@@ -76,14 +76,19 @@ the ones before it, and each makes the next one cheaper, so it is a good default
    What they share: every cut is announced in the result, together with the exact way to
    get the rest; every error says what to do next; and results are compact text that is
    cheap to read, not raw data structures.
-3. *Notes and an index*: a module that says what exists and how to call it, and writes
+3. *Compaction* ([compaction.md](compaction.md)): your conversation compacted
+   automatically, before any model call that would leave too little room, so you stay the
+   same agent and keep working. Without it every agent's working life ends at its context
+   limit, mid-task and unable to report; every rung after this assumes an agent can run as
+   long as its job takes, and it has to be working before it is needed.
+4. *Notes and an index*: a module that says what exists and how to call it, and writes
    `/app/NOTES.md` from that table, so the next agent (or you after a restart) starts from
    the index instead of from the source.
-4. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
+5. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
    and pre-reading, give it a task, get its result as a message. From here on, anything
    large is a sub-agent's job and your context stays at the level of the plan. Build it
    early, while you have plenty of context left.
-5. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
+6. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
    search, when the operators have supplied a key for a search service such as Exa
    (exa.ai), as a node setting under its usual name (`EXA_API_KEY`; the node's settings,
    `Nano.Ops.settings/0` or `GET /api/settings`, show which are set; [search.md](search.md)); and the browser that is already in the image — Lightpanda at
@@ -91,12 +96,12 @@ the ones before it, and each makes the next one cheaper, so it is a good default
    --dump markdown URL` renders a page and prints it as Markdown, and `lightpanda serve
    --host 127.0.0.1 --port 9222` runs a CDP server that Puppeteer- or Playwright-style
    clients can drive for clicks and forms. Wrap it like any other tool.
-6. *Goals* ([goals.md](goals.md)) and *memory*: what you are trying to do and what you have
+7. *Goals* ([goals.md](goals.md)) and *memory*: what you are trying to do and what you have
    learned, on disk, reviewed cheaply at each wakeup.
-7. *Decision models* for the judgments that recur (below), and *MCP* ([mcp.md](mcp.md)) for
+8. *Decision models* for the judgments that recur (below), and *MCP* ([mcp.md](mcp.md)) for
    tools that other people have already built.
 
-By rung 4 a single eval can be `Delegation.subagent("scout", prompt: ..., pre: [...])`,
+By rung 5 a single eval can be `Delegation.subagent("scout", prompt: ..., pre: [...])`,
 where the same work at rung 0 was pages of code and a dozen turns of fixing it.
 
 **Know your role and level of abstraction, and defend your context with delegation.**
@@ -121,22 +126,12 @@ from the foundation, not from the bare seed. Work that shares nothing can start 
 **Compact before your context runs out, not when it does.** Your context only grows, and
 when it nears your limit (when the next call, with room for a reply, might not fit) the
 harness stops calling the model: you cannot then do anything, including shrink it. The seed
-has no compaction, so an agent that will run long needs one: its conversation replaced by
-a summary of what matters (decisions, commitments, open questions, where things are), while
-it stays the same agent, with the same name, pid and mailbox, so the people, sub-agents and
-processes that reach you, and the ones you started that report to you, carry on as before.
-
-Compaction is itself work that needs room, so build it while you have plenty, keep it
-cheap by keeping your notes and goals current as you go, and act on a threshold set short
-of the limit. Think of the reserve in tokens, not as a fraction: it is what compacting will
-take. pi, a coding agent whose harness compacts mechanically with a separate summarising
-call, keeps 16,384 tokens in reserve (the summary may use about 13,000 of them) and the last
-20,000 tokens of the conversation verbatim, so it compacts at 94% of a 272,000-token
-window. If your compaction asks you to read your notes and write the summary in your own
-turns, it costs more: reserve enough for that, and act when that much is left. Compacting
-much earlier throws away context you could still have used. The budget line delivered with
-your events tells you where you are. Put the same rule into the prompts of the agents you
-start: an agent halted for its context cannot report what it found.
+has no compaction, and an agent that will run long needs it to happen automatically, before
+the limit, while it stays the same agent ([compaction.md](compaction.md) is the spec). Build
+it early, while you have plenty of room, and keep your notes and goals current as you go:
+they are what a summary can point to, and what survives it. Until it exists, the budget
+line delivered with your events tells you where you are. Every agent you start needs it as
+much as you do: an agent halted for its context cannot report what it found.
 
 **You share this machine.** Other agents work on this node while you do: in `/app` (the
 running node's source), in worktrees, under `/data` and `/tmp`, on the same ports and in the

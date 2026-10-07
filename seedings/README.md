@@ -19,6 +19,7 @@ or drop for its own situation.
 | File | Capability |
 | --- | --- |
 | [`guidance.md`](guidance.md) | How to build any of them: lean prompts, breadcrumbs, progressive disclosure |
+| [`compaction.md`](compaction.md) | Compact every agent's conversation automatically before its context fills, so it stays itself and keeps working |
 | [`delegation.md`](delegation.md) | Start sub-agents with their own prompt, pre-reading, model, worktree and MCP servers |
 | [`mcp.md`](mcp.md) | Speak MCP: use servers' tools and resources, receive their events as mailbox events |
 | [`web-access.md`](web-access.md) | Browse and search the web (a port of pi-web-access) |
