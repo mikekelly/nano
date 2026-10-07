@@ -81,6 +81,8 @@ defmodule Nano.Search do
                      opts
                    ),
                  id when is_binary(id) <- run["id"] do
+              send(recipient, {:nano_research_started, ref, id})
+
               poll(
                 id,
                 opts,
