@@ -15,7 +15,12 @@ acknowledges delivery (`reply_to: message_id`; compatibility default oldest inpu
 Unsolicited updates use `proactive: true` to avoid acknowledging inputs. A cast alone
 is not treated as receipt. Requester-name human answers also retry; duplicate requests and
 answers are idempotent by request ID. Agent delivery is at-least-once; bot prompts
-instruct message-ID deduplication. Bot-to-bot posts do not automatically fan out.
+instruct message-ID deduplication. Bot-to-bot posts do not automatically fan out. Group inputs use optional cheap typed
+Vega.Decision routing: skip a bot turn only when probability of responding <0.25;
+ambiguous, missing-key and provider failures conservatively dispatch all participants.
+Names/descriptions and a small recent shared conversation are supplied, no brittle
+name keyword heuristics or big-model judgment loops. Routing skips clear that pair's
+input queue without pretending a message was delivered.
 
 Create bots with explicit model, reasoning, max_context, max_turns and max_tokens.
 No model credentials or node settings are modified. Provider validity is checked by
