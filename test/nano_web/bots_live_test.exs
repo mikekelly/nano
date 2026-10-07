@@ -280,4 +280,21 @@ defmodule NanoWeb.BotsLiveTest do
 
     assert has_element?(view, "#messages", "History item 410")
   end
+
+  test "detaching from latest freezes the initial page until explicit return", ctx do
+    {:ok, bot} = Vega.Bots.create_bot("Muse", ctx.opts)
+    {:ok, chat} = Vega.Bots.create_session([bot["id"]], ctx.opts)
+    for i <- 1..85, do: Vega.Bots.post(chat["id"], bot["id"], "Detached item #{i}", ctx.opts)
+    {:ok, view, _} = open(ctx.conn)
+    view |> element("button[phx-click='open-session']") |> render_click()
+    assert has_element?(view, "#messages .bubble p", ~r/^Detached item 6$/)
+    render_hook(view, "reading-history", %{reading: true})
+    {:ok, _} = Vega.Bots.post(chat["id"], bot["id"], "Detached new item", ctx.opts)
+    assert has_element?(view, "#messages .bubble p", ~r/^Detached item 6$/)
+    refute has_element?(view, "#messages", "Detached new item")
+    assert render(view) =~ "New messages have arrived"
+    render_hook(view, "latest-messages", %{})
+    assert has_element?(view, "#messages", "Detached new item")
+    refute has_element?(view, "#messages .bubble p", ~r/^Detached item 6$/)
+  end
 end

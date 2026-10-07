@@ -64,3 +64,10 @@ preserves the displayed message window, updates title/status metadata, and annou
 new messages instead of replacing text under the reader. It never copies another transcript. Own follow hook preserves the
 viewport when messages are prepended; Show latest explicitly returns to bottom.
 Pagination is tested with 410 durable messages and an unopened second conversation.
+
+Detached readers freeze even the initial latest-80 page via the hook's reading-history
+event. New activity does not evict that text. The jump button asks the server for the
+latest page before scrolling. Sliding-window prepends preserve an actual message's
+viewport offset (anchor geometry, not net scrollHeight, which is unchanged at the cap).
+Follow-hook mock evidence: detached state events deduplicate, same-height sliding cap
+keeps the old anchor, and jump asks for latest; OS/browser geometry remains unverified.
