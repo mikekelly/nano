@@ -2164,4 +2164,24 @@ defmodule NanoAgentTest do
     assert {:ok, _} = NanoAgent.compact(ctx.name, "summary", resume_context: true)
     assert text(List.last(request!(ctx.model)["messages"])) =~ ":pending_resume"
   end
+
+  test "compact SHA guards and expired suspended requests", ctx do
+    {pid, _} = start!(ctx)
+    before = :sys.get_state(pid)
+    hash = NanoAgent.transcript_hash(before)
+    assert byte_size(hash) == 32
+    assert {:ok, _} = NanoAgent.compact(ctx.name, "summary", expected_transcript_hash: hash)
+    assert {:error, :stale} = NanoAgent.compact(ctx.name, "stale", expected_transcript_hash: hash)
+    assert {:error, :invalid_option} = NanoAgent.compact(ctx.name, "summary", timeout: 0)
+    before = :sys.get_state(pid)
+    :sys.suspend(pid)
+
+    try do
+      assert {:error, :timeout} = NanoAgent.compact(ctx.name, "expired", timeout: 10)
+    after
+      :sys.resume(pid)
+    end
+
+    assert :sys.get_state(pid) == before
+  end
 end

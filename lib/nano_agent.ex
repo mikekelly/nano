@@ -136,23 +136,36 @@ defmodule NanoAgent do
   `context_used` are rewritten; a summary is appended as the first user message, so the model
   keeps the thread, and the transcript stays valid (every recorded tool call keeps its result).
 
-  Pass `expected_transcript_hash: :erlang.phash2(snapshot.transcript)` to reject a stale
+  Pass `expected_transcript_hash: NanoAgent.transcript_hash(snapshot)` to reject a stale
   summary. Summaries must be nonblank UTF-8, at most 64,000 bytes. Options are a keyword
   list accepting that hash and optional `retained:` metadata (a list). The durable
   `:compacted` log entry must succeed before history is changed; original logs are untouched.
   Halt reasons are not cleared, and no turn is started by compaction by default.
+  Calls have a bounded `timeout:` in milliseconds (default 5,000); queued requests expire
+  without mutation. SHA-256 guards are recommended; legacy integer phash2 guards are accepted.
   With `resume_context: true`, only a `:context` halt is cleared, atomically after the
   durable record succeeds and the new context is below its limit (or unlimited). Pending
   events can then start a turn; all other halt reasons are preserved.
 
   Returns `{:ok, info}` or `{:error, reason}` where reason is `:not_found`, `:busy`,
-  `:stale`, `:invalid_summary`, `:invalid_option`, `:unanswered_tools`, or `:log_failed`.
+  `:timeout`, `:stale`, `:invalid_summary`, `:invalid_option`, `:unanswered_tools`, or `:log_failed`.
   """
   def compact(name, summary, opts \\ []) do
     with :ok <- validate_compaction(summary, opts) do
       case whereis(name) do
-        nil -> {:error, :not_found}
-        pid -> GenServer.call(pid, {:compact, summary, opts}, :infinity)
+        nil ->
+          {:error, :not_found}
+
+        pid ->
+          timeout = Keyword.get(opts, :timeout, 5_000)
+          deadline = System.monotonic_time(:millisecond) + timeout
+
+          try do
+            GenServer.call(pid, {:compact, summary, opts, deadline}, timeout)
+          catch
+            :exit, {:timeout, _} -> {:error, :timeout}
+            :exit, _ -> {:error, :not_found}
+          end
       end
     end
   end
@@ -596,6 +609,14 @@ defmodule NanoAgent do
   # Compaction: only while nothing is running, so it cannot race a model request, an eval, or
   # the tool calls of a response being handled. Anything else is :busy and the caller tries later.
   @impl true
+  def handle_call({:compact, summary, opts, deadline}, from, s) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      {:reply, {:error, :timeout}, s}
+    else
+      handle_call({:compact, summary, opts}, from, s)
+    end
+  end
+
   def handle_call({:compact, summary, opts}, _from, s) do
     result = validate_compaction(summary, opts)
 
@@ -607,7 +628,7 @@ defmodule NanoAgent do
         {:reply, {:error, :busy}, s}
 
       opts[:expected_transcript_hash] != nil and
-          opts[:expected_transcript_hash] != hash_transcript(s.transcript) ->
+          not transcript_matches?(s.transcript, opts[:expected_transcript_hash]) ->
         {:reply, {:error, :stale}, s}
 
       not paired_transcript?(s.transcript) ->
@@ -1046,7 +1067,13 @@ defmodule NanoAgent do
     end
   end
 
-  defp hash_transcript(transcript) when is_list(transcript), do: :erlang.phash2(transcript)
+  defp hash_transcript(transcript) when is_list(transcript),
+    do: :crypto.hash(:sha256, :erlang.term_to_binary(transcript))
+
+  defp transcript_matches?(transcript, expected) when is_integer(expected),
+    do: :erlang.phash2(transcript) == expected
+
+  defp transcript_matches?(transcript, expected), do: hash_transcript(transcript) == expected
 
   defp validate_compaction(summary, opts) do
     cond do
@@ -1067,10 +1094,21 @@ defmodule NanoAgent do
 
       Enum.any?(opts, fn {k, v} ->
         case k do
-          :expected_transcript_hash -> not (is_integer(v) and v >= 0 and v < 134_217_728)
-          :retained -> not is_list(v)
-          :resume_context -> not is_boolean(v)
-          _ -> true
+          :expected_transcript_hash ->
+            not ((is_integer(v) and v >= 0 and v < 134_217_728) or
+                     (is_binary(v) and byte_size(v) == 32))
+
+          :retained ->
+            not is_list(v)
+
+          :resume_context ->
+            not is_boolean(v)
+
+          :timeout ->
+            not (is_integer(v) and v > 0 and v <= 2_147_483_647)
+
+          _ ->
+            true
         end
       end) ->
         {:error, :invalid_option}
