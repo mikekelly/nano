@@ -12,6 +12,8 @@ defmodule Vega.Compaction do
   commitments, open questions, task status, names of collaborators, important bindings,
   file paths, tested capabilities and limitations. Include existing summaries. Be concise;
   reference durable notes rather than reproducing them. Do not invent accomplishments.
+  Image/view references in history are metadata, not image contents visible to you. Preserve
+  relevant references/paths without claiming to have seen or interpreted those images.
   Return only the continuation summary; do not call tools.
   """
 
