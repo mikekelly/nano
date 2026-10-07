@@ -147,6 +147,11 @@ same BEAM. Nothing stops agents colliding except each one taking care, so:
 - leave node-wide state as it is unless asked, or restore it in the same eval: application
   env (API keys, base URLs), global names, other agents' processes, the node itself, and its
   prod build, which `mix compile` in `/app` rewrites under the image's `MIX_ENV=prod`;
+- treat loading code into the running node as changing it for everyone: a module you
+  compile or reload there (from `/app`, a worktree or an eval) replaces the one every
+  agent is running, mid-turn, and a running process keeps state shaped for the old code;
+  load only modules your task owns, never the harness's own (`NanoAgent`, `Nano.*`
+  infrastructure) unless asked, and say what you loaded;
 - when something shared breaks, suspect concurrent work before the code, and tell whoever
   is affected.
 
