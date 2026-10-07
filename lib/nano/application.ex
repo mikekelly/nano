@@ -24,6 +24,9 @@ defmodule Nano.Application do
           Nano.Background.Registry,
           Nano.Background.Tasks,
           Nano.Goals.Store,
+          Nano.MCP.Registry,
+          Nano.MCP.Supervisor,
+          Nano.MCP.Store,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           NanoWeb.Endpoint
