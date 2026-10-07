@@ -1,6 +1,7 @@
 defmodule Vega.ImagesIntegrationTest do
   use ExUnit.Case, async: false
   import Phoenix.ConnTest
+  import Phoenix.LiveViewTest
   import Plug.Conn
   alias Nano.FakeOpenRouter, as: Fake
   @endpoint NanoWeb.Endpoint
@@ -77,6 +78,47 @@ defmodule Vega.ImagesIntegrationTest do
     Process.exit(pid, :operator_restart)
     wait(fn -> NanoAgent.whereis(name) not in [nil, pid] end)
     assert NanoAgent.info(name).input_modalities == ["text", "image"]
+  end
+
+  test "dashboard file upload delivers pixels and renders the same immutable timeline image" do
+    {name, _, model} = start_agent(true)
+    existing = Nano.User.pid("dashboard")
+
+    on_exit(fn ->
+      if is_nil(existing) and not is_nil(Nano.User.pid("dashboard")),
+        do: DynamicSupervisor.terminate_child(Nano.UserSupervisor, Nano.User.pid("dashboard"))
+    end)
+
+    {:ok, view, _} = live(build_conn(), "/agents/#{name}")
+
+    upload =
+      file_input(view, "#image-message", :images, [
+        %{name: "attachment.png", content: png(), type: "image/png"}
+      ])
+
+    assert render_upload(upload, "attachment.png") =~ "attachment.png"
+    Fake.push(model, text: "visible")
+    view |> form("#image-message", %{text: "identify it"}) |> render_submit()
+    assert_receive {:openrouter_request, ^model, body}, 2000
+
+    assert Enum.any?(body["messages"], fn m ->
+             is_list(m["content"]) and Enum.any?(m["content"], &(&1["type"] == "image_url"))
+           end)
+
+    wait(fn -> NanoAgent.info(name).status == :idle end)
+    html = render(view)
+    assert html =~ "alt=\"Image attachment\""
+    assert html =~ "/api/images/"
+  end
+
+  test "legacy state looks up missing modalities once and persists through restart" do
+    {name, pid, _model} = start_agent(true)
+    s = Nano.StateStore.get(name) |> Map.drop([:input_modalities, :pending_images, :tool_images])
+    Nano.StateStore.put(name, s)
+    Process.exit(pid, :operator_restart)
+    wait(fn -> NanoAgent.whereis(name) not in [nil, pid] end)
+    assert NanoAgent.info(name).input_modalities == ["text", "image"]
+    assert NanoAgent.info(name).system_prompt =~ "can see image attachments"
   end
 
   test "eval views follow every tool output, not mixed into tool content" do

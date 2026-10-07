@@ -54,7 +54,10 @@ defmodule Vega.Images do
 
   def fetch(id) when is_binary(id) do
     with true <- Regex.match?(~r/\A[0-9a-f]{64}\z/, id),
-         {:ok, bytes} <- File.read(Path.join(root(), id)),
+         path = Path.join(root(), id),
+         {:ok, stat} <- File.lstat(path),
+         true <- stat.type == :regular and stat.size <= @max_bytes,
+         {:ok, bytes} <- File.read(path),
          true <- digest(bytes) == id,
          {:ok, mime, _, _} <- dimensions(bytes) do
       {:ok, bytes, mime}
@@ -151,18 +154,26 @@ defmodule Vega.Images do
 
   defp store(id, bytes) do
     path = Path.join(root(), id)
-    # Exclusive creation never overwrites an existing image, even under concurrent uploads.
-    case File.open(path, [:write, :binary, :exclusive]) do
-      {:ok, io} ->
-        result = IO.binwrite(io, bytes)
-        File.close(io)
-        if result == :ok, do: File.chmod(path, 0o444), else: result
+    # Write privately, then hard-link atomically with exclusive destination creation.
+    # Readers never observe partially written bytes, and concurrent imports cannot replace.
+    temp = Path.join(root(), ".upload-" <> Base.encode16(:crypto.strong_rand_bytes(16)))
 
-      {:error, :eexist} ->
-        if File.read(path) == {:ok, bytes}, do: :ok, else: {:error, "image store corruption"}
+    try do
+      with :ok <- File.write(temp, bytes, [:binary, :exclusive]),
+           :ok <- File.chmod(temp, 0o444) do
+        case File.ln(temp, path) do
+          :ok ->
+            :ok
 
-      error ->
-        error
+          {:error, :eexist} ->
+            if File.read(path) == {:ok, bytes}, do: :ok, else: {:error, "image store corruption"}
+
+          error ->
+            error
+        end
+      end
+    after
+      File.rm(temp)
     end
   end
 

@@ -496,12 +496,22 @@ defmodule NanoAgent do
   # come from the model's list if it can be had, and the window then caps max_context (which
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
-  defp upgrade(%{context_window: _} = s),
-    do:
+  defp upgrade(%{context_window: _} = s) do
+    missing? = not Map.has_key?(s, :input_modalities)
+
+    s =
       s
-      |> Map.put_new(:input_modalities, ["text"])
+      |> Map.put_new_lazy(:input_modalities, fn ->
+        case Nano.Model.lookup(s.model) do
+          {:ok, entry} -> entry[:input_modalities] || ["text"]
+          _ -> ["text"]
+        end
+      end)
       |> Map.put_new(:pending_images, [])
       |> Map.put_new(:tool_images, [])
+
+    if missing?, do: %{s | system_prompt: render(s)}, else: s
+  end
 
   defp upgrade(s) do
     entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
@@ -511,7 +521,7 @@ defmodule NanoAgent do
 
     Map.merge(s, %{
       context_window: window,
-      input_modalities: ["text"],
+      input_modalities: entry[:input_modalities] || ["text"],
       pending_images: [],
       tool_images: [],
       max_output: entry[:max_output],

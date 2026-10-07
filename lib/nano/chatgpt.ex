@@ -271,7 +271,7 @@ defmodule Nano.ChatGPT do
   """
   def models do
     now = System.monotonic_time(:second)
-    config = {url(""), client_version()}
+    config = {url(""), client_version(), :input_modalities_v1}
     cached = :persistent_term.get({__MODULE__, :models}, nil)
 
     cond do
