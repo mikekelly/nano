@@ -1,15 +1,15 @@
 defmodule Nano.Capabilities do
   @moduledoc "Discover seedling libraries. `index/0` is compact; `notes/1` writes the same index to disk. Module docs and linked guides disclose details progressively."
   @entries [
-    {:files_shell, Nano.Tools, "Bounded file operations and shell commands", "docs/tools.md"},
-    {:background, Nano.Background, "Restart-safe commands and completion events", "docs/tools.md"},
-    {:delegation, Nano.Delegation, "Composed prompts, isolated children and lifecycle reports", "docs/delegation.md"},
-    {:mcp, Nano.MCP, "MCP tools, resources, prompts and mailbox notifications", "docs/mcp.md"},
-    {:web, Nano.Web, "HTTP/JavaScript pages, cached paging and citations", "docs/web.md"},
-    {:search, Nano.Search, "Exa search and asynchronous research (requires key)", "docs/web.md"},
-    {:goals, Nano.Goals, "Durable goal trees and concise reviews", "docs/goals.md"},
-    {:memory, Nano.Memory, "Durable cross-session knowledge", "docs/goals.md"},
-    {:bots, Nano.Bots, "Consumer chat sessions, identity and human requests", "docs/bots.md"}
+    {:files_shell, Nano.Tools, "Bounded file operations and shell commands", "docs/nova-tools.md"},
+    {:background, Nano.Background, "Restart-safe commands and completion events", "docs/nova-tools.md"},
+    {:delegation, Nano.Delegation, "Composed prompts, isolated children and lifecycle reports", "docs/nova-delegation.md"},
+    {:mcp, Nano.MCP, "MCP tools, resources, prompts and mailbox notifications", "docs/nova-mcp.md"},
+    {:web, Nano.Web, "HTTP/JavaScript pages, cached paging and citations", "docs/nova-web.md"},
+    {:search, Nano.Search, "Exa search and asynchronous research (requires key)", "docs/nova-web.md"},
+    {:goals, Nano.Goals, "Durable goal trees and concise reviews", "docs/nova-goals.md"},
+    {:memory, Nano.Memory, "Durable cross-session knowledge", "docs/nova-goals.md"},
+    {:bots, Nano.Bots, "Consumer chat sessions, identity and human requests", "docs/nova-bots.md"}
   ]
   def entries do
     Enum.map(@entries, fn {name, mod, description, guide} ->
