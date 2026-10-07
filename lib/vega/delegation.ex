@@ -22,8 +22,9 @@ defmodule Vega.Delegation do
     with :ok <- validate(name, parent, opts),
          {:ok, pre} <- preread(opts[:pre] || [], opts[:pre_max_bytes] || 64_000),
          {:ok, hook} <- hook(opts[:mcp_hook]),
+         {:ok, servers} <- connect_mcp(opts[:mcp_servers] || [], opts[:mcp_module] || Vega.MCP),
          {:ok, workspace} <- workspace(name, opts[:worktree]) do
-      case launch(name, parent, opts, pre, workspace, hook) do
+      case launch(name, parent, opts, pre, workspace, %{hook: hook, servers: servers}) do
         {:ok, _} = ok ->
           ok
 
@@ -50,7 +51,8 @@ defmodule Vega.Delegation do
              pid,
              opts[:poll_ms] || 250,
              opts[:state_dir] || state_dir()
-           ) do
+           ),
+         :ok <- bind_mcp_or_rollback(name, pid, hook.servers, opts[:mcp_module] || Vega.MCP) do
       if opts[:message], do: tell(name, opts[:message])
 
       if not Keyword.get(opts, :start_idle, true) and not opts[:message],
@@ -65,6 +67,50 @@ defmodule Vega.Delegation do
          prompt_bytes: byte_size(prompt)
        }}
     end
+  end
+
+  defp mcp_call(module, function, args) do
+    apply(module, function, args)
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp connect_mcp(servers, module) do
+    Enum.reduce_while(servers, {:ok, []}, fn server, {:ok, acc} ->
+      {name, config} =
+        case server do
+          name when is_binary(name) -> {name, nil}
+          {name, config} -> {name, config}
+        end
+
+      case mcp_call(module, :connect, [name, config]) do
+        {:ok, _info} -> {:cont, {:ok, acc ++ [name]}}
+        {:error, reason} -> {:halt, {:error, {:mcp_start, name, reason}}}
+      end
+    end)
+  end
+
+  defp bind_mcp_or_rollback(name, pid, servers, module) do
+    result =
+      Enum.reduce_while(servers, :ok, fn server, :ok ->
+        case mcp_call(module, :watch, [server, name]) do
+          :ok -> {:cont, :ok}
+          {:ok, _} -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, {:mcp_watch, server, reason}}}
+        end
+      end)
+
+    if result != :ok do
+      Enum.each(servers, &mcp_call(module, :unwatch, [&1, name]))
+      unwatch(name)
+      DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+      NanoAgent.kill_tasks(pid)
+      Nano.StateStore.delete(name)
+    end
+
+    result
   end
 
   defp attach_or_rollback(name, parent, pid, interval, dir) do
@@ -93,7 +139,14 @@ defmodule Vega.Delegation do
       job =
         "Assigned job:\n#{opts[:job] || "Await instructions."}\nWorkspace: #{inspect(workspace)}\nMCP startup: #{inspect(hook)}"
 
-      {:ok, Enum.join([facts, @shared, identity, job, reading], "\n\n")}
+      mcp_api =
+        if is_map(hook) and hook[:servers] != [] do
+          "MCP servers ready: #{inspect(hook[:servers])}. Discover with Vega.MCP.tools(server), Vega.MCP.resources(server), Vega.MCP.prompts(server); invoke Vega.MCP.call_tool(server, tool, args), Vega.MCP.read_resource(server, uri), Vega.MCP.get_prompt(server, prompt, args). See /app/docs/vega-mcp.md. Do not print server credentials."
+        else
+          ""
+        end
+
+      {:ok, Enum.join([facts, @shared, identity, job, reading, mcp_api], "\n\n")}
     end
   end
 

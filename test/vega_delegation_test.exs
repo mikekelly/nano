@@ -247,5 +247,66 @@ defmodule Vega.DelegationTest do
     refute NanoAgent.info(c.name)
   end
 
+  defmodule MCPAdapter do
+    def connect("fail-connect", _), do: {:error, :connection_failed}
+
+    def connect(server, config) do
+      send(Process.get(:mcp_listener), {:mcp_connected, server, config})
+      {:ok, %{secret: "do-not-inject-this-info"}}
+    end
+
+    def watch("fail-watch", _), do: {:error, :watch_failed}
+    def watch("crash-watch", _), do: raise("watch fixture exception")
+
+    def watch(server, child) do
+      send(Process.get(:mcp_listener), {:mcp_watching, server, child, NanoAgent.whereis(child)})
+      :ok
+    end
+
+    def unwatch(server, child) do
+      send(Process.get(:mcp_listener), {:mcp_unwatching, server, child})
+      :ok
+    end
+  end
+
+  test "MCP servers connect and bind to child before its first turn, no config leaks", c do
+    Process.put(:mcp_listener, self())
+    config = %{"command" => "fixture", "headers" => %{"Authorization" => "secret-key"}}
+
+    opts =
+      Fake.opts(c.model) ++
+        [parent: self(), mcp_servers: [{"tools", config}, "configured"], mcp_module: MCPAdapter]
+
+    assert {:ok, _} = Vega.Delegation.subagent(c.name, opts)
+    assert_receive {:mcp_connected, "tools", ^config}
+    assert_receive {:mcp_connected, "configured", nil}
+    assert_receive {:mcp_watching, "tools", name, pid}
+    assert name == c.name and is_pid(pid)
+    prompt = NanoAgent.info(c.name).system_prompt
+    assert prompt =~ "Vega.MCP.call_tool"
+    assert prompt =~ "configured"
+    refute prompt =~ "secret-key"
+    refute prompt =~ "do-not-inject-this-info"
+  end
+
+  test "MCP connect or post-launch binding failure refuses/rolls back child", c do
+    Process.put(:mcp_listener, self())
+    base = Fake.opts(c.model) ++ [parent: self(), mcp_module: MCPAdapter]
+
+    assert {:error, {:mcp_start, "fail-connect", :connection_failed}} =
+             Vega.Delegation.subagent(c.name, base ++ [mcp_servers: ["fail-connect"]])
+
+    assert {:error, {:mcp_watch, "fail-watch", :watch_failed}} =
+             Vega.Delegation.subagent(c.name, base ++ [mcp_servers: ["fail-watch"]])
+
+    refute NanoAgent.whereis(c.name)
+    assert :undefined == :global.whereis_name({Vega.Delegation.Watcher, c.name})
+
+    assert {:error, {:mcp_watch, "crash-watch", _}} =
+             Vega.Delegation.subagent(c.name, base ++ [mcp_servers: ["crash-watch"]])
+
+    refute NanoAgent.whereis(c.name)
+  end
+
   def mcp, do: {:ok, "mcp-ready"}
 end
