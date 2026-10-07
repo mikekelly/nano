@@ -113,12 +113,54 @@ defmodule Vega.ImagesIntegrationTest do
 
   test "legacy state looks up missing modalities once and persists through restart" do
     {name, pid, _model} = start_agent(true)
-    s = Nano.StateStore.get(name) |> Map.drop([:input_modalities, :pending_images, :tool_images])
+
+    s =
+      Nano.StateStore.get(name)
+      |> Map.drop([:input_modalities, :input_modalities_version, :pending_images, :tool_images])
+
     Nano.StateStore.put(name, s)
     Process.exit(pid, :operator_restart)
     wait(fn -> NanoAgent.whereis(name) not in [nil, pid] end)
     assert NanoAgent.info(name).input_modalities == ["text", "image"]
     assert NanoAgent.info(name).system_prompt =~ "can see image attachments"
+  end
+
+  test "pre-schema text-only placeholder upgrades once at runtime and survives catalog outage" do
+    {name, pid, model} = start_agent(true)
+
+    :sys.replace_state(pid, fn s ->
+      s |> Map.put(:input_modalities, ["text"]) |> Map.delete(:input_modalities_version)
+    end)
+
+    Fake.push(model, text: "migrated")
+    NanoAgent.notify(name, :upgrade)
+    assert_receive {:openrouter_request, ^model, _}, 2000
+    wait(fn -> NanoAgent.info(name).status == :idle end)
+    assert NanoAgent.info(name).input_modalities == ["text", "image"]
+    assert NanoAgent.info(name).system_prompt =~ "can see image attachments"
+    assert Nano.StateStore.get(name).input_modalities_version == 1
+    # A later catalog with the same slug but no vision must not change recorded capability.
+    Fake.models([
+      %{
+        "id" => model,
+        "context_length" => 1_000_000,
+        "architecture" => %{"input_modalities" => ["text"]},
+        "reasoning" => %{"supported_efforts" => []}
+      }
+    ])
+
+    :persistent_term.erase({Nano.OpenRouter, :models})
+    Fake.push(model, text: "stable")
+    NanoAgent.notify(name, :next)
+    assert_receive {:openrouter_request, ^model, _}, 2000
+    wait(fn -> NanoAgent.info(name).status == :idle end)
+    assert NanoAgent.info(name).input_modalities == ["text", "image"]
+    Fake.models(500)
+    :persistent_term.erase({Nano.OpenRouter, :models})
+    Process.exit(pid, :operator_restart)
+    wait(fn -> NanoAgent.whereis(name) not in [nil, pid] end)
+    assert NanoAgent.info(name).input_modalities == ["text", "image"]
+    assert Nano.StateStore.get(name).input_modalities_version == 1
   end
 
   test "eval views follow every tool output, not mixed into tool content" do
