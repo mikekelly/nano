@@ -17,8 +17,10 @@ filesystem paths. Fetch verifies the hash and errors on missing/corrupt data. PN
 JPEG, GIF and WebP headers supply the MIME and dimensions, independent of filename.
 Maximum 3,750,000 binary bytes (5 MB base64), 2,000 pixels per side, positive dimensions;
 these conservative limits also hold after a transcript grows beyond 20 pictures.
-Adapters accept at most 20 images per message. Image headers are inspected; this is not
-a full image decoder or malware scanner. Images are retained indefinitely: garbage
+Adapters accept at most 20 images per message. Header metadata is checked first, then a
+bounded Pillow decoder verifies and loads the first frame before admission. Only static
+images are accepted; animation is rejected without iterating/decoding all frames. The
+helper is a decoder, not a malware scanner. Images are retained indefinitely: garbage
 collection is intentionally absent while persisted transcripts may refer to them.
 
 Provider catalogs retain `input_modalities`; unknown/fallback entries are text-only,
@@ -67,3 +69,40 @@ Live harness confirmation (2026-10-07) after parent-approved reload:
   logs checked for data URLs: none; operator timeline has both immutable image refs.
 - Disposable probe agent/user stopped; source PNG removed. Content-addressed image
   files/log evidence retained as normal (no dangling persisted transcript cleanup).
+
+## Strict decoder dependency and bounds
+
+Fresh Debian nodes need `apt-get update && apt-get install -y python3 python3-pil coreutils`
+(include these packages in deployment Docker builds). Decoder source is `priv/vega/verify_image.py`,
+invoked with `/usr/bin/python3 -I -B`, not the possibly unrelated `/usr/local/bin/python3`.
+A deployment may set application env `:nano, :image_decoder_python` to an equivalent
+Python executable with Pillow; this is not a secret or a node dashboard setting.
+If Python, Pillow, helper, or GNU `timeout` is unavailable, admission fails closed with
+an explicit installation error. There is deliberately no header-only bypass.
+
+The decoder runs for at most 5 seconds, with SIGKILL on deadline, 3 CPU seconds,
+256 MiB address-space, no file writes/core dumps. Raw bytes travel only in a unique
+0600 file inside a private0700 `.validate-*` directory under the image store; the
+subprocess argv contains only its path, never base64. `after` cleanup runs on failure,
+success, and timeout. The real helper also unlinks the raw file immediately after a
+bounded read, before decoding from memory (mitigating caller-death leftovers). It rejects invalid pixels, truncated compression, CRC failures
+and animations. It never iterates an animation's frame sequence; first-frame decode
+only occurs after the static-image check. Python/native codec subprocess bounds
+protect the VM, but are not an OS sandbox against intentionally malicious native code.
+
+Verified/rejected hashes are cached on disk with decoder-rule schema `v2`; each fetch
+still checks the immutable-byte SHA256. Legacy header-only references are validated
+at the provider edge on first use. Invalid/missing images become explicit user text
+(`Image attachment <id> unavailable ... no contents were provided; do not guess`),
+not bad image parts and not a permanently failing model request. The stored transcript
+and metadata reference stay unchanged. Decoder unavailable/timeouts are not cached as
+content rejection, so installing/fixing the decoder allows a later attempt to succeed.
+An invalid-content cache marker contains no image data, and an already verified image
+can still be used when the decoder is temporarily unavailable.
+
+Strict-admission tests use genuine static PNG/JPEG/GIF/WebP fixtures and native Elixir
+PNG fixture generation. Header-valid but truncated images are rejected before an image
+file/reference is persisted; animated GIF rejected; bad legacy refs hydrate to explicit
+text; missing dependency/stalled subprocess fail closed and leave no temp bytes;
+concurrent imports and verified cache reuse are covered. No real malformed-provider
+request was made (would waste budget and poison a growing transcript).

@@ -6,7 +6,7 @@ defmodule Vega.ImagesIntegrationTest do
   alias Nano.FakeOpenRouter, as: Fake
   @endpoint NanoWeb.Endpoint
 
-  defp png, do: <<137, 80, 78, 71, 13, 10, 26, 10, 13::32, "IHDR", 10::32, 10::32, 8, 2, 0, 0, 0>>
+  defp png, do: Nano.ImageFixture.png(10, 10)
 
   defp post_json(path, body),
     do:
