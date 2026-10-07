@@ -30,6 +30,37 @@ defmodule Vega.Bots do
          do: {:ok, Enum.filter(all, &(&1["status"] == "pending"))}
   end
 
+  def get_message(session, id, opts \\ []), do: call({:get_message, session, id}, opts)
+
+  def workspace(bot, opts \\ []) do
+    with {:ok, _} <- get_bot(bot, opts),
+         {:ok, root} <- call(:root, opts),
+         :ok <- workspace_session(bot, opts[:session_id], opts),
+         do: Vega.Bots.Workspace.ensure(root, bot, opts[:session_id])
+  end
+
+  def shell(bot, session, command, opts \\ []) do
+    with {:ok, ws} <- workspace(bot, Keyword.put(opts, :session_id, session)) do
+      case Vega.Files.sh(
+             command,
+             opts
+             |> Keyword.put(:cwd, ws["session"])
+             |> Keyword.put_new(:output_dir, Path.join(ws["session"], ".shell-output"))
+           ) do
+        {:error, _} = error -> error
+        result -> {:ok, result}
+      end
+    end
+  end
+
+  defp workspace_session(_, nil, _), do: :ok
+
+  defp workspace_session(bot, session, opts) do
+    with {:ok, s} <- get_session(session, opts) do
+      if bot in s["bot_ids"], do: :ok, else: {:error, :wrong_session}
+    end
+  end
+
   def get_bot(id, opts \\ []), do: get("bots", id, opts)
 
   def get_session(id, opts \\ []),

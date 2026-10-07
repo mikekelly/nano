@@ -70,6 +70,18 @@ defmodule Vega.Bots.Server do
           "outbox" => []
         }
 
+    data =
+      Map.update!(
+        data,
+        "bots",
+        &Enum.map(&1, fn b ->
+          case Vega.Bots.Workspace.identity(root, b["id"]) do
+            {:ok, path} -> Map.put(b, "workspace", path)
+            _ -> b
+          end
+        end)
+      )
+
     table = :ets.new(__MODULE__, [:set, :protected, read_concurrency: true])
     :persistent_term.put({__MODULE__, self()}, table)
     cache(table, data)
@@ -115,6 +127,18 @@ defmodule Vega.Bots.Server do
 
   def handle_call(_, _, %{load_error: error} = s) when not is_nil(error),
     do: {:reply, {:error, error}, s}
+
+  def handle_call({:get_message, sid, mid}, _, s) do
+    result =
+      with {:ok, session} <- find(s.data, "sessions", sid) do
+        case Enum.find(session["messages"], &(&1["id"] == mid)) do
+          nil -> {:error, :not_found}
+          message -> {:ok, message}
+        end
+      end
+
+    {:reply, result, s}
+  end
 
   def handle_call({:session, sid, opts}, _, s) do
     result =
@@ -162,6 +186,9 @@ defmodule Vega.Bots.Server do
   def handle_call(command, _, s) do
     command =
       case command do
+        {:create_bot, name, opts} ->
+          {:create_bot, name, Keyword.put(opts, :root, s.root)}
+
         {:message, sid, author, text, opts} ->
           {:message, sid, author, text, Keyword.put(opts, :root, s.root)}
 
@@ -210,6 +237,9 @@ defmodule Vega.Bots.Server do
         "shape" => Enum.at(@shapes, rem(length(d["bots"]), length(@shapes)))
       }
     }
+
+    {:ok, identity_workspace} = Vega.Bots.Workspace.identity(opts[:root], attrs["id"])
+    attrs = Map.put(attrs, "workspace", identity_workspace)
 
     with :ok <- validate_bot(attrs) do
       {:ok, attrs, Map.update!(d, "bots", &(&1 ++ [attrs])), event("bot_created")}
@@ -689,9 +719,17 @@ defmodule Vega.Bots.Server do
           session = Map.put(session, "routing_participants", participants)
           message = Enum.find(session["messages"], &(&1["id"] == item["message_id"]))
 
+          session =
+            session
+            |> Map.put("prior_message_count", length(session["messages"]) - 1)
+            |> Map.put("messages", Enum.take(session["messages"], -21))
+
+          runtime = s.runtime
+          root = s.root
+
           task =
             Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
-              s.runtime.deliver(bot, session, message, s.root)
+              runtime.deliver(bot, session, message, root)
             end)
 
           {Map.put(tasks, task.ref, item), MapSet.put(busy, pair)}
