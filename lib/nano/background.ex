@@ -8,8 +8,16 @@ defmodule Nano.Background do
   """
   use GenServer
 
-  def start_link(opts \\ []),
-    do: GenServer.start_link(__MODULE__, %{}, Keyword.put(opts, :name, __MODULE__))
+  def start_link(opts \\ []) do
+    case GenServer.start_link(__MODULE__, %{}, Keyword.put(opts, :name, __MODULE__)) do
+      {:error, {:already_started, pid}} ->
+        Process.link(pid)
+        {:ok, pid}
+
+      other ->
+        other
+    end
+  end
 
   def start(command, opts \\ []) do
     try do

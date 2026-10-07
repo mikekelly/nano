@@ -98,7 +98,22 @@ defmodule Nano.ToolsTest do
     assert bytes > 800_000
   end
 
+  test "read streams giant lines and preserves chunk boundaries", %{dir: dir} do
+    path = Path.join(dir, "giant.txt")
+    first = String.duplicate("α", 20_000)
+    File.write!(path, first <> "\r\nsecond\n\nlast")
+    assert {:error, _} = Nano.Tools.read(path, max_bytes: 100)
+    assert {:ok, %{text: "second\n\nlast", total_lines: 4}} = Nano.Tools.read(path, offset: 2)
+
+    assert {:ok, %{text: first_read, next_offset: 2}} =
+             Nano.Tools.read(path, max_bytes: 50_000, limit: 1)
+
+    assert first_read == first <> "\r"
+    assert {:error, _} = Nano.Tools.read(dir)
+  end
+
   test "shell exit
+
 
 , environment and bounded output",
        %{dir: dir} do
