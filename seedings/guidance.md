@@ -42,15 +42,45 @@ the ones before it, and each makes the next one cheaper, so it is a good default
    nothing is lost; a search caps the number of matches (say 100) and the length of each
    matching line (say 500 characters); a listing caps entries (hundreds, not thousands).
    Cap by lines as well as bytes where lines are the natural unit, so results stay
-   predictable in tokens. The harness's own cap on an eval result is `{{result_max_bytes}}`
-   bytes with the rest spilled to a file; your utilities should bound output well below
-   that, so the cap is never what shapes a result.
+   predictable in tokens. The harness's own cap on an eval result is 50 KB
+   (`RESULT_MAX_BYTES`) with the rest spilled to a file; your utilities should bound output
+   well below that, so the cap is never what shapes a result.
+
+   How the core tools of a mature coding agent (pi) behave, as a reference for yours:
+   - *read* pages by line (`offset`, `limit`) and stops at 2,000 lines or 50 KB. When it
+     stops early it says exactly how to go on: `[Showing lines 1-2000 of 5120. Use
+     offset=2001 to continue.]`. An offset past the end is an error that gives the file's
+     length; a single line longer than the cap is reported, not silently cut.
+   - *edit* replaces exact text that must occur exactly once. Its errors say how to fix
+     the call: not found ("must match exactly, including whitespace and newlines"), or
+     found N times ("add context to make it unique"). Several disjoint replacements go in
+     one call, each matched against the original file, and overlapping ones are refused;
+     a replacement that changes nothing is an error. It keeps the file's line endings,
+     falls back to a tolerant match (trailing whitespace, curly quotes, Unicode dashes)
+     only when the exact one fails, and returns a short diff, so there is no need to read
+     the file again to see what changed. Keep the old text small but unique.
+   - *write* is for new files and complete rewrites; it creates parent directories.
+     Everything else is an edit.
+   - *bash* returns stdout and stderr together with the exit code and the time taken,
+     keeps the last 2,000 lines or 50 KB, and when it cuts, says which lines are shown and
+     where the full output is. A timeout is optional, and a timed-out command says so and
+     keeps what it printed.
+   - *grep* takes a regex or literal pattern, a glob filter, case-insensitivity and lines
+     of context, respects `.gitignore`, and returns matching lines with their paths and line numbers, at most 100
+     matches with each line cut to 500 characters. *find* globs (respecting `.gitignore`,
+     up to 1,000 paths); *ls* sorts, marks directories with `/`, includes dotfiles and
+     stops at 500 entries.
+
+   What they share: every cut is announced in the result, together with the exact way to
+   get the rest; every error says what to do next; and results are compact text that is
+   cheap to read, not raw data structures.
 3. *Notes and an index*: a module that says what exists and how to call it, and writes
    `/app/NOTES.md` from that table, so the next agent (or you after a restart) starts from
    the index instead of from the source.
 4. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
    and pre-reading, give it a task, get its result as a message. From here on, anything
-   large is a sub-agent's job and your context stays at the level of the plan.
+   large is a sub-agent's job and your context stays at the level of the plan. Build it
+   early, while you have plenty of context left (see "Hand over before your context runs out" below).
 5. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
    search, when a key for a search service is present (`EXA_API_KEY`;
    [search.md](search.md)); and the browser that is already in the image — Lightpanda at
@@ -75,6 +105,18 @@ runs itself is context it no longer has for the plan. The exception is a task so
 and so unlikely to turn into a yak shave, that the ceremony of delegating it would cost
 more context than doing it. Write this into the prompts you compose for yourself and for
 the agents you start: it is an operating principle for every agent, not advice for one.
+
+**Hand over before your context runs out, not when it does.** Your context only grows, and
+when it reaches your limit the harness stops calling the model: you cannot then do anything,
+including hand over. Compacting your context, or handing the baton to a successor agent that starts
+fresh with your notes, your plan and the job of reporting to whoever you report to, is
+itself work that needs room: a turn that reads what it must and writes the summary or the
+successor's brief, which can be long. Leave that room. So have the mechanism working long
+before you need it (delegation is the simplest one), keep the handoff cheap by keeping your
+notes and goals current as you go, and act on a threshold you set early, well short of the
+limit; around half full is a sensible default, and in the last quarter it is already risky.
+The budget line delivered with your events tells you where you are. Put the same rule into
+the prompts of the agents you start.
 
 **Use decision models where the LLM is too expensive and code is too brittle.** Some
 judgments come up constantly, must be fast and cheap, and are beyond deterministic code

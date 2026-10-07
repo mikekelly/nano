@@ -111,6 +111,10 @@ lightpanda serve --host 127.0.0.1 --port 9222           # a CDP server Puppeteer
 The node runs as root, so an agent can `apt-get install` anything else it needs (Node,
 `poppler-utils`, …); such installs survive a container restart but not a rebuild.
 
+Deps live in `/opt/nano/deps` and builds under `/opt/nano/_build/<env>` (`MIX_BUILD_ROOT`),
+so `MIX_ENV=test mix test` in `/app` runs the suite on the node without touching the
+running node's prod build.
+
 ## Seeing and undoing what agents changed
 
 ```bash
