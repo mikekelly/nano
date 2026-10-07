@@ -584,6 +584,11 @@ defmodule Vega.Bots.Server do
                 end)
               )
 
+            {:skip, :routing} ->
+              s.data
+              |> Map.update!("outbox", &Enum.reject(&1, fn x -> x["id"] == item["id"] end))
+              |> put_status(item["session_id"], item["bot_id"], "idle", "")
+
             {:error, _} ->
               failed(s.data, item)
 
@@ -646,6 +651,14 @@ defmodule Vega.Bots.Server do
         else
           {:ok, bot} = find(s.data, "bots", item["bot_id"])
           {:ok, session} = find(s.data, "sessions", item["session_id"])
+
+          participants =
+            Enum.map(session["bot_ids"], fn id ->
+              {:ok, b} = find(s.data, "bots", id)
+              Map.take(b, ~w(id name description))
+            end)
+
+          session = Map.put(session, "routing_participants", participants)
           message = Enum.find(session["messages"], &(&1["id"] == item["message_id"]))
 
           task =

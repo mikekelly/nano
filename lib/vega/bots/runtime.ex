@@ -3,23 +3,27 @@ defmodule Vega.Bots.Runtime do
   def deliver(bot, session, message, root) do
     name = Vega.Bots.agent_name(bot["id"], session["id"])
 
-    with :ok <- ensure_agent(name, bot, session),
-         {:ok, memories} <-
-           Vega.Bots.Relevance.retrieve(bot["id"], message["text"], root) do
-      event = %{
-        bot_session: session["id"],
-        bot_identity: bot["id"],
-        message_id: message["id"],
-        message: message["text"],
-        author: "person",
-        images: message["images"],
-        files: message["files"] || [],
-        relevant_memories: memories,
-        instructions:
-          "Reply visibly via Vega.Bots.post(#{inspect(session["id"])}, #{inspect(bot["id"])}, markdown, reply_to: #{inspect(message["id"])}). Do not repeat an already posted reply for this message_id. Final prose is only an operator log, not a chat reply."
-      }
+    if Vega.Bots.Routing.answer?(bot, session, message) == :skip do
+      {:skip, :routing}
+    else
+      with :ok <- ensure_agent(name, bot, session),
+           {:ok, memories} <-
+             Vega.Bots.Relevance.retrieve(bot["id"], message["text"], root) do
+        event = %{
+          bot_session: session["id"],
+          bot_identity: bot["id"],
+          message_id: message["id"],
+          message: message["text"],
+          author: "person",
+          images: message["images"],
+          files: message["files"] || [],
+          relevant_memories: memories,
+          instructions:
+            "Reply visibly via Vega.Bots.post(#{inspect(session["id"])}, #{inspect(bot["id"])}, markdown, reply_to: #{inspect(message["id"])}). Do not repeat an already posted reply for this message_id. Final prose is only an operator log, not a chat reply."
+        }
 
-      notify(name, event)
+        notify(name, event)
+      end
     end
   end
 
