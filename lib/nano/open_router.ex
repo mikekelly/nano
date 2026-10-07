@@ -62,6 +62,53 @@ defmodule Nano.OpenRouter do
   end
 
   @doc """
+  OpenRouter's models as `%{id, name, context_length, prompt_price, completion_price}` (prices in
+  USD per million tokens, nil if not given), sorted by id. Cached for an hour, a failure for a
+  minute; `[]` if they cannot be fetched (5 s at most).
+  """
+  def models do
+    now = System.monotonic_time(:second)
+
+    case :persistent_term.get({__MODULE__, :models}, nil) do
+      {until, models} when until > now ->
+        models
+
+      _ ->
+        models = fetch_models()
+
+        :persistent_term.put(
+          {__MODULE__, :models},
+          {now + if(models == [], do: 60, else: 3600), models}
+        )
+
+        models
+    end
+  end
+
+  defp fetch_models do
+    key = Application.get_env(:nano, :openrouter_api_key)
+    auth = if key in [nil, ""], do: [], else: [auth: {:bearer, key}]
+    opts = [retry: false, receive_timeout: 5_000, connect_options: [timeout: 5_000]] ++ auth
+    url = Application.fetch_env!(:nano, :openrouter_base_url) <> "/models"
+    {:ok, %{status: 200, body: %{"data" => data}}} = Req.get(url, opts)
+    price = &with({p, _} <- Float.parse(&1 || ""), do: p * 1_000_000, else: (_ -> nil))
+
+    data
+    |> Enum.map(fn m ->
+      %{
+        id: m["id"],
+        name: m["name"],
+        context_length: m["context_length"],
+        prompt_price: price.(get_in(m, ["pricing", "prompt"])),
+        completion_price: price.(get_in(m, ["pricing", "completion"]))
+      }
+    end)
+    |> Enum.sort_by(& &1.id)
+  catch
+    _, _ -> []
+  end
+
+  @doc """
   Whether a failed attempt is worth retrying: no response at all, 408, 429, 5xx, or a 200
   whose body is an error object with one of those codes (OpenRouter reports some upstream
   failures that way).

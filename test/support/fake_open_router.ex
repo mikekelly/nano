@@ -48,6 +48,9 @@ defmodule Nano.FakeOpenRouter do
   @doc "Makes the caller receive model's requests without queuing a response."
   def listen(model), do: GenServer.call(__MODULE__, {:listen, model, self()})
 
+  @doc "What `GET /models` answers: a list of model maps (sent as `data`), or an HTTP status."
+  def models(models_or_status), do: GenServer.call(__MODULE__, {:models, models_or_status})
+
   @doc false
   def request(body), do: GenServer.call(__MODULE__, {:request, body}, :infinity)
 
@@ -57,11 +60,20 @@ defmodule Nano.FakeOpenRouter do
       Bandit.start_link(plug: __MODULE__.Endpoint, ip: :loopback, port: 0, startup_log: false)
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
-    {:ok, %{port: port, models: %{}}}
+    {:ok, %{port: port, models: %{}, list: 500}}
   end
 
   @impl true
   def handle_call(:port, _from, s), do: {:reply, s.port, s}
+
+  def handle_call({:models, list}, _from, s), do: {:reply, :ok, %{s | list: list}}
+
+  def handle_call(:list, _from, s) do
+    reply =
+      if is_list(s.list), do: {200, %{"data" => s.list}}, else: {s.list, %{"error" => "fake"}}
+
+    {:reply, reply, s}
+  end
 
   def handle_call({:listen, model, pid}, _from, s),
     do: {:reply, :ok, update(s, model, &%{&1 | listener: pid})}
@@ -156,6 +168,14 @@ defmodule Nano.FakeOpenRouter do
     @behaviour Plug
 
     def init(opts), do: opts
+
+    def call(%{method: "GET"} = conn, _opts) do
+      {status, body} = GenServer.call(Nano.FakeOpenRouter, :list)
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(status, Jason.encode!(body))
+    end
 
     def call(conn, _opts) do
       {:ok, raw, conn} = Plug.Conn.read_body(conn, length: 100_000_000)
