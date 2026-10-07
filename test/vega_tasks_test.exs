@@ -192,8 +192,20 @@ defmodule Vega.TasksTest do
     end
   end
 
-  test "invalid command and timeout errors
- are values",
+  test "relative artifact root remains absolute when command changes cwd", %{root: root} do
+    relative =
+      Path.join(
+        List.duplicate("..", length(Path.split(File.cwd!())) - 1) ++
+          [String.trim_leading(root, "/")]
+      )
+
+    {:ok, task} = Tasks.start("printf relative", root: relative, cwd: "/tmp")
+    assert Path.type(task.dir) == :absolute
+    assert_receive {:vega_task, %{status: :completed}}, 2000
+    assert {:ok, %{text: "relative"}} = Tasks.read(task)
+  end
+
+  test "invalid command and timeout errors are values",
        %{root: root} do
     assert {:error, :command_must_be_nonempty_string} = Tasks.start("", root: root)
     assert {:error, :invalid_timeout} = Tasks.start("true", timeout: -1, root: root)
