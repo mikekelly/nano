@@ -58,6 +58,7 @@ defmodule Nano.MCP.Server do
       capabilities: nil,
       instructions: nil,
       probe_timer: nil,
+      last_error: nil,
       stderr_log: nil
     }
 
@@ -74,12 +75,12 @@ defmodule Nano.MCP.Server do
 
           {:error, reason, state} ->
             Logger.warning("mcp #{state.id}: cannot start: #{inspect(reason)}")
-            {:noreply, schedule_reconnect(state)}
+            {:noreply, schedule_reconnect(%{state | last_error: inspect(reason)})}
         end
 
       {:error, reason} ->
         Logger.warning("mcp #{state.id}: cannot register: #{inspect(reason)}")
-        {:noreply, schedule_reconnect(state)}
+        {:noreply, schedule_reconnect(%{state | last_error: inspect(reason)})}
     end
   end
 
@@ -151,7 +152,7 @@ defmodule Nano.MCP.Server do
   # ---- transport --------------------------------------------------------------
 
   defp open(%{config: %{transport: :stdio} = config} = state) do
-    [program | args] = config.command || []
+    [program | args] = Enum.map(config.command || [], &to_string/1)
 
     case System.find_executable(program) do
       nil ->
@@ -253,7 +254,7 @@ defmodule Nano.MCP.Server do
   defp probe(state) do
     id = next_id(state)
     state = %{state | waiting: Map.put(state.waiting, id, {:probe, System.monotonic_time(:millisecond)})}
-    timer = Process.send_after(self(), {:mcp_timeout, id}, 4_000)
+    timer = Process.send_after(self(), {:mcp_timeout, id}, 8_000)
     message = request_message(%{state | next_id: id}, id, "server/discover", %{}, modern: true)
 
     case write(state, message) do
@@ -264,7 +265,17 @@ defmodule Nano.MCP.Server do
 
   defp fallback(state) do
     if state.probe_timer, do: Process.cancel_timer(state.probe_timer)
-    initialize(state, @legacy_versions)
+
+    # Drop the probe's bookkeeping: its reply, if it ever comes, is not ours to want, and its timer
+    # must not start a second initialize.
+    waiting = state.waiting |> Enum.reject(fn {_id, v} -> match?({:probe, _}, v) end) |> Map.new()
+
+    # If an initialize is already in flight (a late probe reply, or a repeated timeout), do nothing.
+    if Enum.any?(waiting, fn {_id, v} -> match?({:initialize, _}, v) end) do
+      %{state | waiting: waiting, probe_timer: nil}
+    else
+      initialize(%{state | waiting: waiting, probe_timer: nil}, @legacy_versions)
+    end
   end
 
   defp initialize(state, versions) do
@@ -611,6 +622,7 @@ defmodule Nano.MCP.Server do
       serverInfo: state.server_info,
       capabilities: state.capabilities,
       instructions: state.instructions,
+      last_error: Map.get(state, :last_error),
       connected: state.era != nil
     }
   end

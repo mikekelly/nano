@@ -121,7 +121,20 @@ defmodule Nano.MCP do
   HTTP URL. Options: `agent:` (subscribe that agent to notifications), `env:`, `headers:`.
   Returns `{:ok, info}` with `era`, `protocolVersion`, `serverInfo` and `capabilities`.
   """
-  def connect(id, spec \\ nil, opts \\ []) do
+  def connect(id, spec \\ nil, opts \\ [])
+
+  # Tolerate the common slip of passing options as the second argument: `connect("fs", await: 5_000)`.
+  def connect(id, spec, opts) when is_list(spec) and spec != [] and is_list(opts) do
+    if Keyword.keyword?(spec) and not is_list(Keyword.get(spec, :command)) do
+      connect(id, nil, Keyword.merge(spec, opts))
+    else
+      do_connect(id, spec, opts)
+    end
+  end
+
+  def connect(id, spec, opts), do: do_connect(id, spec, opts)
+
+  defp do_connect(id, spec, opts) do
     with {:ok, config} <- resolve_config(id, spec, opts),
          {:ok, pid} <- start_server(id, config) do
       case Keyword.get(opts, :agent) do
@@ -174,7 +187,7 @@ defmodule Nano.MCP do
     Registry.select(Nano.MCP.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}]) |> Enum.map(&to_string/1) |> Enum.sort()
   end
 
-  @doc "One server's connection info (era, version, serverInfo, capabilities), or nil."
+  @doc "One server's connection info (era, version, serverInfo, capabilities, and `last_error` when a connect failed), or nil."
   def info(id) do
     case whereis(id) do
       nil -> nil
