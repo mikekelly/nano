@@ -65,8 +65,15 @@ defmodule Vega.Compaction do
   end
 
   @doc false
-  def summarize(model, old, window) do
-    with true <- is_binary(model), {:ok, entry} <- Nano.Model.lookup(model) do
+  def summarize(model, old, window), do: summarize(model, old, window, [])
+
+  @doc "Optionally cap each stage's conservative input tokens with `stage_input_tokens:`."
+  def summarize(model, old, window, opts) do
+    stage_limit = Keyword.get(opts, :stage_input_tokens)
+
+    with true <- is_nil(stage_limit) or (is_integer(stage_limit) and stage_limit > 0),
+         true <- is_binary(model),
+         {:ok, entry} <- Nano.Model.lookup(model) do
       cap =
         min(
           Application.get_env(:nano, :compaction_max_output, 13_000),
@@ -76,13 +83,25 @@ defmodule Vega.Compaction do
       cap = min(cap, entry[:max_output] || cap)
 
       if cap >= 128 do
-        summarize_chunks(model, entry, cap, Jason.encode!(old), "", 1, empty_usage())
+        summarize_chunks(
+          model,
+          Map.put(entry, :stage_input_tokens, stage_limit),
+          cap,
+          Jason.encode!(old),
+          "",
+          1,
+          empty_usage()
+        )
       else
         {:error, "summarizer window/output limit is too small"}
       end
     else
-      false -> {:error, "summarizer model must be a model slug"}
-      {:error, e} -> {:error, inspect(e)}
+      false ->
+        {:error,
+         "summarizer model must be a slug and stage_input_tokens must be a positive integer"}
+
+      {:error, e} ->
+        {:error, inspect(e)}
     end
   end
 
@@ -108,7 +127,9 @@ defmodule Vega.Compaction do
   end
 
   defp summarize_chunks(model, entry, cap, remaining, digest, stage, usage) do
-    limit = entry.context_length - cap - 512
+    limit =
+      min(entry.context_length - cap - 512, entry[:stage_input_tokens] || entry.context_length)
+
     max_stages = Application.get_env(:nano, :compaction_max_stages, 32)
 
     cond do

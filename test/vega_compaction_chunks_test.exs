@@ -83,7 +83,21 @@ defmodule Vega.CompactionChunksTest do
         do: assert(Vega.Compaction.tokens(body["messages"]) + body["max_tokens"] < 272_000)
   end
 
+  test "per-call stage input tuning is bounded and requires no global setting changes", c do
+    old = [%{"role" => "user", "content" => String.duplicate("commitments and facts ", 1_000)}]
+    for i <- 1..32, do: Fake.push(c.model, text: "digest #{i}")
+
+    assert {:ok, _, _} =
+             Vega.Compaction.summarize(c.model, old, 40_000, stage_input_tokens: 3_000)
+
+    bodies = requests(c.model)
+    assert length(bodies) > 3
+    for body <- bodies, do: assert(Vega.Compaction.tokens(body["messages"]) <= 3_200)
+    assert {:error, _} = Vega.Compaction.summarize(c.model, old, 40_000, stage_input_tokens: 0)
+  end
+
   test "later rejected stage
+
  returns all completed usage including rejected response",
        c do
     old = [
