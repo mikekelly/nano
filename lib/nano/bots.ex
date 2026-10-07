@@ -16,11 +16,21 @@ defmodule Nano.Bots do
     end
   end
 
+  def archive(sid, generation, server \\ __MODULE__),
+    do: call(server, {:archive, sid, generation})
+
+  def history(sid, opts \\ []), do: call(opts[:server] || __MODULE__, {:history, sid, opts})
+
+  def checkpoint(sid, generation, opts \\ []),
+    do: call(opts[:server] || __MODULE__, {:checkpoint, sid, generation, opts})
+
   def snapshot(server \\ __MODULE__), do: call(server, :snapshot)
   def create_bot(name, opts \\ []), do: call(opts[:server] || __MODULE__, {:bot, name, opts})
 
   def create_session(ids, opts \\ []),
     do: call(opts[:server] || __MODULE__, {:session, ids, opts})
+
+  def configure(bid, opts), do: call(opts[:server] || __MODULE__, {:configure, bid, opts})
 
   def say(sid, text, server \\ __MODULE__), do: call(server, {:say, sid, text})
 
@@ -33,7 +43,10 @@ defmodule Nano.Bots do
     do:
       call(
         opts[:server] || __MODULE__,
-        {:ask, bid, question, Keyword.put_new(opts, :reply_to, caller_agent() || self())}
+        {:ask, bid, question,
+         opts
+         |> Keyword.put_new(:reply_to, caller_agent() || self())
+         |> Keyword.put(:actor, caller_agent())}
       )
 
   def answer(rid, text, server \\ __MODULE__), do: call(server, {:answer, rid, text})
@@ -65,6 +78,10 @@ defmodule Nano.Bots do
 
   defp current_actor?(_, _, _, _), do: true
 
+  defp safe_agent_options(opts) do
+    Keyword.take(opts, [:model, :reasoning, :max_context, :max_tokens, :max_turns])
+  end
+
   defp id,
     do: Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
@@ -83,18 +100,95 @@ defmodule Nano.Bots do
         {:error, reason} -> raise "bots state unreadable: #{inspect(reason)}"
       end
 
+    Process.send_after(self(), :monitor, 500)
+
     {:ok,
      %{
        data: data,
        path: path,
        runner: opts[:runner] || (&Nano.Bots.Runtime.deliver/4),
-       decision: opts[:decision] || (&Nano.Bots.Decision.decide/2),
+       decision:
+         opts[:decision] ||
+           fn task, state ->
+             Nano.Bots.Decision.decide(task, state, opts[:decision_options] || [])
+           end,
        last_notification: 0,
-       group_budget: %{}
+       group_budget: %{},
+       work_queues: %{},
+       preparing: MapSet.new(),
+       subscriptions: MapSet.new(),
+       compacting: MapSet.new()
      }}
   end
 
   @impl true
+  def handle_call({:archive, sid, generation}, _, s) do
+    case s.data.sessions[sid] do
+      nil ->
+        {:reply, {:error, :unknown_session}, s}
+
+      chat ->
+        states =
+          Enum.map(chat.bots, &Nano.StateStore.get("bot-#{&1}-#{sid}-#{generation}"))
+          |> Enum.reject(&is_nil/1)
+
+        result =
+          if states != [],
+            do: persist(checkpoint_path(s.path, sid, generation), states),
+            else: :ok
+
+        {:reply, result, s}
+    end
+  end
+
+  def handle_call({:history, sid, opts}, _, s) do
+    case s.data.sessions[sid] do
+      nil ->
+        {:reply, {:error, :unknown_session}, s}
+
+      chat ->
+        offset = max(0, opts[:offset] || 0)
+        limit = min(50, max(1, opts[:limit] || 20))
+
+        {:reply,
+         {:ok,
+          %{
+            messages: Enum.slice(chat.messages, offset, limit),
+            total: length(chat.messages),
+            next_offset: offset + limit
+          }}, s}
+    end
+  end
+
+  def handle_call({:checkpoint, sid, generation, opts}, _, s) do
+    if Map.has_key?(s.data.sessions, sid) and is_integer(generation) and generation >= 0 do
+      path = checkpoint_path(s.path, sid, generation)
+
+      result =
+        with {:ok, bytes} <- File.read(path) do
+          text =
+            inspect(:erlang.binary_to_term(bytes, [:safe]),
+              limit: :infinity,
+              printable_limit: :infinity
+            )
+
+          offset = max(0, opts[:offset] || 0)
+          limit = min(12_000, max(1, opts[:limit] || 6000))
+
+          {:ok,
+           %{
+             text: String.slice(text, offset, limit),
+             total_chars: String.length(text),
+             next_offset: offset + limit
+           }}
+        end
+
+      {:reply, result, s}
+    else
+      {:reply, {:error, :invalid_checkpoint}, s}
+    end
+  end
+
   def handle_call(:snapshot, _, s), do: {:reply, s.data, s}
 
   def handle_call({:bot, name, opts}, _, s) do
@@ -105,6 +199,7 @@ defmodule Nano.Bots do
         description: opts[:description] || "A thoughtful, helpful companion.",
         color: Enum.at(~w(#a7c7e7 #cdb4db #b7d8ba #f4c7ab), rem(map_size(s.data.bots), 4)),
         shape: rem(map_size(s.data.bots), 3),
+        agent_options: safe_agent_options(opts[:agent_options] || []),
         memories: [],
         created_at: now()
       }
@@ -112,6 +207,17 @@ defmodule Nano.Bots do
       commit(s, put_in(s.data, [:bots, bot.id], bot), {:ok, bot})
     else
       {:reply, {:error, :invalid_name}, s}
+    end
+  end
+
+  def handle_call({:configure, bid, opts}, _, s) do
+    case s.data.bots[bid] do
+      nil ->
+        {:reply, {:error, :unknown_bot}, s}
+
+      bot ->
+        bot = Map.put(bot, :agent_options, safe_agent_options(opts[:agent_options] || []))
+        commit(s, put_in(s.data, [:bots, bid], bot), :ok)
     end
   end
 
@@ -139,14 +245,14 @@ defmodule Nano.Bots do
 
   def handle_call({:say, sid, text}, _, s) do
     with true <- valid?(text), %{} = chat <- s.data.sessions[sid] do
-      chat = append(chat, :human, text) |> compact(s.decision)
+      chat = append(chat, :human, text) |> compact(nil)
       data = put_in(s.data, [:sessions, sid], chat)
 
       case persist(s.path, data) do
         :ok ->
-          for bid <- chat.bots, do: send(self(), {:deliver, sid, bid, text})
           broadcast(%{session: sid})
-          {:reply, :ok, %{s | data: data, group_budget: Map.put(s.group_budget, sid, 2)}}
+          s = %{s | data: data, group_budget: Map.put(s.group_budget, sid, 2)}
+          {:reply, :ok, enqueue(s, sid, text)}
 
         e ->
           {:reply, e, s}
@@ -190,7 +296,8 @@ defmodule Nano.Bots do
 
     with true <- valid?(question),
          %{bots: bots} = chat <- s.data.sessions[sid],
-         true <- bid in bots do
+         true <- bid in bots,
+         true <- current_actor?(opts[:actor], bid, sid, chat.generation) do
       req = %{
         id: id(),
         bot: bid,
@@ -239,6 +346,87 @@ defmodule Nano.Bots do
 
   def handle_call(_, _, s), do: {:reply, {:error, :unknown_call}, s}
   @impl true
+  def handle_info(:monitor, s) do
+    Process.send_after(self(), :monitor, 500)
+    {:noreply, monitor(s)}
+  end
+
+  def handle_info({:nano_log, %{type: type}}, s)
+      when type in [:response, :tool_result, :turn_ended, :halted] do
+    {:noreply, monitor(s)}
+  end
+
+  def handle_info({:paused_for_compaction, sid, generation, worker, transcript, _active}, s) do
+    chat = s.data.sessions[sid]
+
+    if chat.generation == generation do
+      brief =
+        String.slice(
+          chat.brief <> "\nRuntime continuation (untrusted):\n" <> transcript,
+          -12_000,
+          12_000
+        )
+
+      chat = compact(%{chat | brief: brief, context_bytes: 24_001}, nil)
+      data = put_in(s.data, [:sessions, sid], chat)
+
+      case persist(s.path, data) do
+        :ok ->
+          send(worker, :proceed)
+          broadcast(%{session: sid})
+          {:noreply, %{s | data: data}}
+
+        _ ->
+          send(worker, :abort)
+          {:noreply, %{s | compacting: MapSet.delete(s.compacting, sid)}}
+      end
+    else
+      send(worker, :abort)
+      {:noreply, %{s | compacting: MapSet.delete(s.compacting, sid)}}
+    end
+  end
+
+  def handle_info({:compaction_finished, sid, active}, s) do
+    s = %{s | compacting: MapSet.delete(s.compacting, sid)}
+
+    text =
+      "Resume the unfinished work using the session brief and recent conversation. Do not repeat an already posted answer. If nothing is pending, idle."
+
+    {:noreply, if(active, do: enqueue(s, sid, text), else: s)}
+  end
+
+  def handle_info({:compaction_aborted, sid}, s),
+    do: {:noreply, %{s | compacting: MapSet.delete(s.compacting, sid)}}
+
+  def handle_info({:prepared, sid, generation, prepared, text}, s) do
+    current = s.data.sessions[sid]
+
+    chat =
+      if current.generation == generation do
+        %{
+          current
+          | generation: prepared.generation,
+            brief: prepared.brief,
+            context_bytes:
+              if(prepared.generation != generation, do: 0, else: current.context_bytes)
+        }
+      else
+        current
+      end
+
+    data = put_in(s.data, [:sessions, sid], chat)
+
+    case persist(s.path, data) do
+      :ok ->
+        for bid <- chat.bots, do: send(self(), {:deliver, sid, bid, text})
+        s = %{s | data: data, preparing: MapSet.delete(s.preparing, sid)}
+        {:noreply, start_preparation(s, sid)}
+
+      _ ->
+        {:noreply, %{s | preparing: MapSet.delete(s.preparing, sid)}}
+    end
+  end
+
   def handle_info({:deliver, sid, bid, text}, s) do
     parent = self()
     bot = s.data.bots[bid]
@@ -320,6 +508,154 @@ defmodule Nano.Bots do
   end
 
   def handle_info(_, s), do: {:noreply, s}
+
+  defp monitor(s) do
+    Enum.reduce(s.data.sessions, s, fn {sid, chat}, s ->
+      s =
+        Enum.reduce(chat.bots, s, fn bid, s ->
+          case NanoAgent.info("bot-#{bid}-#{sid}-#{chat.generation}") do
+            %{id: id} ->
+              if MapSet.member?(s.subscriptions, id) do
+                s
+              else
+                Nano.Log.subscribe(id)
+                %{s | subscriptions: MapSet.put(s.subscriptions, id)}
+              end
+
+            _ ->
+              s
+          end
+        end)
+
+      if runtime_needs_compaction?(chat) and not MapSet.member?(s.compacting, sid) and
+           not MapSet.member?(s.preparing, sid) do
+        parent = self()
+        spawn(fn -> pause_for_compaction(parent, chat, s.path) end)
+        %{s | compacting: MapSet.put(s.compacting, sid)}
+      else
+        s
+      end
+    end)
+  end
+
+  defp pause_for_compaction(parent, chat, path) do
+    names = Enum.map(chat.bots, &"bot-#{&1}-#{chat.id}-#{chat.generation}")
+
+    paused =
+      Enum.reduce(names, [], fn name, acc ->
+        case NanoAgent.whereis(name) do
+          nil ->
+            acc
+
+          pid ->
+            try do
+              :ok = :sys.suspend(pid, :infinity)
+              [{name, pid} | acc]
+            catch
+              _, _ -> acc
+            end
+        end
+      end)
+
+    try do
+      states = Enum.map(paused, fn {name, _} -> Nano.StateStore.get(name) end)
+      safe = Enum.all?(states, fn state -> state && state.status != :running_tool end)
+
+      if safe and paused != [] do
+        checkpoint = checkpoint_path(path, chat.id, chat.generation)
+        :ok = persist(checkpoint, states)
+
+        transcript =
+          states
+          |> Enum.map(&Map.take(&1, [:name, :transcript, :pending]))
+          |> inspect(limit: :infinity, printable_limit: :infinity)
+          |> String.slice(-12_000, 12_000)
+
+        active = Enum.any?(states, &(&1.status != :idle or &1.halted == :context))
+
+        send(
+          parent,
+          {:paused_for_compaction, chat.id, chat.generation, self(), transcript, active}
+        )
+
+        proceed =
+          receive do
+            :proceed -> true
+            :abort -> false
+          after
+            5000 -> false
+          end
+
+        if proceed do
+          Enum.each(paused, fn {name, _} -> Nano.Ops.stop_agent(name) end)
+          send(parent, {:compaction_finished, chat.id, active})
+        else
+          resume_paused(paused)
+          send(parent, {:compaction_aborted, chat.id})
+        end
+      else
+        resume_paused(paused)
+        send(parent, {:compaction_aborted, chat.id})
+      end
+    after
+      resume_paused(paused)
+    end
+  rescue
+    _ -> send(parent, {:compaction_aborted, chat.id})
+  end
+
+  defp resume_paused(paused) do
+    Enum.each(paused, fn {_, pid} ->
+      try do
+        :sys.resume(pid, :infinity)
+      catch
+        _, _ -> :ok
+      end
+    end)
+  end
+
+  defp enqueue(s, sid, text) do
+    queue = Map.get(s.work_queues, sid, []) ++ [text]
+    start_preparation(%{s | work_queues: Map.put(s.work_queues, sid, queue)}, sid)
+  end
+
+  defp start_preparation(s, sid) do
+    case {MapSet.member?(s.preparing, sid), Map.get(s.work_queues, sid, [])} do
+      {false, [text | rest]} ->
+        parent = self()
+        chat = s.data.sessions[sid]
+
+        spawn(fn ->
+          prepared = compact(chat, s.decision)
+          # Hard rollover already installed an excerpt. Upgrade it semantically in
+          # this worker before dispatch, never blocking the state owner/UI.
+          prepared =
+            if chat.generation > 0 and chat.context_bytes == 0 do
+              recent =
+                Enum.take(chat.messages, -20) |> Enum.map_join("\n", &"#{&1.who}: #{&1.text}")
+
+              brief = decide(s.decision, :summary, %{previous: chat.brief, recent: recent}, nil)
+
+              if is_binary(brief) and byte_size(brief) <= 12_000,
+                do: %{prepared | brief: brief},
+                else: prepared
+            else
+              prepared
+            end
+
+          send(parent, {:prepared, sid, chat.generation, prepared, text})
+        end)
+
+        %{
+          s
+          | work_queues: Map.put(s.work_queues, sid, rest),
+            preparing: MapSet.put(s.preparing, sid)
+        }
+
+      _ ->
+        s
+    end
+  end
 
   defp deliver_answer(pid, rid, text) when is_pid(pid),
     do: send(pid, {:nano_human_answer, rid, text})
@@ -447,6 +783,9 @@ defmodule Nano.Bots do
         {:reply, e, s}
     end
   end
+
+  defp checkpoint_path(path, sid, generation),
+    do: Path.join(Path.dirname(path), "checkpoints/#{sid}-#{generation}.term")
 
   defp persist(path, data) do
     with :ok <- File.mkdir_p(Path.dirname(path)),

@@ -13,6 +13,7 @@ defmodule NanoWeb.BotsLive do
        selected: nil,
        chips: [],
        query: "",
+       model: Application.get_env(:nano, :bots_agent_options, [])[:model] || "",
        notice: nil
      )}
   end
@@ -35,7 +36,8 @@ defmodule NanoWeb.BotsLive do
   def handle_event("new", _, socket),
     do: {:noreply, assign(socket, selected: nil, chips: [], notice: nil)}
 
-  def handle_event("filter", %{"query" => q}, socket), do: {:noreply, assign(socket, query: q)}
+  def handle_event("filter", %{"query" => q} = params, socket),
+    do: {:noreply, assign(socket, query: q, model: params["model"] || socket.assigns.model)}
 
   def handle_event("chip", %{"id" => id}, socket),
     do: {:noreply, assign(socket, chips: Enum.uniq(socket.assigns.chips ++ [id]), query: "")}
@@ -44,7 +46,14 @@ defmodule NanoWeb.BotsLive do
     do: {:noreply, assign(socket, chips: socket.assigns.chips -- [id])}
 
   def handle_event("create", _, socket) do
-    case Nano.Bots.create_bot(socket.assigns.query) do
+    opts = Application.get_env(:nano, :bots_agent_options, [])
+
+    opts =
+      if socket.assigns.model != "",
+        do: Keyword.put(opts, :model, socket.assigns.model),
+        else: opts
+
+    case Nano.Bots.create_bot(socket.assigns.query, agent_options: opts) do
       {:ok, bot} ->
         {:noreply,
          assign(socket,
@@ -181,6 +190,12 @@ defmodule NanoWeb.BotsLive do
             ].name} ×</button>
           </div>
           <form id="bot-search" phx-change="filter" phx-submit="create">
+            <input
+              name="model"
+              value={@model}
+              placeholder="Explicit model slug (e.g. google/gemini-2.5-flash-lite)"
+              aria-label="Bot model"
+            />
             <input
               name="query"
               value={@query}
