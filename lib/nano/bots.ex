@@ -32,6 +32,9 @@ defmodule Nano.Bots do
   def checkpoint(sid, generation, opts \\ []),
     do: call(opts[:server] || __MODULE__, {:checkpoint, sid, generation, opts})
 
+  def message(sid, index, opts \\ []),
+    do: call(opts[:server] || __MODULE__, {:message, sid, index, opts})
+
   def snapshot(server \\ __MODULE__), do: call(server, :snapshot)
   def create_bot(name, opts \\ []), do: call(opts[:server] || __MODULE__, {:bot, name, opts})
 
@@ -241,14 +244,57 @@ defmodule Nano.Bots do
       chat ->
         offset = max(0, opts[:offset] || 0)
         limit = min(50, max(1, opts[:limit] || 20))
+        budget = min(12_000, max(1000, opts[:max_bytes] || 6000))
+        per_message = min(budget, max(256, opts[:message_bytes] || 1000))
+
+        {messages, _} =
+          chat.messages
+          |> Enum.slice(offset, limit)
+          |> Enum.reduce_while({[], budget - 100}, fn m, {acc, left} ->
+            fragment =
+              text_page(
+                m.text,
+                0,
+                min(
+                  per_message,
+                  max(256, left - byte_size(Jason.encode!(Map.delete(m, :text))) - 160)
+                )
+              )
+
+            entry =
+              Map.merge(m, %{
+                text: fragment.text,
+                text_bytes: fragment.total_bytes,
+                next_byte: fragment.next_offset,
+                truncated: fragment.next_offset != nil
+              })
+
+            cost = byte_size(Jason.encode!(entry))
+
+            if cost <= left,
+              do: {:cont, {acc ++ [entry], left - cost}},
+              else: {:halt, {acc, left}}
+          end)
+
+        next = offset + length(messages)
 
         {:reply,
          {:ok,
           %{
-            messages: Enum.slice(chat.messages, offset, limit),
+            messages: messages,
             total: length(chat.messages),
-            next_offset: offset + limit
+            next_offset: if(next < length(chat.messages), do: next, else: nil)
           }}, s}
+    end
+  end
+
+  def handle_call({:message, sid, index, opts}, _, s) do
+    with %{messages: messages} <- s.data.sessions[sid],
+         true <- is_integer(index) and index >= 0,
+         m when not is_nil(m) <- Enum.at(messages, index) do
+      {:reply, {:ok, text_page(m.text, opts[:offset] || 0, opts[:max_bytes] || 6000)}, s}
+    else
+      _ -> {:reply, {:error, :unknown_message}, s}
     end
   end
 
@@ -271,12 +317,7 @@ defmodule Nano.Bots do
           offset = max(0, opts[:offset] || 0)
           limit = min(12_000, max(1, opts[:limit] || 6000))
 
-          {:ok,
-           %{
-             text: String.slice(text, offset, limit),
-             total_chars: String.length(text),
-             next_offset: offset + limit
-           }}
+          {:ok, text_page(text, offset, limit)}
         end
 
       {:reply, result, s}
@@ -457,9 +498,8 @@ defmodule Nano.Bots do
 
     if chat.generation == generation do
       brief =
-        String.slice(
+        Nano.Bots.Context.tail(
           chat.brief <> "\nRuntime continuation (untrusted):\n" <> transcript,
-          -12_000,
           12_000
         )
 
@@ -701,7 +741,7 @@ defmodule Nano.Bots do
           states
           |> Enum.map(&Map.take(&1, [:name, :transcript, :pending]))
           |> inspect(limit: :infinity, printable_limit: :infinity)
-          |> String.slice(-12_000, 12_000)
+          |> Nano.Bots.Context.tail(12_000)
 
         active = Enum.any?(states, &(&1.status != :idle or &1.halted == :context))
 
@@ -847,7 +887,7 @@ defmodule Nano.Bots do
           do: brief,
           else:
             Nano.Bots.Context.clip(
-              String.slice(chat.brief <> "\n" <> recent, -12_000, 12_000),
+              Nano.Bots.Context.tail(chat.brief <> "\n" <> recent, 12_000),
               12_000
             )
 
@@ -935,6 +975,37 @@ defmodule Nano.Bots do
       e ->
         {:reply, e, s}
     end
+  end
+
+  # Offsets are UTF-8 byte boundaries returned by the preceding page. The
+  # encoded text as well as raw bytes is bounded (controls can expand sixfold).
+  defp text_page(text, offset, requested) do
+    cap = min(12_000, max(256, requested))
+    offset = min(byte_size(text), max(0, offset))
+    rest = binary_part(text, offset, byte_size(text) - offset)
+
+    if String.valid?(rest) do
+      fragment = fit_encoded(Nano.Bots.Context.clip(rest, cap), cap)
+      next = offset + byte_size(fragment)
+
+      %{
+        text: fragment,
+        total_bytes: byte_size(text),
+        next_offset: if(next < byte_size(text), do: next, else: nil)
+      }
+    else
+      %{text: "", total_bytes: byte_size(text), next_offset: offset, error: :invalid_utf8_offset}
+    end
+  end
+
+  defp fit_encoded(text, cap) do
+    if byte_size(Jason.encode!(text)) <= max(2, cap),
+      do: text,
+      else:
+        fit_encoded(
+          Nano.Bots.Context.clip(text, max(0, byte_size(text) - max(1, div(byte_size(text), 4)))),
+          cap
+        )
   end
 
   defp checkpoint_path(path, sid, generation),

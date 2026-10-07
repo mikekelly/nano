@@ -84,7 +84,8 @@ defmodule Nano.Bots.Context do
   defp utf8(text),
     do: if(String.valid?(text), do: text, else: utf8(binary_part(text, 0, byte_size(text) - 1)))
 
-  defp tail(text, bytes) do
+  @doc "UTF-8 safe suffix bounded in bytes."
+  def tail(text, bytes) do
     if byte_size(text) <= bytes,
       do: text,
       else: utf8_start(binary_part(text, byte_size(text) - bytes, bytes))

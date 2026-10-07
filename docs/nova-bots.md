@@ -91,14 +91,29 @@ promise exactly-once external side effects: successor prompts say inspect comple
 actions and do not repeat them, but actions should still be idempotent.
 
 The UI retains all visible history; `Nano.Bots.history(session, offset: 0, limit: 20)`
-retrieves it in pages. `Nano.Bots.checkpoint(session, generation, offset: 0, limit: 6000)`
-retrieves runtime history in bounded text pages. Semantic summaries preserve decisions,
+retrieves bounded fragments: the aggregate JSON page defaults to 6000 bytes
+(`max_bytes`, clamped 1000–12000), and each message defaults to 1000 bytes
+(`message_bytes`). A fragment carries `text_bytes`, `truncated`, and `next_byte`.
+`next_offset` pages message indices and is `nil` at the end. For exact content use
+`Nano.Bots.message(session, message_index, offset: 0, max_bytes: 6000)`, then pass
+its `next_offset` until `nil`. Content offsets are **UTF-8 byte boundaries**, not
+character indices; both raw and JSON-encoded text are capped (256–12000 bytes).
+`Nano.Bots.checkpoint(session, generation, offset: 0, limit: 6000)` likewise returns
+`text`, `total_bytes`, and byte `next_offset`; this supersedes the old character-offset
+checkpoint API. Use returned continuations rather than adding the requested limit.
+Checkpoint files retain the full original state. Semantic summaries preserve decisions,
 preferences, commitments and open questions when a decision model is configured.
 Without it a bounded excerpt is explicit fallback; it may omit facts from working
 context, but neither display history nor proactive runtime checkpoints are erased.
 Bots are instructed to retrieve the archive rather than guessing forgotten details.
 Use per-bot memory for cross-session facts; this is not perfect automatic extraction
 or a claim of never forgetting a nuance.
+
+The UI distinguishes a silent completed turn (`no_reply`) from a budget-halted
+turn (`paused`) and from unavailable model configuration. A context halt alone
+never makes an active eval safe to retire: idle status, `task: nil`, and `calls: []`
+are all required. Request-boundary compaction runs only after completed tools and
+preserves cumulative generation turn/token accounting.
 
 ## Cheap typed decision adapter
 

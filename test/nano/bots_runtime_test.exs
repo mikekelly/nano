@@ -94,7 +94,71 @@ defmodule Nano.BotsRuntimeTest do
     eventually(fn -> Nano.Bots.snapshot(s).sessions[chat.id].generation == 1 end)
   end
 
+  test "real context policy compacts only after a running eval completes", %{s: s} do
+    model = Fake.model()
+    Fake.listen(model)
+    {:ok, a} = Nano.Bots.create_bot("Ada", server: s)
+    {:ok, chat} = Nano.Bots.create_session([a.id], server: s)
+    name = "bot-#{a.id}-#{chat.id}-0"
+    Registry.register(Nano.Registry, {:bots_eval_observer, name}, nil)
+
+    code =
+      "[{p, _}] = Registry.lookup(Nano.Registry, {:bots_eval_observer, " <>
+        inspect(name) <>
+        "}); send(p, {:eval_started, self()}); receive do :finish -> String.duplicate(\"🧠\", 7000) end"
+
+    Fake.push(model, calls: [eval: code], usage: {9000, 100, 0})
+    Fake.push(model, text: "finished")
+
+    {:ok, pid} =
+      NanoAgent.start(
+        Keyword.merge(Fake.opts(model),
+          name: name,
+          max_context: 8192,
+          system_prompt: "short",
+          context_policy: Nano.Bots.Context
+        )
+      )
+
+    on_exit(fn ->
+      Nano.Ops.stop_agent(name)
+      Nano.StateStore.delete(name)
+    end)
+
+    NanoAgent.notify(pid, :hello)
+    assert_receive {:openrouter_request, ^model, _}, 2000
+    assert_receive {:eval_started, tool}, 2000
+    state = Nano.StateStore.get(name)
+    assert state.halted == :context
+    assert state.status == :running_tool
+    assert state.task != nil or state.calls != []
+    send(s, :monitor)
+    Process.sleep(30)
+    assert Process.alive?(tool)
+    assert Process.alive?(pid)
+    assert Nano.Bots.snapshot(s).sessions[chat.id].generation == 0
+    # Stop only the isolated monitor so the final state remains available for
+    # cumulative-budget assertions rather than being archived and retired.
+    GenServer.stop(s)
+    send(tool, :finish)
+    assert_receive {:openrouter_request, ^model, request}, 2000
+    assert Enum.map(request["messages"], & &1["role"]) == ["system", "user"]
+    assert Jason.encode!(request["messages"]) =~ "Bot working checkpoint"
+
+    eventually(fn ->
+      match?(%{status: :idle, task: nil, calls: []}, Nano.StateStore.get(name))
+    end)
+
+    final = Nano.StateStore.get(name)
+    assert final.halted == nil
+    assert final.turns_used == 2
+    assert final.tokens_used == 9210
+    assert final.task == nil
+    assert final.calls == []
+  end
+
   test "provider settings
+
  are durable and secrets are rejected",
        %{s: s} do
     {:ok, a} =
