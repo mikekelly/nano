@@ -139,6 +139,29 @@ defmodule Vega.GoalsMemoryTest do
     end
   end
 
+  test "disk state survives independent VM shutdown and startup", %{opts: o} do
+    paths = [Path.dirname(:code.which(Vega.Goals)), Path.dirname(:code.which(Jason))]
+    args = Enum.flat_map(paths, &["-pa", &1])
+
+    writer =
+      "{:ok, _} = Vega.Goals.add(\"restart\", \"Survive\", why: \"Evidence\", root: #{inspect(o[:root])}); {:ok, _} = Vega.Memory.put(\"restart\", \"Remember restart\", provenance: %{source: \"vm one\"}, root: #{inspect(o[:root])})"
+
+    assert {_, 0} =
+             System.cmd(System.find_executable("elixir"), args ++ ["-e", writer],
+               env: [{"ERL_FLAGS", "+S 2"}],
+               stderr_to_stdout: true
+             )
+
+    reader =
+      "{:ok, [%{\"title\" => \"Survive\", \"why\" => \"Evidence\"}]} = Vega.Goals.list(\"restart\", root: #{inspect(o[:root])}); {:ok, [%{\"content\" => \"Remember restart\", \"provenance\" => %{\"source\" => \"vm one\"}}]} = Vega.Memory.retrieve(\"restart\", \"restart\", root: #{inspect(o[:root])})"
+
+    assert {_, 0} =
+             System.cmd(System.find_executable("elixir"), args ++ ["-e", reader],
+               env: [{"ERL_FLAGS", "+S 2"}],
+               stderr_to_stdout: true
+             )
+  end
+
   test "IO failures surfaced", %{opts: o} do
     File.mkdir_p!(o[:root])
     File.write!(Path.join(o[:root], "not-dir"), "x")
