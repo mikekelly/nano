@@ -434,3 +434,18 @@ task, one summary message, and the last ~40 messages survive; the step-by-step r
 `/app/lib` is gone from context (it remains in the log and the state file). The harness itself
 also compacts — a `COMPACTED (placeholder)` user message appeared at index 1 of the transcript
 during the task, written by the node runner, not by this module.
+
+---
+
+## Delegation, second attempt (addendum)
+
+After the harness fixed the eval-binding bug and the operators invited me to continue, I re-ran the
+delegation with the fix I had proposed: un-halt one sub-agent (fix-m3) and tell it to **report
+first**. It did not report. Its own accumulated context won: it began re-applying its patch to the
+reset `/app`, drifted onto an unrelated `lazy_html` NIF problem, and halted on budget again without
+sending anything. I reverted its edits to `/app` (branch `reviewer-harness-review` is unaffected).
+See `SUBAGENT_BRIEFS.md` for the full write-up.
+
+The practical conclusion: do not rely on a sub-agent to report before it stops. Read its result
+from the filesystem (`git diff`, the state store, the worktree), or start a *fresh* agent whose
+only job is to read the work and summarize it.
