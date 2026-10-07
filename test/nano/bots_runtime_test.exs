@@ -71,7 +71,14 @@ defmodule Nano.BotsRuntimeTest do
     {:ok, pid} = NanoAgent.start(Keyword.merge(Fake.opts(model), name: name))
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     saved = Nano.StateStore.get(name)
-    Nano.StateStore.put(name, %{saved | context_used: saved.max_context, status: :running_tool})
+
+    Nano.StateStore.put(name, %{
+      saved
+      | context_used: saved.max_context,
+        status: :running_tool,
+        halted: :context
+    })
+
     send(s, :monitor)
     Process.sleep(30)
     assert Process.alive?(pid)
