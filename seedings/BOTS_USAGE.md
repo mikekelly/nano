@@ -59,6 +59,10 @@ path-component replacement/FIFO swaps are outside a sandbox guarantee. A crash b
 copy and chat commit can leave orphan files; failure cleanup is best effort and there
 is no artifact GC. Downloads are bounded and buffered, not network-streamed. No rich
 file previews, upload workflow, VM isolation or independent bot browser is claimed.
+Copy runs synchronously inside the Bots service and can block chat operations on a slow
+filesystem. Treat the configured artifact root as trusted: directory creation happens
+before ancestor-symlink rejection and can create directories through a maliciously
+configured symlink.
 
 ## Human requests: one conduit for every agent
 
