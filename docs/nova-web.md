@@ -88,7 +88,8 @@ Exa's current docs (read 2026-10-07 from `https://exa.ai/docs/llms.txt`,
 ```
 
 The unlinked worker makes the create request and polls in the background; the
-initial call is immediate. Completion stores the whole provider run as readable
+initial call is immediate. After creation it sends `{:nano_research_started, ref,
+run_id}` so callers can save the id for recovery if polling or the node fails. Completion stores the whole provider run as readable
 pretty JSON, including `output.text`, `output.structured`, `output.grounding`,
 metadata and costs, and sends a bounded page handle. Options: `notify` pid
 (default caller), `poll_interval` ms (3,000), `research_timeout` ms (900,000).

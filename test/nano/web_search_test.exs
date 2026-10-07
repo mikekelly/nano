@@ -124,6 +124,7 @@ defmodule Nano.WebSearchTest do
     assert {:ok, %{ref: ref}} =
              Nano.Search.research("q", opts ++ [api_key: "test", req_options: [plug: plug]])
 
+    assert_receive {:nano_research_started, ^ref, "run-1"}, 2000
     assert_receive {:nano_research, ^ref, {:ok, %{id: "run-1", page: p}}}, 2000
     assert p.text =~ "result"
   end
