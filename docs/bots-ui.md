@@ -57,8 +57,10 @@ require integration/browser evidence; unit/LiveView success is not such evidence
 Sidebar snapshots carry at most the last preview message for each conversation, not
 unopened transcripts. The selected conversation is fetched separately (latest 80).
 Load earlier messages fetches 80 before the earliest-message cursor, deduplicates and
-prepends, retaining at most 400 messages on the LiveView. At that cap the older button
-is disabled; Show latest messages resets to 80. PubSub merges only selected-chat history
-with its recent page, never copies another transcript. Own follow hook preserves the
+prepends, retaining at most 400 messages on the LiveView. At that cap subsequent older
+pages slide the window backward (drop its newer end), so even the first message remains
+accessible. Show latest messages resets to 80. While reading loaded history, PubSub
+preserves the displayed message window, updates title/status metadata, and announces
+new messages instead of replacing text under the reader. It never copies another transcript. Own follow hook preserves the
 viewport when messages are prepended; Show latest explicitly returns to bottom.
 Pagination is tested with 410 durable messages and an unopened second conversation.

@@ -255,7 +255,7 @@ defmodule NanoWeb.BotsLiveTest do
     view |> element("button", "Load earlier messages") |> render_click()
     assert has_element?(view, "#messages", "History item 251")
     for _ <- 1..3, do: view |> element("button", "Load earlier messages") |> render_click()
-    assert has_element?(view, "button[phx-click='load-earlier'][disabled]")
+    refute has_element?(view, "button[phx-click='load-earlier'][disabled]")
 
     assert length(
              LazyHTML.from_document(render(view))
@@ -263,6 +263,13 @@ defmodule NanoWeb.BotsLiveTest do
              |> LazyHTML.to_tree()
            ) == 400
 
+    view |> element("button", "Load earlier messages") |> render_click()
+    assert has_element?(view, "#messages", "History item 1")
+    refute has_element?(view, "#messages", "History item 410")
+    {:ok, _} = Vega.Bots.post(chat["id"], bot["id"], "New while reading", ctx.opts)
+    assert render(view) =~ "New messages have arrived"
+    assert has_element?(view, "#messages", "History item 1")
+    refute has_element?(view, "#messages", "New while reading")
     view |> element("button", "Show latest messages") |> render_click()
 
     assert length(
