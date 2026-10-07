@@ -151,6 +151,10 @@ defmodule Nano.SettingsTest do
     TestSettings.put("SOME_TOKEN", "abc")
     assert Nano.Settings.get("SOME_TOKEN") == "abc"
     assert Nano.Settings.get("OTHER") == nil
+    # Named in any case, as a string or an atom: an agent may well ask for :some_token.
+    assert Nano.Settings.get("some_token") == "abc"
+    assert Nano.Settings.get(:some_token) == "abc"
+    assert Nano.Settings.get(:SOME_TOKEN) == "abc"
     assert %{applies: :live, default: nil, last4: nil} = entry("SOME_TOKEN")
     assert :ok = Nano.Ops.delete_setting("SOME_TOKEN")
     assert entry("SOME_TOKEN") == nil

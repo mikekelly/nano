@@ -2,7 +2,8 @@
 
 Needs a key for Exa (exa.ai), which the operators may have supplied as a node setting under
 its usual name, `EXA_API_KEY`; the node's settings (`Nano.Ops.settings/0`, or
-`GET /api/settings`) show which are set, though never their values. If it is not set, say so
+`GET /api/settings`) show which are set, though never their values, and
+`Nano.Settings.get("EXA_API_KEY")` reads it (any case, string or atom). If it is not set, say so
 and stop: there is nothing real to build against, and a stand-in would only look like search.
 
 ## Outcome

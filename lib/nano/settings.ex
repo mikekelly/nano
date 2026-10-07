@@ -71,7 +71,9 @@ defmodule Nano.Settings do
 
   @doc """
   A setting's value, never calling the process: one of the seed's (an atom, or its name) as
-  set or its default; an operator's own (by its name) as set, or nil.
+  set or its default; an operator's own (by its name, in any case, as a string or an atom:
+  `"TYPESAFE_API_KEY"`, `"typesafe_api_key"` and `:typesafe_api_key` are the same) as set,
+  or nil.
   """
   def get(key) when key in @keys, do: Map.get(values(), key, default(key))
 
@@ -137,9 +139,13 @@ defmodule Nano.Settings do
   @doc """
   A setting's key from its name: `{:ok, atom}` for one of the seed's, named in either case
   (`openrouter_api_key`, or `OPENROUTER_API_KEY` as in `.env`); `{:ok, name}` for any other
-  name of letters, digits and `_` (an operator's own); else `{:error, message}`.
+  name of letters, digits and `_` (an operator's own), upper-cased as in `.env`, and given
+  as a string or an atom; else `{:error, message}`.
   """
   def key(key) when key in @keys, do: {:ok, key}
+
+  def key(key) when is_atom(key) and key not in [nil, true, false],
+    do: key(Atom.to_string(key))
 
   def key(name) when is_binary(name) do
     cond do
@@ -147,7 +153,7 @@ defmodule Nano.Settings do
         {:ok, key}
 
       name =~ ~r/^[A-Za-z_][A-Za-z0-9_]{0,99}$/ ->
-        {:ok, name}
+        {:ok, String.upcase(name)}
 
       true ->
         {:error,

@@ -91,7 +91,8 @@ the ones before it, and each makes the next one cheaper, so it is a good default
 6. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
    search, when the operators have supplied a key for a search service such as Exa
    (exa.ai), as a node setting under its usual name (`EXA_API_KEY`; the node's settings,
-   `Nano.Ops.settings/0` or `GET /api/settings`, show which are set; [search.md](search.md)); and the browser that is already in the image — Lightpanda at
+   `Nano.Ops.settings/0` or `GET /api/settings`, show which are set, and `Nano.Settings.get/1`
+   reads one by name; [search.md](search.md)); and the browser that is already in the image — Lightpanda at
    `/usr/local/bin/lightpanda`, a headless browser with JavaScript: `lightpanda fetch
    --dump markdown URL` renders a page and prints it as Markdown, and `lightpanda serve
    --host 127.0.0.1 --port 9222` runs a CDP server that Puppeteer- or Playwright-style
@@ -162,7 +163,8 @@ but far below what the agent's own model should be spent on. A decision model su
 typed answers with probabilities that code can branch on, sort by and route with — "the
 kind of judgment a highly knowledgeable person could make in a few seconds". The operators
 may have supplied credentials for it as a node setting named `TYPESAFE_API_KEY` (the node's
-settings, `Nano.Ops.settings/0` or `GET /api/settings`, show which are set). Examples:
+settings, `Nano.Ops.settings/0` or `GET /api/settings`, show which are set, and
+`Nano.Settings.get("TYPESAFE_API_KEY")` reads it). Examples:
 walking a Markdown knowledge graph to find the sources relevant to a question, scoring
 pages, sections and links as it goes (see https://github.com/mikekelly/s1m, which does
 exactly this best-first with a budget); deciding whether a message in a shared chat room
