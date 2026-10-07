@@ -1,0 +1,7 @@
+# Boot integration
+
+`Nano.Application` calls `Vega.Boot.start_services/1` only after loading durable agent state and reviving named agents. This prevents a pending bot outbox from creating a fresh agent over a saved pair. It eagerly supervises Delegation.Supervisor, MCP.Supervisor and Bots.Server under the existing Nano root. A lazy service already running is linked/adopted without replacing state; adoption/restart is unit-tested. Persisted delegation monitor mappings are restored; a monitor already running is expected and harmless.
+
+Normal environments default to eager startup. `:nano, :vega_autostart` false disables it (test config does this so suites can supervise isolated trees and never write /data). Bots root is `:nano, :vega_root`, default `/data/vega`. MCP connection definitions still launch explicitly; persisted interests restore when the server reconnects. Background OS commands remain detached and don't survive whole container death.
+
+The parent applied this to the current live node without restarting agents: loaded `Vega.Boot` and `Nano.Application`, then called `Vega.Boot.start_services(Nano.Supervisor)` to adopt existing service trees. All three now belong to the root. No prod build was rewritten; normal image boot compiles committed source. Service migrations must be state-compatible or restarted safely; never hot-load a changed state shape over running GenServers casually.
