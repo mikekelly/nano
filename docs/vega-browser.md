@@ -14,9 +14,18 @@ Vega.Browser.stop(b)
 ```
 
 Requires a native **Node >=22** (built-in WebSocket, no npm packages) and
-`/usr/local/bin/lightpanda`. Node lookup: `node:` option, `VEGA_BROWSER_NODE`,
-then PATH. The development native ARM64 runtime is `/tmp/vega-browser-tools/node`;
-it is not shipped in git. Lightpanda can be overridden with `lightpanda:`.
+`/usr/local/bin/lightpanda`. Node lookup precedence (read-only): explicit `node:`
+option; exact string node setting `Nano.Settings.get("VEGA_BROWSER_NODE")`;
+environment `VEGA_BROWSER_NODE`; `/data/vega-browser-tools/node22` if a regular
+file; then PATH. Empty/whitespace setting/environment values mean unset. Explicit
+options (even nil/invalid) take precedence and fail rather than silently falling
+through. A nonblank but invalid configured path also fails honestly.
+`node_runtime/1` reports the selected path without installing/changing anything.
+The parent installed a durable native ARM64 v22.21.1 copy at the stable /data path;
+`start()` works on this node without options or environment mutation, despite
+system /usr/bin/node being20. The development /tmp copy is not needed in production.
+Neither executable is shipped in git. Lightpanda overrides: `binary:` or legacy
+`lightpanda:`. Chromium is optional as documented below.
 The packaged script is `priv/vega_browser.mjs`, override with `script:` only for
 trusted deployment/tests. Existing Vega.Web remains HTTP/Markdown oriented.
 
@@ -24,9 +33,10 @@ All public operations return `{:ok, result}` / `{:error, reason}`. CDP and JS
 errors are string-key maps (`kind`, `message`, `method` as applicable). Missing
 selectors are JS errors, never silent success. `click` uses DOM `.click()`;
 `fill` sets `.value` and emits bubbling input/change, not trusted mouse/keyboard
-input. Rich React-controlled inputs, hover, layout, viewport, keyboard, file
-upload, cross-origin frames, downloads, CAPTCHA and navigation auto-wait after
-click are not implemented. Call evaluate/poll for your explicit condition.
+input. Rich React-controlled input handling, hover convenience, file upload, cross-origin
+frame helpers, downloads, CAPTCHA and navigation auto-wait after click are not
+implemented. Chromium viewport, trusted keyboard and CSS-pixel screenshots are
+implemented as described below; Lightpanda is not a CSS layout renderer. Call evaluate/poll for your explicit condition.
 `navigate` polls `document.readyState` complete, not network idle or asynchronous
 app readiness. DOM text uses textContent (not visual innerText/readability);
 scripts/styles may occur. Paging re-snapshots DOM: changes between reads can
@@ -196,3 +206,35 @@ exit0. A temporary QA filename warning was removed by moving the opt-in
 script from test/ to priv/; existing seed-suite warnings/retry_start are not
 failures. Live QA was repeated with strict no-overflow/no-timeline/error-free
 assertions, also exit0; latest artifacts `/tmp/vega-browser-tools/qa/UFWmxObuXgc`.
+
+## Pinned runtime installation on a fresh ARM64 image
+
+`start/1` never auto-installs/downloads runtimes, mutates environment, or changes
+node settings. Keep system Node20 for other capabilities; install the Browser
+runtime separately. For this Debian ARM64 container, an operator can explicitly
+run (root needed to write the stable /data path):
+
+```sh
+work=$(mktemp -d /tmp/vega-browser-install-XXXXXXXX)
+cd "$work"
+curl -fSLO https://nodejs.org/dist/v22.21.1/node-v22.21.1-linux-arm64.tar.xz
+echo 'e660365729b434af422bcd2e8e14228637ecf24a1de2cd7c916ad48f2a0521e1  node-v22.21.1-linux-arm64.tar.xz' | sha256sum -c -
+tar -xJf node-v22.21.1-linux-arm64.tar.xz
+install -d -m 0755 /data/vega-browser-tools
+install -m 0755 node-v22.21.1-linux-arm64/bin/node /data/vega-browser-tools/node22
+/data/vega-browser-tools/node22 --version # v22.21.1
+# Optional CSS backend: apt-get update && apt-get install -y chromium
+```
+
+Archive digest was compared to Node's official v22.21.1 SHASUMS256.txt on this
+node; downloaded bytes matched. For x86_64 use the matching linux-x64 artifact
+and its **different** official pinned digest; don't run ARM64 bytes on x64 or
+vice versa. The durable copy needs a compatible glibc base image. Installation
+is an explicit provisioning step, not a dependency bundled in the source commit.
+
+Default selection followup verification: six focused tests passed, seed786713,
+with VEGA_BROWSER_NODE **unset** in the isolated subprocess. Default start used
+the stable native /data copy and evaluated 6*7=42. Resolver tests verified
+explicit option precedence, exact string node-setting precedence, and blank
+setting fallback; settings mutations were confined to that isolated test BEAM,
+never the running node. Live node settings/environment were only read, not changed.
