@@ -1,0 +1,11 @@
+{
+  "dependencies": {
+    "@mozilla/readability": "*",
+    "@postlight/parser": "*",
+    "html2text": "*",
+    "jsdom": "*"
+  },
+  "description": "HTML -> readable Markdown for Nano.Web",
+  "name": "nano-web-extract",
+  "private": true
+}
