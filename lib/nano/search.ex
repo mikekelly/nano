@@ -67,37 +67,83 @@ defmodule Nano.Search do
     if key(opts) in [nil, ""] do
       {:error, :missing_api_key}
     else
-      recipient = Keyword.get(opts, :notify, self())
-      ref = make_ref()
+      recipient = Keyword.get(opts, :notify, default_recipient())
 
-      pid =
-        spawn(fn ->
-          result =
-            with {:ok, run} <-
-                   request(
-                     :post,
-                     "/agent/runs",
-                     Map.merge(%{"query" => query}, Keyword.get(opts, :params, %{})),
-                     opts
-                   ),
-                 id when is_binary(id) <- run["id"] do
-              send(recipient, {:nano_research_started, ref, id})
+      if is_pid(recipient) or is_binary(recipient) do
+        ref = make_ref()
 
-              poll(
-                id,
-                opts,
-                System.monotonic_time(:millisecond) +
-                  Keyword.get(opts, :research_timeout, 900_000)
-              )
-            else
-              nil -> {:error, :missing_run_id}
-              error -> error
-            end
+        pid =
+          spawn(fn ->
+            result =
+              try do
+                with {:ok, run} <-
+                       request(
+                         :post,
+                         "/agent/runs",
+                         Map.merge(%{"query" => query}, Keyword.get(opts, :params, %{})),
+                         opts
+                       ),
+                     id when is_binary(id) <- run["id"] do
+                  notify(recipient, {:nano_research_started, ref, id}, opts)
 
-          send(recipient, {:nano_research, ref, result})
+                  poll(
+                    id,
+                    opts,
+                    System.monotonic_time(:millisecond) +
+                      Keyword.get(opts, :research_timeout, 900_000)
+                  )
+                else
+                  nil -> {:error, :missing_run_id}
+                  error -> error
+                end
+              rescue
+                _ -> {:error, :research_worker_failed}
+              catch
+                _, _ -> {:error, :research_worker_failed}
+              end
+
+            notify(recipient, {:nano_research, ref, result}, opts)
+          end)
+
+        {:ok, %{ref: ref, pid: pid}}
+      else
+        {:error, :invalid_notify}
+      end
+    end
+  end
+
+  defp default_recipient do
+    Enum.find_value([self() | List.wrap(Process.get(:"$callers"))], fn pid ->
+      try do
+        Enum.find_value(Registry.keys(Nano.Registry, pid), fn
+          {:agent, name} -> name
+          _ -> nil
         end)
+      rescue
+        _ -> nil
+      end
+    end) || self()
+  end
 
-      {:ok, %{ref: ref, pid: pid}}
+  defp notify(target, message, opts) when is_binary(target) do
+    deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :notify_timeout, 30_000)
+    notify_name(target, message, deadline)
+  end
+
+  defp notify(pid, message, _opts) when is_pid(pid), do: send(pid, message)
+
+  defp notify_name(name, message, deadline) do
+    case NanoAgent.whereis(name) do
+      pid when is_pid(pid) ->
+        send(pid, message)
+
+      _ ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(100)
+          notify_name(name, message, deadline)
+        else
+          :undelivered
+        end
     end
   end
 

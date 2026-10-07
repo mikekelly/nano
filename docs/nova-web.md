@@ -38,13 +38,15 @@ are not implemented. Browser stderr remains operator-visible, not mixed into pag
 HTTP and browser caches are separate SHA256 ids. Default cache directory is
 `/tmp/nano-web-cache`; supply `cache_dir: "/data/your-agent/web"` for persistent
 state and use the same option for subsequent reads/contents/research. Writes are
-atomic. Cached fetches are reused for one hour (`ttl` seconds); `refresh: true`
+atomic with random exclusive temporary files. Cached fetches are reused for one hour (`ttl` seconds); `refresh: true`
 forces network access. `read` intentionally can read an old cached snapshot.
 Default retention is 100 pages (`cache_entries`), evicting oldest file timestamps
 on store. Concurrent writers may transiently exceed that bound. Storage/fetch
-limit is five MB per page (`max_download_bytes`). Response-size checks happen
-**after download**, not during streaming; this is not a memory quota or an SSRF
-sandbox. Only http/https schemes are accepted; private/local URLs are not blocked.
+limit is five MB per page (`max_download_bytes`). HTTP bodies are accumulated through a capped Req streaming sink (compression
+is disabled); exceeding the cap halts reading. Lightpanda stdout is consumed
+incrementally through a capped port. Closing the port on overflow stops local
+reading; GNU timeout remains the OS process lifetime backstop. These limits bound
+stored bodies, not total browser process memory or an SSRF sandbox. Only http/https schemes are accepted; private/local URLs are not blocked.
 PDFs and other binary media return explicit unsupported errors. Dedicated PDF,
 repository and video processing is deferred; textual GitHub raw URLs work normally.
 
@@ -91,21 +93,26 @@ The unlinked worker makes the create request and polls in the background; the
 initial call is immediate. After creation it sends `{:nano_research_started, ref,
 run_id}` so callers can save the id for recovery if polling or the node fails. Completion stores the whole provider run as readable
 pretty JSON, including `output.text`, `output.structured`, `output.grounding`,
-metadata and costs, and sends a bounded page handle. Options: `notify` pid
-(default caller), `poll_interval` ms (3,000), `research_timeout` ms (900,000).
+metadata and costs, and sends a bounded page handle. Options: `notify` pid or stable agent name
+(default: agent name resolved from eval Task `$callers`, else caller pid), `poll_interval` ms (3,000), `research_timeout` ms (900,000).
 Failed/cancelled runs send error values with the run id. Local deadline sends
 `{:error, %{reason: :research_timeout, id: id}}`; recover it via
 `research_status(id)`. That explicit status function returns the raw provider
 map; use it only when the full response is wanted. Local timeout/worker death
-does **not** cancel the remote billable run. The worker is not persisted or
-supervised: a node restart loses its notification. `Process.exit(job.pid, :kill)`
+does **not** cancel the remote billable run. Named notifications re-resolve the agent pid at delivery and retry registration
+for `notify_timeout` milliseconds (default 30,000), surviving ordinary agent
+restarts; worker rescue/catch sends a terminal safe error on unexpected failure.
+The worker is not persisted or supervised: a node restart loses its notification. `Process.exit(job.pid, :kill)`
 stops local polling only. A transient polling error ends local observation;
 explicit status lets callers recover, without hiding billable retries.
 
 ## Verification
 
 - Isolated `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-web/_build mix test`: 255 passed
-  (including 10 new mocked tests); existing suite warnings only.
+  (including the original 10 new mocked tests); existing suite warnings only.
+- Final expanded targeted suite: 16 passed (concurrent store, ephemeral eval
+  task, replacement named target, worker exception, HTTP and browser byte caps
+  and browser timeout regressions included).
 - Real HTTP example.com fetch: success, bounded readable text.
 - Real Lightpanda example.com render: success, bounded markdown.
 - Real Exa search: two official Elixir URLs returned.

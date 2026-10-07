@@ -180,6 +180,117 @@ defmodule Nano.WebSearchTest do
     assert_receive {:nano_research, ^ref, {:error, %{reason: "failed", id: "run-fail"}}}, 2000
   end
 
+  test "60 concurrent same-id stores use unique atomic temp files", %{opts: opts} do
+    id = String.duplicate("a", 64)
+
+    results =
+      1..60
+      |> Task.async_stream(
+        fn n -> Nano.Web.store("https://example.org", "#{n}", opts ++ [id: id]) end,
+        max_concurrency: 30
+      )
+      |> Enum.to_list()
+
+    assert Enum.all?(results, fn r -> match?({:ok, {:ok, _}}, r) end)
+    assert {:ok, _} = Nano.Web.read(id, opts)
+    assert Path.wildcard(Path.join(opts[:cache_dir], "*.tmp")) == []
+  end
+
+  test "eval task's callers resolve to stable agent name", %{opts: opts} do
+    name = "nova-web-research-test-#{System.unique_integer([:positive])}"
+    Registry.register(Nano.Registry, {:agent, name}, nil)
+
+    task =
+      Task.async(fn ->
+        Nano.Search.research(
+          "q",
+          opts ++
+            [api_key: "test", req_options: mock(%{"id" => "eval-run", "status" => "completed"})]
+        )
+      end)
+
+    assert {:ok, %{ref: ref}} = Task.await(task)
+    assert_receive {:nano_research_started, ^ref, "eval-run"}, 2000
+    assert_receive {:nano_research, ^ref, {:ok, %{id: "eval-run"}}}, 2000
+    Registry.unregister(Nano.Registry, {:agent, name})
+  end
+
+  test "named notification follows replacement agent process", %{opts: opts} do
+    name = "nova-web-replacement-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    assert {:ok, %{ref: ref}} =
+             Nano.Search.research(
+               "q",
+               opts ++
+                 [
+                   notify: name,
+                   api_key: "test",
+                   req_options: mock(%{"id" => "named-run", "status" => "completed"})
+                 ]
+             )
+
+    replacement =
+      spawn(fn ->
+        Registry.register(Nano.Registry, {:agent, name}, nil)
+
+        receive do
+          event -> send(parent, {:forwarded, event})
+        end
+
+        receive do
+          event -> send(parent, {:forwarded, event})
+        end
+      end)
+
+    assert_receive {:forwarded, {:nano_research_started, ^ref, "named-run"}}, 2000
+    assert_receive {:forwarded, {:nano_research, ^ref, {:ok, %{id: "named-run"}}}}, 2000
+    assert is_pid(replacement)
+  end
+
+  test "worker exceptions send terminal error" do
+    assert {:ok, %{ref: ref}} =
+             Nano.Search.research("q",
+               notify: self(),
+               api_key: "test",
+               research_timeout: :bad,
+               req_options: mock(%{"id" => "bad-run"})
+             )
+
+    assert_receive {:nano_research_started, ^ref, "bad-run"}, 2000
+    assert_receive {:nano_research, ^ref, {:error, :research_worker_failed}}, 2000
+  end
+
+  test "HTTP streaming enforces body cap", %{opts: opts} do
+    assert {:error, :page_too_large} =
+             Nano.Web.fetch(
+               "https://example.org/big",
+               opts ++
+                 [
+                   max_download_bytes: 20,
+                   req_options: mock(String.duplicate("a", 100), 200, "text/plain")
+                 ]
+             )
+  end
+
+  test "browser output cap and timeout", %{opts: opts} do
+    File.mkdir_p!(opts[:cache_dir])
+    binary = Path.join(opts[:cache_dir], "fake-browser")
+    File.write!(binary, "#!/bin/sh\nhead -c 100000 /dev/zero\n")
+    File.chmod!(binary, 0o700)
+
+    assert {:error, :page_too_large} =
+             Nano.Lightpanda.fetch("https://example.org",
+               executable: binary,
+               max_download_bytes: 20
+             )
+
+    File.write!(binary, "#!/bin/sh\nsleep 2\n")
+
+    assert {:error, :timeout} =
+             Nano.Lightpanda.fetch("https://example.org", executable: binary, timeout: 20)
+  end
+
   test "browser missing and shell-free URL validation" do
     assert {:error, :lightpanda_missing} =
              Nano.Lightpanda.fetch("https://example.org", executable: nil)
