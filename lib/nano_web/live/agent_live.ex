@@ -125,7 +125,7 @@ defmodule NanoWeb.AgentLive do
     name = socket.assigns.name
     agent = Nano.Ops.agent(name)
     spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
-    socket = assign(socket, agent: agent, spawned: spawned)
+    socket = assign(socket, agent: agent, spawned: spawned, goals: Nano.Goals.review(name))
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -286,6 +286,28 @@ defmodule NanoWeb.AgentLive do
             No agent named "{@name}" is running{if @id, do: " (it was stopped)"}. Start one from <.link navigate="/">the process view</.link>.
           </p>
           <span :if={@notice} class={["sent", elem(@notice, 0)]}>{elem(@notice, 1)}</span>
+        </section>
+
+        <section id="goals" class="prompt" aria-label="Open goals">
+          <h2>Open goals</h2>
+          <%= case @goals do %>
+            <% {:ok, review} -> %>
+              <p class="dim">
+                {review.total} open{if review.omitted > 0, do: " · #{review.omitted} more not shown"}
+              </p>
+              <p :if={review.total == 0} class="dim">No open goals recorded.</p>
+              <ol>
+                <li :for={goal <- review.goals} id={"goal-#{goal["id"]}"}>
+                  <strong>{goal["title"]}</strong>
+                  <span class="badge">{goal["status"]}</span>
+                  <p class="dim">Why: {goal["why"]}</p>
+                  <p :if={goal["note"] != ""}>{goal["note"]}</p>
+                  <small :if={goal["parent"]} class="dim">Step of {goal["parent"]}</small>
+                </li>
+              </ol>
+            <% {:error, reason} -> %>
+              <p class="error">Goals unavailable: {inspect(reason)}</p>
+          <% end %>
         </section>
 
         <details :if={@agent} id="system-prompt" class="prompt" phx-mounted={keep_open()}>
