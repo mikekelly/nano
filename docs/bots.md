@@ -76,9 +76,16 @@ Without explicit session, newest session involving the bot is used, or one is cr
 ## Evidence and current limits
 
 `MIX_ENV=test MIX_BUILD_ROOT=/tmp/vega-bots-build mix test test/vega/bots_test.exs test/vega/bots_relevance_test.exs`:
-11/11 passing isolated backend tests (no real provider spend). Frontend pending separate
-subagent. No modules loaded into the running node. Real Codex bot and compaction tests
-wait for parent integration/fixed compaction and authorization.
+Final full worktree suite: **345 tests passed**, compile --warnings-as-errors passed
+(task HjxHTL-vkCFBpcpG, /tmp/vega-bots-tasks/HjxHTL-vkCFBpcpG/output.log). Focused
+bots tests total27:14 backend/controller and13 LiveView/Markdown. ARM Node syntax
+and reproducible test/js/bots_hooks_test.js + bots_scroll_test.js passed. Existing
+seed-test-only unused-variable/optional-default warnings remain outside owned files.
+Real authorized Codex evidence (group authors, cross-session memory, requester restart,
+automatic compaction/continuity and native vision) is recorded in bots-real-evidence.md.
+This agent did not load any modules live; parent loaded an earlier reviewed backend
+and owns application/endpoint/front-end deployment. Latest state shape requires
+service restart, not hot loading over an old map.
 
 Initial state snapshot uses owned Vega.Bots.Persistence atomic JSON with a 32MB cap. At cap a new message returns
 `:invalid_or_oversized_store`, never discards old chat; partitioned/archived history is a future

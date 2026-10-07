@@ -89,3 +89,13 @@ mobile gestures and OS notification permission/popups remain untested.** No clos
 push is offered; no authentication/multi-user security is implied. Live parent service
 was an earlier committed backend (unbounded snapshot/old idle-status mapping); parent
 must review and restart it onto latest tested bounded-cache map, not blind hot reload.
+
+## Final source validation
+
+After all final source changes: MIX_ENV=test with isolated worktree build,
+`mix compile --warnings-as-errors && mix test` passed **345 tests**, exit0,
+output `/tmp/vega-bots-tasks/HjxHTL-vkCFBpcpG/output.log` (2026-10-07T22:09:08Z).
+Focused bots suite totals27 tests (14 backend/controller,13 LiveView/Markdown).
+Node --check and both committed test/js VM scripts passed. No real browser/OS
+notification claims are added by those mocked tests. Integration still requires
+parent static bots.css/js allowlist and reviewed eager service restart/map migration.
