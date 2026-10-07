@@ -45,6 +45,8 @@ Tests: `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-tools/_build mix test test/nano/to
 
 Listings, find and grep also cap aggregate inspected item bytes at 16KB (`max_bytes`), with `offset`/`next_offset` for exact continuation. A single oversized item errors. Tail can be continued by `read(path, offset: 1)` or increasing `limit`/`max_bytes`; full output remains at path.
 
-Manager failure loses tracking/notifications; jobs are not durable across manager/node failure. Optional `Nano.Background.start_link/1` supports an application's supervisor; it adopts/links an existing lazy manager when added to an application supervisor. Tail reports total_lines `:unknown` when the EOF window does not cover the whole file.
+Manager restarts recover metadata from a node-local persistent_term snapshot and re-monitor live workers; workers retry completion until acknowledged by the registered manager. Jobs are not durable across node failure. Optional `Nano.Background.start_link/1` supports an application's supervisor; it adopts/links an existing lazy manager when added to an application supervisor. Tail reports total_lines `:unknown` when the EOF window does not cover the whole file.
 
 Read is streaming even for oversized lines, retains at most max_bytes pending text plus an 8KB input chunk, and counts the whole file for exact EOF/continuation metadata. Large-file scans can still take time. Grep still reads each searched file into memory.
+
+Manager snapshots are small node-local metadata maps, updated at job start/completion/prune (not output chunks). Persistent-term writes copy the retained map; prune completed jobs in long-lived busy nodes. Notification delivery is best-effort/at-least-once around manager failure; use job id to deduplicate. Recovery test kills only the test node's manager, serially after async tests.

@@ -116,7 +116,25 @@ defmodule Nano.Background do
     end
   end
 
-  def init(state), do: {:ok, state}
+  def init(_) do
+    state = :persistent_term.get({__MODULE__, :jobs}, %{})
+
+    state =
+      Map.new(state, fn {id, job} ->
+        if job.state == :running do
+          {id, Map.put(job, :ref, Process.monitor(job.pid))}
+        else
+          {id, job}
+        end
+      end)
+
+    {:ok, persist(state)}
+  end
+
+  defp persist(state) do
+    :persistent_term.put({__MODULE__, :jobs}, state)
+    state
+  end
 
   def handle_call({:start, command, opts, callers}, _, state) do
     id = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
@@ -145,7 +163,7 @@ defmodule Nano.Background do
         started_at: System.monotonic_time(:millisecond)
       }
 
-      {:reply, {:ok, Map.take(job, [:id, :path, :pid, :state])}, Map.put(state, id, job)}
+      {:reply, {:ok, Map.take(job, [:id, :path, :pid, :state])}, persist(Map.put(state, id, job))}
     else
       error -> {:reply, error, state}
     end
@@ -155,13 +173,13 @@ defmodule Nano.Background do
     case Map.get(state, id) do
       nil -> {:reply, {:error, :not_found}, state}
       %{state: :running} -> {:reply, {:error, :still_running}, state}
-      _ -> {:reply, :ok, Map.delete(state, id)}
+      _ -> {:reply, :ok, persist(Map.delete(state, id))}
     end
   end
 
   def handle_call(:prune, _, state) do
     kept = Map.filter(state, fn {_, j} -> j.state == :running end)
-    {:reply, {:ok, %{pruned: map_size(state) - map_size(kept)}}, kept}
+    {:reply, {:ok, %{pruned: map_size(state) - map_size(kept)}}, persist(kept)}
   end
 
   def handle_call({:notify_again, id, target}, _, state) do
@@ -198,6 +216,19 @@ defmodule Nano.Background do
     end
   end
 
+  def handle_info({:done, id, result, worker}, state) do
+    case Map.get(state, id) do
+      %{state: :running} ->
+        {:noreply, state} = handle_info({:done, id, result}, state)
+        send(worker, {:ack, id})
+        {:noreply, state}
+
+      _ ->
+        send(worker, {:ack, id})
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:done, id, result}, state) do
     job = Map.fetch!(state, id)
     Process.demonitor(job.ref, [:flush])
@@ -207,7 +238,7 @@ defmodule Nano.Background do
       |> Map.put(:duration_ms, System.monotonic_time(:millisecond) - job.started_at)
 
     notify(job.notify, id, result)
-    {:noreply, Map.put(state, id, Map.merge(job, result))}
+    {:noreply, persist(Map.put(state, id, Map.merge(job, result)))}
   end
 
   def handle_info({:DOWN, ref, :process, _, reason}, state) do
@@ -302,7 +333,18 @@ defmodule Nano.Background do
         _ -> 0
       end
 
-    send(manager, {:done, id, Map.put(result, :bytes, bytes)})
+    complete(manager, id, Map.put(result, :bytes, bytes))
+  end
+
+  defp complete(manager, id, result) do
+    manager = Process.whereis(__MODULE__) || manager
+    if is_pid(manager) and Process.alive?(manager), do: send(manager, {:done, id, result, self()})
+
+    receive do
+      {:ack, ^id} -> :ok
+    after
+      500 -> complete(manager, id, result)
+    end
   end
 
   defp wait(port, os_pid, path) do
