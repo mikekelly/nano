@@ -32,8 +32,20 @@ Nano.Lightpanda.fetch("https://example.com", timeout: 15_000) # raw markdown
 
 Lightpanda uses an argument vector (no shell), GNU timeout, and kill-after=1s;
 `executable` can select a binary. Missing binary, process failure, timeout, and
-unsupported schemes are error values. Interactive CDP clicks/forms/server lifecycle
-are not implemented. Browser stderr remains operator-visible, not mixed into pages.
+unsupported schemes are error values. For interactive CDP sessions, clicks and forms, use the separately implemented
+`Nano.Browser` (see [nova-browser.md](nova-browser.md)):
+
+```elixir
+{:ok, browser} = Nano.Browser.start()
+Nano.Browser.navigate(browser, "https://example.com")
+Nano.Browser.snapshot(browser)
+# Nano.Browser.fill(browser, "input[name=q]", "search terms")
+# Nano.Browser.click(browser, "button[type=submit]")
+Nano.Browser.stop(browser)
+```
+
+Its session owner handles the CDP server/process lifecycle; Web.fetch's browser
+mode remains the simpler render-once path. Browser stderr remains operator-visible, not mixed into pages.
 
 HTTP and browser caches are separate SHA256 ids. Default cache directory is
 `/tmp/nano-web-cache`; supply `cache_dir: "/data/your-agent/web"` for persistent
@@ -138,8 +150,8 @@ remains available to restore.
 
 ## Verification
 
-- Isolated `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-web/_build mix test`: 255 passed
-  (including the original 10 new mocked tests); existing suite warnings only.
+- Isolated `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-web/_build mix test`: 263 passed
+  (including 18 new mocked tests); existing suite warnings only.
 - Final expanded targeted suite: 18 passed (concurrent store, ephemeral eval
   task, replacement named target, worker exception, HTTP and browser byte caps
   browser timeout, Unicode/multi-page aggregate bounds and durable GET-only
@@ -150,7 +162,8 @@ remains available to restore.
 - Real Exa contents: official docs stored, 81 lines.
 - Real Exa answer: official documentation URL with eight citations.
 - Research creation/poll/completion/failure/deadline tested with mocked services;
-  no real high-cost research run was started. Interactive CDP not tested/built.
+  no real high-cost research run was started. Interactive CDP is implemented and tested separately by the Nano.Browser
+  owner; see its documentation for its precise smoke results and limits.
 
 Tests use unique temp directories and per-request Plug mocks; no shared env,
 fixed ports, real keys or live services are required by the suite.
