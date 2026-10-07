@@ -233,45 +233,126 @@ defmodule NanoWeb.ProcessLiveTest do
     end
   end
 
-  test "the start form's prompt file survives re-renders and is passed on", ctx do
+  test "the system prompt is default, file or custom: exactly one is shown and sent", ctx do
     file = "tmp/prompt_#{System.unique_integer([:positive])}.txt"
     File.mkdir_p!("tmp")
     File.write!(file, "You are {{name}}, from the form's file.")
     on_exit(fn -> File.rm(file) end)
 
-    {:ok, view, _} = live(ctx.conn, "/?view=debug")
+    {:ok, view, _} = live(ctx.conn, "/")
+    assert has_element?(view, "#start .segmented label.on", "default")
+    refute has_element?(view, "#start input[name=system_prompt_file]")
+    refute has_element?(view, "#start textarea[name=system_prompt]")
 
-    assert has_element?(
-             view,
-             "#start input[name=system_prompt_file][placeholder*='priv/system_prompt.txt']"
-           )
-
-    view |> form("#start", %{name: "typing", system_prompt_file: file}) |> render_change()
+    view |> form("#start", %{name: "typing", prompt: "file"}) |> render_change()
+    assert has_element?(view, "#start input[name=system_prompt_file]")
+    refute has_element?(view, "#start textarea[name=system_prompt]")
+    view |> form("#start", %{prompt: "file", system_prompt_file: file}) |> render_change()
     send(view.pid, :refresh)
     assert has_element?(view, "#start input[name=system_prompt_file][value='#{file}']")
 
+    view |> form("#start", %{prompt: "custom"}) |> render_change()
+    assert has_element?(view, "#start textarea[name=system_prompt]")
+    refute has_element?(view, "#start input[name=system_prompt_file]")
+
+    # The file is sent only when "file" is chosen, the template only when "custom" is.
+    assert NanoWeb.StartForm.opts(%{
+             "prompt" => "file",
+             "system_prompt_file" => file,
+             "system_prompt" => "x"
+           })[:system_prompt] == nil
+
+    assert NanoWeb.StartForm.opts(%{
+             "prompt" => "custom",
+             "system_prompt_file" => file,
+             "system_prompt" => "x"
+           })[:system_prompt_file] == nil
+
+    assert NanoWeb.StartForm.opts(%{
+             "prompt" => "default",
+             "system_prompt_file" => file,
+             "system_prompt" => "x"
+           })
+           |> Keyword.take([:system_prompt, :system_prompt_file]) == []
+
     name = unique("agent")
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
+    {:ok, view, _} = live(ctx.conn, "/")
+    view |> form("#start", %{prompt: "file"}) |> render_change()
 
     assert {:error, {:live_redirect, _}} =
              view
-             |> form("#start", %{name: name, model: ctx.model, system_prompt_file: file})
+             |> form("#start", %{
+               name: name,
+               model: ctx.model,
+               prompt: "file",
+               system_prompt_file: file
+             })
              |> render_submit()
 
     assert Nano.Ops.agent(name).system_prompt == "You are #{name}, from the form's file."
 
-    {:ok, view, _} = live(ctx.conn, "/?view=debug")
+    {:ok, view, _} = live(ctx.conn, "/")
+    view |> form("#start", %{prompt: "file"}) |> render_change()
 
     html =
       view
       |> form("#start", %{
         name: unique("agent"),
         model: ctx.model,
+        prompt: "file",
         system_prompt_file: "tmp/none.txt"
       })
       |> render_submit()
 
     assert html =~ "cannot read system_prompt_file: no such file or directory"
+  end
+
+  test "the model box: default preselected, a fuzzy filter over the model list, any slug accepted",
+       ctx do
+    :persistent_term.erase({Nano.OpenRouter, :models})
+    on_exit(fn -> :persistent_term.erase({Nano.OpenRouter, :models}) end)
+
+    Fake.models([
+      %{
+        "id" => "deepseek/deepseek-v4.1-flash",
+        "name" => "DeepSeek V4.1 Flash",
+        "context_length" => 163_840
+      },
+      %{
+        "id" => "anthropic/claude-haiku-4.5",
+        "name" => "Anthropic: Claude Haiku 4.5",
+        "context_length" => 200_000
+      },
+      %{"id" => "openai/gpt-5-mini", "name" => "OpenAI: GPT-5 Mini", "context_length" => 400_000}
+    ])
+
+    {:ok, view, _} = live(ctx.conn, "/")
+    default = Application.fetch_env!(:nano, :default_model)
+    assert has_element?(view, "#start input[name=model][value='#{default}']")
+    assert has_element?(view, "#start select[name=reasoning]")
+    refute has_element?(view, "#start details")
+
+    # Letters in order are enough: "dsflash" finds deepseek-v4.1-flash only.
+    view |> form("#start", %{model: "dsflash"}) |> render_change()
+    assert has_element?(view, "#start .matches button", "deepseek/deepseek-v4.1-flash")
+    assert has_element?(view, "#start .matches", "163,840 context")
+    refute has_element?(view, "#start .matches button", "claude")
+    view |> form("#start", %{model: "claude"}) |> render_change()
+    assert has_element?(view, "#start .matches button", "anthropic/claude-haiku-4.5")
+
+    view |> element("#start .matches button", "anthropic/claude-haiku-4.5") |> render_click()
+    assert has_element?(view, "#start input[name=model][value='anthropic/claude-haiku-4.5']")
+    refute has_element?(view, "#start .matches")
+
+    # A slug that is not in the list is still accepted.
+    name = unique("agent")
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+
+    assert {:error, {:live_redirect, _}} =
+             view |> form("#start", %{name: name, model: ctx.model}) |> render_submit()
+
+    assert Nano.Ops.agent(name).model == ctx.model
   end
 
   test "the start form rejects a limit that is not a whole number, 0 or more", ctx do
@@ -291,16 +372,20 @@ defmodule NanoWeb.ProcessLiveTest do
     end
   end
 
-  test "the start form's three limits accept 0 (no limit), survive re-renders, and are passed on",
+  test "the start form's three limits are prefilled with the node's defaults, accept 0, and are passed on",
        ctx do
-    {:ok, view, _} = live(ctx.conn, "/?view=debug")
+    {:ok, view, _} = live(ctx.conn, "/")
 
-    for field <- ~w(max_turns max_tokens max_context) do
-      assert has_element?(
-               view,
-               "#start input[name=#{field}][min='0'][placeholder*='0 = no limit']"
-             )
+    for {field, env} <- [
+          max_turns: :agent_max_turns,
+          max_tokens: :agent_max_tokens,
+          max_context: :agent_max_context
+        ] do
+      value = Application.fetch_env!(:nano, env)
+      assert has_element?(view, "#start input[name=#{field}][min='0'][value='#{value}']")
     end
+
+    assert has_element?(view, "#start .hint", "0 = no limit")
 
     view |> form("#start", %{name: "typing", max_context: "1234"}) |> render_change()
     send(view.pid, :refresh)
@@ -330,7 +415,7 @@ defmodule NanoWeb.ProcessLiveTest do
 
     html =
       view
-      |> element("#{row(Nano.Ops.whereis(name))} form", "say")
+      |> element("#{row(Nano.Ops.whereis(name))} form[id$='-text']")
       |> render_submit(%{text: "hello"})
 
     assert html =~ "not responding (suspended or flooded?); the message is queued"
@@ -346,7 +431,7 @@ defmodule NanoWeb.ProcessLiveTest do
     view |> element("#{row(target)} button", "send") |> render_click()
     assert has_element?(view, "#{row(target)} .send")
 
-    view |> element("#{row(target)} form", "say") |> render_submit(%{text: "hello there"})
+    view |> element("#{row(target)} form[id$='-text']") |> render_submit(%{text: "hello there"})
     assert_receive {:forwarded, %{sender_pid: ^dashboard, message: "hello there"}}
     assert render(view) =~ "said &quot;hello there&quot; to #{esc(target)}"
 
@@ -560,7 +645,7 @@ defmodule NanoWeb.ProcessLiveTest do
 
     assert has_element?(view, "#{card(idle)}.idle a[href='/agents/#{idle}']", idle)
     assert has_element?(view, "#{card(idle)} .meter .value", "0 / ∞")
-    assert has_element?(view, "#{card(idle)} .meter .value", "0 / 3,000,000")
+    assert has_element?(view, "#{card(idle)} .meter .value", "0 / 30,000,000")
 
     assert has_element?(view, card(idle), ctx.model)
 
@@ -572,18 +657,17 @@ defmodule NanoWeb.ProcessLiveTest do
     :sys.resume(spid)
   end
 
-  test "what an agent's evals spawned is a count that opens to the list", ctx do
+  test "what an agent's evals spawned is a count on its card, not a list", ctx do
     {name, _} = start_agent(ctx)
     turn(name, ctx.model, eval: "spawn(fn -> Process.sleep(:infinity) end)")
 
     {:ok, view, _} = live(ctx.conn, "/")
-    assert has_element?(view, "#{card(name)} details summary", "1 spawned process")
-    [row] = for %{kind: {:spawned_by, ^name}} = r <- Nano.Ops.processes(), do: r
-    assert has_element?(view, "#{card(name)} details li", inspect(row.pid))
+    assert has_element?(view, "#{card(name)} .spawned", "1 spawned")
+    refute has_element?(view, "#{card(name)} details")
     assert has_element?(view, "#{card(name)} .now", "idle, waiting for a message")
   end
 
-  test "an agent started by another sits inside its parent's card", ctx do
+  test "an agent started by another follows its starter's card and says so", ctx do
     {parent, _} = start_agent(ctx)
     child = unique("child")
     on_exit(fn -> Nano.Ops.stop_agent(child) end)
@@ -595,9 +679,14 @@ defmodule NanoWeb.ProcessLiveTest do
     assert Nano.Ops.agent(child).started_by == parent
 
     {:ok, view, _} = live(ctx.conn, "/")
-    assert has_element?(view, "#{card(parent)} .children #{card(child)}")
-    # Once, nested; not again at the top level.
-    refute has_element?(view, ".overview > .cards > #{card(child)}")
+    # Its own card, straight after its starter's, saying who started it.
+    assert has_element?(
+             view,
+             "#{card(parent)} + #{card(child)}.child .started-by a[href='/agents/#{parent}']",
+             parent
+           )
+
+    refute has_element?(view, "#{card(parent)} .started-by a")
   end
 
   test "users and other processes are listed; the rest is counted", ctx do

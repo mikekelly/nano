@@ -81,7 +81,9 @@ defmodule NanoWeb.Layouts do
             }
           }
 
-          // Dropdowns (<details class="dropdown">) close on a click outside them, or on Escape.
+          // Dropdowns (<details class="dropdown">) close on a click outside them, on Escape, or
+          // when the server says so (a message sent from one).
+          window.addEventListener("phx:close", e => { const d = document.getElementById(e.detail.id); if (d) d.open = false })
           document.addEventListener("click", e =>
             document.querySelectorAll("details.dropdown[open]").forEach(d => d.contains(e.target) || (d.open = false)))
           document.addEventListener("keydown", e =>

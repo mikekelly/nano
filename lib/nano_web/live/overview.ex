@@ -1,7 +1,8 @@
 defmodule NanoWeb.Overview do
   @moduledoc """
-  The home page's default view: agent cards (status, limits, what each is doing now, what it
-  spawned, the agents it started nested inside it), users, and the processes worth a look.
+  The home page's default view: agent cards (status, limits, what each is doing now, how many
+  processes it spawned; an agent started by another follows its starter's card and says so),
+  users, and the processes worth a look.
   Presentation only: everything comes from `Nano.Ops`, `Nano.User` and the agents' latest
   log entries, which `NanoWeb.ProcessLive` keeps.
   """
@@ -20,7 +21,7 @@ defmodule NanoWeb.Overview do
 
     assigns =
       assign(assigns,
-        tree: tree(assigns.agents),
+        cards: flatten(tree(assigns.agents), nil),
         spawned: Enum.group_by(spawned, &elem(&1, 0), &elem(&1, 1)),
         others: Enum.filter(assigns.rows, &(&1.kind == :other))
       )
@@ -32,7 +33,13 @@ defmodule NanoWeb.Overview do
         No agents yet. Start one with the form above; it will appear here.
       </p>
       <div class="cards">
-        <.card :for={node <- @tree} node={node} recent={@recent} spawned={@spawned} />
+        <.card
+          :for={{agent, parent} <- @cards}
+          agent={agent}
+          parent={parent}
+          recent={@recent}
+          spawned={@spawned}
+        />
       </div>
 
       <h2>users <span class="dim">{length(@users)}</span></h2>
@@ -63,48 +70,54 @@ defmodule NanoWeb.Overview do
     """
   end
 
-  attr :node, :any, required: true
+  # Each agent followed by the agents it started (depth first), with the name of its starter.
+  defp flatten(nodes, parent) do
+    Enum.flat_map(nodes, fn {agent, children} ->
+      [{agent, parent} | flatten(children, agent.name)]
+    end)
+  end
+
+  attr :agent, :map, required: true
+  attr :parent, :string, default: nil, doc: "the agent that started this one, if it is shown"
   attr :recent, :map, required: true
   attr :spawned, :map, required: true
 
-  # One agent, and the agents it started nested inside it.
+  # One agent. Cards follow the agents that started them, and say so.
   defp card(assigns) do
-    {agent, children} = assigns.node
+    agent = assigns.agent
+    assigns = assign(assigns, mine: assigns.spawned[agent.name] || [])
 
-    assigns =
-      assign(assigns, agent: agent, children: children, mine: assigns.spawned[agent.name] || [])
+    assigns = assign(assigns, now: now(agent, assigns.recent[agent.id] || []))
 
+    # Every line has a fixed slot, so cards in a row stay the same height whatever they say.
     ~H"""
-    <article class={["card agent-card", state(@agent)]} id={"card-#{@agent.name}"}>
+    <article class={["card agent-card", state(@agent), @parent && "child"]} id={"card-#{@agent.name}"}>
       <header>
-        <.link navigate={"/agents/#{@agent.name}"} class="name">{@agent.name}</.link>
+        <.link navigate={"/agents/#{@agent.name}"} class="name" title={@agent.name}>{@agent.name}</.link>
         <.status agent={@agent} />
       </header>
-      <div class="dim">
+      <div class="line dim">
         {txt(@agent.model)} · reasoning {txt(Map.get(@agent, :reasoning) || "off")}
       </div>
-      <p :if={@agent.halted} class="halt">{halt_reason(@agent.halted)}</p>
+      <%!-- One slot: why it is halted, or else who started it. --%>
+      <p :if={@agent.halted} class="line halt" title={halt_reason(@agent.halted)}>
+        {halt_reason(@agent.halted)}
+      </p>
+      <p :if={!@agent.halted} class="line started-by">
+        <span :if={@parent}>↳ started by <.link navigate={"/agents/#{@parent}"}>{@parent}</.link></span>
+      </p>
       <div class="meters">
         <.meter label="turns" used={@agent.budget[:turns_used]} max={@agent.budget[:max_turns]} />
         <.meter label="tokens" used={@agent.budget[:tokens_used]} max={@agent.budget[:max_tokens]} />
         <.meter label="context" used={@agent.budget[:context_used]} max={@agent.budget[:max_context]} />
       </div>
-      <div class="dim">{cost(@agent.cost)} · {txt(@agent.restart_count)} restarts</div>
-      <div class="now">{now(@agent, @recent[@agent.id] || [])}</div>
-      <details :if={@mine != []} id={"spawned-#{@agent.name}"} phx-mounted={keep_open()}>
-        <summary>{length(@mine)} spawned process{if length(@mine) != 1, do: "es"}</summary>
-        <ul>
-          <li :for={row <- @mine}>
-            <span class="pid">{inspect(row.pid)}</span>
-            <span class="mono">{mfa(row.current_function)}</span>
-            <span class="dim">{bytes(row.memory)}</span>
-          </li>
-        </ul>
-      </details>
-      <div :if={@children != []} class="children">
-        <span class="dim">started</span>
-        <.card :for={node <- @children} node={node} recent={@recent} spawned={@spawned} />
+      <div class="line dim">
+        {cost(@agent.cost)} · {txt(@agent.restart_count)} restarts<span :if={@mine != []}> · <span class="spawned"><.icon
+          name="cpu"
+          size={13}
+        /> {length(@mine)} spawned</span></span>
       </div>
+      <div class="now line" title={@now}>{@now}</div>
     </article>
     """
   end

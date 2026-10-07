@@ -55,6 +55,20 @@ defmodule NanoWeb.AgentLive do
 
   def handle_info({:nano_log, _}, socket), do: {:noreply, socket}
 
+  # A send from the bar's panels: on success the panel closes and the bar says what was sent.
+  def handle_event("send", params, socket) do
+    socket = handle_shared("send", params, socket)
+    panel = if Map.has_key?(params, "text"), do: "say-menu", else: "raw-menu"
+
+    case socket.assigns.sent do
+      {:ok, _} = sent ->
+        {:noreply, socket |> assign(notice: sent) |> push_event("close", %{id: panel})}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_event(event, params, socket) when event in ~w(draft send clear_inbox),
     do: {:noreply, handle_shared(event, params, socket)}
 
@@ -83,8 +97,10 @@ defmodule NanoWeb.AgentLive do
 
   # Re-reads the header; on first sight of an agent id (or a new one), loads its timeline.
   defp sync(socket) do
-    agent = Nano.Ops.agent(socket.assigns.name)
-    socket = assign(socket, agent: agent)
+    name = socket.assigns.name
+    agent = Nano.Ops.agent(name)
+    spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
+    socket = assign(socket, agent: agent, spawned: spawned)
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -190,10 +206,40 @@ defmodule NanoWeb.AgentLive do
             </div>
           </dl>
           <div class="controls">
-            <button phx-click="stop">Stop</button>
-            <button phx-click="restart" disabled={@agent.pid == nil}>Restart</button>
-            <button :if={@agent.suspended} phx-click="resume" class="warn">Resume</button>
-            <button :if={@agent.halted} phx-click="unhalt" class="warn">Un-halt</button>
+            <details id="procs-menu" class="dropdown" phx-mounted={keep_open()}>
+              <summary class="button" title="processes this agent's evals started">
+                <.icon name="cpu" /> {length(@spawned)}
+              </summary>
+              <div class="panel processes-panel">
+                <h3>processes started by {@name}'s evals</h3>
+                <p :if={@spawned == []} class="dim">None running.</p>
+                <ul>
+                  <li :for={row <- @spawned}>
+                    <span class="pid">{inspect(row.pid)}</span>
+                    <span class="mono">{mfa(row.current_function)}</span>
+                    <span class="dim">{bytes(row.memory)} · queue {row.message_queue_len}</span>
+                  </li>
+                </ul>
+              </div>
+            </details>
+            <details id="say-menu" class="dropdown" phx-mounted={keep_open()}>
+              <summary class="button"><.icon name="send" /> Send message</summary>
+              <div class="panel">
+                <.send_form id="send" to={@name} draft={@draft} sent={@sent} boxes={["text"]} />
+              </div>
+            </details>
+            <details id="raw-menu" class="dropdown" phx-mounted={keep_open()}>
+              <summary class="button"><.icon name="code" /> Advanced message</summary>
+              <div class="panel">
+                <.send_form id="send-raw" to={@name} draft={@draft} sent={@sent} boxes={["term"]} />
+              </div>
+            </details>
+            <button phx-click="stop"><.icon name="stop" /> Stop</button>
+            <button phx-click="restart" disabled={@agent.pid == nil}><.icon name="restart" /> Restart</button>
+            <button :if={@agent.suspended} phx-click="resume" class="warn"><.icon name="play" />
+            Resume</button>
+            <button :if={@agent.halted} phx-click="unhalt" class="warn"><.icon name="unlock" />
+            Un-halt</button>
             <span :if={@notice} class={["sent", elem(@notice, 0)]}>{elem(@notice, 1)}</span>
           </div>
           <p :if={@agent.suspended} class="flag suspended">
@@ -219,15 +265,13 @@ defmodule NanoWeb.AgentLive do
           <pre>{@agent.system_prompt}</pre>
         </details>
 
-        <.send_form :if={@agent} id="send" to={@name} draft={@draft} sent={@sent} />
-
         <nav class="views">
           <.link
-            :for={v <- ~w(reading debug)}
+            :for={{v, icon} <- [{"reading", "book"}, {"debug", "list"}]}
             patch={"/agents/#{@name}" <> if(v == "debug", do: "?view=debug", else: "")}
             class={@view == v && "current"}
           >
-            {v}
+            <.icon name={icon} /> {v}
           </.link>
         </nav>
         <ol
@@ -484,11 +528,7 @@ defmodule NanoWeb.AgentLive do
   defp read(%{e: %{"type" => "model_response"}} = assigns) do
     ~H"""
     <li id={@id} class="r says">
-      <svg class="bot" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-        <path d="M12 2.5v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-        <rect x="3.5" y="6" width="17" height="13.5" rx="4" fill="currentColor" />
-        <circle cx="9" cy="12.5" r="1.7" fill="#fff" /><circle cx="15" cy="12.5" r="1.7" fill="#fff" />
-      </svg>
+      <span class="bot"><.icon name="bot" size={22} /></span>
       <div class="bubble">
         <div :if={present?(@e["text"])} class="prose">{txt(@e["text"])}</div>
         <details :if={present?(@e["reasoning"])} class="reasoning">

@@ -23,7 +23,12 @@ defmodule NanoWeb.ProcessLive do
       socket
       |> assign(page_title: "nano", prev: %{}, prev_at: nil, send_to: nil, view: view(params))
       |> assign(recent: %{}, counts: %{})
-      |> assign(start: %{}, start_error: nil)
+      # The model list is fetched (and cached) by Nano.OpenRouter; only a live page asks for it.
+      |> assign(
+        start: %{},
+        start_error: nil,
+        models: if(connected?(socket), do: Nano.OpenRouter.models(), else: [])
+      )
       |> mount_shared()
       |> refresh()
 
@@ -80,28 +85,18 @@ defmodule NanoWeb.ProcessLive do
   # Inputs are held in assigns so the once-a-second re-render does not reset them.
   def handle_event("start_draft", params, socket), do: {:noreply, assign(socket, start: params)}
 
+  def handle_event("pick_model", %{"id" => id}, socket),
+    do: {:noreply, update(socket, :start, &Map.put(&1, "model", id))}
+
   def handle_event("start", params, socket) do
     name = String.trim(params["name"] || "")
 
-    opts =
-      [
-        model: blank_to_nil(params["model"]),
-        start_idle: params["start_idle"] != "false",
-        max_turns: number(params["max_turns"]),
-        max_tokens: number(params["max_tokens"]),
-        max_context: number(params["max_context"]),
-        system_prompt: blank_to_nil(params["system_prompt"]),
-        system_prompt_file: blank_to_nil(params["system_prompt_file"]),
-        reasoning: params["reasoning"]
-      ]
-      |> Enum.reject(fn {_, v} -> v == nil end)
-
-    case Nano.Ops.start_agent(name, opts) do
+    case Nano.Ops.start_agent(name, NanoWeb.StartForm.opts(params)) do
       {:ok, _pid} ->
         {:noreply, push_navigate(socket, to: "/agents/#{name}")}
 
       {:error, reason} ->
-        {:noreply, assign(socket, start: params, start_error: start_error(reason))}
+        {:noreply, assign(socket, start: params, start_error: NanoWeb.StartForm.error(reason))}
     end
   end
 
@@ -198,56 +193,6 @@ defmodule NanoWeb.ProcessLive do
   # Broadcast entries have atom keys; the log on disk, string keys. Cards read the latter.
   defp json(entry), do: entry |> Jason.encode!() |> Jason.decode!()
 
-  defp limit_fields do
-    [
-      {"max_turns", "max turns", :agent_max_turns},
-      {"max_tokens", "max tokens", :agent_max_tokens},
-      {"max_context", "max context", :agent_max_context}
-    ]
-  end
-
-  defp placeholder(env) do
-    case Application.get_env(:nano, env) do
-      nil -> "0 = no limit"
-      default -> "default #{default}; 0 = no limit"
-    end
-  end
-
-  # What the form shows selected: what was chosen, or until then the node's default (REASONING).
-  defp reasoning(%{"reasoning" => level}), do: level
-  defp reasoning(_), do: Application.get_env(:nano, :reasoning, "off")
-
-  defp blank_to_nil(value) do
-    case String.trim(value || "") do
-      "" -> nil
-      value -> value
-    end
-  end
-
-  # A whole number as an integer; anything else typed is passed on as typed, for
-  # `NanoAgent.start/1` to reject as it would from the API. Blank means the default.
-  defp number(value) do
-    value = blank_to_nil(value)
-
-    case value && Integer.parse(value) do
-      {n, ""} -> n
-      _ -> value
-    end
-  end
-
-  defp start_error(:invalid_name), do: "name must be letters, digits, _ . or -"
-  defp start_error({:already_started, _}), do: "an agent with that name is already running"
-
-  defp start_error(:missing_openrouter_api_key),
-    do: "OPENROUTER_API_KEY is not set on this node"
-
-  defp start_error(:missing_model), do: "no model given and DEFAULT_MODEL is not set"
-
-  defp start_error(:invalid_option),
-    do: "max turns, max tokens and max context must be whole numbers, 0 or more (0 = no limit)"
-
-  defp start_error(reason), do: NanoWeb.Components.refusal(reason)
-
   defp kind(%{kind: {:spawned_by, agent}} = assigns) do
     assigns = assign(assigns, agent: agent)
     ~H|spawned by <.link navigate={"/agents/#{@agent}"}>{@agent}</.link>|
@@ -268,82 +213,15 @@ defmodule NanoWeb.ProcessLive do
     </header>
     <div class="layout">
       <main>
-        <form id="start" class="start" phx-change="start_draft" phx-submit="start">
-          <h2>Start agent</h2>
-          <label>
-            name <input type="text" name="name" value={@start["name"]} required autocomplete="off" />
-          </label>
-          <label>
-            model
-            <input
-              type="text"
-              name="model"
-              value={@start["model"]}
-              placeholder={Application.get_env(:nano, :default_model)}
-              autocomplete="off"
-            />
-          </label>
-          <label class="check">
-            <input type="hidden" name="start_idle" value="false" />
-            <input
-              type="checkbox"
-              name="start_idle"
-              value="true"
-              checked={@start["start_idle"] != "false"}
-            /> Start idle
-          </label>
-          <button>Start</button>
-          <details id="start-options" phx-mounted={keep_open()}>
-            <summary>options</summary>
-            <label :for={{field, label, env} <- limit_fields()}>
-              {label}
-              <input
-                type="number"
-                name={field}
-                value={@start[field]}
-                min="0"
-                placeholder={placeholder(env)}
-              />
-            </label>
-            <label>
-              reasoning
-              <select name="reasoning">
-                <option
-                  :for={level <- reasoning_levels()}
-                  value={level}
-                  selected={level == reasoning(@start)}
-                >
-                  {level}
-                </option>
-              </select>
-            </label>
-            <label class="wide">
-              system prompt file
-              <input
-                type="text"
-                name="system_prompt_file"
-                value={@start["system_prompt_file"]}
-                placeholder={"blank = #{Application.get_env(:nano, :system_prompt_file)}; relative to the app directory; the template below wins if both are filled"}
-                autocomplete="off"
-              />
-            </label>
-            <label class="wide">
-              system prompt template (blank = the file above; same placeholders) <textarea
-                name="system_prompt"
-                rows="4"
-              >{@start["system_prompt"]}</textarea>
-            </label>
-          </details>
-          <p :if={@start_error} class="error">{@start_error}</p>
-        </form>
+        <NanoWeb.StartForm.start_form start={@start} models={@models} error={@start_error} />
 
         <nav class="views">
           <.link
-            :for={v <- ~w(overview debug)}
+            :for={{v, icon} <- [{"overview", "grid"}, {"debug", "list"}]}
             patch={if v == "debug", do: "/?view=debug", else: "/"}
             class={@view == v && "current"}
           >
-            {v}
+            <.icon name={icon} /> {v}
           </.link>
         </nav>
 

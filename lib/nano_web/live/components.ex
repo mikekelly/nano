@@ -85,16 +85,62 @@ defmodule NanoWeb.Components do
 
   ## Components
 
+  # One small set of stroke icons, drawn on a 24-unit grid. The markup is ours, not user input.
+  @icons %{
+    "mail" => ~s|<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 7l8.5 6 8.5-6"/>|,
+    "send" => ~s|<path d="M21 3 10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/>|,
+    "code" => ~s|<path d="M8 8l-4 4 4 4"/><path d="M16 8l4 4-4 4"/><path d="M13.5 5l-3 14"/>|,
+    "cpu" =>
+      ~s|<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5"/>|,
+    "stop" => ~s|<rect x="6" y="6" width="12" height="12" rx="2"/>|,
+    "restart" => ~s|<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/>|,
+    "play" => ~s|<path d="M8 5.5v13l10.5-6.5z"/>|,
+    "unlock" =>
+      ~s|<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.6-1.7"/>|,
+    "book" =>
+      ~s|<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19"/>|,
+    "list" => ~s|<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>|,
+    "grid" =>
+      ~s|<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>|,
+    "bot" =>
+      ~s|<rect x="4" y="7.5" width="16" height="12" rx="3"/><path d="M12 3.5v4M9 12.5v1.5M15 12.5v1.5"/>|,
+    "plus" => ~s|<path d="M12 5v14M5 12h14"/>|
+  }
+
+  attr :name, :string, required: true
+  attr :size, :integer, default: 16
+
+  @doc "A small stroke icon from the set above, in the current text colour."
+  def icon(assigns) do
+    assigns = assign(assigns, :paths, Phoenix.HTML.raw(Map.fetch!(@icons, assigns.name)))
+
+    ~H"""
+    <svg
+      class="icon"
+      viewBox="0 0 24 24"
+      width={@size}
+      height={@size}
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >{@paths}</svg>
+    """
+  end
+
   attr :id, :string, required: true
   attr :to, :string, required: true, doc: "target: a pid string or an agent name"
   attr :draft, :map, required: true
   attr :sent, :any, required: true
+  attr :boxes, :list, default: ~w(text term), doc: "which boxes to show"
 
   @doc "The send form: a plain-text box (`say/3`) and an Elixir term box (`send_raw/3`)."
   def send_form(assigns) do
     ~H"""
     <div class="send" id={@id}>
-      <form id={@id <> "-text"} phx-change="draft" phx-submit="send">
+      <form :if={"text" in @boxes} id={@id <> "-text"} phx-change="draft" phx-submit="send">
         <input type="hidden" name="to" value={@to} />
         <input
           type="text"
@@ -103,9 +149,9 @@ defmodule NanoWeb.Components do
           placeholder="plain text, sent as %{sender_pid: dashboard, message: text}"
           autocomplete="off"
         />
-        <button>say</button>
+        <button><.icon name="send" /> send</button>
       </form>
-      <form id={@id <> "-term"} phx-change="draft" phx-submit="send">
+      <form :if={"term" in @boxes} id={@id <> "-term"} phx-change="draft" phx-submit="send">
         <input type="hidden" name="to" value={@to} />
         <input
           type="text"
@@ -117,7 +163,7 @@ defmodule NanoWeb.Components do
           autocomplete="off"
           class="mono"
         />
-        <button>send term</button>
+        <button><.icon name="code" /> send term</button>
       </form>
       <p :if={@sent} class={["sent", elem(@sent, 0)]}>{elem(@sent, 1)}</p>
     </div>
@@ -141,15 +187,7 @@ defmodule NanoWeb.Components do
       phx-hook="InboxSeen"
     >
       <summary title="inbox of user dashboard">
-        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-          <path
-            d="M3 6.5h18v11H3z M3 7l9 6.5L21 7"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <.icon name="mail" size={20} />
         <span :if={@inbox not in [nil, []]} class="count">{length(@inbox)}</span>
         <span :if={@inbox == nil} class="count warn">!</span>
         <span id="inbox-new" class="count new" phx-update="ignore" hidden></span>

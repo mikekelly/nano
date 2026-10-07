@@ -213,27 +213,37 @@ defmodule NanoWeb.AgentLiveTest do
     assert has_element?(view, "button", "Un-halt")
   end
 
-  test "the send form: text via say, terms via send_raw, parse errors shown", ctx do
+  test "the bar's Send message and Advanced message panels: say, send_raw, close on success",
+       ctx do
     start!(ctx)
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     Fake.push(ctx.model, calls: [idle: nil])
     Fake.push(ctx.model, calls: [idle: nil])
+    assert has_element?(view, "section.bar #say-menu.dropdown summary", "Send message")
+    assert has_element?(view, "section.bar #raw-menu.dropdown summary", "Advanced message")
+    refute has_element?(view, "main > .send")
 
-    view |> element(".send form", "say") |> render_submit(%{text: "anyone home?"})
+    view |> element("#send-text") |> render_submit(%{text: "anyone home?"})
+    assert_push_event(view, "close", %{id: "say-menu"})
+    assert has_element?(view, ".controls .sent.ok", "said")
     entry = await(:event_received)
     assert entry.message =~ ~s(message: "anyone home?")
     assert entry.message =~ inspect(Nano.User.pid("dashboard"))
     await(:turn_ended)
 
     view
-    |> element(".send form", "send term")
+    |> element("#send-raw-term")
     |> render_submit(%{term: ~s|{:hello, Nano.User.pid("dashboard"), "are you there?"}|})
+
+    assert_push_event(view, "close", %{id: "raw-menu"})
 
     entry = await(:event_received)
     assert entry.message == inspect({:hello, Nano.User.pid("dashboard"), "are you there?"})
     eventually(fn -> has_entry?(view, "event", "are you there?") end)
 
-    html = view |> element(".send form", "send term") |> render_submit(%{term: "%{oops"})
+    # A failed send keeps its panel open with the error in it.
+    html = view |> element("#send-raw-term") |> render_submit(%{term: "%{oops"})
+    refute_push_event(view, "close", _)
     assert html =~ ~s(class="sent error")
     assert html =~ "MissingError" or html =~ "SyntaxError"
   end
@@ -460,6 +470,23 @@ defmodule NanoWeb.AgentLiveTest do
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
     source = Nano.Ops.agent(ctx.name).prompt_source
     assert has_element?(view, "#system-prompt summary", "from #{source}")
+  end
+
+  test "the processes button counts what the agent's evals started and lists them", ctx do
+    start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "spawn(fn -> Process.sleep(:infinity) end)"])
+    Fake.push(ctx.model, calls: [idle: nil])
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert has_element?(view, "#procs-menu summary", "0")
+    assert has_element?(view, "#procs-menu .panel", "None running.")
+
+    NanoAgent.notify(ctx.name, :go)
+    await(:turn_ended)
+    [row] = for %{kind: {:spawned_by, n}} = r <- Nano.Ops.processes(), n == ctx.name, do: r
+    send(view.pid, :refresh)
+    assert has_element?(view, "#procs-menu summary", "1")
+    assert has_element?(view, "#procs-menu .panel li", inspect(row.pid))
+    assert has_element?(view, "#procs-menu .panel li", "queue 0")
   end
 
   ## Reading view
