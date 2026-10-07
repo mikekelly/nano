@@ -15,6 +15,39 @@ defmodule Vega.Bots.Server do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
+  @doc "Nonblocking bounded public snapshot from service-owned ETS, even during a durable write."
+  def snapshot(server) do
+    with pid when is_pid(pid) <- GenServer.whereis(server),
+         table when not is_nil(table) <- :persistent_term.get({__MODULE__, pid}, nil),
+         [{:snapshot, data}] <- :ets.lookup(table, :snapshot) do
+      {:ok, data}
+    else
+      _ -> {:error, :not_started}
+    end
+  rescue
+    ArgumentError -> {:error, :not_started}
+  end
+
+  def session(server, sid, opts) do
+    if opts[:before] == nil and Keyword.get(opts, :limit, 80) == 80 do
+      with pid when is_pid(pid) <- GenServer.whereis(server),
+           table when not is_nil(table) <- :persistent_term.get({__MODULE__, pid}, nil) do
+        case :ets.lookup(table, {:session, sid}) do
+          [{_, page}] -> {:ok, page}
+          _ -> {:error, :not_found}
+        end
+      else
+        _ -> {:error, :not_started}
+      end
+    else
+      GenServer.call(server, {:session, sid, opts}, 10_000)
+    end
+  rescue
+    ArgumentError -> {:error, :not_started}
+  catch
+    :exit, _ -> {:error, :service_unavailable}
+  end
+
   @impl true
   def init(opts) do
     root = Keyword.get(opts, :root, "/data/vega")
@@ -30,10 +63,14 @@ defmodule Vega.Bots.Server do
             "outbox" => []
           }
 
+      table = :ets.new(__MODULE__, [:set, :protected, read_concurrency: true])
+      :persistent_term.put({__MODULE__, self()}, table)
+      cache(table, data)
       send(self(), :tick)
 
       {:ok,
        %{
+         table: table,
          root: root,
          data: data,
          runtime: Keyword.get(opts, :runtime, Vega.Bots.Runtime),
@@ -48,8 +85,47 @@ defmodule Vega.Bots.Server do
 
   @impl true
   def handle_call(:snapshot, _, s) do
-    public = Map.take(s.data, ~w(bots sessions requests settings))
-    {:reply, {:ok, public}, s}
+    {:reply, snapshot(self()), s}
+  end
+
+  def handle_call({:session, sid, opts}, _, s) do
+    result =
+      with {:ok, session} <- find(s.data, "sessions", sid) do
+        limit = opts[:limit] || 80
+
+        if is_integer(limit) and limit in 1..200 do
+          messages = session["messages"]
+
+          stop =
+            if opts[:before],
+              do: Enum.find_index(messages, &(&1["id"] == opts[:before])),
+              else: length(messages)
+
+          if is_integer(stop) do
+            start = max(0, stop - limit)
+            page = Enum.slice(messages, start, stop - start)
+
+            history = %{
+              "total" => length(messages),
+              "start" => start,
+              "has_more" => start > 0,
+              "next_before" =>
+                case page do
+                  [first | _] -> first["id"]
+                  _ -> nil
+                end
+            }
+
+            {:ok, session |> Map.put("messages", page) |> Map.put("history", history)}
+          else
+            {:error, :invalid_cursor}
+          end
+        else
+          {:error, :invalid_page_limit}
+        end
+      end
+
+    {:reply, result, s}
   end
 
   def handle_call(:root, _, s), do: {:reply, {:ok, s.root}, s}
@@ -69,6 +145,7 @@ defmodule Vega.Bots.Server do
       {:ok, result, next, event} ->
         case persist(s, next) do
           :ok ->
+            cache(s.table, next)
             Phoenix.PubSub.broadcast(Nano.PubSub, s.topic, {:vega_bots, event})
             send(self(), :dispatch)
             {:reply, {:ok, result}, %{s | data: next}}
@@ -631,9 +708,64 @@ defmodule Vega.Bots.Server do
     if next == s.data, do: s, else: save_background(s, next, event("status"))
   end
 
+  defp cache(table, data) do
+    sessions =
+      Enum.map(data["sessions"], fn s ->
+        total = length(s["messages"])
+        page = Enum.take(s["messages"], -80)
+
+        history = %{
+          "total" => total,
+          "start" => max(0, total - 80),
+          "has_more" => total > 80,
+          "next_before" =>
+            case page do
+              [first | _] -> first["id"]
+              _ -> nil
+            end
+        }
+
+        :ets.insert(
+          table,
+          {{:session, s["id"]}, s |> Map.put("messages", page) |> Map.put("history", history)}
+        )
+
+        preview =
+          Enum.map(
+            Enum.take(s["messages"], -1),
+            &Map.update!(&1, "text", fn text -> String.slice(text, 0, 512) end)
+          )
+
+        s |> Map.put("message_count", total) |> Map.put("messages", preview)
+      end)
+
+    requests =
+      data["requests"]
+      |> Enum.sort_by(fn r -> {r["status"] == "pending", r["created_at"]} end, :desc)
+      |> Enum.take(200)
+
+    public =
+      data
+      |> Map.take(~w(bots settings))
+      |> Map.put("sessions", sessions)
+      |> Map.put("requests", requests)
+      |> Map.put("request_count", length(data["requests"]))
+      |> Map.put("requests_truncated", length(data["requests"]) > 200)
+
+    :ets.insert(table, {:snapshot, public})
+  end
+
+  @impl true
+  def terminate(_, s) do
+    :persistent_term.erase({__MODULE__, self()})
+    Enum.each(s.tasks, fn {ref, _} -> Process.demonitor(ref, [:flush]) end)
+    :ok
+  end
+
   defp save_background(s, next, e) do
     case persist(s, next) do
       :ok ->
+        cache(s.table, next)
         Phoenix.PubSub.broadcast(Nano.PubSub, s.topic, {:vega_bots, e})
         %{s | data: next}
 
