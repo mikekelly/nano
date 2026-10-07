@@ -153,6 +153,107 @@ defmodule Nano.GoalsMemoryTest do
     assert {:error, :invalid_owner} = Nano.Goals.list("", opts)
   end
 
+  test "maximum snapshot rejection preserves committed memory", %{opts: opts, root: root} do
+    text = String.duplicate("m", 32_000)
+
+    failed =
+      Enum.reduce_while(1..80, nil, fn i, _ ->
+        case Nano.Memory.put("full", "key#{i}", text, opts) do
+          {:ok, _} -> {:cont, nil}
+          {:error, :store_too_large} -> {:halt, i}
+          other -> flunk("unexpected write result #{inspect(other)}")
+        end
+      end)
+
+    assert is_integer(failed) and failed > 1
+    [path] = Path.wildcard(Path.join(root, "memory/*.json"))
+    committed = File.read!(path)
+    assert byte_size(committed) <= 2_000_000
+    assert {:error, :store_too_large} = Nano.Memory.put("full", "key#{failed}", text, opts)
+    assert File.read!(path) == committed
+    assert {:error, :not_found} = Nano.Memory.get("full", "key#{failed}", opts)
+    assert {:ok, %{"text" => ^text}} = Nano.Memory.get("full", "key1", opts)
+    assert Path.wildcard(Path.join(root, "memory/*.tmp")) == []
+  end
+
+  test "readers see only committed snapshots during writes", %{opts: opts} do
+    {:ok, _} = Nano.Memory.put("race", "key", "before", opts)
+
+    writer =
+      Task.async(fn ->
+        for i <- 1..60 do
+          assert {:ok, _} = Nano.Memory.put("race", "key", "value#{i}", opts)
+          assert {:ok, _} = Nano.Goals.add("race", "Goal #{i}", [why: "Valid"] ++ opts)
+        end
+      end)
+
+    for _ <- 1..120 do
+      assert {:ok, %{"text" => text}} = Nano.Memory.get("race", "key", opts)
+      assert text == "before" or String.starts_with?(text, "value")
+      assert {:ok, %{goals: _, total: n}} = Nano.Goals.review("race", opts)
+      assert n in 0..60
+    end
+
+    Task.await(writer, 10_000)
+    assert {:ok, %{total: 60}} = Nano.Goals.review("race", opts)
+  end
+
+  test "killed transaction owners release locks without changing disk", %{opts: opts} do
+    {:ok, old} = Nano.Goals.add("lock", "Original", [why: "Needed"] ++ opts)
+    parent = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Nano.DurableStore.transact("goals", "lock", opts, fn _ ->
+          send(parent, :locked)
+
+          receive do
+            :never -> {:error, :never}
+          end
+        end)
+      end)
+
+    assert_receive :locked
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    assert {:ok, [^old]} = Nano.Goals.list("lock", opts)
+
+    assert {:ok, _} =
+             Task.async(fn -> Nano.Goals.add("lock", "Next", [why: "Continue"] ++ opts) end)
+             |> Task.await(2_000)
+  end
+
+  test "cancelled parents do not silently cancel children; unicode remains valid", %{opts: opts} do
+    {:ok, parent} =
+      Nano.Goals.add("a", String.duplicate("🧭", 200), [why: String.duplicate("é", 1000)] ++ opts)
+
+    {:ok, child} =
+      Nano.Goals.add("a", "Child", [why: "Independent step", parent: parent["id"]] ++ opts)
+
+    assert {:ok, %{goals: [excerpt]}} = Nano.Goals.review("a", [limit: 1] ++ opts)
+    assert String.valid?(excerpt["title"])
+    assert String.length(excerpt["title"]) == 160
+    assert String.length(excerpt["why"]) == 240
+    assert {:ok, _} = Nano.Goals.update("a", parent["id"], [status: :cancelled], opts)
+    assert {:ok, %{goals: [g], total: 1}} = Nano.Goals.review("a", opts)
+    assert g["id"] == child["id"]
+    assert {:ok, %{goals: [], omitted: 1}} = Nano.Goals.review("a", [limit: -1] ++ opts)
+    assert {:error, :invalid_memory} = Nano.Memory.put("a", "bad", <<255>>, opts)
+  end
+
+  test "schema bound violations and read I/O errors are explicit", %{opts: opts, root: root} do
+    {:ok, _} = Nano.Memory.put("a", "key", "Text", opts)
+    [path] = Path.wildcard(Path.join(root, "memory/*.json"))
+    json = path |> File.read!() |> Jason.decode!()
+    entry = json["entries"]["key"] |> Map.put("tags", List.duplicate("tag", 21))
+    json = put_in(json, ["entries", "key"], entry)
+    File.write!(path, Jason.encode!(json))
+    assert {:error, :corrupt_store} = Nano.Memory.review("a", opts)
+    File.rm!(path)
+    File.mkdir!(path)
+    assert {:error, :eisdir} = Nano.Memory.get("a", "key", opts)
+  end
+
   test "I/O failures are returned", %{root: root} do
     File.write!(root, "file not directory")
     assert {:error, :enotdir} = Nano.Goals.add("a", "Goal", why: "Why", root: root)
