@@ -37,6 +37,7 @@ defmodule NanoWeb.BotsLive do
         drafts: %{},
         pending_images: [],
         image_drafts: %{},
+        upload_notice: nil,
         error: nil,
         recipient_open: true,
         settings_open: false,
@@ -195,7 +196,8 @@ defmodule NanoWeb.BotsLive do
          error: nil
        )}
 
-  def handle_event("back", _, socket), do: {:noreply, assign(socket, pane: "list")}
+  def handle_event("back", _, socket),
+    do: {:noreply, socket |> save_draft() |> assign(pane: "list")}
 
   def handle_event("open-session", %{"id" => id}, socket) do
     if Enum.any?(socket.assigns.sessions, &(&1["id"] == id)) do
@@ -274,7 +276,9 @@ defmodule NanoWeb.BotsLive do
   def handle_event("show-bot-form", _, socket),
     do:
       {:noreply,
-       assign(socket,
+       socket
+       |> save_draft()
+       |> assign(
          bot_form: true,
          bot_name: socket.assigns.query,
          creating: true,
@@ -461,8 +465,8 @@ defmodule NanoWeb.BotsLive do
 
   def handle_event(_, _, socket), do: {:noreply, socket}
 
-  defp save_draft(socket),
-    do:
+  defp save_draft(socket) do
+    socket =
       assign(socket,
         drafts: Map.put(socket.assigns.drafts, socket.assigns.selected, socket.assigns.draft),
         image_drafts:
@@ -472,6 +476,20 @@ defmodule NanoWeb.BotsLive do
             socket.assigns.pending_images
           )
       )
+
+    entries = socket.assigns.uploads.images.entries
+
+    socket =
+      Enum.reduce(entries, socket, fn entry, acc -> cancel_upload(acc, :images, entry.ref) end)
+
+    if entries == [],
+      do: socket,
+      else:
+        assign(socket,
+          upload_notice:
+            "Unsent image uploads were removed when you changed chats. Reattach them in the intended conversation."
+        )
+  end
 
   defp integer(value, default) do
     case Integer.parse(to_string(value || "")) do
@@ -516,7 +534,7 @@ defmodule NanoWeb.BotsLive do
     <div class="bots-app" data-pane={@pane}>
       <aside class="sidebar" aria-label="Chats">
         <header>
-          <h1>Bots</h1><button phx-click="new-chat" aria-label="New chat">＋</button>
+          <h1>Bots</h1><button phx-click="new-chat" aria-label="New chat"><.icon kind="plus" /></button>
         </header>
         <form id="chat-search-form" phx-change="search" role="search">
           <label for="chat-search">Search chats and bots</label><input
@@ -616,6 +634,7 @@ defmodule NanoWeb.BotsLive do
         <p :if={@requests_truncated} class="notice" role="status">
           Showing the most recent 200 of {@request_count} human requests, with unanswered requests first. Older request cards are not shown.
         </p>
+        <p :if={@upload_notice} class="notice" role="status">{@upload_notice}</p>
         <section :if={@creating or @bots == []} class="new-chat">
           <h2>{if @bots == [], do: "Create your first bot", else: "New conversation"}</h2>
           <p>A familiar face to think things through with. Choose one bot or bring a few together.</p>
@@ -815,7 +834,7 @@ defmodule NanoWeb.BotsLive do
               value={@draft}
               placeholder={"Message #{names(@bots,@chat["bot_ids"])}"}
             >{@draft}</textarea>
-            <label class="attach-button">＋<span class="sr-only">Attach images</span><.live_file_input upload={
+            <label class="attach-button"><.icon kind="plus" /><span class="sr-only">Attach images</span><.live_file_input upload={
               @uploads.images
             } /></label>
             <button
@@ -823,7 +842,7 @@ defmodule NanoWeb.BotsLive do
               disabled
               aria-label="Voice input coming later"
               title="Voice input coming later"
-            >🎙<span class="sr-only">Voice input coming later</span></button><button
+            ><.icon kind="microphone" /><span class="sr-only">Voice input coming later</span></button><button
               type="submit"
               phx-disable-with="Sending…"
             >Send</button>

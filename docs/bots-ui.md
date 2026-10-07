@@ -71,3 +71,15 @@ latest page before scrolling. Sliding-window prepends preserve an actual message
 viewport offset (anchor geometry, not net scrollHeight, which is unchanged at the cap).
 Follow-hook mock evidence: detached state events deduplicate, same-height sliding cap
 keeps the old anchor, and jump asks for latest; OS/browser geometry remains unverified.
+
+## Attachment target isolation and graphics
+
+Leaving a conversation, opening a bot/create flow, starting a new chat, or returning
+to the list cancels all unconsumed LiveView upload entries. A visible notice asks the
+person to reattach in the intended conversation; raw upload entries cannot silently
+move into another session. Already imported immutable refs remain in the original
+per-session draft and are restored only for that session. The regression test uploads
+in A, switches/sends in B (no images), then retries an imported A ref in A only.
+Faces use CSS eyes/smile curves and plus/microphone controls use fixed-size trusted
+inline SVG, avoiding missing-glyph boxes on Linux/browser fonts. Accessible labels
+remain on controls; model content still cannot supply SVG or arbitrary HTML.
