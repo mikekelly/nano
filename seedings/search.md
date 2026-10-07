@@ -29,3 +29,10 @@ engine with an API at `https://api.exa.ai`, authenticated with `x-api-key: $EXA_
 
 An agent asked a question it cannot answer from the node searches, reads, and answers with
 citations; and a research run started in one turn is received as an event in a later one.
+
+## Related
+
+- Builds on: [web-access.md](web-access.md) (reading what search finds), [delegation.md](delegation.md) (a research run is delegation), [guidance.md](guidance.md) (small responses by default).
+- Used by: [bots.md](bots.md) (memory and research for bots).
+- In the seed: keys arrive through the environment and compose passthrough ([docker-compose.yml](../docker-compose.yml), [.env.example](../.env.example)); the agent can read them ([SPEC.md, limits](../SPEC.md#container-configuration-and-limits)).
+- Runs: not yet run (no key); `gardener` wired Exa into `Nano.Web` for when a key appears ([RUNS.md](RUNS.md)).

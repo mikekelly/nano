@@ -27,3 +27,9 @@ the project's keys.
 
 With Langfuse up and keys in `.env`, a conversation with an agent appears in Langfuse as a
 trace with its generations and tool spans, and the numbers match the agent's own log.
+
+## Related
+
+- Builds on: the per-agent JSONL log and its entry types ([SPEC.md, OpenRouter and the harness log](../SPEC.md#openrouter-and-the-harness-log)), which is what the traces mirror; [lib/nano/log.ex](../lib/nano/log.ex).
+- Pairs with: [goals.md](goals.md) and [delegation.md](delegation.md) (traces across a parent and its children), [bots.md](bots.md) (sessions as traces).
+- Runs: not yet run (no service); `gardener` left a `docker-compose.langfuse.yml` on its branch ([RUNS.md](RUNS.md)).

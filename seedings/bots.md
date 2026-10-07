@@ -63,3 +63,10 @@ this is the product on top.
 A person creates two bots, starts a session with one and a session with both, chats for
 long enough that compaction happens without them noticing, tells one bot something in
 one session and has it come up appropriately in another, and never sees an eval.
+
+## Related
+
+- Builds on: [delegation.md](delegation.md) (bots as agents), [goals.md](goals.md), [search.md](search.md) and [web-access.md](web-access.md) (what bots can do), [guidance.md](guidance.md) (decision models; lean prompts; role and abstraction level).
+- Compaction: the mechanism `reviewer` found — rewrite the stored transcript from outside, keeping every tool call answered — in [RUNS.md](RUNS.md), branch `seedling/reviewer-harness-review` (`Nano.Compact`).
+- In the seed: the dashboard is a Phoenix LiveView app in the same node ([SPEC.md, Web dashboard](../SPEC.md#web-dashboard)); the reading view of an agent's timeline is the nearest thing to a chat surface ([lib/nano_web/live/agent_live.ex](../lib/nano_web/live/agent_live.ex)); the `dashboard` user is how the UI talks to agents ([SPEC.md, Operator access](../SPEC.md#operator-access)).
+- Decision models: Jev ([docs.typesafe.ai](https://docs.typesafe.ai/introduction.md)); knowledge-graph traversal as in [s1m](https://github.com/mikekelly/s1m).

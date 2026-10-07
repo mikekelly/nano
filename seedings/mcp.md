@@ -38,3 +38,10 @@ tests.
 An agent can connect a server from config, list its tools, call one, read a resource,
 subscribe to a resource, and see a change to it arrive as an event — with the whole
 sequence visible in its timeline on the dashboard.
+
+## Related
+
+- Builds on: [guidance.md](guidance.md) (breadcrumbs: the catalogue), [background-tasks.md](background-tasks.md) (stdio servers are long-running OS processes).
+- Used by: [delegation.md](delegation.md) (MCP servers per sub-agent), [web-access.md](web-access.md) and [search.md](search.md) (either could be exposed as an MCP server).
+- In the seed: events as mailbox messages ([SPEC.md, Agent GenServer](../SPEC.md#agent-genserver)); the process view tags what an agent spawns ([SPEC.md, Web dashboard](../SPEC.md#web-dashboard)).
+- Runs: `gardener` (`Nano.MCP`, revision 2025-06-18, verified against the reference filesystem server) in [RUNS.md](RUNS.md); branch `seedling/gardener-five-capabilities`.

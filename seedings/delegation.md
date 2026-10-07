@@ -46,3 +46,10 @@ A parent agent can, from one eval, start a sub-agent with a composed prompt, pre
 and a worktree, give it a task, continue with its own work, receive the result as a message
 and show it. All of it tested; the message protocol and the options written up where the
 next agent will find them.
+
+## Related
+
+- Builds on: [guidance.md](guidance.md) (role and abstraction level; defend your context), [mcp.md](mcp.md) (servers for the child), [background-tasks.md](background-tasks.md) (waiting without spending turns).
+- Used by: [bots.md](bots.md) (one agent per bot or per session), [search.md](search.md) (research runs as delegation).
+- In the seed: `NanoAgent.start/1` and `started_by` in [lib/nano_agent.ex](../lib/nano_agent.ex); agents addressed by name ([SPEC.md, Operator access](../SPEC.md#operator-access)); the prompt template and its placeholders ([priv/system_prompt.txt](../priv/system_prompt.txt), [SPEC.md, System prompt](../SPEC.md#system-prompt)).
+- Runs: `reviewer` (sub-agents never reported; budgets) and `gardener` (`Nano.Delegation`, a watcher reports on a child's behalf) in [RUNS.md](RUNS.md); branches `seedling/reviewer-harness-review`, `seedling/gardener-five-capabilities`.

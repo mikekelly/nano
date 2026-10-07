@@ -38,3 +38,10 @@ at 30 seconds.
 
 An agent can search for something, open the best result, read it in pages, and cite a
 passage — all from `eval`, with the calls and their sizes visible in its timeline.
+
+## Related
+
+- Builds on: [guidance.md](guidance.md) (paged reads keep context small), [background-tasks.md](background-tasks.md) (clones and slow fetches).
+- Pairs with: [search.md](search.md) (Exa as the search provider), [mcp.md](mcp.md), [bots.md](bots.md) (bots that browse).
+- In the seed: the result-size limit `RESULT_MAX_BYTES` ([SPEC.md, Container, configuration and limits](../SPEC.md#container-configuration-and-limits)); `Req` is already a dependency ([mix.exs](../mix.exs)).
+- Runs: `porter` (pi's tools ported; the fetching patterns it used) and `gardener` (`Nano.Web`, keyless fallback) in [RUNS.md](RUNS.md); branches `seedling/porter-pi-tools`, `seedling/gardener-five-capabilities`.

@@ -23,3 +23,10 @@ command in the background, carry on, and be told when it finishes.
 An agent starts a build or a long test run, idles with a wakeup, is woken by the
 completion event, reads the tail of the output and acts on it — tested, and visible on
 the dashboard as a spawned process while it runs.
+
+## Related
+
+- Builds on: [guidance.md](guidance.md) (output stays out of context by default).
+- Used by: [delegation.md](delegation.md), [mcp.md](mcp.md) (stdio servers), [web-access.md](web-access.md) (slow fetches), [goals.md](goals.md) (review on wakeup).
+- In the seed: eval runs in a task with `EVAL_TIMEOUT_MS` ([SPEC.md, Agent GenServer](../SPEC.md#agent-genserver)); processes an agent spawns are tagged and shown ([SPEC.md, Web dashboard](../SPEC.md#web-dashboard)); completion must arrive as a mailbox message to become an `<event>`.
+- Runs: `gardener` built this first (`Nano.Background`, a drainer owns the port so the task survives the agent's restart) in [RUNS.md](RUNS.md); branch `seedling/gardener-five-capabilities`.

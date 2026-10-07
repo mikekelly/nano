@@ -22,22 +22,22 @@ works, or if you conclude it can't be done, send a message to the sender_pid of 
 message saying what you built and how to use it.
 ```
 
-Record the run in `RUNS.md` (which seeding, which model, what grew, cost), push the
+Record the run in [`RUNS.md`](RUNS.md) (which seeding, which model, what grew, cost), push the
 seedling branch, and reset the checkout to `main` for the next run.
 
 ## Seedings
 
 | File | Capability |
 | --- | --- |
-| `guidance.md` | How to build any of them: lean prompts, breadcrumbs, progressive disclosure |
-| `delegation.md` | Start sub-agents with their own prompt, pre-reading, model, worktree and MCP servers |
-| `mcp.md` | Speak MCP: use servers' tools and resources, receive their events as mailbox events |
-| `web-access.md` | Browse and search the web (a port of pi-web-access) |
-| `search.md` | Search and research with Exa, including handing work to its research agent |
-| `tracing.md` | Trace every model call and tool call into Langfuse |
-| `goals.md` | Set, keep and review goals across turns, restarts and agents |
-| `background-tasks.md` | Run shell commands in the background and be told when they finish |
-| `bots.md` | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
+| [`guidance.md`](guidance.md) | How to build any of them: lean prompts, breadcrumbs, progressive disclosure |
+| [`delegation.md`](delegation.md) | Start sub-agents with their own prompt, pre-reading, model, worktree and MCP servers |
+| [`mcp.md`](mcp.md) | Speak MCP: use servers' tools and resources, receive their events as mailbox events |
+| [`web-access.md`](web-access.md) | Browse and search the web (a port of pi-web-access) |
+| [`search.md`](search.md) | Search and research with Exa, including handing work to its research agent |
+| [`tracing.md`](tracing.md) | Trace every model call and tool call into Langfuse |
+| [`goals.md`](goals.md) | Set, keep and review goals across turns, restarts and agents |
+| [`background-tasks.md`](background-tasks.md) | Run shell commands in the background and be told when they finish |
+| [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
 Older, advice-style seedings and tasks are kept under `tasks/` and as
 `utilities-and-delegation.md` because `RUNS.md` refers to them.
