@@ -26,23 +26,24 @@ Listings cap 500 entries; find caps 1000 paths; grep caps 100 matches with 500
 characters per matching line. Find/grep respect git ignore via git check-ignore
 when inside a repository (`respect_gitignore: false` disables). Grep supports regex,
 literal, ignore_case, glob, limit and line_limit; context lines are not implemented.
-Results are maps for branching, not formatted CLI output. Read/tail currently load
-whole files; find enumerates the glob before capping. Result bounds do not imply
+Results are maps for branching, not formatted CLI output. Read currently loads
+whole files; tail uses an EOF seek window bounded by max_bytes + 4; find enumerates the glob before capping. Result bounds do not imply
 bounded input memory or search runtime. Tail byte slicing drops incomplete leading UTF-8 characters.
 
 Background workers and the manager are unlinked to evals. Worker ancestry includes
 caller chains for dashboard attribution even after the eval dies. Default notify
 resolves the calling agent's stable name; otherwise defaults to caller pid. Explicit
-notify name retries delivery while the agent is absent. Completion events contain
+notify name retries delivery for one minute while the agent is absent; later use `notify_again(id, target)` to redeliver retained completion metadata. Completion events contain
 `{:nano_background, id, %{state: ..., exit_status: ..., bytes: ..., path: ...,
 duration_ms: ...}}`, never output. pid notification cannot survive pid replacement.
 Linux setsid --wait isolates a process group; timeout/kill sends SIGKILL to the group
 (including ordinary children). Daemons that deliberately escape their group aren't
 controlled. Output goes to uniquely named files under /tmp/nano-background by default;
-set output_dir for durable storage. Files and completed metadata are retained until
-manual cleanup/node exit; there is no retention scheduler. Jobs survive agent restart,
+set output_dir for durable storage. Files are retained until manual cleanup. `prune(id)` removes one finished job's metadata; `prune()` removes all finished metadata without touching running jobs or output files. There is no retention scheduler. Jobs survive agent restart,
 not node/container restart. Do not write secrets to commands/output.
 
 Tests: `MIX_ENV=test MIX_BUILD_ROOT=/tmp/nova-tools/_build mix test test/nano/tools_test.exs test/nano/background_test.exs`.
 
 Listings, find and grep also cap aggregate inspected item bytes at 16KB (`max_bytes`), with `offset`/`next_offset` for exact continuation. A single oversized item errors. Tail can be continued by `read(path, offset: 1)` or increasing `limit`/`max_bytes`; full output remains at path.
+
+Manager failure loses tracking/notifications; jobs are not durable across manager/node failure. Optional `Nano.Background.start_link/1` supports an application's supervisor; do not add it after lazy start without coordinating the existing manager. Tail reports total_lines `:unknown` when the EOF window does not cover the whole file.

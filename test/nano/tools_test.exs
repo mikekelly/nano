@@ -87,7 +87,19 @@ defmodule Nano.ToolsTest do
     refute hd(matches).path == hd(rest).path
   end
 
+  test "tail reads only an EOF byte window", %{dir: dir} do
+    path = Path.join(dir, "large.log")
+    File.write!(path, String.duplicate("old line\n", 100_000) <> "last line\n")
+
+    assert {:ok, %{text: text, total_lines: :unknown, total_bytes: bytes, truncated: true}} =
+             Nano.Tools.tail(path, max_bytes: 100, limit: 1)
+
+    assert text == "last line"
+    assert bytes > 800_000
+  end
+
   test "shell exit
+
 , environment and bounded output",
        %{dir: dir} do
     assert {:ok, %{exit_status: 7, text: "yes", path: path}} =
