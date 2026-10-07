@@ -49,6 +49,9 @@ defmodule Nano.Application do
         NanoAgent.revive(Nano.AgentSupervisor)
       end)
 
+      # Seedling services may dispatch pending work, so start only after saved agents exist.
+      best_effort(fn -> Vega.Boot.start_services(sup) end)
+
       {:ok, sup}
     end
   end

@@ -23,5 +23,7 @@ if config_env() == :prod do
 end
 
 if config_env() == :test do
+  # Capability suites start isolated service trees with unique state roots.
+  config :nano, :vega_autostart, false
   config :logger, level: :warning
 end
