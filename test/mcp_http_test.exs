@@ -209,6 +209,83 @@ defmodule MCP.HTTPTest do
     assert_receive {:http_closed, ^post}, 2000
   end
 
+  test "modern metadata mirrors protocol, method, and encoded name without legacy initialization",
+       %{url: url} do
+    transport = start_transport(url)
+    name = "例 tool"
+
+    message = %{
+      "jsonrpc" => "2.0",
+      "id" => 4,
+      "method" => "tools/call",
+      "params" => %{
+        "name" => name,
+        "arguments" => %{},
+        "_meta" => %{"io.modelcontextprotocol/protocolVersion" => "2026-07-28"}
+      }
+    }
+
+    assert :ok = HTTP.send_message(transport, message)
+    {post, req} = request("POST")
+    assert req.headers["mcp-protocol-version"] == "2026-07-28"
+    assert req.headers["mcp-method"] == "tools/call"
+    assert req.headers["mcp-name"] == "=?base64?" <> Base.encode64(name) <> "?="
+    refute Map.has_key?(req.headers, "mcp-session-id")
+    assert Jason.decode!(req.body) == message
+    response = %{"jsonrpc" => "2.0", "id" => 4, "result" => %{"content" => []}}
+    Server.reply(post, 200, [{"content-type", "application/json"}], Jason.encode!(response))
+    assert_receive {:mcp_transport, ^transport, {:message, ^response}}, 2000
+    refute_receive {:http_request, _, %{method: "GET"}}, 100
+  end
+
+  test "JSON-RPC error body on HTTP 400 reaches the owner", %{url: url} do
+    transport = start_transport(url)
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 1, "method" => "missing"})
+    {post, _} = request("POST")
+
+    response = %{
+      "jsonrpc" => "2.0",
+      "id" => 1,
+      "error" => %{"code" => -32601, "message" => "Method not found"}
+    }
+
+    Server.reply(
+      post,
+      400,
+      [{"content-type", "application/json; charset=utf-8"}],
+      Jason.encode!(response)
+    )
+
+    assert_receive {:mcp_transport, ^transport, {:message, ^response}}, 2000
+    refute_receive {:mcp_transport, ^transport, {:down, _}}, 50
+  end
+
+  test "redirects are not followed with credentials", %{url: url} do
+    transport = start_transport(url, %{"headers" => %{"authorization" => "Bearer secret"}})
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+    {post, _} = request("POST")
+    Server.reply(post, 307, [{"location", url <> "?redirected=true"}])
+    assert_receive {:mcp_transport, ^transport, {:down, _}}, 2000
+    refute_receive {:http_request, _, _}, 100
+  end
+
+  test "a request that never receives headers times out", %{url: url} do
+    transport = start_transport(url, %{"timeout_ms" => 100})
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+    {post, _} = request("POST")
+    assert_receive {:mcp_transport, ^transport, {:down, _}}, 2000
+    assert_receive {:http_closed, ^post}, 2000
+  end
+
+  test "malformed JSON response is a transport error", %{url: url} do
+    transport = start_transport(url)
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+    {post, _} = request("POST")
+    Server.reply(post, 200, [{"content-type", "application/json"}], "{not-json")
+    assert_receive {:mcp_transport, ^transport, {:down, _}}, 2000
+    refute_receive {:mcp_transport, ^transport, {:message, _}}, 50
+  end
+
   test "invalid configuration is rejected synchronously without linking to caller", %{url: url} do
     for config <- [
           %{},
