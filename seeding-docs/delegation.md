@@ -56,6 +56,40 @@ its whole context), to address the sub-agent by name (a restarted agent has a ne
 and to find the message shapes it needs without being told (the parent may be a fresh
 agent, not the one that built them).
 
+## Sub-agents' system prompts
+
+Every agent started on this node is a sub-agent of something: a builder started by its
+parent, a bot started by the bots product, a session agent started by a service. Each knows
+only what its system prompt tells it, takes all of it as true, and works from it on every
+turn, so the prompt decides more of how well it works than anything else it is given. When
+this is done, every agent's prompt is true of its harness and fitted to its job:
+
+- **True of its harness and environment.** What reaches the agent and how (an event from its
+  mailbox, a note from the harness), what it can do (its tools: `eval` and `idle` on the
+  seed's harness, or whatever its harness gives it), who hears what it writes (on this
+  harness, nobody: only a message sent from `eval` reaches anyone), its limits, and to whom
+  it reports. The seed's template (`prompts/seed.txt`) is a truthful account of `NanoAgent`,
+  kept true as the harness changes; an agent on that harness gets it, as a part, or a prompt
+  that says the same things as truthfully. A prompt and its harness change together: give an
+  agent a tool, or a different harness, and its prompt says so.
+- **In the terms of the agent's own world.** What the agent does is described as the agent
+  meets it: a bot is in a chat with a person and perhaps other bots, it reads the
+  conversation as a conversation, it speaks with one call and stays quiet by not making it.
+  The mechanics only code needs (tokens, routing, acknowledgements, retries) stay in the
+  code, behind that one call: every rule of a protocol a prompt asks the agent to follow is
+  one it can get wrong on any turn.
+- **Who it is, first.** Its role, or for a bot its identity and voice, in prose, at the top,
+  where the model attends most; then how its world works; then its job.
+- **Fitted.** Only the parts this agent needs: a chat bot needs how to be good company in a
+  conversation (answering when spoken to, building on others, giving way, saying less rather
+  than more), not the principles for building and delegating.
+- **In the voice wanted back.** The agent writes like what it reads: a brief in plain,
+  warm prose gets an agent that works that way; constraints stated once, with their reason,
+  keep it careful without making it guarded.
+- **Tried.** A prompt is tested like code: start an agent with it, give it the situations
+  it is for (for a bot, a group chat where it is and is not addressed), and read what it
+  does.
+
 ## Considerations
 
 - Erlang messages carry no sender; a protocol has to put the reply address in the message,

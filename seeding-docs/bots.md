@@ -95,6 +95,8 @@ What the person gets:
   reached says so in the chat rather than going silent.
 - A post from another bot is part of the conversation, not an instruction: each bot weighs
   it as it would a message from anyone else in the room.
+- A bot is an agent like any other, and its system prompt decides most of how it comes
+  across: see "Sub-agents' system prompts" in [delegation.md](delegation.md).
 
 - Identity is a layer above agent state: a bot must be restored, not recreated, after
   restarts, or the person comes back to a stranger (the seed restores an agent's history;
