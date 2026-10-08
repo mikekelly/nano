@@ -524,6 +524,7 @@ defmodule Nano.ChatGPTTest do
                id: "gpt-x",
                name: "GPT-X",
                context_length: 1000,
+               input_modalities: ["text"],
                reasoning_levels: ~w(low medium high xhigh max),
                default_reasoning: "low"
              },
@@ -531,6 +532,7 @@ defmodule Nano.ChatGPTTest do
                id: "gpt-y",
                name: "gpt-y",
                context_length: nil,
+               input_modalities: ["text"],
                reasoning_levels: ~w(off low medium),
                default_reasoning: "off"
              }

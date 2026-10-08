@@ -33,7 +33,7 @@ defmodule Nano.OpenRouter do
 
     body = %{
       model: model,
-      messages: cache(messages),
+      messages: messages |> Seedling.Images.Wire.openrouter() |> cache(),
       tools: tools,
       usage: %{include: true},
       reasoning: if(reasoning == "off", do: %{enabled: false}, else: %{effort: reasoning})
@@ -95,7 +95,7 @@ defmodule Nano.OpenRouter do
 
   @doc """
   OpenRouter's models as `%{id, name, context_length, max_output, prompt_price, completion_price,
-  reasoning_levels, default_reasoning}` (`max_output` the most tokens its top provider will
+  reasoning_levels, default_reasoning, input_modalities}` (`max_output` the most tokens its top provider will
   generate in one response, or nil; prices in USD per million tokens, nil if not given;
   levels as `Nano.Model.reasoning/3` gives them), sorted by id. Cached for an hour, a failure for a
   minute, and fetched again once the key or the address changes; `[]` if they cannot be
@@ -146,6 +146,7 @@ defmodule Nano.OpenRouter do
           id: m["id"],
           name: m["name"],
           context_length: m["context_length"],
+          input_modalities: get_in(m, ["architecture", "input_modalities"]) || ["text"],
           max_output: get_in(m, ["top_provider", "max_completion_tokens"]),
           prompt_price: price.(get_in(m, ["pricing", "prompt"])),
           completion_price: price.(get_in(m, ["pricing", "completion"]))
