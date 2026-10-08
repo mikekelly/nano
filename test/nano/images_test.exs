@@ -13,7 +13,7 @@ defmodule Nano.ImagesTest do
     %{path: path}
   end
 
-  defp start_agent(vision) do
+  defp start_agent(vision, overrides \\ []) do
     Fake.start()
 
     model =
@@ -25,7 +25,9 @@ defmodule Nano.ImagesTest do
 
     name = "images-#{System.unique_integer([:positive])}"
     Fake.listen(model)
-    {:ok, pid} = NanoAgent.start([name: name, system_prompt: "Test images"] ++ Fake.opts(model))
+
+    {:ok, pid} =
+      NanoAgent.start([name: name, system_prompt: "Test images"] ++ Fake.opts(model, overrides))
 
     on_exit(fn ->
       if p = NanoAgent.whereis(name) do
@@ -84,7 +86,38 @@ defmodule Nano.ImagesTest do
     assert {:error, _} = Nano.Images.read(%{"id" => "../../settings"})
   end
 
-  test "full decoder validates JPEG/static GIF and refuses animation and truncated pixels", c do
+  test "shared image admission rejects oversized captions and irreducible image bundles before history mutation",
+       c do
+    {name, pid, model} = start_agent(true)
+    assert {:ok, ref} = Nano.Images.import(c.path)
+    original = Nano.StateStore.get(name).transcript
+
+    assert {:error, caption_error} =
+             NanoAgent.deliver_images(name, [ref], String.duplicate("x", 16_001))
+
+    assert caption_error =~ "16000 bytes"
+    assert Nano.StateStore.get(name).transcript == original
+    refute_receive {:openrouter_request, ^model, _}, 50
+
+    {tiny_name, _tiny_pid, tiny_model} = start_agent(true, max_context: 6000)
+    assert {:error, fit_error} = NanoAgent.deliver_images(tiny_name, [ref], "small")
+    assert fit_error =~ "cannot fit max_context"
+    assert Nano.StateStore.get(tiny_name).transcript == []
+    assert NanoAgent.info(tiny_name).halted == nil
+    refute_receive {:openrouter_request, ^tiny_model, _}, 50
+
+    # Even a direct raw cast cannot bypass the shared admission guard.
+    Fake.push(model, text: "rejected")
+    GenServer.cast(pid, {:images, [ref], String.duplicate("z", 16_001)})
+    rejected = request(model)
+    assert inspect(rejected["messages"]) =~ "Image delivery rejected"
+    refute inspect(rejected) =~ String.duplicate("z", 200)
+    refute inspect(rejected) =~ "data:image"
+  end
+
+  test "full decoder validates
+ JPEG/static GIF and refuses animation and truncated pixels",
+       c do
     jpeg = c.path <> ".jpg"
     gif = c.path <> ".gif"
     animated = c.path <> ".animated.gif"
