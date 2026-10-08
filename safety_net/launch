@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ -n "${SAFETY_NET_SESSION:-}" ]; then
+  exec elixir --name "${SAFETY_NET_NODE:-nano@127.0.0.1}" --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" -r "$SAFETY_NET_HOME/runtime/heartbeat.exs" -S mix run --no-halt
+fi
+exec elixir --name "${SAFETY_NET_NODE:-nano@127.0.0.1}" --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" -S mix run --no-halt

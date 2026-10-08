@@ -1,3 +1,8 @@
 #!/bin/sh
-# Container entrypoint: compile /app and run the node from source.
+# Install once with safety_net/supervisor.py install; /data survives recreation.
+home="${SAFETY_NET_HOME:-/data/safety-net}"
+if [ -f "$home/runtime/supervisor.py" ]; then
+  exec python3 "$home/runtime/supervisor.py" --home "$home" run
+fi
+echo 'SAFETY NET: not installed; node is unprotected' >&2
 exec elixir --name nano@127.0.0.1 --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" -S mix run --no-halt
