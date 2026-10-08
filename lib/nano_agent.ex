@@ -803,6 +803,7 @@ defmodule NanoAgent do
             do: %{append(Compaction.remember_delivery(s, s.pending), user) | pending: []},
             else: s
 
+        next = FrontOfMind.before_call(next)
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -1029,7 +1030,7 @@ defmodule NanoAgent do
     s = charge_compaction(s, stats)
 
     if log(s, :compaction_completed, %{summary: summary}) == :ok do
-      s = Compaction.rebuild(s, summary) |> check_budget()
+      s = Compaction.rebuild(s, summary) |> FrontOfMind.after_compaction() |> check_budget()
 
       if s.max_context > 0 and
            (estimate(s) >= s.max_context - @reply_room or Compaction.due?(s, estimate(s))) do
@@ -1346,7 +1347,7 @@ defmodule NanoAgent do
 
         {summary, s} ->
           log(s, :compaction_completed, %{summary: summary, voluntary: true})
-          s = Compaction.rebuild(s, summary)
+          s = Compaction.rebuild(s, summary) |> FrontOfMind.after_compaction()
 
           if s.halted == :context do
             note(
