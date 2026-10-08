@@ -1,4 +1,6 @@
 defmodule BotsTest.Runtime do
+  def owner?(_bot, _session, actor, opts), do: actor == opts[:observer]
+
   def dispatch(bot, session, context, opts) do
     send(opts[:observer], {:dispatch, bot, session, context})
 
@@ -40,6 +42,22 @@ end
 defmodule BotsTest.NoDecision do
   def noul(id, text), do: {id, text}
   def ask(_, _, _), do: {:error, :offline}
+end
+
+defmodule BotsTest.Images do
+  def resolve(%{"id" => "valid"}),
+    do:
+      {:ok,
+       %{
+         "type" => "image_ref",
+         "id" => "valid",
+         "mime" => "image/png",
+         "width" => 1,
+         "height" => 1,
+         "bytes" => 70
+       }}
+
+  def resolve(_), do: {:error, :corrupt}
 end
 
 defmodule BotsTest do
@@ -99,6 +117,218 @@ defmodule BotsTest do
           Process.sleep(10)
           eventually(fun, attempts - 1)
         )
+  end
+
+  test "restart preserves each still-owed group respondent without repeating completed bots" do
+    s = service(routing: :all)
+    a = bot(s, "A")
+    b = bot(s, "B")
+    c = chat(s, [a, b])
+    Bots.say(c["id"], "both of you", server: s.server)
+    assert_receive {:dispatch, one, _, first}, 1000
+    assert_receive {:dispatch, two, _, second}, 1000
+    assert {:ok, _} = Bots.post(first.token, "My answer", server: s.server)
+    GenServer.stop(s.server)
+    {:ok, server} = Bots.start_link(s.start_opts)
+    Process.unlink(server)
+    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    assert_receive {:dispatch, resumed, _, context}, 1000
+    assert resumed["id"] == two["id"]
+    refute resumed["id"] == one["id"]
+    assert context.message["text"] == "both of you"
+    assert Enum.any?(context.conversation, &(&1["text"] == "My answer"))
+    assert {:error, :stale_token} = Bots.post(second.token, "old token", server: server)
+    assert {:ok, _} = Bots.post(context.token, "Recovered reply", server: server)
+  end
+
+  test "failed finish retains its live response deadline" do
+    s = service(response_timeout: 120)
+    c = chat(s, [bot(s)])
+    Bots.say(c["id"], "hello", server: s.server)
+    assert_receive {:dispatch, _, _, ctx}, 1000
+    path = Path.join(s.root, "state.json")
+    backup = File.read!(path)
+    File.rm_rf!(s.root)
+    File.write!(s.root, "blocked")
+    assert {:error, {:persistence, _}} = Bots.finish(ctx.token, server: s.server)
+    File.rm!(s.root)
+    File.mkdir_p!(s.root)
+    File.write!(path, backup)
+    eventually(fn -> Bots.session(c["id"], server: s.server)["status"] == "error" end)
+    assert {:error, :stale_token} = Bots.post(ctx.token, "not immortal", server: s.server)
+  end
+
+  test "cooldowns longer than an hour retain last notification independently of hourly count" do
+    s = service()
+    b = bot(s)
+
+    Bots.preferences(%{notifications: true, cooldown_seconds: 7200, max_per_hour: 10},
+      server: s.server
+    )
+
+    GenServer.stop(s.server)
+    path = Path.join(s.root, "state.json")
+    last = System.system_time(:second) - 3601
+
+    data =
+      File.read!(path)
+      |> Jason.decode!()
+      |> Map.put("notification_times", [last])
+      |> Map.put("last_notification_at", last)
+
+    File.write!(path, Jason.encode!(data))
+    {:ok, server} = Bots.start_link(s.start_opts)
+    Process.unlink(server)
+    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    Bots.subscribe(server: server)
+    Bots.request(b["id"], "Must stay quiet", requester: self(), server: server)
+    refute_receive {:bots_notification, _}, 30
+    assert (File.read!(path) |> Jason.decode!())["last_notification_at"] == last
+  end
+
+  test "malformed JSON values never crash the shared service or leave temp files" do
+    s = service()
+    b = bot(s)
+    c = chat(s, [b])
+
+    for attachment <- [%{"name" => <<255>>}, %{<<255>> => "bad key"}] do
+      assert {:error, :invalid_attachments} =
+               Bots.say(c["id"], "hello", attachments: [attachment], server: s.server)
+    end
+
+    assert {:error, :invalid_idempotency_key} =
+             Bots.request(b["id"], "hello",
+               requester: self(),
+               idempotency_key: self(),
+               server: s.server
+             )
+
+    assert {:error, :not_json_encodable} = Bots.Store.save(s.root, %{bad: self()})
+    assert Path.wildcard(Path.join(s.root, "state.json.*")) == []
+    assert Process.alive?(s.server)
+  end
+
+  test "owning agent alone can use a token
+ or proactive posting, and human pending wins" do
+    s = service(max_bot_exchanges: 1)
+    b = bot(s)
+    c = chat(s, [b])
+    Bots.say(c["id"], "hello", server: s.server)
+    assert_receive {:dispatch, _, _, ctx}, 1000
+    # A separate process is not the owning runtime, even with a copied token.
+    parent = self()
+    spawn(fn -> send(parent, {:wrong_post, Bots.post(ctx.token, "spoof", server: s.server)}) end)
+    assert_receive {:wrong_post, {:error, :wrong_agent}}
+
+    assert {:error, :human_turn_pending} =
+             Bots.announce(b["id"], c["id"], "interrupt", server: s.server)
+
+    assert {:ok, _} = Bots.post(ctx.token, "answer", server: s.server)
+    eventually(fn -> Bots.session(c["id"], server: s.server)["status"] == "idle" end)
+
+    assert {:ok, msg} =
+             Bots.announce(b["id"], c["id"], "Background job finished", server: s.server)
+
+    assert msg["bot_id"] == b["id"]
+    assert {:error, :discussion_limit} = Bots.post(b["id"], c["id"], "No loop", server: s.server)
+    Bots.stop(c["id"], server: s.server)
+    assert {:error, :stopped} = Bots.announce(b["id"], c["id"], "Do not resume", server: s.server)
+  end
+
+  test "runtime process death is immediately visible, not left thinking until timeout" do
+    agent =
+      spawn(fn ->
+        receive do
+          :never -> :ok
+        end
+      end)
+
+    s = service(runtime_result: {:ok, agent}, response_timeout: 60_000)
+    c = chat(s, [bot(s)])
+    Bots.say(c["id"], "hello", server: s.server)
+    assert_receive {:dispatch, _, _, ctx}, 1000
+    Process.exit(agent, :kill)
+    eventually(fn -> Bots.session(c["id"], server: s.server)["status"] == "error" end)
+    assert {:error, :stale_token} = Bots.post(ctx.token, "late", server: s.server)
+  end
+
+  test "idempotency keys are requester scoped and request cards reflect answer status" do
+    s = service()
+    b = bot(s)
+
+    {:ok, first} =
+      Bots.request(b["id"], "First",
+        requester: "agent-a",
+        idempotency_key: "key",
+        server: s.server
+      )
+
+    {:ok, second} =
+      Bots.request(b["id"], "Second",
+        requester: "agent-b",
+        idempotency_key: "key",
+        server: s.server
+      )
+
+    refute first["id"] == second["id"]
+
+    assert {:error, :invalid_idempotency_key} =
+             Bots.request(b["id"], "Invalid",
+               requester: self(),
+               idempotency_key: {:bad, :key},
+               server: s.server
+             )
+
+    assert {:ok, _} = Bots.reply(first["id"], "Chosen", server: s.server)
+    messages = Bots.session(first["session_id"], server: s.server)["messages"]
+    assert Enum.find(messages, &(&1["request_id"] == first["id"]))["status"] == "answered"
+    assert Enum.find(messages, &(&1["request_id"] == second["id"]))["status"] == "pending"
+  end
+
+  test "image references are resolved to canonical bytes metadata, not trusted input" do
+    s = service(images: BotsTest.Images)
+    c = chat(s, [bot(s)])
+
+    supplied = %{
+      "type" => "image_ref",
+      "id" => "valid",
+      "mime" => "text/html",
+      "width" => 9999,
+      "path" => "/secret"
+    }
+
+    assert {:ok, msg} = Bots.say(c["id"], "Look", attachments: [supplied], server: s.server)
+    assert [%{"mime" => "image/png", "width" => 1} = canonical] = msg["attachments"]
+    refute Map.has_key?(canonical, "path")
+    assert_receive {:dispatch, _, _, ctx}, 1000
+    assert ctx.message["attachments"] == [canonical]
+
+    assert {:error, :invalid_attachments} =
+             Bots.say(c["id"], "Bad",
+               attachments: [%{"type" => "image_ref", "id" => "corrupt"}],
+               server: s.server
+             )
+
+    assert {:error, :invalid_attachments} =
+             Bots.say(c["id"], "Too many",
+               attachments: List.duplicate(supplied, 11),
+               server: s.server
+             )
+  end
+
+  test "nested store corruption is rejected before recovery accesses malformed data" do
+    s = service()
+    c = chat(s, [bot(s)])
+    GenServer.stop(s.server)
+    path = Path.join(s.root, "state.json")
+
+    data =
+      File.read!(path)
+      |> Jason.decode!()
+      |> put_in(["sessions", c["id"], "epoch"], "not an integer")
+
+    File.write!(path, Jason.encode!(data))
+    assert {:error, :invalid_bots_store} = Bots.Store.load(s.root)
   end
 
   test "identities, sessions, string-key contracts, preferences and history survive service restart" do

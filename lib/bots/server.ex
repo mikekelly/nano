@@ -118,7 +118,7 @@ defmodule Bots.Server do
   def handle_call({:say, sid, text, opts}, _, s) do
     with {:ok, session} <- fetch_session(s, sid),
          :ok <- validate_text(text),
-         {:ok, attachments} <- attachments(opts) do
+         {:ok, attachments} <- attachments(s, opts) do
       message = message("human", text, nil, nil, attachments)
 
       session =
@@ -127,6 +127,8 @@ defmodule Bots.Server do
         |> Map.put("status", "thinking")
         |> Map.put("epoch", session["epoch"] + 1)
         |> Map.put("bot_exchanges", 0)
+        |> Map.put("pending_speakers", [])
+        |> Map.put("pending_message_id", nil)
         |> Map.put("ceiling_noted", false)
         |> Map.update!("pending_human_ids", &(&1 ++ [message["id"]]))
 
@@ -151,6 +153,8 @@ defmodule Bots.Server do
         |> Map.put("status", "stopped")
         |> Map.put("epoch", session["epoch"] + 1)
         |> Map.put("pending_human_ids", [])
+        |> Map.put("pending_speakers", [])
+        |> Map.put("pending_message_id", nil)
         |> append(message("system", "Conversation stopped. Send a message to continue.", nil))
 
       case save(s, put_session(s.data, session), sid) do
@@ -173,11 +177,14 @@ defmodule Bots.Server do
   end
 
   def handle_call({:post, token, text, opts}, _, s) do
-    with {:ok, grant, session} <- grant(s, token),
+    with {:ok, grant, session} <- grant(s, token, opts[:actor]),
          :ok <- validate_text(text),
-         {:ok, attachments} <- attachments(opts) do
+         {:ok, attachments} <- attachments(s, opts) do
       msg = message("bot", text, grant.bot_id, nil, attachments)
-      session = session |> append(msg) |> Map.put("pending_human_ids", [])
+
+      session =
+        session |> append(msg) |> Map.put("pending_human_ids", []) |> remove_speaker(grant.bot_id)
+
       remaining = Map.delete(s.grants, token)
       status = if active?(remaining, session["id"]), do: "thinking", else: "idle"
       session = Map.put(session, "status", status)
@@ -186,7 +193,7 @@ defmodule Bots.Server do
       case save(s, data, session["id"]) do
         {:ok, next} ->
           next = %{next | grants: remaining}
-          cancel_timer(grant.timer)
+          release_grant(grant)
           broadcast_notification(next, notification)
           if status == "idle", do: send(self(), {:route, session["id"], session["epoch"], msg})
           {:reply, {:ok, msg}, next}
@@ -199,8 +206,53 @@ defmodule Bots.Server do
     end
   end
 
-  def handle_call({:remember, token, key, value}, _, s) do
-    with {:ok, g, _session} <- grant(s, token) do
+  def handle_call({:announce, bid, sid, text, opts}, _, s) do
+    with {:ok, session} <- fetch_session(s, sid),
+         true <- bid in session["bot_ids"] and owner?(s, bid, session, opts[:actor]),
+         :ok <- validate_text(text),
+         {:ok, attachments} <- attachments(s, opts) do
+      cond do
+        session["status"] == "stopped" ->
+          {:reply, {:error, :stopped}, s}
+
+        session["pending_human_ids"] != [] ->
+          {:reply, {:error, :human_turn_pending}, s}
+
+        active?(s.grants, sid) or routing?(s, sid) ->
+          {:reply, {:error, :conversation_busy}, s}
+
+        session["bot_exchanges"] >= max_exchanges(s) ->
+          {:reply, {:error, :discussion_limit}, ceiling(s, session)}
+
+        true ->
+          msg = message("bot", text, bid, nil, attachments)
+
+          session =
+            session
+            |> append(msg)
+            |> Map.put("status", "idle")
+            |> Map.update!("bot_exchanges", &(&1 + 1))
+
+          {data, notification} = notification(s, put_session(s.data, session), session, msg)
+
+          case save(s, data, sid) do
+            {:ok, next} ->
+              broadcast_notification(next, notification)
+              send(self(), {:route, sid, session["epoch"], msg})
+              {:reply, {:ok, msg}, next}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, s}
+          end
+      end
+    else
+      false -> {:reply, {:error, :wrong_agent}, s}
+      error -> {:reply, error, s}
+    end
+  end
+
+  def handle_call({:remember, token, key, value, actor}, _, s) do
+    with {:ok, g, _session} <- grant(s, token, actor) do
       result = Bots.Memory.remember(g.bot_id, g.sid, key, value, runtime_opts(s))
       {:reply, result, s}
     else
@@ -208,24 +260,22 @@ defmodule Bots.Server do
     end
   end
 
-  def handle_call({:finish, token}, _, s) do
-    with {:ok, g, session} <- grant(s, token) do
+  def handle_call({:finish, token, actor}, _, s) do
+    with {:ok, g, session} <- grant(s, token, actor) do
       next = %{s | grants: Map.delete(s.grants, token)}
-      cancel_timer(g.timer)
+      session = remove_speaker(session, g.bot_id)
 
-      if active?(next.grants, session["id"]) do
-        {:reply, {:ok, session}, next}
-      else
-        {session, follow} = finish_session(session)
+      {session, follow} =
+        if active?(next.grants, session["id"]), do: {session, nil}, else: finish_session(session)
 
-        case save(next, put_session(next.data, session), session["id"]) do
-          {:ok, next} ->
-            if follow, do: send(self(), {:route, session["id"], session["epoch"], follow})
-            {:reply, {:ok, session}, next}
+      case save(next, put_session(next.data, session), session["id"]) do
+        {:ok, next} ->
+          release_grant(g)
+          if follow, do: send(self(), {:route, session["id"], session["epoch"], follow})
+          {:reply, {:ok, session}, next}
 
-          {:error, reason} ->
-            {:reply, {:error, reason}, s}
-        end
+        {:error, reason} ->
+          {:reply, {:error, reason}, s}
       end
     else
       error -> {:reply, error, s}
@@ -235,52 +285,56 @@ defmodule Bots.Server do
   def handle_call({:request, bid, text, opts}, _, s) do
     key = opts[:idempotency_key]
 
-    existing =
-      if is_binary(key),
-        do:
-          Enum.find(
-            Map.values(s.data["requests"]),
-            &(&1["bot_id"] == bid and &1["idempotency_key"] == key)
-          )
+    with :ok <- validate_key(key), {:ok, requester} <- requester(opts[:requester]) do
+      existing =
+        if is_binary(key),
+          do:
+            Enum.find(
+              Map.values(s.data["requests"]),
+              &(&1["bot_id"] == bid and &1["idempotency_key"] == key and
+                  &1["requester"] == requester)
+            )
 
-    if existing do
-      {:reply, {:ok, existing}, s}
-    else
-      with true <- Map.has_key?(s.data["bots"], bid),
-           :ok <- validate_text(text),
-           {:ok, requester} <- requester(opts[:requester]),
-           {:ok, session} <- request_session(s, bid, opts) do
-        rid = id()
-
-        request = %{
-          "id" => rid,
-          "bot_id" => bid,
-          "session_id" => session["id"],
-          "text" => text,
-          "status" => "pending",
-          "answer" => nil,
-          "requester" => requester,
-          "created_at" => now(),
-          "idempotency_key" => key
-        }
-
-        msg = message("request", text, bid, rid)
-        session = append(session, msg)
-        data = s.data |> put_session(session) |> put_in(["requests", rid], request)
-        {data, notification} = notification(s, data, session, msg)
-
-        case save(s, data, session["id"]) do
-          {:ok, next} ->
-            broadcast_notification(next, notification)
-            {:reply, {:ok, request}, next}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, s}
-        end
+      if existing do
+        {:reply, {:ok, existing}, s}
       else
-        false -> {:reply, {:error, :unknown_bot}, s}
-        error -> {:reply, error, s}
+        with true <- Map.has_key?(s.data["bots"], bid),
+             :ok <- validate_text(text),
+             {:ok, session} <- request_session(s, bid, opts) do
+          rid = id()
+
+          request = %{
+            "id" => rid,
+            "bot_id" => bid,
+            "session_id" => session["id"],
+            "text" => text,
+            "status" => "pending",
+            "answer" => nil,
+            "requester" => requester,
+            "created_at" => now(),
+            "idempotency_key" => key
+          }
+
+          msg = message("request", text, bid, rid) |> Map.put("status", "pending")
+          session = append(session, msg)
+          data = s.data |> put_session(session) |> put_in(["requests", rid], request)
+          {data, notification} = notification(s, data, session, msg)
+
+          case save(s, data, session["id"]) do
+            {:ok, next} ->
+              broadcast_notification(next, notification)
+              {:reply, {:ok, request}, next}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, s}
+          end
+        else
+          false -> {:reply, {:error, :unknown_bot}, s}
+          error -> {:reply, error, s}
+        end
       end
+    else
+      error -> {:reply, error, s}
     end
   end
 
@@ -290,15 +344,33 @@ defmodule Bots.Server do
       request =
         Map.merge(request, %{"status" => "answered", "answer" => text, "answered_at" => now()})
 
+      human = message("human", text, nil, rid)
+
       session =
         s.data["sessions"][request["session_id"]]
-        |> append(message("human", text, nil, rid))
+        |> Map.update!("messages", fn messages ->
+          Enum.map(messages, fn msg ->
+            if msg["request_id"] == rid and msg["kind"] == "request",
+              do: Map.put(msg, "status", "answered"),
+              else: msg
+          end)
+        end)
+        |> append(human)
+        |> Map.put("status", "thinking")
+        |> Map.update!("epoch", &(&1 + 1))
+        |> Map.put("bot_exchanges", 0)
+        |> Map.put("pending_speakers", [])
+        |> Map.put("pending_message_id", nil)
+        |> Map.put("ceiling_noted", false)
+        |> Map.update!("pending_human_ids", &(&1 ++ [human["id"]]))
 
       data = s.data |> put_session(session) |> put_in(["requests", rid], request)
 
       case save(s, data, session["id"]) do
         {:ok, next} ->
           deliver(request)
+          next = cancel_session(next, session["id"])
+          send(self(), {:route, session["id"], session["epoch"], human})
           {:reply, {:ok, request}, next}
 
         {:error, reason} ->
@@ -330,7 +402,11 @@ defmodule Bots.Server do
     data =
       Map.update!(s.data, "sessions", fn sessions ->
         Map.new(sessions, fn {sid, session} ->
-          session = Map.put(session, "epoch", session["epoch"] + 1)
+          session =
+            session
+            |> Map.put_new("pending_speakers", [])
+            |> Map.put_new("pending_message_id", nil)
+            |> Map.put("epoch", session["epoch"] + 1)
 
           session =
             if session["status"] == "thinking",
@@ -343,11 +419,18 @@ defmodule Bots.Server do
 
     case save(s, data, nil) do
       {:ok, next} ->
-        for {sid, session} <- data["sessions"],
-            session["pending_human_ids"] != [],
-            session["status"] != "stopped" do
-          msg = Enum.find(Enum.reverse(session["messages"]), &(&1["kind"] == "human"))
-          send(self(), {:route, sid, session["epoch"], msg})
+        for {sid, session} <- data["sessions"], session["status"] != "stopped" do
+          cond do
+            session["pending_speakers"] != [] ->
+              send(self(), {:resume_speakers, sid, session["epoch"]})
+
+            session["pending_human_ids"] != [] ->
+              msg = Enum.find(Enum.reverse(session["messages"]), &(&1["kind"] == "human"))
+              send(self(), {:route, sid, session["epoch"], msg})
+
+            true ->
+              :ok
+          end
         end
 
         for {_id, req} <- data["requests"], req["status"] == "answered", do: deliver(req)
@@ -362,6 +445,28 @@ defmodule Bots.Server do
     for {_id, req} <- s.data["requests"], req["status"] == "answered", do: deliver(req)
     Process.send_after(self(), :outbox, Keyword.get(s.opts, :outbox_interval, 5_000))
     {:noreply, s}
+  end
+
+  def handle_info({:resume_speakers, sid, epoch}, s) do
+    session = s.data["sessions"][sid]
+
+    if current?(session, epoch) and not active?(s.grants, sid) do
+      session = Map.put(session, "status", "thinking")
+      msg = Enum.find(session["messages"], &(&1["id"] == session["pending_message_id"]))
+
+      case save(s, put_session(s.data, session), sid) do
+        {:ok, next} when not is_nil(msg) ->
+          {:noreply,
+           Enum.reduce(session["pending_speakers"], next, fn bid, acc ->
+             dispatch(acc, session, msg, bid)
+           end)}
+
+        _ ->
+          {:noreply, s}
+      end
+    else
+      {:noreply, s}
+    end
   end
 
   def handle_info({:route, sid, epoch, message}, s) do
@@ -389,7 +494,7 @@ defmodule Bots.Server do
                next,
                job,
                fn -> s.router.select(bots, session, message, s.opts) end,
-               Keyword.get(s.opts, :routing_timeout, 3_000)
+               Keyword.get(s.opts, :routing_timeout, 12_000) + 500
              )}
 
           {:error, _} ->
@@ -407,8 +512,20 @@ defmodule Bots.Server do
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, s) do
     case Enum.find(s.jobs, fn {_ref, job} -> job.monitor == monitor end) do
-      {ref, _} -> complete_job(s, ref, {:error, {:worker_exit, reason}})
-      nil -> {:noreply, s}
+      {ref, _} ->
+        complete_job(s, ref, {:error, {:worker_exit, reason}})
+
+      nil ->
+        case Enum.find(s.grants, fn {_token, g} -> Map.get(g, :monitor) == monitor end) do
+          nil ->
+            {:noreply, s}
+
+          {token, g} ->
+            release_grant(g)
+
+            {:noreply,
+             runtime_error(%{s | grants: Map.delete(s.grants, token)}, g, {:agent_exit, reason})}
+        end
     end
   end
 
@@ -418,6 +535,8 @@ defmodule Bots.Server do
         {:noreply, s}
 
       grant ->
+        release_grant(grant)
+
         {:noreply,
          runtime_error(%{s | grants: Map.delete(s.grants, token)}, grant, :response_timeout)}
     end
@@ -451,6 +570,16 @@ defmodule Bots.Server do
                 :ok ->
                   {:noreply, s}
 
+                {:ok, pid} when is_pid(pid) ->
+                  case s.grants[job.token] do
+                    nil ->
+                      {:noreply, s}
+
+                    grant ->
+                      grant = Map.put(grant, :monitor, Process.monitor(pid))
+                      {:noreply, %{s | grants: Map.put(s.grants, job.token, grant)}}
+                  end
+
                 {:ok, _} ->
                   {:noreply, s}
 
@@ -460,7 +589,7 @@ defmodule Bots.Server do
                       {:noreply, s}
 
                     {g, grants} ->
-                      cancel_timer(g.timer)
+                      release_grant(g)
                       {:noreply, runtime_error(%{s | grants: grants}, g, error)}
                   end
               end
@@ -496,9 +625,20 @@ defmodule Bots.Server do
       persist_or_original(s, put_session(s.data, session), job.sid)
     else
       count = if job.message["kind"] == "bot", do: length(ids), else: 0
-      session = Map.update!(session, "bot_exchanges", &(&1 + count))
-      s = persist_or_original(s, put_session(s.data, session), job.sid)
-      Enum.reduce(ids, s, fn bid, acc -> dispatch(acc, session, job.message, bid) end)
+
+      session =
+        session
+        |> Map.update!("bot_exchanges", &(&1 + count))
+        |> Map.put("pending_speakers", ids)
+        |> Map.put("pending_message_id", job.message["id"])
+
+      case save(s, put_session(s.data, session), job.sid) do
+        {:ok, next} ->
+          Enum.reduce(ids, next, fn bid, acc -> dispatch(acc, session, job.message, bid) end)
+
+        {:error, _} ->
+          s
+      end
     end
   end
 
@@ -534,7 +674,7 @@ defmodule Bots.Server do
         memories = Bots.Memory.recall(bot, message["text"], runtime_opts(s))
         s.runtime.dispatch(bot, session, %{context | memories: memories}, runtime_opts(s))
       end,
-      Keyword.get(s.opts, :dispatch_timeout, 15_000)
+      Keyword.get(s.opts, :dispatch_timeout, 25_000)
     )
   end
 
@@ -551,6 +691,7 @@ defmodule Bots.Server do
 
       session =
         session
+        |> remove_speaker(grant.bot_id)
         |> append(msg)
         |> Map.put("status", if(active?(s.grants, grant.sid), do: "thinking", else: "error"))
 
@@ -562,6 +703,9 @@ defmodule Bots.Server do
 
   defp error_label(:response_timeout), do: "response timed out"
   defp error_label(_), do: "runtime unavailable"
+
+  defp remove_speaker(session, bid),
+    do: Map.update(session, "pending_speakers", [], &Enum.reject(&1, fn id -> id == bid end))
 
   defp finish_session(session) do
     if session["pending_human_ids"] != [] do
@@ -615,7 +759,7 @@ defmodule Bots.Server do
 
   defp cancel_session(s, sid) do
     {removed, kept} = Enum.split_with(s.grants, fn {_t, g} -> g.sid == sid end)
-    for {_t, g} <- removed, do: cancel_timer(g.timer)
+    for {_t, g} <- removed, do: release_grant(g)
     {removed_jobs, jobs} = Enum.split_with(s.jobs, fn {_r, job} -> job.sid == sid end)
 
     for {_r, job} <- removed_jobs do
@@ -627,15 +771,30 @@ defmodule Bots.Server do
     %{s | grants: Map.new(kept), jobs: Map.new(jobs)}
   end
 
-  defp grant(s, token) do
+  defp grant(s, token, actor) do
     case s.grants[token] do
       nil ->
         {:error, :stale_token}
 
       g ->
         session = s.data["sessions"][g.sid]
-        if current?(session, g.epoch), do: {:ok, g, session}, else: {:error, :stale_token}
+
+        cond do
+          not current?(session, g.epoch) ->
+            {:error, :stale_token}
+
+          function_exported?(s.runtime, :owner?, 4) and not owner?(s, g.bot_id, session, actor) ->
+            {:error, :wrong_agent}
+
+          true ->
+            {:ok, g, session}
+        end
     end
+  end
+
+  defp owner?(s, bid, session, actor) do
+    Code.ensure_loaded?(s.runtime) and function_exported?(s.runtime, :owner?, 4) and
+      s.runtime.owner?(s.data["bots"][bid], session, actor, runtime_opts(s)) == true
   end
 
   defp active?(grants, sid), do: Enum.any?(grants, fn {_t, g} -> g.sid == sid end)
@@ -648,6 +807,11 @@ defmodule Bots.Server do
   defp max_exchanges(s), do: Keyword.get(s.opts, :max_bot_exchanges, 6)
   defp runtime_opts(s), do: Keyword.put(s.opts, :root, s.root)
   defp cancel_timer(timer), do: Process.cancel_timer(timer)
+
+  defp release_grant(grant) do
+    cancel_timer(grant.timer)
+    if Map.get(grant, :monitor), do: Process.demonitor(grant.monitor, [:flush])
+  end
 
   defp new_session(data, ids, opts) do
     if is_list(ids) and ids != [] and length(ids) <= 12 and
@@ -667,6 +831,8 @@ defmodule Bots.Server do
          "epoch" => 0,
          "bot_exchanges" => 0,
          "pending_human_ids" => [],
+         "pending_speakers" => [],
+         "pending_message_id" => nil,
          "ceiling_noted" => false
        }}
     else
@@ -739,11 +905,12 @@ defmodule Bots.Server do
   defp notification(s, data, session, msg) do
     now = System.system_time(:second)
     prefs = data["preferences"]
+    last = data["last_notification_at"] || Enum.max(data["notification_times"], fn -> nil end)
     times = Enum.filter(data["notification_times"], &(&1 > now - 3600))
 
     allowed =
       prefs["notifications"] and length(times) < prefs["max_per_hour"] and
-        Enum.all?(times, &(now - &1 >= prefs["cooldown_seconds"]))
+        (is_nil(last) or now - last >= prefs["cooldown_seconds"])
 
     if allowed do
       bot = data["bots"][msg["bot_id"]]
@@ -755,10 +922,12 @@ defmodule Bots.Server do
         id: msg["id"]
       }
 
-      {Map.put(data, "notification_times", [now | times]), notice}
+      {data
+       |> Map.put("notification_times", [now | times])
+       |> Map.put("last_notification_at", now), notice}
     else
       _ = s
-      {Map.put(data, "notification_times", times), nil}
+      {data |> Map.put("notification_times", times) |> Map.put("last_notification_at", last), nil}
     end
   end
 
@@ -819,18 +988,35 @@ defmodule Bots.Server do
     }
   end
 
-  defp attachments(opts) do
-    attachments = Keyword.get(opts, :attachments, [])
+  defp attachments(s, opts) do
+    values = Keyword.get(opts, :attachments, [])
 
-    if is_list(attachments) and length(attachments) <= 10 and
-         Enum.all?(attachments, fn a ->
-           is_map(a) and
-             Enum.all?(a, fn {k, v} -> is_binary(k) and is_binary(v) and byte_size(v) <= 2000 end)
-         end) do
-      {:ok, attachments}
+    if is_list(values) and length(values) <= 10 do
+      Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+        case attachment(value, Keyword.get(s.opts, :images, Images)) do
+          {:ok, ref} -> {:cont, {:ok, acc ++ [ref]}}
+          _ -> {:halt, {:error, :invalid_attachments}}
+        end
+      end)
     else
       {:error, :invalid_attachments}
     end
+  end
+
+  defp attachment(%{"type" => "image_ref"} = value, images) do
+    if Code.ensure_loaded?(images),
+      do: apply(images, :resolve, [value]),
+      else: {:error, :images_unavailable}
+  rescue
+    _ -> {:error, :invalid_image}
+  end
+
+  defp attachment(value, _) do
+    if is_map(value) and
+         Enum.all?(value, fn {k, v} ->
+           is_binary(k) and String.valid?(k) and is_binary(v) and String.valid?(v) and
+             byte_size(v) <= 2000
+         end), do: {:ok, value}, else: {:error, :invalid_attachment}
   end
 
   defp attrs(map) when is_map(map),
@@ -843,6 +1029,11 @@ defmodule Bots.Server do
     do: if(Keyword.keyword?(list), do: list |> Map.new() |> attrs(), else: %{})
 
   defp attrs(_), do: %{}
+  defp validate_key(nil), do: :ok
+
+  defp validate_key(key),
+    do: if(text?(key, 200), do: :ok, else: {:error, :invalid_idempotency_key})
+
   defp validate_text(text), do: if(text?(text, 50_000), do: :ok, else: {:error, :invalid_text})
 
   defp text?(text, max),
