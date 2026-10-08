@@ -29,6 +29,17 @@ defmodule MCP.Stdio do
       ]
 
       port = Port.open({:spawn_executable, String.to_charlist(executable)}, options)
+      {:os_pid, os_pid} = Port.info(port, :os_pid)
+      identity = process_identity(os_pid)
+      transport = self()
+      # Independent reaper also runs if the transport is killed without terminate/2.
+      spawn(fn ->
+        ref = Process.monitor(transport)
+
+        receive do
+          {:DOWN, ^ref, :process, ^transport, _} -> reap(os_pid, identity)
+        end
+      end)
 
       {:ok,
        %{port: port, owner: owner, buffer: "", cap: config["max_message_bytes"] || 8_000_000}}
@@ -93,6 +104,35 @@ defmodule MCP.Stdio do
             {:error, :invalid_json_rpc_frame}
         end
     end
+  end
+
+  defp process_identity(pid) do
+    case File.read("/proc/#{pid}/stat") do
+      {:ok, stat} ->
+        # Field 22 (starttime), after the parenthesized comm which may include spaces.
+        fields = stat |> String.split(") ") |> List.last() |> String.split()
+        if hd(fields) == "Z", do: nil, else: Enum.at(fields, 19)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp reap(pid, identity) do
+    Process.sleep(100)
+    signal_if_same(pid, identity, "TERM")
+    Process.sleep(500)
+    signal_if_same(pid, identity, "KILL")
+  end
+
+  defp signal_if_same(pid, identity, signal) do
+    if identity != nil and process_identity(pid) == identity do
+      System.cmd("/bin/kill", ["-#{signal}", "--", Integer.to_string(pid)],
+        stderr_to_stdout: true
+      )
+    end
+
+    :ok
   end
 
   defp down(state, reason) do
