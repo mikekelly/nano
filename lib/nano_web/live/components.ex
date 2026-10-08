@@ -163,6 +163,7 @@ defmodule NanoWeb.Components do
         />
         <button><.icon name="code" /> send term</button>
       </form>
+      <.live_component module={Seedling.ImageSender} id={@id <> "-images"} to={@to} from={@from} />
       <p :if={@sent} class={["sent", elem(@sent, 0)]}>{elem(@sent, 1)}</p>
     </div>
     """
@@ -188,11 +189,17 @@ defmodule NanoWeb.Components do
   is just a string is shown as text.
   """
   def message(assigns) do
-    assigns = assign(assigns, summary: summary(assigns.term), texts: texts(assigns.term))
+    assigns =
+      assign(assigns,
+        summary: summary(assigns.term),
+        texts: texts(assigns.term),
+        images: Seedling.Images.collect(assigns.term)
+      )
 
     ~H"""
     <div class="msg">
       <code :if={@summary} class="summary">{@summary}</code>
+      <Seedling.ImageComponents.images refs={@images} />
       <div :for={{where, text} <- @texts} class="text">
         <span :if={where} class="where">{where}</span>
         <div class="body">{text}</div>
