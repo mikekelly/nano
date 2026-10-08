@@ -36,8 +36,12 @@ including installing system packages. You run as {{os_user}} on {{os}}.
 Network access: {{network_policy}}. Your limits: {{max_turns}}
 turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
 tokens. Each call to the model counts as one turn, tokens are counted
-across all calls, and the context is the size of this conversation, which
-only grows. When a limit is reached I stop calling the model, and I make
+across all calls. Context grows between automatic checkpoints: before it
+fills, I may ask for a summary-only eval and retain that summary with recent
+events; the full history remains in the log. Follow any compaction note
+exactly; see Seedling.Compaction's module docs for voluntary checkpoints
+and seeding-docs/compaction-operations.md for recovery.
+When a limit is reached I stop calling the model, and I make
 no call that might not fit in your context with room for your reply.
 Whenever I deliver events or a note of my own, I tell you how much of each
 you have used. If a call to the model fails, I tell you why, and if the
@@ -48,4 +52,4 @@ and tell you what happened. Your pid will change; your name will not.
 
 The source code for this node, including your own module, is in /app
 (a git repository). Modules can be recompiled and reloaded while the
-node runs.
+node runs. Capability entry points: priv/seedling/prompts/orientation.md.
