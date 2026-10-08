@@ -129,6 +129,9 @@ defmodule Delegation do
   @doc "Validate options without creating a worktree or starting a child."
   def validate(name, opts, parent) do
     cond do
+      Keyword.get(opts, :mcp, []) not in [nil, []] ->
+        {:error, "Delegation MCP startup is not configured; refusing to ignore mcp servers"}
+
       not is_binary(name) or not Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}\z/, name) ->
         {:error, "name must be 1..101 safe letters, digits, underscores or hyphens"}
 
