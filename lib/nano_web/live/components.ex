@@ -6,6 +6,29 @@ defmodule NanoWeb.Components do
   """
   use Phoenix.Component
 
+  attr :images, :list, default: []
+  attr :agent, :string, default: nil
+
+  def image_attachments(assigns) do
+    ~H"""
+    <div :if={@agent && @images != []} class="image-attachments">
+      <a
+        :for={ref <- @images}
+        href={"/api/agents/#{URI.encode_www_form(@agent)}/images/#{ref["sha256"]}"}
+        target="_blank"
+        rel="noopener"
+      >
+        <img
+          src={"/api/agents/#{URI.encode_www_form(@agent)}/images/#{ref["sha256"]}"}
+          alt="Message image attachment"
+          loading="lazy"
+          style="max-width: min(100%, 640px); max-height: 480px; object-fit: contain;"
+        />
+      </a>
+    </div>
+    """
+  end
+
   alias Phoenix.LiveView.JS
 
   @user "dashboard"

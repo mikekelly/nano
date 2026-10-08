@@ -39,6 +39,9 @@ defmodule Nano.RawLog do
   written apart, the request before it is sent, so a request that never gets an answer is
   still there; each is written whole (a temp file, renamed).
 
+  Image data URLs in debug records are replaced with `[image bytes omitted]`; outgoing
+  requests are unchanged. Except for that deliberate privacy redaction, bytes are exact.
+
   Headers that carry credentials (authorization, chatgpt-account-id, cookies, anything named
   like a key, token or secret) are written as `[redacted]`. The bodies are not: a request
   holds the agent's whole conversation.
@@ -159,7 +162,16 @@ defmodule Nano.RawLog do
 
         write(name <> ".request.txt", fn ->
           method = req.method |> to_string() |> String.upcase()
-          [method, ?\s, URI.to_string(req.url), ?\n, headers(req.headers), ?\n, body(req.body)]
+
+          [
+            method,
+            ?\s,
+            URI.to_string(req.url),
+            ?\n,
+            headers(req.headers),
+            ?\n,
+            SeedImages.redact(body(req.body))
+          ]
         end)
 
         req
@@ -189,7 +201,7 @@ defmodule Nano.RawLog do
         resp = %{resp | body: IO.iodata_to_binary(body)}
 
         write(req.private.raw_model_log <> ".response.txt", fn ->
-          ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, resp.body]
+          ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, SeedImages.redact(resp.body)]
         end)
 
         write(req.private.raw_model_log <> ".timing.txt", fn ->

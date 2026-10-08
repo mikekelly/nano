@@ -311,7 +311,8 @@ defmodule NanoWeb.ProcessLiveTest do
              |> form("#start", %{name: name, prompt: "file", system_prompt_file: file})
              |> render_submit()
 
-    assert Nano.Ops.agent(name).system_prompt == "You are #{name}, from the form's file."
+    assert Nano.Ops.agent(name).system_prompt ==
+             "You are #{name}, from the form's file.\n\n" <> SeedImages.orientation([])
 
     {:ok, view, _} = live(ctx.conn, "/")
     choose(view, ctx.model)

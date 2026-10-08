@@ -74,8 +74,10 @@ defmodule NanoWeb.ApiController do
        "survive a node restart; their pids do not, so look a user up by name each time you " <>
        "send to it (Nano.User.pid(name))."},
     {"POST", "/api/users", "Start a user, or find it if already started. Body: name."},
+    {"GET", "/api/agents/:name/images/:sha256",
+     "Image bytes from an agent's recorded attachments; no arbitrary file paths."},
     {"POST", "/api/users/:name/say",
-     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text."},
+     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text, optional images: [{data: base64}] (PNG/JPEG/GIF/WebP, at most four; each <= 3,750,000 decoded bytes and <= 2000 pixels per side)."},
     {"POST", "/api/users/:name/send_raw",
      "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
     {"GET", "/api/users/:name/inbox?clear=true",
@@ -281,12 +283,66 @@ defmodule NanoWeb.ApiController do
 
   def say(conn, %{"name" => name} = params) do
     case strings(params, ["to", "text"]) do
-      {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
-      {:error, field} -> missing(conn, field)
+      {:ok, [to, text]} ->
+        with {:ok, refs} <- import_images(params["images"]) do
+          result =
+            if refs == [],
+              do: User.say(name, to, text),
+              else: User.say_images(name, to, text, refs)
+
+          sent(conn, name, to, result)
+        else
+          {:error, text} -> error(conn, 422, text)
+        end
+
+      {:error, field} ->
+        missing(conn, field)
     end
   end
 
-  def send_raw(conn, %{"name" => name} = params) do
+  defp import_images(nil), do: {:ok, []}
+
+  defp import_images(images) when is_list(images) and length(images) <= 4 do
+    Enum.reduce_while(images, {:ok, []}, fn
+      %{"data" => encoded}, {:ok, refs}
+      when is_binary(encoded) and byte_size(encoded) <= 5_000_000 ->
+        with {:ok, bytes} <- Base.decode64(encoded),
+             {:ok, ref} <- SeedImages.ingest_bytes(bytes) do
+          {:cont, {:ok, refs ++ [ref]}}
+        else
+          :error -> {:halt, {:error, "Image data must be standard base64."}}
+          error -> {:halt, error}
+        end
+
+      _, _ ->
+        {:halt, {:error, "Each image needs data: standard base64, at most 5 MB encoded."}}
+    end)
+  end
+
+  defp import_images(_), do: {:error, "Images must be a list of at most four attachments."}
+
+  def image(conn, %{"name" => name, "sha256" => sha}) do
+    with true <- sha =~ ~r/^[0-9a-f]{64}$/,
+         entries when is_list(entries) <- Ops.log(name, 0),
+         ref when is_map(ref) <-
+           Enum.find_value(entries, fn e ->
+             Enum.find(e["images"] || [], &(&1["sha256"] == sha))
+           end),
+         {:ok, bytes, mime} <- SeedImages.load(ref) do
+      conn
+      |> put_resp_content_type(mime, nil)
+      |> put_resp_header("x-content-type-options", "nosniff")
+      |> put_resp_header("cache-control", "private, max-age=31536000, immutable")
+      |> send_resp(200, bytes)
+    else
+      _ -> error(conn, 404, "No such recorded image attachment.")
+    end
+  end
+
+  def send_raw(
+        conn,
+        %{"name" => name} = params
+      ) do
     with {:ok, [to, source]} <- strings(params, ["to", "term"]),
          pid when is_pid(pid) <- User.pid(name),
          {:ok, term} <- Ops.term(source) do
@@ -369,8 +425,26 @@ defmodule NanoWeb.ApiController do
 
         json(
           conn,
-          for(m <- messages, do: %{at: DateTime.to_iso8601(m.at), dir: m.dir, term: show(m.term)})
+          for(m <- messages, do: message_json(m, agent))
         )
+    end
+  end
+
+  defp message_json(m, agent) do
+    value = %{at: DateTime.to_iso8601(m.at), dir: m.dir, term: show(m.term)}
+
+    case m.term do
+      %{images: refs} when is_list(refs) and is_binary(agent) ->
+        images =
+          Enum.map(refs, fn ref ->
+            Map.take(ref, ["sha256", "mime", "width", "height", "bytes"])
+            |> Map.put("url", "/api/agents/#{URI.encode_www_form(agent)}/images/#{ref["sha256"]}")
+          end)
+
+        Map.put(value, :images, images)
+
+      _ ->
+        value
     end
   end
 

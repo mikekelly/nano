@@ -872,7 +872,7 @@ defmodule NanoAgentTest do
     assert {name, model, max_tokens} ==
              {ctx.name, ctx.model, 30_000_000}
 
-    assert prompt == "#{ctx.name} on #{node()}, 7 turns"
+    assert prompt == "#{ctx.name} on #{node()}, 7 turns\n\n" <> SeedImages.orientation([])
     assert NanoAgent.info("nobody") == nil
   end
 
@@ -1627,7 +1627,12 @@ defmodule NanoAgentTest do
     spec = File.read!("priv/system_prompt.txt")
     assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
     pattern = spec |> Regex.escape() |> String.replace(~r/\\\{\\\{\w+\\\}\\\}/, ".+?")
-    assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
+
+    assert NanoAgent.info(ctx.name).system_prompt =~
+             Regex.compile!(
+               "^" <> pattern <> Regex.escape("\n\n" <> SeedImages.orientation([])) <> "$",
+               "s"
+             )
 
     assert NanoAgent.info(ctx.name).system_prompt =~
              "When a limit is reached I stop calling the model, and I make\nno call that " <>
@@ -1859,8 +1864,12 @@ defmodule NanoAgentTest do
     # The first agent picks the edit up when it restarts.
     Fake.push(ctx.model, text: "ok")
     new = kill(ctx, id)
-    assert NanoAgent.info(ctx.name).system_prompt == "second: #{inspect(new)}"
-    assert text(hd(request!(ctx.model)["messages"])) == "second: #{inspect(new)}"
+
+    assert NanoAgent.info(ctx.name).system_prompt ==
+             "second: #{inspect(new)}\n\n" <> SeedImages.orientation([])
+
+    assert text(hd(request!(ctx.model)["messages"])) ==
+             "second: #{inspect(new)}\n\n" <> SeedImages.orientation([])
   end
 
   test "a missing or invalid template file fails the start", ctx do
@@ -1879,7 +1888,9 @@ defmodule NanoAgentTest do
     File.rm!(file)
     Fake.push(ctx.model, text: "ok")
     new = kill(ctx, id)
-    assert NanoAgent.info(ctx.name).system_prompt == "kept: #{inspect(new)}"
+
+    assert NanoAgent.info(ctx.name).system_prompt ==
+             "kept: #{inspect(new)}\n\n" <> SeedImages.orientation([])
 
     assert delivery(List.last(request!(ctx.model)["messages"])) =~
              "I could not read the system prompt file #{file} (:enoent), so your system prompt " <>

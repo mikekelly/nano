@@ -92,6 +92,7 @@ defmodule NanoWeb.MessagesLive do
             <div class="bubble">
               <div :if={said(m)} class="said">{said(m)}</div>
               <.message :if={!said(m)} term={m.term} />
+              <.image_attachments images={image_refs(m.term)} agent={@agent} />
             </div>
             <time>{if m.dir == :sent, do: "sent", else: "received"} {time(m.at)}</time>
           </li>
@@ -114,6 +115,8 @@ defmodule NanoWeb.MessagesLive do
   # What a user said with `say`: the text alone, without the map around it.
   defp said(%{dir: :sent, term: %{sender_pid: _, message: text}}) when is_binary(text), do: text
   defp said(_), do: nil
+  defp image_refs(%{images: refs}) when is_list(refs), do: refs
+  defp image_refs(_), do: []
 
   defp preview(m) do
     text = said(m) || inspect(m.term, limit: 5, printable_limit: 80)

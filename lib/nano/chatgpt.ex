@@ -112,6 +112,16 @@ defmodule Nano.ChatGPT do
 
   ## Chat messages to Responses input items
 
+  defp input(%{"role" => "user", "content" => parts}) when is_list(parts) do
+    content =
+      Enum.map(parts, fn
+        %{"type" => "text", "text" => text} -> %{"type" => "input_text", "text" => text}
+        %{"type" => "input_image"} = image -> image
+      end)
+
+    [%{type: "message", role: "user", content: content}]
+  end
+
   defp input(%{"role" => "user", "content" => text}),
     do: [%{type: "message", role: "user", content: [%{type: "input_text", text: text}]}]
 
@@ -286,7 +296,7 @@ defmodule Nano.ChatGPT do
 
   @doc """
   The models the connected subscription offers, as `%{id, name, context_length,
-  reasoning_levels, default_reasoning}` (ids without the `openai-codex/` prefix; levels as
+  reasoning_levels, default_reasoning, input_modalities}` (ids without the `openai-codex/` prefix; levels as
   `Nano.Model.reasoning/3` gives them): the backend's list (`GET /models`, as the Codex CLI
   fetches it, in its order of priority), or the Codex CLI's bundled list if that cannot be had;
   `[]` when no subscription is connected. Cached for an hour, a fallback for a minute, and
@@ -334,7 +344,8 @@ defmodule Nano.ChatGPT do
         %{
           id: m["slug"],
           name: m["display_name"] || m["slug"],
-          context_length: m["context_window"]
+          context_length: m["context_window"],
+          input_modalities: m["input_modalities"] || []
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )
