@@ -109,7 +109,13 @@ defmodule Seedling.Background do
       )
 
     {:ok, file} = File.open(output, [:write, :binary])
-    os_pid = Port.info(port, :os_pid) |> elem(1)
+
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> pid
+        nil -> nil
+      end
+
     if timeout != :infinity, do: Process.send_after(self(), :timeout, timeout)
     Process.send_after(self(), :attribute, 0)
 

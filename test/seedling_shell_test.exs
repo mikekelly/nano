@@ -29,6 +29,27 @@ defmodule Seedling.ShellTest do
     assert saved.id == r.id
   end
 
+  test "instant commands remain safe under concurrent port exit", %{dir: dir} do
+    results =
+      1..100
+      |> Task.async_stream(
+        fn _ ->
+          {:ok, task} = Background.start("true", owner: self(), dir: dir)
+
+          receive do
+            {:seedling_background, result} ->
+              assert result.id == task.id
+              assert result.exit_code == 0
+              assert result.status == :completed
+          after
+            5000 -> flunk("instant command did not complete")
+          end
+        end, max_concurrency: 20, timeout: 10_000)
+      |> Enum.to_list()
+
+    assert Enum.all?(results, &match?({:ok, _}, &1))
+  end
+
   test "bounded tail retains full output", %{dir: dir} do
     assert {:ok, r} = Shell.sh("seq 1 10000", dir: dir, max_bytes: 100, max_lines: 3)
     assert r.truncated
