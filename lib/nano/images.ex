@@ -33,6 +33,8 @@ defmodule Nano.Images do
     end
   end
 
+  def import(_), do: {:error, "image path must be a string"}
+
   def from_base64(text) when is_binary(text) and byte_size(text) <= 5_000_000 do
     case Base.decode64(text) do
       {:ok, bytes} -> store(bytes)

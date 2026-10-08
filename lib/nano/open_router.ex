@@ -112,6 +112,9 @@ defmodule Nano.OpenRouter do
       {^config, until, [%{input_modalities: _} | _] = models} when until > now ->
         models
 
+      {^config, until, []} when until > now ->
+        []
+
       _ ->
         models = fetch_models()
 
