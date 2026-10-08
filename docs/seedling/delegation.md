@@ -54,7 +54,9 @@ that explicitly named revision to a commit and starts a worktree at that commit;
 uncommitted edits are never copied. Existing directories are not adopted or overwritten.
 Worktree creation failures return `{:error, {:git, output}}`. The returned metadata
 contains the resolved commit and isolated build instructions. Use `MIX_ENV=test` and
-a unique `MIX_BUILD_ROOT`; seed Mix currently deletes MIX_BUILD_ROOT for test builds
+a unique `MIX_BUILD_ROOT` on the **whole subprocess environment**, not just the first
+command before `&&` (use `Seedling.Tools.sh(cmd, env: [{"MIX_ENV", "test"},
+{"MIX_BUILD_ROOT", "/tmp/job-build"}])` or export them for the whole shell); seed Mix currently deletes MIX_BUILD_ROOT for test builds
 and uses the worktree's own `_build/test`. Delegation never changes global env, deletes
 worktrees or merges child commits. If agent setup later fails, inspect/remove the
 created worktree yourself; preserving it avoids deleting work someone may need.
@@ -63,8 +65,17 @@ Starts run **directly** in the caller's eval, so the dashboard's `started_by` an
 remains correct. Parent defaults to the calling agent's registered name, not the
 short-lived eval task. Outside an agent eval, give `parent:` explicitly; prefer a name
 to a pid for restart safety. The child always starts idle: failure watches and optional
-`mcp: ["server"]` connections are set up before delivering `message:`. MCP setup failures
-produce an error report and terminate the idle child. With no message it remains idle;
+`mcp: ["server"]` connections are set up before delivering `message:`. Delivery is deferred across **all**
+requested MCP servers, then released only after every connect reports ready; even
+connecting/notification events cannot wake a partial first turn. A constructor monitor
+terminates a half-setup child and reports a durable error if its eval task dies or is
+timed out. Explicit setup failures also disconnect the child's server attachments.
+`mcp_options:` passes connection options such as an isolated `instance:`. The guard
+does not suspend any agent process. The RPC event gate is in memory: after a whole-node
+restart normal MCP event forwarding resumes, while durable subscription intent and
+parent watch/result records are restored. MCP setup failures
+produce an error report and terminate the idle child. With no message it remains idle until ordinary events arrive (MCP lifecycle events
+can wake it after setup is ready);
 `start_idle: false` supplies a short kickoff. `tell(name, message)` addresses live names.
 
 ## Reports and failure protocol
@@ -100,7 +111,11 @@ Tests use the seed's real local fake provider, not paid calls. They cover compos
 partials, exact hashed pre-reading and changed-file detection, cap/marker validation,
 explicit worktree revision and edit isolation, zero-turn idle starts, preserved ancestry
 from a real parent eval, reporting and manager-kill recovery, named-parent queued delivery,
-budget/death/restart alerts, and a stopped child whose DOWN was lost during watcher recovery. The implementation was also used live to start the MCP
+budget/death/restart alerts, and a stopped child whose DOWN was lost during watcher recovery. Guard tests cover
+constructor death and stale-name reuse. A real two-server MCP integration test uses
+a private file-controlled handshake gate to prove there is **no first model request**
+while only one server is ready, then releases it and observes the call; partial setup
+errors and constructor death are also verified to terminate the child without a turn. The implementation was also used live to start the MCP
 builder in a worktree at explicit shared-foundation commit `eee9dda`; ancestry was
 `started_by: "orion-delegation"` and its pre-read hashes were returned in the single-eval
 start result. This is not a claim of full node-restart testing; persistence and manager
@@ -110,3 +125,12 @@ The live start's compact inspected result was 793 bytes (~397 tokens under the
 harness's conservative two-bytes-per-token estimate), versus 26,150 bytes in the
 child's composed prompt. This measures returned metadata, not the parent's eval source,
 API envelope or exact provider tokenizer; the child transcript is never returned.
+
+Final independent validation after MCP integration: 30 focused capability tests
+(11 delegation, 3 multi-server integration, 16 MCP/schema) and `mix test --seed 0`
+299/299 passed, followed by warnings-as-errors compilation and owned-file format checks.
+An implementation-run shell environment scoping mistake caused a worktree's prod
+compile to overwrite shared build artifacts; no live modules were loaded by that
+command. The parent restored the shared priv symlink and was told to rebuild integrated
+prod artifacts before restart. The corrected validator sets env on the entire subprocess;
+this operational failure is not a passing test claim.

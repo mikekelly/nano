@@ -23,9 +23,10 @@ defmodule Seedling.Delegation.Manager do
     end
   end
 
-  def report(child, summary, status) when is_binary(summary) and status in [:ok, :error] do
+  def report(child, summary, status, opts \\ [])
+      when is_binary(summary) and status in [:ok, :error] do
     with {:ok, pid} <- ensure_started(),
-         do: GenServer.call(pid, {:report, child, summary, status})
+         do: GenServer.call(pid, {:report, child, summary, status, opts[:child_id]})
   end
 
   def result(child) do
@@ -72,6 +73,18 @@ defmodule Seedling.Delegation.Manager do
 
     Nano.Log.subscribe(id)
 
+    monitors =
+      Enum.reduce(s.monitors, %{}, fn {ref, watched}, acc ->
+        if watched == name do
+          Process.demonitor(ref, [:flush])
+          acc
+        else
+          Map.put(acc, ref, watched)
+        end
+      end)
+
+    s = %{s | monitors: monitors}
+
     s = %{
       s
       | records: Map.put(s.records, name, record),
@@ -81,10 +94,16 @@ defmodule Seedling.Delegation.Manager do
     {:reply, persist(s), s}
   end
 
-  defp do_call({:report, name, summary, status}, _, s) do
+  defp do_call({:report, name, summary, status}, from, s),
+    do: do_call({:report, name, summary, status, nil}, from, s)
+
+  defp do_call({:report, name, summary, status, expected_id}, _, s) do
     case s.records[name] do
       nil ->
         {:reply, {:error, :unknown_child}, s}
+
+      %{child_id: id} when expected_id != nil and expected_id != id ->
+        {:reply, {:error, :replaced_child}, s}
 
       %{done: true} ->
         {:reply, {:error, :already_reported}, s}

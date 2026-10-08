@@ -18,7 +18,9 @@ defmodule Seedling.Delegation do
   A start runs directly in the calling eval, preserving NanoAgent's `started_by`.
   Parent defaults to that eval's caller's agent name; outside an agent supply `parent:`
   (a stable agent name or a pid). Start is idle until `message:` is delivered, so all
-  pre-reading and optional `mcp: ["server"]` connections precede the first turn.
+  pre-reading and optional `mcp: ["server"]` connections precede the first turn. Events are held across all servers until ready;
+  `mcp_options:` supplies shared connection options such as an isolated `instance:`.
+  A constructor-task monitor terminates and reports half-setup children on task death.
   `start_idle: false` supplies a standard kickoff if there is no message.
 
   Child: `report(child_name, summary)`; parent: call the harness `idle` tool, no
@@ -63,8 +65,6 @@ defmodule Seedling.Delegation do
                %{name: name, pid: pid, id: id, parent: parent, worktree: worktree, pre: manifest}}
 
             {:error, reason} ->
-              Manager.report(name, "Child setup failed: #{inspect(reason)}", :error)
-              DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
               {:error, {:child_setup, reason}}
           end
 
@@ -212,13 +212,15 @@ defmodule Seedling.Delegation do
   end
 
   defp setup_child(manager, name, id, pid, parent, worktree, opts) do
-    with :ok <- GenServer.call(manager, {:track, name, id, pid, parent, worktree}),
-         :ok <- connect_mcp(opts[:mcp] || [], name),
-         do: :ok
-  rescue
-    e -> {:error, Exception.message(e)}
-  catch
-    :exit, reason -> {:error, {:setup_exit, reason}}
+    servers = opts[:mcp] || []
+    mcp_opts = opts[:mcp_options] || []
+
+    Seedling.Delegation.SetupGuard.run(name, id, servers, mcp_opts, fn ->
+      with :ok <- GenServer.call(manager, {:track, name, id, pid, parent, worktree}),
+           :ok <- connect_mcp(servers, name, mcp_opts),
+           :ok <- release_mcp(servers, name, mcp_opts),
+           do: :ok
+    end)
   end
 
   defp required(opts) do
@@ -257,11 +259,17 @@ defmodule Seedling.Delegation do
   defp worktree_prompt(w),
     do: "\nAssigned worktree: #{inspect(w)}. Edit there only, never /app.\n"
 
-  defp connect_mcp([], _), do: :ok
+  defp release_mcp([], _, _), do: :ok
+  defp release_mcp(_, name, opts), do: apply(Seedling.MCP, :release_events, [name, opts])
 
-  defp connect_mcp(servers, name) do
+  defp connect_mcp([], _, _), do: :ok
+
+  defp connect_mcp(servers, name, opts) do
     Enum.reduce_while(servers, :ok, fn server, :ok ->
-      case apply(Seedling.MCP, :connect, [server, [agent: name]]) do
+      case apply(Seedling.MCP, :connect, [
+             server,
+             Keyword.merge(opts, agent: name, defer_events: true)
+           ]) do
         {:ok, _} -> {:cont, :ok}
         {:error, _} = error -> {:halt, error}
       end
