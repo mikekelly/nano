@@ -88,11 +88,17 @@ defmodule Seedling.ShellTest do
   end
 
   test "worker killed by operator reports error and cleans command group", %{dir: dir} do
-    {:ok, task} = Shell.background("echo ready; sleep 30", spool_dir: dir)
+    marker = Path.join(dir, "operator-kill-marker")
+
+    {:ok, task} =
+      Shell.background("echo ready; (sleep 0.5; touch '#{marker}') & wait", spool_dir: dir)
+
     wait_for(fn -> File.exists?(task.group_path) end)
     Process.exit(task.pid, :kill)
     assert_receive {:seedling_task, _, %{status: :error}}, 2_000
     assert {:ok, %{status: :error}} = Shell.status(task)
+    Process.sleep(600)
+    refute File.exists?(marker)
   end
 
   test "bad options and missing cwd are actionable errors", %{dir: dir} do
