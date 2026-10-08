@@ -114,7 +114,95 @@ defmodule Nano.CompactionTest do
     assert Enum.any?(Nano.Log.read(s.id), &(&1["type"] == "compaction_failed"))
   end
 
-  test "cut retains complete tool call/result pairs and serialization bounds tool output" do
+  test "an oversized accepted checkpoint keeps the original transcript and count on failure", c do
+    :sys.replace_state(c.pid, &%{&1 | system_prompt: String.duplicate("p", 12_000)})
+    Fake.push(c.model, text: "first")
+    send(c.pid, :first)
+    request(c.model)
+    wait(fn -> NanoAgent.info(c.name).status == :idle end)
+    Fake.push(c.model, text: "second", usage: {15_500, 10, 0})
+    send(c.pid, String.duplicate("x", 8_500))
+    request(c.model)
+    summary_call = request(c.model)
+    assert summary_call["max_tokens"] == 2500
+    original = :sys.get_state(c.pid).transcript
+    Fake.push(c.model, text: String.duplicate("s", 9_990))
+    wait(fn -> NanoAgent.info(c.name).halted == :context end)
+    assert :sys.get_state(c.pid).transcript == original
+    assert NanoAgent.info(c.name).compactions == 0
+    assert inspect(:sys.get_state(c.pid).pending) =~ "checkpoint and recent history"
+  end
+
+  test "reply-length cutoff triggers a checkpoint even below the token threshold", c do
+    Fake.push(c.model, text: "first")
+    send(c.pid, :first)
+    request(c.model)
+    wait(fn -> NanoAgent.info(c.name).status == :idle end)
+    Fake.push(c.model, text: "cut off", finish_reason: "length")
+    Fake.push(c.model, text: "Goal: continue\nProgress: partial response\nNext Steps: resume")
+    send(c.pid, :second)
+    request(c.model)
+    summary_call = request(c.model)
+    assert summary_call["tools"] == []
+    wait(fn -> NanoAgent.info(c.name).compactions == 1 end)
+    assert NanoAgent.info(c.name).halted == nil
+  end
+
+  test "a long single turn checkpoints
+ at an assistant boundary without orphaning results",
+       c do
+    Fake.push(c.model, calls: [eval: "File.read!(\"/etc/hostname\")"])
+    Fake.push(c.model, calls: [eval: "value = 81"], usage: {15_500, 10, 0})
+    send(c.pid, :long_turn)
+    request(c.model)
+    request(c.model)
+    summary_call = request(c.model)
+    assert summary_call["tools"] == []
+
+    Fake.push(c.model,
+      text: "Goal: long task\nProgress: read hostname\nNext Steps: keep value=81"
+    )
+
+    Fake.push(c.model, text: "continued")
+    resumed = request(c.model)
+    assert inspect(resumed) =~ "Files read (literal eval paths): /etc/hostname"
+
+    assert [
+             %{"role" => "assistant", "tool_calls" => [call]},
+             %{"role" => "tool", "tool_call_id" => id}
+           ] = Enum.take(resumed["messages"], -2)
+
+    assert call["id"] == id
+    wait(fn -> NanoAgent.info(c.name).status == :idle end)
+    assert NanoAgent.info(c.name).halted == nil
+  end
+
+  test "in-flight eval results from both seed tuple shapes survive a hot upgrade", c do
+    for shape <- [:three, :four] do
+      Fake.push(c.model, calls: [eval: "receive do :never -> :ok end"])
+      Fake.push(c.model, text: "continued")
+      send(c.pid, {:old_eval, shape})
+      request(c.model)
+      wait(fn -> match?(%{task: %{kind: :eval}}, Nano.StateStore.get(c.name)) end)
+      s = :sys.get_state(c.pid)
+
+      tuple =
+        if shape == :three, do: {:ok, "42", [legacy: 42]}, else: {:ok, "42", [legacy: 42], ""}
+
+      # Simulates completion of a task compiled under the seed module. No live module
+      # replacement is needed; the actual completion message protocol is exercised.
+      send(c.pid, {s.task.task.ref, tuple})
+      resumed = request(c.model)
+      assert inspect(List.last(resumed["messages"])["content"]) =~ "42"
+      Process.exit(s.task.task.pid, :kill)
+      wait(fn -> NanoAgent.info(c.name).status == :idle end)
+      assert NanoAgent.whereis(c.name) == c.pid
+      assert NanoAgent.info(c.name).restart_count == 0
+    end
+  end
+
+  test "cut retains complete tool call/result pairs
+ and serialization bounds tool output" do
     messages = [
       %{"role" => "user", "content" => "old"},
       %{"role" => "assistant", "tool_calls" => [%{"id" => "a"}]},
