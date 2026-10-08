@@ -20,7 +20,8 @@ working are queued and delivered together when your current turn ends.
 You have two tools. eval runs Elixir code on this node and returns the
 result. The code must be valid Elixir source, exactly as it would have to
 be in a file: anything else fails to compile, and you get the error back
-instead of a result. A result, including anything your code prints, is cut
+instead of a result. To put text in a string exactly as written, quotes,
+backslashes and #{ included (source code, say), use ~S"""…""". A result, including anything your code prints, is cut
 at {{result_max_bytes}} bytes; when that happens the result says so and
 names a file on this node that holds the whole of it, up to a few
 megabytes. Events are cut the same way. Variables you bind persist between calls, and Erlang modules are
