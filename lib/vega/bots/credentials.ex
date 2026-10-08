@@ -39,8 +39,10 @@ defmodule Vega.Bots.Credentials do
       when is_binary(password) and byte_size(password) in 1..16_000 do
     server = Keyword.get(opts, :server, Vega.Bots.Server)
 
+    {:ok, root} = GenServer.call(server, :root, 10_000)
+
     :global.trans(
-      {{__MODULE__, server, id}, self()},
+      {{__MODULE__, Path.expand(root), id}, self()},
       fn ->
         with {:ok, request} <- Vega.Bots.get_request(id, opts),
              true <- request["kind"] == "setting",

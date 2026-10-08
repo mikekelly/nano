@@ -64,7 +64,8 @@ defmodule Vega.Bots.Persistence do
           end)
       end) and
       Enum.all?(d["requests"], fn r ->
-        is_binary(r["id"]) and r["status"] in ~w(pending answered) and is_binary(r["requester"])
+        is_binary(r["id"]) and r["status"] in ~w(pending answered) and is_binary(r["requester"]) and
+          request_kind_valid?(r)
       end) and
       Enum.all?(d["outbox"], fn x ->
         is_binary(x["id"]) and is_binary(x["session_id"]) and is_binary(x["bot_id"]) and
@@ -73,6 +74,21 @@ defmodule Vega.Bots.Persistence do
   end
 
   defp valid?(_), do: false
+
+  defp request_kind_valid?(%{"kind" => "setting"} = r) do
+    case Vega.Bots.Credentials.key(r["setting_key"]) do
+      {:ok, key} ->
+        key == r["setting_key"] and
+          if r["status"] == "answered",
+            do: r["answer"] == %{"setting_key" => key, "set" => true},
+            else: is_nil(r["answer"])
+
+      _ ->
+        false
+    end
+  end
+
+  defp request_kind_valid?(r), do: r["kind"] in [nil, "choice"]
 
   defp links_valid?(d) do
     bots = MapSet.new(Enum.map(d["bots"], & &1["id"]))

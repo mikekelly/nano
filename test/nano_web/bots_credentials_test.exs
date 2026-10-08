@@ -104,6 +104,7 @@ defmodule NanoWeb.BotsCredentialsTest do
 
     conn =
       recycle(page)
+      |> put_private(:plug_skip_csrf_protection, false)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("accept", "application/json")
       |> put_req_header("x-csrf-token", csrf)
@@ -151,5 +152,58 @@ defmodule NanoWeb.BotsCredentialsTest do
     assert Nano.Settings.get(c.key) == fake_secret
     assert {:ok, _} = Bots.acknowledge_answer(r["id"], c.opts ++ [requester: name])
     assert Process.alive?(pid)
+  end
+
+  test "credential metadata survives restart and rejects unsafe persisted answers", c do
+    {:ok, pending} =
+      Bots.request_setting(
+        c.bot["id"],
+        c.key,
+        "Credential",
+        c.opts ++ [requester: "restart-requester"]
+      )
+
+    assert {:ok, _} = Bots.answer_setting(pending["id"], "fake-restart-value", c.opts)
+    :ok = stop_supervised(Vega.Bots.Server)
+
+    {:ok, service} =
+      start_supervised({Vega.Bots.Server, name: :bots_credential_test, root: c.root, tick_ms: 20})
+
+    assert {:ok, restored} = Bots.get_request(pending["id"], server: service)
+    assert restored["answer"] == %{"setting_key" => c.key, "set" => true}
+    assert {:ok, _} = Bots.answer_setting(pending["id"], "fake-ignored", server: service)
+    assert Nano.Settings.get(c.key) == "fake-restart-value"
+    {:ok, data} = Vega.Bots.Persistence.load(c.root)
+
+    broken =
+      Map.update!(data, "requests", fn requests ->
+        Enum.map(requests, &Map.put(&1, "answer", "unsafe plaintext"))
+      end)
+
+    assert {:error, :invalid_or_oversized_store} = Vega.Bots.Persistence.save(c.root, broken)
+  end
+
+  test "password endpoint refuses JSON without CSRF and does not write settings", c do
+    {:ok, request} =
+      Bots.request_setting(
+        c.bot["id"],
+        c.key,
+        "Credential",
+        c.opts ++ [requester: "csrf-requester"]
+      )
+
+    assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn ->
+      build_conn()
+      |> put_private(:plug_skip_csrf_protection, false)
+      |> put_req_header("content-type", "application/json")
+      |> post(
+        "/bots/requests/" <> request["id"] <> "/setting",
+        Jason.encode!(%{password: "fake-csrf-secret"})
+      )
+    end
+
+    refute Nano.Settings.get(c.key)
+    assert {:ok, pending} = Bots.get_request(request["id"], c.opts)
+    assert pending["status"] == "pending"
   end
 end
