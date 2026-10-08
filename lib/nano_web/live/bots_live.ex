@@ -4,6 +4,14 @@ defmodule NanoWeb.BotsLive do
   events, never logs. Assets: bots.css and bots.js (window.BotsHooks.BotsShell).
   Tests can set a PID string in the trusted signed session's bots_server key;
   request parameters never choose a backend. BotsMarkdown escapes raw HTML.
+
+  Image attachments use Images.ingest/1 (four files per batch, 3.75 MB each),
+  with canonical references sent to Bots.say/3 and fixed /api/images/:id links.
+  Replies to human requests are text-only. Failed sends retain drafts and images.
+  Initially renders the latest 100 messages; earlier history loads on demand.
+  Browser notifications require explicit permission, saved opt-in preferences,
+  a background tab and backend plus client limits. They require an open page;
+  no service worker or push service is registered. Voice input is unavailable.
   """
   use Phoenix.LiveView
   import Phoenix.Component
@@ -163,11 +171,22 @@ defmodule NanoWeb.BotsLive do
     do: {:noreply, assign(socket, draft: String.slice(text, 0, 32_000))}
 
   def handle_event("send", %{"text" => text}, socket) do
-    text = text |> String.trim() |> String.slice(0, 32_000)
+    text = String.trim(text)
 
-    if text == "",
-      do: {:noreply, assign(socket, error: "Write a message first.")},
-      else: prepare_send(socket, text)
+    cond do
+      text == "" ->
+        {:noreply, assign(socket, error: "Write a message first.")}
+
+      String.length(text) > 32_000 or byte_size(text) > 50_000 ->
+        {:noreply,
+         assign(socket,
+           error:
+             "That message is too long. Please send it in smaller parts (up to 32,000 characters or 50 KB)."
+         )}
+
+      true ->
+        prepare_send(socket, text)
+    end
   end
 
   def handle_event("reply", %{"id" => id}, socket) do
@@ -230,6 +249,25 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
+  def handle_event("review-request", %{"id" => id}, socket) do
+    entries = messages(socket.assigns.active)
+
+    index =
+      Enum.find_index(
+        entries,
+        &(&1["id"] == id and &1["kind"] == "request" and &1["status"] != "answered")
+      )
+
+    if index do
+      {:noreply,
+       socket
+       |> assign(message_limit: max(socket.assigns.message_limit, length(entries) - index))
+       |> push_event("bots:reveal-message", %{id: "bot-message-" <> id})}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_event("older-messages", _, socket),
     do: {:noreply, update(socket, :message_limit, &(&1 + 100))}
 
@@ -256,6 +294,12 @@ defmodule NanoWeb.BotsLive do
     {complete, pending} = uploaded_entries(socket, :pictures)
 
     cond do
+      length(complete) + length(socket.assigns.attachments) > 10 ->
+        {:noreply,
+         assign(socket,
+           error: "Keep at most ten images in one message. Remove an attachment and try again."
+         )}
+
       pending != [] or upload_errors(socket.assigns.uploads.pictures) != [] or
           Enum.any?(complete, &(upload_errors(socket.assigns.uploads.pictures, &1) != [])) ->
         {:noreply,
@@ -404,6 +448,9 @@ defmodule NanoWeb.BotsLive do
     end)
   end
 
+  defp pending_count(chat),
+    do: Enum.count(messages(chat), &(&1["kind"] == "request" and &1["status"] != "answered"))
+
   defp preview(chat) do
     case List.last(messages(chat)) do
       nil -> "Start a conversation"
@@ -464,6 +511,11 @@ defmodule NanoWeb.BotsLive do
 
   @impl true
   def render(assigns) do
+    entries = messages(assigns.active)
+
+    pending_requests =
+      Enum.filter(entries, &(&1["kind"] == "request" and &1["status"] != "answered"))
+
     recipients =
       participants(
         assigns.bots,
@@ -484,8 +536,9 @@ defmodule NanoWeb.BotsLive do
             &(matches?(title(&1, assigns.bots), assigns.search) or
                 matches?(preview(&1), assigns.search))
           ),
-        messages: Enum.take(messages(assigns.active), -assigns.message_limit),
-        has_older: length(messages(assigns.active)) > assigns.message_limit
+        messages: Enum.take(entries, -assigns.message_limit),
+        has_older: length(entries) > assigns.message_limit,
+        pending_requests: pending_requests
       )
 
     ~H"""
@@ -540,6 +593,11 @@ defmodule NanoWeb.BotsLive do
               small={true}
             /><span :if={length(chat["bot_ids"] || []) > 1} class="bots-you-small">Y</span></span>
             <span class="bots-chat-copy"><strong>{title(chat, @bots)}</strong><small>{preview(chat)}</small></span>
+            <span
+              :if={pending_count(chat) > 0}
+              class="bots-request-badge"
+              aria-label={"#{pending_count(chat)} requests waiting"}
+            >{pending_count(chat)}</span>
             <span :if={chat["status"] == "thinking"} class="bots-thinking-dot" aria-label="Thinking"></span>
           </.link>
           <p :if={@filtered_chats == []} class="bots-empty-list">
@@ -617,6 +675,7 @@ defmodule NanoWeb.BotsLive do
               class="bots-recipient-option"
               data-recipient-option
               role="option"
+              tabindex="-1"
               aria-selected="false"
               phx-click="create-open"
             ><span class="bots-option-icon">＋</span><span>{if @query != "" and @filtered_bots == [],
@@ -628,6 +687,7 @@ defmodule NanoWeb.BotsLive do
               class="bots-recipient-option"
               data-recipient-option
               role="option"
+              tabindex="-1"
               aria-selected="false"
               phx-click="group"
             ><span class="bots-option-icon">♧</span><span>Create group chat<small>Choose two or more bots below</small></span></button>
@@ -639,6 +699,7 @@ defmodule NanoWeb.BotsLive do
               data-recipient-option
               data-bot-shortcut={if index < 9, do: index + 1}
               role="option"
+              tabindex="-1"
               aria-selected="false"
               phx-click="choose-bot"
               phx-value-id={member["id"]}
@@ -657,9 +718,16 @@ defmodule NanoWeb.BotsLive do
             phx-click="start-chat"
           >Start {if length(@selected) > 1, do: "group chat", else: "chat"} →</button>
         </section>
+        <div :if={@active && @pending_requests != []} class="bots-pending-request" role="status">
+          <span>✦ {length(@pending_requests)} {if length(@pending_requests) == 1,
+            do: "request is",
+            else: "requests are"} waiting for you</span>
+          <button type="button" phx-click="review-request" phx-value-id={hd(@pending_requests)["id"]}>Review request →</button>
+        </div>
         <div
           :if={@active}
           id="bots-messages"
+          tabindex="0"
           class="bots-messages"
           role="log"
           aria-label="Messages"
@@ -775,6 +843,7 @@ defmodule NanoWeb.BotsLive do
             </p>
             <.live_file_input
               upload={@uploads.pictures}
+              tabindex="-1"
               class="bots-sr-only"
               disabled={@recipients == [] or @reply_to != nil}
               aria-label="Attach images"
