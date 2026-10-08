@@ -815,7 +815,9 @@ defmodule NanoAgent do
 
         next =
           if new_turn?,
-            do: append(Compaction.remember_delivery(s, s.pending), user) |> Map.merge(%{pending: [], pending_images: []}),
+            do:
+              append(Compaction.remember_delivery(s, s.pending), user)
+              |> Map.merge(%{pending: [], pending_images: []}),
             else: s
 
         next = FrontOfMind.before_call(next)
