@@ -15,6 +15,7 @@ defmodule NanoAgent do
   """
   use GenServer
   require Logger
+  alias Seedling.Compaction
 
   @log_failed "I could not write the harness log, the durable record of what you do"
 
@@ -94,6 +95,7 @@ defmodule NanoAgent do
         prompt_file: file,
         context_window: entry.context_length,
         max_output: entry[:max_output],
+        input_modalities: entry[:input_modalities] || ["text"],
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
           with [pid | _] <- Process.get(:"$callers"),
@@ -184,7 +186,8 @@ defmodule NanoAgent do
   `:waiting_retry` (a model call failed and the agent will call again at `retry_at`, an
   ISO 8601 time, else nil). `halted` is nil, `:budget`, `:context`, `:node_budget`,
   `:usage_limit`, `:provider_unavailable`, `:model_refused`, `:restart_brake`, `:start_failed`
-  or `:log_failed`; `context_window` is the model's, as its provider listed it at start (nil if
+  or `:log_failed`, `:compaction_failed` (three invalid checkpoints). `context_window` is the
+  model's, as its provider listed it at start (nil if
   it could not be had for an agent saved before it was recorded); `cache_hit_rate` is nil until
   the first response.
   """
@@ -213,6 +216,7 @@ defmodule NanoAgent do
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
+        input_modalities: Map.get(s, :input_modalities, ["text"]),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -328,6 +332,7 @@ defmodule NanoAgent do
       prompt_file: opts[:prompt_file],
       # The agent whose eval started this one, or nil (an operator did).
       started_by: opts[:started_by],
+      input_modalities: opts[:input_modalities] || ["text"],
       system_prompt: nil,
       transcript: [],
       bindings: [],
@@ -375,6 +380,7 @@ defmodule NanoAgent do
         # is estimated from the growth since (estimate/1).
         measured_bytes: 0
       })
+      |> Compaction.migrate()
       |> stated()
 
     s = %{s | system_prompt: render(s)}
@@ -394,7 +400,7 @@ defmodule NanoAgent do
   end
 
   defp restore(saved) do
-    saved = saved |> upgrade() |> stated()
+    saved = saved |> upgrade() |> Compaction.migrate() |> stated()
     reason = Nano.StateStore.exit_reason(saved.name, saved.pid) || :unknown
     # Revived at boot from the agent's state file: the whole node stopped, not just the process.
     node_restart? = reason == :node_restart
@@ -418,6 +424,7 @@ defmodule NanoAgent do
 
     s =
       saved
+      |> cancel_interrupted_summary()
       |> new_process()
       |> Map.merge(%{
         bindings: bindings,
@@ -515,6 +522,12 @@ defmodule NanoAgent do
     })
   end
 
+  # A voluntary submission made by an eval that never completed cannot be committed.
+  defp cancel_interrupted_summary(%{task: %{kind: :eval}} = s),
+    do: %{s | compaction_summary: nil}
+
+  defp cancel_interrupted_summary(s), do: s
+
   # The fields that belong to a process rather than to the agent's history.
   defp new_process(s),
     do: %{
@@ -573,7 +586,7 @@ defmodule NanoAgent do
 
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
-    end)
+    end) <> "\n" <> Seedling.Images.prompt(Map.get(s, :input_modalities, ["text"]))
   end
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
@@ -622,9 +635,13 @@ defmodule NanoAgent do
           {%{s | turns_used: 0, tokens_used: 0},
            " Your turn and token counters are reset to zero."}
 
+        :compaction_failed ->
+          {%{Compaction.migrate(s) | compaction: %{attempt: 1}},
+           " The unchanged automatic checkpoint request will be retried."}
+
         :context ->
           {s,
-           " This conversation does not shrink: its context is still " <>
+           " The hard context guard still applies: this context is " <>
              "#{used(b.context_used, b.max_context, "tokens")}, so unless your limit has been " <>
              "raised I will halt you again before my next call to the model, without making it."}
 
@@ -640,6 +657,22 @@ defmodule NanoAgent do
   def handle_cast(msg, s), do: noreply(event(s, {:"$gen_cast", msg}))
 
   @impl true
+  def handle_call({:seedling_compaction_summary, text}, {pid, _}, s) do
+    s = Compaction.migrate(s)
+
+    case {s.task, Compaction.validate(text)} do
+      {%{kind: :eval, task: %Task{pid: ^pid}, call: call}, {:ok, text}} ->
+        summary = %{text: text, call_id: call["id"]}
+        {:reply, :ok, save(%{s | compaction_summary: summary})}
+
+      {_, {:error, reason}} ->
+        {:reply, {:error, reason}, s}
+
+      _ ->
+        {:reply, {:error, "only the agent's active eval can submit a checkpoint"}, s}
+    end
+  end
+
   def handle_call(msg, from, s), do: noreply(event(s, {:"$gen_call", from, msg}))
 
   @impl true
@@ -694,6 +727,7 @@ defmodule NanoAgent do
   def handle_info(msg, s), do: noreply(event(s, msg))
 
   defp event(s, term) do
+    s = Compaction.migrate(s)
     seq = s.event_seq + 1
 
     {text, truncated, spill} =
@@ -705,11 +739,17 @@ defmodule NanoAgent do
 
     at = timestamp(DateTime.utc_now())
 
+    rendered = ~s(<event seq="#{seq}" at="#{at}">#{text}</event>)
+    {images, notice} = Seedling.Images.prepare(Seedling.Images.collect(term), s.input_modalities)
+    rendered = rendered <> notice
+    record = %{text: rendered, kind: event_kind(s, term), images: images}
+
     s = %{
       s
-      | event_seq: seq,
+      | compaction_pending_events: s.compaction_pending_events ++ [record],
+        event_seq: seq,
         wakeup: nil,
-        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
+        pending: s.pending ++ [rendered]
     }
 
     # queue_length: events waiting for the next turn, this one included.
@@ -722,6 +762,7 @@ defmodule NanoAgent do
         event_seq: seq,
         message: text,
         queue_length: queued,
+        images: images,
         truncated: truncated
       })
     )
@@ -729,7 +770,21 @@ defmodule NanoAgent do
     maybe_start_turn(s)
   end
 
+  # Erlang messages have no authenticated sender. Only explicitly identified child reports
+  # can be excluded; unknown messages are external requests and survive conservatively.
+  defp event_kind(s, term) when is_map(term) do
+    sender = term[:sender_pid] || term[:sender] || term["sender_pid"] || term["sender"]
+
+    if sender &&
+         Enum.any?(Nano.StateStore.all(), fn child ->
+           child[:started_by] == s.name and sender in [child.name, child.pid]
+         end), do: :child_result, else: :external
+  end
+
+  defp event_kind(_, _), do: :external
+
   # Harness notes queue up with events, in the order things happened.
+
   defp note(s, text) do
     log(s, :harness_note, %{text: text})
     %{s | pending: s.pending ++ ["<harness>#{text}</harness>"]}
@@ -757,7 +812,7 @@ defmodule NanoAgent do
 
   defp request(s, new_turn?) do
     # State from an older version of this module, still running after a reload.
-    s = s |> upgrade() |> check_provider()
+    s = s |> upgrade() |> Compaction.migrate() |> check_provider()
     node_used = Nano.StateStore.node_tokens_last_hour()
     cap = Nano.Settings.get(:node_max_tokens_per_hour)
 
@@ -779,6 +834,9 @@ defmodule NanoAgent do
         log(s, :budget_exhausted, Map.merge(budget(s, "node"), node))
         s |> halt(:node_budget, text) |> end_turn("budget")
 
+      s.compaction != nil ->
+        dispatch_request(s, false)
+
       true ->
         # Each delivery ends with what is used so far: not counting the call it starts, and
         # the context as of the latest response.
@@ -789,14 +847,119 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
-        estimate = estimate(next)
-        room = b.max_context - estimate
+        images = Enum.flat_map(s.compaction_pending_events, &Map.get(&1, :images, []))
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        user =
+          attach_images(
+            %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")},
+            images
+          )
+
+        next =
+          if new_turn? do
+            %{
+              append(s, user)
+              | pending: [],
+                compaction_events: s.compaction_events ++ s.compaction_pending_events,
+                compaction_pending_events: []
+            }
+          else
+            s
+          end
+
+        if compact_due?(next) do
+          begin_compaction(next)
+        else
+          dispatch_request(next, new_turn? && line, s)
+        end
+    end
+  end
+
+  defp compact_due?(s) do
+    s.max_context > 0 and not s.compaction_fresh and
+      s.max_context - estimate(s) < Compaction.reserve(s.max_context) and
+      Enum.any?(s.transcript, &(&1["role"] == "assistant"))
+  end
+
+  defp dispatch_request(s, line, before_delivery \\ nil) do
+    estimate = estimate(s)
+    room = s.max_context - estimate
+
+    if s.max_context > 0 and room < @reply_room,
+      do: (before_delivery || s) |> context_halt(estimate) |> end_turn("budget"),
+      else: call(s, line, estimate, room)
+  end
+
+  defp begin_compaction(s) do
+    text = Compaction.instruction()
+    log(s, :harness_note, %{text: text})
+
+    log(s, :compaction_started, %{
+      estimate: estimate(s),
+      reserve: Compaction.reserve(s.max_context)
+    })
+
+    s = append(s, %{"role" => "user", "content" => "<harness>#{text}</harness>"})
+    dispatch_request(%{s | compaction: %{attempt: 1}}, false)
+  end
+
+  defp apply_compaction(s, text, source) do
+    path = Path.join(Application.fetch_env!(:nano, :log_dir), s.id <> ".jsonl")
+
+    {transcript, retained} =
+      Compaction.rebuild(s.compaction_events, text,
+        window: s.max_context,
+        log: path,
+        source: source
+      )
+
+    fields = %{
+      source: source,
+      summary: text,
+      retained_events: length(retained),
+      dropped_events: length(s.compaction_events) - length(retained),
+      full_record: path
+    }
+
+    if log(s, :compaction_completed, fields) == :ok do
+      %{
+        s
+        | transcript: transcript,
+          compaction_events: retained,
+          compaction: nil,
+          compaction_summary: nil,
+          compaction_fresh: true,
+          context_used: 0,
+          measured_bytes: 0,
+          halted: if(s.halted == :context, do: nil, else: s.halted)
+      }
+      |> save()
+    else
+      halt(s, :log_failed, @log_failed)
+    end
+  end
+
+  defp compaction_response(s, msg) do
+    case Compaction.extract(msg) do
+      {:ok, text} ->
+        s |> apply_compaction(text, :automatic) |> request(s.pending != [])
+
+      {:error, reason} ->
+        attempt = s.compaction.attempt
+        log(s, :compaction_rejected, %{attempt: attempt, reason: reason})
+
+        if attempt < Compaction.attempts() do
+          request(%{s | compaction: %{attempt: attempt + 1}}, false)
+        else
+          s
+          |> halt(
+            :compaction_failed,
+            "Automatic compaction did not receive a valid summary after #{attempt} responses. " <>
+              "No returned code was executed; the full history is still in the log. " <>
+              "An operator can un-halt you to retry the unchanged checkpoint request"
+          )
+          |> end_turn("error")
+        end
     end
   end
 
@@ -829,9 +992,10 @@ defmodule NanoAgent do
   # The size, as JSON, of the tools and messages of a request: what the estimate scales.
   defp bytes(system_prompt, transcript),
     do:
-      byte_size(
-        Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
-      )
+      Seedling.Images.estimate_bytes([
+        @tools,
+        %{"role" => "system", "content" => system_prompt} | transcript
+      ])
 
   defp context_halt(s, estimate) do
     b = budget(s)
@@ -852,6 +1016,7 @@ defmodule NanoAgent do
     messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
     id = s.request_id + 1
     output = if s.max_context > 0, do: min(room, s.max_output || room), else: s.max_output
+    output = if s.compaction, do: min(output || 12_000, 12_000), else: output
 
     fields = %{
       request_id: id,
@@ -981,7 +1146,8 @@ defmodule NanoAgent do
 
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
 
-  defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
+  defp task_done(%{task: %{kind: :model}} = s, result),
+    do: model_done(%{Compaction.migrate(s) | task: nil}, result)
 
   defp task_done(%{task: %{kind: :eval} = t} = s, result),
     do: eval_done(%{s | task: nil}, t, result)
@@ -1036,7 +1202,32 @@ defmodule NanoAgent do
       raw: r[:raw]
     })
 
+    if s.compaction do
+      # Discarded responses must not enter the cached prefix. Account the actual spend,
+      # but measure only the unchanged prompt, not the response we are discarding.
+      s =
+        %{
+          s
+          | status: :running_tool,
+            tokens_used: s.tokens_used + prompt + completion,
+            cost: s.cost + (r.cost || 0),
+            responses: s.responses + 1,
+            cache_hits: s.cache_hits + if(cached > 0, do: 1, else: 0),
+            retry: nil,
+            context_used: prompt,
+            measured_bytes: bytes(s.system_prompt, s.transcript)
+        }
+        |> check_budget()
+
+      compaction_response(s, msg)
+    else
+      normal_response(s, msg, r, prompt, completion, cached, calls)
+    end
+  end
+
+  defp normal_response(s, msg, r, prompt, completion, cached, calls) do
     # Null content is not valid in a later request; tool calls and reasoning details go back as sent.
+
     message =
       %{"role" => "assistant", "content" => msg["content"] || ""}
       |> Map.merge(
@@ -1048,6 +1239,7 @@ defmodule NanoAgent do
       %{
         s
         | status: :running_tool,
+          compaction_fresh: false,
           calls: calls,
           tokens_used: s.tokens_used + prompt + completion,
           cost: s.cost + (r.cost || 0),
@@ -1208,6 +1400,13 @@ defmodule NanoAgent do
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
   defp run_calls(%{calls: []} = s) do
+    s = Compaction.migrate(s)
+
+    s =
+      if s.compaction_summary,
+        do: apply_compaction(s, s.compaction_summary.text, :voluntary),
+        else: s
+
     cond do
       not s.idle_called -> request(s, false)
       s.wakeup_after && s.pending == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")
@@ -1273,7 +1472,7 @@ defmodule NanoAgent do
               task: %{kind: :eval, n: s.call_seq, call: call, started: started, io: io}
           })
 
-        args = [code, Keyword.put(s.bindings, :me, self()), io]
+        args = [code, Keyword.put(s.bindings, :me, self()), io, s.input_modalities]
         task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :eval, args)
         timeout = Nano.Settings.get(:eval_timeout_ms)
         Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, timeout)
@@ -1343,7 +1542,10 @@ defmodule NanoAgent do
 
   @doc false
   # {:ok, inspected, bindings, warnings} | {:error, formatted}, with io as the group leader.
-  def eval(code, bindings, io) do
+  def eval(code, bindings, io), do: eval(code, bindings, io, nil)
+
+  @doc false
+  def eval(code, bindings, io, modalities) do
     Process.group_leader(self(), io)
 
     # Compiler errors and warnings would go to stderr, out of the model's sight; collect them.
@@ -1351,7 +1553,13 @@ defmodule NanoAgent do
       Code.with_diagnostics(fn ->
         try do
           {value, bindings} = Code.eval_string(code, bindings)
-          {:ok, inspect(value, [pretty: true] ++ inspect_opts()), bindings}
+
+          {images, notice} =
+            if modalities,
+              do: Seedling.Images.prepare(Seedling.Images.collect(value), modalities),
+              else: {[], ""}
+
+          {:ok, inspect(value, [pretty: true] ++ inspect_opts()) <> notice, bindings, images}
         catch
           kind, reason -> {:error, kind, reason, __STACKTRACE__}
         end
@@ -1360,8 +1568,13 @@ defmodule NanoAgent do
     diagnostics = Enum.map_join(diagnostics, &"#{&1.severity}: #{&1.message}#{where(&1)}\n")
 
     case result do
-      {:ok, value, bindings} -> {:ok, value, bindings, diagnostics}
-      {:error, kind, reason, stack} -> {:error, format_error(kind, reason, stack, diagnostics)}
+      {:ok, value, bindings, images} ->
+        if modalities,
+          do: {:ok, value, bindings, diagnostics, images},
+          else: {:ok, value, bindings, diagnostics}
+
+      {:error, kind, reason, stack} ->
+        {:error, format_error(kind, reason, stack, diagnostics)}
     end
   end
 
@@ -1443,12 +1656,35 @@ defmodule NanoAgent do
 
   defp eval_done(s, %{call: call, started: started, io: io, task: task} = t, result) do
     {output, spawned} = release(io, Process.group_leader(), task.pid)
+
+    result =
+      case result do
+        {:ok, value, bindings, warnings} -> {:ok, value, bindings, warnings, []}
+        other -> other
+      end
+
+    s = Compaction.migrate(s)
     s = %{s | spawned: s.spawned ++ spawned}
 
+    s =
+      if (not match?({:ok, _, _, _, _}, result) and
+            s.compaction_summary) && s.compaction_summary.call_id == call["id"],
+         do: %{s | compaction_summary: nil},
+         else: s
+
     case result do
-      {:ok, value, bindings, warnings} ->
+      {:ok, value, bindings, warnings, images} ->
         Nano.StateStore.put_bindings(s.name, bindings)
-        tool_result(%{s | bindings: bindings}, call, started, true, value, output <> warnings)
+
+        tool_result(
+          %{s | bindings: bindings},
+          call,
+          started,
+          true,
+          value,
+          output <> warnings,
+          images
+        )
 
       {:error, error} ->
         tool_result(s, call, started, false, error, output)
@@ -1466,7 +1702,7 @@ defmodule NanoAgent do
 
   # The model sees the result followed by any captured IO, truncated as a whole; the log
   # keeps result and IO apart for the dashboard.
-  defp tool_result(s, call, started, ok, result, io \\ "") do
+  defp tool_result(s, call, started, ok, result, io \\ "", images \\ []) do
     whole = if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io
     max = stated(s, :result_max_bytes)
     {text, truncated, spill} = truncate(whole, max, {s.id, "call-#{s.call_seq}"})
@@ -1478,6 +1714,7 @@ defmodule NanoAgent do
         call_id: call["id"],
         name: call["function"]["name"],
         duration_ms: System.monotonic_time(:millisecond) - started,
+        images: images,
         ok: ok,
         result: elem(truncate(result, max), 0),
         io: elem(truncate(io, max), 0),
@@ -1485,11 +1722,14 @@ defmodule NanoAgent do
       })
     )
 
-    append(s, tool_message(call, text))
+    append(s, attach_images(tool_message(call, text), images))
   end
 
   defp tool_message(call, text),
     do: %{"role" => "tool", "tool_call_id" => call["id"], "content" => text}
+
+  defp attach_images(message, []), do: message
+  defp attach_images(message, images), do: Map.put(message, "images", images)
 
   ## Helpers
 
