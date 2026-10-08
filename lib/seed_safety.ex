@@ -104,7 +104,12 @@ defmodule SeedSafety do
     reject(path, "@chatgpt", access <> <<0>> <> refresh, dir)
   end
 
-  defp directory, do: System.get_env("SEED_SAFETY_DIR", "/data/seed-safety")
+  defp directory do
+    case Application.get_env(:nano, :test_dir) do
+      path when is_binary(path) -> Path.join(path, "seed-safety")
+      _ -> System.get_env("SEED_SAFETY_DIR", "/data/seed-safety")
+    end
+  end
 
   defp write(dir, name, data) do
     path = Path.join(dir, name)
