@@ -213,6 +213,70 @@ defmodule SeedMCPTest do
     assert :ok = SeedMCP.Runtime.stop_for(owner)
   end
 
+  test "supervised client restart falls back from dead bootstrap worker to named child", %{
+    opts: opts,
+    dir: dir
+  } do
+    parent = self()
+    owner = "mcp-restart-gate-#{System.unique_integer([:positive])}"
+
+    child =
+      spawn(fn ->
+        loop = fn loop ->
+          receive do
+            message ->
+              send(parent, {:restarted_child, message})
+              loop.(loop)
+          end
+        end
+
+        loop.(loop)
+      end)
+
+    worker =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert :yes = Nano.Names.register_name({:agent, owner}, child)
+
+    on_exit(fn ->
+      Process.exit(child, :kill)
+      Process.exit(worker, :kill)
+      SeedMCP.Runtime.stop_for(owner)
+    end)
+
+    spec = opts[:server] |> Map.put("name", "restart") |> Map.put("protocolVersion", "2025-11-25")
+
+    assert {:ok, %{"restart" => via}} =
+             SeedMCP.start_for(owner, [spec], state_dir: dir, event_owner: worker)
+
+    send(child, :original_task)
+    assert :ok = SeedMCP.owner(via, owner)
+    assert {:ok, _} = SeedMCP.subscribe(via, "file:///restart")
+
+    assert_receive {:restarted_child,
+                    %{event: :notification, method: "notifications/resources/updated"}},
+                   1000
+
+    worker_ref = Process.monitor(worker)
+    send(worker, :stop)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker, :normal}
+    old = GenServer.whereis(via)
+    Process.exit(old, :kill)
+    assert_receive {:restarted_child, %{event: :connected}}, 3000
+    assert GenServer.whereis(via) != old
+
+    assert_receive {:restarted_child,
+                    %{event: :notification, method: "notifications/resources/updated"}},
+                   1000
+
+    assert {:ok, _} = SeedMCP.tools(via)
+    assert :ok = SeedMCP.Runtime.stop_for(owner)
+  end
+
   test "failed runtime startup rolls back new clients", %{dir: dir} do
     owner = "mcp-failed-#{System.unique_integer([:positive])}"
     spec = %{"name" => "bad", "command" => "/not/a/real/command"}
