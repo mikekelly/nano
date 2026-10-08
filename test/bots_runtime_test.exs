@@ -706,6 +706,56 @@ defmodule Bots.RuntimeFacadeTest do
     assert {:ok, %{pid: ^agent_pid}} = Runtime.status(c.bot, c.session, c.opts)
   end
 
+  test "a real owning agent can announce a completion after its grant is consumed, never another session",
+       c do
+    server = pid_code(c.server)
+    test_pid = pid_code(self())
+
+    initial = """
+    turn = File.read!(#{inspect(c.snapshot)}) |> Jason.decode!()
+    result = Bots.post(turn["token"], "I am working on it", server: #{server})
+    send(#{test_pid}, {:initial_post, result, me})
+    """
+
+    Fake.push(c.model, calls: [eval: initial, idle: nil])
+    assert {:ok, _} = Bots.say(c.session["id"], "Start a task", server: c.server)
+    assert_receive {:openrouter_request, model, _}, 2000
+    assert model == c.model
+    assert_receive {:initial_post, {:ok, first}, agent}, 2000
+
+    await(fn ->
+      Bots.session(c.session["id"], server: c.server)["status"] == "idle" and
+        :sys.get_state(c.server).jobs == %{}
+    end)
+
+    {:ok, other} = Bots.create_session([c.bot["id"]], server: c.server)
+
+    assert {:error, :wrong_agent} =
+             Bots.announce(c.bot["id"], c.session["id"], "Impostor",
+               server: c.server,
+               actor: agent
+             )
+
+    completion = """
+    wrong = Bots.announce(#{inspect(c.bot["id"])}, #{inspect(other["id"])}, "Wrong session", server: #{server})
+    result = Bots.announce(#{inspect(c.bot["id"])}, #{inspect(c.session["id"])}, "Task complete", server: #{server})
+    send(#{test_pid}, {:completion_post, wrong, result})
+    """
+
+    Fake.push(c.model, calls: [eval: completion, idle: nil])
+    NanoAgent.notify(agent, :background_task_completed)
+    assert_receive {:openrouter_request, ^model, _}, 2000
+    assert_receive {:completion_post, {:error, :wrong_agent}, {:ok, done}}, 2000
+    assert done["text"] == "Task complete"
+
+    assert Enum.filter(
+             Bots.session(c.session["id"], server: c.server)["messages"],
+             &(&1["kind"] == "bot")
+           ) == [first, done]
+
+    assert Bots.session(other["id"], server: c.server)["messages"] == []
+  end
+
   test "a grant captured by a real agent cannot publish after human supersession or stop", c do
     test_pid = pid_code(self())
 
