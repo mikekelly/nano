@@ -17,12 +17,44 @@ defmodule NanoWeb.SeedBotsLiveTest do
       creating: false,
       error: nil,
       notice: nil,
-      notifications: false
+      notifications: false,
+      statuses: %{},
+      requests: %{}
     }
   end
 
   defp socket(attrs \\ %{}) do
     Phoenix.Component.assign(%Phoenix.LiveView.Socket{}, Map.merge(assigns(), attrs))
+  end
+
+  test "human requests have answer forms only while pending; status and stop controls are visible" do
+    message = %{id: "m1", author: :system, text: "Please choose", request_id: "r1"}
+    session = %{id: "s1", title: "Muse", bot_ids: ["b1"], messages: [message]}
+
+    a =
+      Map.merge(assigns(), %{
+        current: session,
+        sessions: [session],
+        statuses: %{"b1" => :thinking},
+        requests: %{"r1" => %{status: :pending}}
+      })
+
+    html = render_component(&View.render/1, a)
+    assert html =~ "Send answer"
+    assert html =~ "thinking…"
+    assert html =~ "Stop replies"
+    assert html =~ "Chat update"
+    html = render_component(&View.render/1, %{a | requests: %{"r1" => %{status: :answered}}})
+    refute html =~ "Send answer"
+
+    {:noreply, s} =
+      View.handle_event(
+        "answer",
+        %{"request_id" => "not-in-chat", "answer" => "Yes"},
+        socket(%{current: session})
+      )
+
+    assert s.assigns.error =~ "open request"
   end
 
   test "empty state offers search, bot creation and accessible messaging" do

@@ -11,7 +11,10 @@ defmodule NanoWeb.SeedBotsLive do
   alias Nano.SeedBots
 
   def mount(_params, _session, socket) do
-    if connected?(socket), do: SeedBots.subscribe()
+    if connected?(socket) do
+      SeedBots.subscribe()
+      Process.send_after(self(), :poll_status, 1_000)
+    end
 
     {:ok,
      socket
@@ -27,9 +30,16 @@ defmodule NanoWeb.SeedBotsLive do
        creating: false,
        error: nil,
        notice: nil,
-       notifications: false
+       notifications: false,
+       statuses: %{},
+       requests: %{}
      )
      |> refresh()}
+  end
+
+  def handle_info(:poll_status, socket) do
+    Process.send_after(self(), :poll_status, 1_000)
+    {:noreply, refresh(socket)}
   end
 
   def handle_info({:seed_bots, _}, socket) do
@@ -158,6 +168,26 @@ defmodule NanoWeb.SeedBotsLive do
 
   def handle_event("dismiss", _, socket), do: {:noreply, assign(socket, notice: nil)}
 
+  def handle_event("stop", _, socket) do
+    if socket.assigns.current, do: SeedBots.stop(socket.assigns.current.id)
+    {:noreply, refresh(socket)}
+  end
+
+  def handle_event("answer", %{"request_id" => id, "answer" => text}, socket) do
+    allowed =
+      socket.assigns.current &&
+        Enum.any?(socket.assigns.current.messages, &(Map.get(&1, :request_id) == id))
+
+    if allowed && String.trim(text) != "" do
+      case SeedBots.answer(id, String.trim(text)) do
+        :ok -> {:noreply, socket |> refresh() |> assign(error: nil)}
+        _ -> {:noreply, assign(socket, error: "Could not send your answer. Please try again.")}
+      end
+    else
+      {:noreply, assign(socket, error: "Write an answer to an open request first.")}
+    end
+  end
+
   defp ensure_session(%{assigns: %{current: nil, selected: ids}}),
     do: SeedBots.create_session(ids)
 
@@ -169,7 +199,26 @@ defmodule NanoWeb.SeedBotsLive do
     current =
       if socket.assigns.current, do: Enum.find(sessions, &(&1.id == socket.assigns.current.id))
 
-    assign(socket, bots: SeedBots.bots(), sessions: sessions, current: current)
+    statuses = if current, do: SeedBots.statuses(current.id), else: %{}
+
+    requests =
+      if current do
+        for m <- current.messages,
+            id = Map.get(m, :request_id),
+            id != nil,
+            into: %{},
+            do: {id, SeedBots.request(id)}
+      else
+        %{}
+      end
+
+    assign(socket,
+      bots: SeedBots.bots(),
+      sessions: sessions,
+      current: current,
+      statuses: statuses,
+      requests: requests
+    )
   end
 
   defp matches?(text, query), do: String.contains?(String.downcase(text), String.downcase(query))
@@ -193,7 +242,16 @@ defmodule NanoWeb.SeedBotsLive do
   end
 
   defp author_name(author, _) when author in [:user, "user"], do: "You"
+  defp author_name(author, _) when author in [:system, "system"], do: "Chat update"
   defp author_name(author, bots), do: bot(bots, author).name
+
+  defp pending?(message, requests) do
+    case Map.get(requests, Map.get(message, :request_id)) do
+      %{status: :pending} -> true
+      _ -> false
+    end
+  end
+
   attr :bot, :map, required: true
 
   defp face(assigns) do
@@ -261,7 +319,13 @@ defmodule NanoWeb.SeedBotsLive do
             phx-value-id={id}
             aria-label={"Remove #{bot(@bots, id).name}"}
           >×</button></span>
+          <button :if={@current} phx-click="stop" aria-label="Stop bot replies">Stop replies</button>
+          <span :for={{id, status} <- @statuses} :if={status != :idle} class="sb-muted" role="status">{bot(
+            @bots,
+            id
+          ).name}: {if status == :thinking, do: "thinking…", else: "unavailable"}</span>
         </header>
+
         <div :if={!@current} class="sb-picker">
           <form phx-change="query">
             <input
@@ -324,6 +388,16 @@ defmodule NanoWeb.SeedBotsLive do
             <span class="sb-author">{author_name(m.author, @bots)}</span><div class="sb-bubble">
               {m.text}
             </div>
+            <form
+              :if={pending?(m, @requests)}
+              id={"answer-#{m.id}"}
+              phx-submit="answer"
+              class="sb-create"
+            >
+              <input type="hidden" name="request_id" value={m.request_id} />
+              <label>Your answer<input class="sb-input" name="answer" required maxlength="20000" /></label>
+              <button type="submit">Send answer</button>
+            </form>
           </li>
         </ol>
         <div :if={!@current || @current.messages == []} class="sb-empty">
