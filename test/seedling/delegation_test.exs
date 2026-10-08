@@ -172,6 +172,16 @@ defmodule Seedling.DelegationTest do
     assert NanoAgent.info(c.name).budget.turns_used == 0
   end
 
+  test "a stopped child is reported even when its DOWN was lost on watcher restart", c do
+    assert {:ok, child} = D.subagent(c.name, c.opts)
+    watcher = Process.whereis(D.Manager)
+    :sys.suspend(watcher)
+    DynamicSupervisor.terminate_child(Nano.AgentSupervisor, child.pid)
+    Process.exit(watcher, :kill)
+    assert_receive %{type: :delegation, status: :exited, summary: summary}, 3000
+    assert summary =~ "no live process"
+  end
+
   defp wait(fun, attempts \\ 100)
 
   defp wait(fun, n) when n > 0 do

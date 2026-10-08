@@ -160,6 +160,18 @@ defmodule Seedling.Delegation.Manager do
         s
       else
         pid = info.pid
+
+        s =
+          if is_nil(pid) and is_pid(record.last_pid),
+            do:
+              queue(
+                s,
+                name,
+                :exited,
+                "Child has no live process; its exit occurred while the delegation watcher was unavailable."
+              ),
+            else: s
+
         # A code-side timer is the correctness path, including after PubSub restart.
         s =
           if is_pid(pid) and not Enum.any?(s.monitors, fn {_, n} -> n == name end) do
