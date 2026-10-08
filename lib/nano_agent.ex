@@ -794,10 +794,84 @@ defmodule NanoAgent do
         estimate = estimate(next)
         room = b.max_context - estimate
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        cond do
+          b.max_context > 0 and room < Nano.Compaction.reserve(b.max_context) and
+              not Map.get(s, :compaction_failed, false) ->
+            compact(next)
+
+          b.max_context > 0 and room < @reply_room ->
+            s |> context_halt(estimate) |> end_turn("budget")
+
+          true ->
+            call(next, new_turn? && line, estimate, room)
+        end
     end
+  end
+
+  defp compact(s) do
+    {older, recent} = Nano.Compaction.split(s.transcript, s.max_context)
+
+    if older == [] do
+      s |> Map.put(:compaction_failed, true) |> request(false)
+    else
+      log(s, :compaction_started, %{messages: length(older), retained: length(recent)})
+      s = save(%{s | status: :thinking})
+
+      task =
+        Task.Supervisor.async_nolink(Nano.EvalSupervisor, Nano.Compaction, :summarize, [
+          s.model,
+          older,
+          s.max_context
+        ])
+
+      %{s | task: %{kind: :compaction, task: task, recent: recent}}
+    end
+  end
+
+  defp compact_done(s, recent, {:ok, summary, r}) do
+    tokens = (r.usage["prompt_tokens"] || 0) + (r.usage["completion_tokens"] || 0)
+    Nano.StateStore.add_node_tokens(tokens)
+
+    checkpoint = %{
+      "role" => "user",
+      "content" =>
+        "<harness>Automatic harness compaction checkpoint (not a human intervention). Full record: " <>
+          Path.join(Application.fetch_env!(:nano, :log_dir), s.id <> ".jsonl") <>
+          "</harness>\n" <> summary
+    }
+
+    log(s, :compaction_completed, %{summary: summary, retained: length(recent), tokens: tokens})
+
+    s =
+      Map.merge(s, %{
+        transcript: [checkpoint | recent],
+        context_used: 0,
+        measured_bytes: 0,
+        tokens_used: s.tokens_used + tokens,
+        cost: s.cost + (r.cost || 0),
+        status: :idle,
+        compaction_failed: true
+      })
+
+    s =
+      note(
+        s,
+        "The harness automatically compacted your older history using #{s.model}. Your identity, mailbox and eval bindings are unchanged; the full record is in the log named in your checkpoint."
+      )
+
+    s |> check_budget() |> request(true)
+  end
+
+  defp compact_done(s, _recent, error) do
+    log(s, :compaction_failed, %{error: brief(error)})
+
+    s =
+      note(
+        s,
+        "Automatic harness compaction failed: #{brief(error)}. Original history is intact; the context safety check still applies."
+      )
+
+    s |> Map.put(:compaction_failed, true) |> request(true)
   end
 
   # An operator can turn a provider off (remove OpenRouter's key) at any time; an agent on it
@@ -940,6 +1014,9 @@ defmodule NanoAgent do
 
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
 
+  defp task_done(%{task: %{kind: :compaction, recent: recent}} = s, result),
+    do: compact_done(%{s | task: nil}, recent, result)
+
   defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
 
   defp task_done(%{task: %{kind: :eval} = t} = s, result),
@@ -966,9 +1043,18 @@ defmodule NanoAgent do
     s = check_budget(s)
 
     cond do
-      s.halted -> end_turn(s, "error")
-      error.class == :transient -> wait(s, error)
-      true -> s |> refused(error) |> end_turn("error")
+      s.halted ->
+        end_turn(s, "error")
+
+      error.class == :context and not Map.get(s, :compaction_failed, false) and
+          length(s.transcript) > 1 ->
+        compact(s)
+
+      error.class == :transient ->
+        wait(s, error)
+
+      true ->
+        s |> refused(error) |> end_turn("error")
     end
   end
 
@@ -1016,6 +1102,7 @@ defmodule NanoAgent do
       |> Map.put(:context_used, prompt + completion)
       # Calls no longer fail in a row.
       |> Map.put(:retry, nil)
+      |> Map.put(:compaction_failed, false)
       |> append(message)
 
     s =
@@ -1128,7 +1215,7 @@ defmodule NanoAgent do
           "You have used #{turns} and #{used(b.tokens_used, b.max_tokens, "tokens")}"
         )
 
-      reached?(b.context_used, b.max_context) ->
+      reached?(b.context_used, b.max_context) and Map.get(s, :compaction_failed, false) ->
         log(s, :budget_exhausted, Map.put(b, :scope, "context"))
 
         text =
