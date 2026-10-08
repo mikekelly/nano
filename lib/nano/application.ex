@@ -34,6 +34,7 @@ defmodule Nano.Application do
           Nano.OpenRouter.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
+          {Seedling.Bots, []},
           {Seedling.Background.Recovery, []},
           {Seedling.MCP.Supervisor, [config: "/app/config/mcp.json", name: Seedling.MCP.Connections]},
           NanoWeb.Endpoint
