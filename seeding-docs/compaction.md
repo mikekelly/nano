@@ -64,6 +64,9 @@ coding agent whose compaction is a good reference. In outline:
   agent's context is mostly tool output. Keeping the input to what the agent needs to
   continue (pi cuts each tool result to 2,000 characters) and the output to a fixed shape is
   what lets one call do it in seconds.
+- On the ChatGPT subscription the backend accepts no limit on a reply's length, so a
+  summary call there is bounded only by what it is asked to write: say how long the summary
+  may be, and check its length when it comes back. OpenRouter takes a limit (`max_tokens`).
 - A summary call over a large context can still take a while; time limits must allow for
   the real size, and a failed call (a dropped connection, a provider error) should be
   retried before the agent is left halted.
