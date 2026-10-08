@@ -16,6 +16,124 @@ defmodule Seedling.Prompts do
   @runtime ~w(pid name node otp_release elixir_version os_user os network_policy max_turns max_tokens max_context result_max_bytes)
   def runtime_variables, do: @runtime
 
+  @doc """
+  Compose node facts followed by selected file-backed partials, without imposing a
+  report contract. For example, a long-lived bot can use:
+
+      Seedling.Prompts.compose(["operating", "orientation", "bot"], %{},
+        partials: %{"bot" => "Bot identity and APIs..."})
+
+  Options: `:facts_file`, `:prompt_root`, `:partials` (overrides/additions),
+  `:max_bytes` (16 KB), `:preserve` (defaults to runtime_variables/0).
+  File partial names use letters/digits/underscore/dot/hyphen, never paths.
+  Nested partials are loaded automatically from the same root; comments removed.
+  Unknown variables fail. Variable data is not re-expanded by this renderer, but
+  the seed later replaces runtime placeholders: avoid literal runtime tags in data.
+  """
+  def compose(parts, vars \\ %{}, opts \\ []) do
+    if is_list(parts) and Enum.all?(parts, &part_name?/1) and Keyword.keyword?(opts) do
+      cap = Keyword.get(opts, :max_bytes, 16_000)
+      dir = Keyword.get(opts, :prompt_root, Path.expand("../../priv/seedling/prompts", __DIR__))
+
+      facts_file =
+        Keyword.get(opts, :facts_file, Path.expand("../../priv/system_prompt.txt", __DIR__))
+
+      overrides = Keyword.get(opts, :partials, %{})
+
+      if is_integer(cap) and cap > 0 and is_binary(dir) and text_map?(overrides) do
+        with {:ok, facts} <- read_template(facts_file, cap),
+             {:ok, partials} <- load_parts(parts ++ references(facts), dir, overrides, cap) do
+          template = facts <> "\n" <> Enum.map_join(parts, "\n", &"{{>#{&1}}}")
+
+          render(
+            template,
+            vars,
+            Keyword.merge(opts,
+              partials: partials,
+              preserve: Keyword.get(opts, :preserve, runtime_variables())
+            )
+          )
+        end
+      else
+        error(
+          :invalid_options,
+          "Give a positive max_bytes, prompt_root path and string-keyed partials text map."
+        )
+      end
+    else
+      error(:invalid_options, "Give a list of simple partial names and keyword options.")
+    end
+  end
+
+  defp part_name?(name),
+    do: is_binary(name) and Regex.match?(~r/^[\w.-]+$/, name) and name not in [".", ".."]
+
+  defp read_template(path, cap) when is_binary(path) do
+    case Seedling.Files.read(path, limit: 5000, max_bytes: cap) do
+      {:ok, %{truncated: false, text: text}} ->
+        {:ok, text}
+
+      {:ok, _} ->
+        error(
+          :prompt_too_large,
+          "Template #{path} exceeds #{cap} bytes/5000 lines; keep partials lean."
+        )
+
+      {:error, %{reason: :line_too_long, message: message}} ->
+        error(:prompt_too_large, message)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp read_template(_, _),
+    do: error(:invalid_options, "facts_file must be a readable text path.")
+
+  defp references(text),
+    do: Regex.scan(~r/\{\{>\s*([^}]+?)\s*\}\}/, text, capture: :all_but_first) |> List.flatten()
+
+  defp load_parts(names, dir, overrides, cap),
+    do: load_parts(names, dir, overrides, cap, MapSet.new())
+
+  defp load_parts([], _, partials, _, _), do: {:ok, partials}
+
+  defp load_parts([name | rest], dir, partials, cap, seen) do
+    cond do
+      not part_name?(name) ->
+        error(
+          :missing_partial,
+          "Partial #{inspect(name)} is not a simple name; no directory traversal is allowed."
+        )
+
+      MapSet.member?(seen, name) ->
+        load_parts(rest, dir, partials, cap, seen)
+
+      MapSet.size(seen) >= 128 ->
+        error(
+          :partial_count,
+          "More than 128 referenced partials; flatten/narrow the composition."
+        )
+
+      true ->
+        read =
+          case Map.fetch(partials, name) do
+            {:ok, text} -> {:ok, text}
+            :error -> read_template(Path.join(dir, name <> ".md"), cap)
+          end
+
+        with {:ok, text} <- read do
+          load_parts(
+            rest ++ references(text),
+            dir,
+            Map.put(partials, name, text),
+            cap,
+            MapSet.put(seen, name)
+          )
+        end
+    end
+  end
+
   def render(template, vars \\ %{}, opts \\ []) do
     partials = Keyword.get(opts, :partials, %{})
     preserve = Keyword.get(opts, :preserve, [])
