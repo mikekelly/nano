@@ -1507,16 +1507,42 @@ defmodule NanoAgent do
     end
   end
 
-  defp compaction_done(s, _t, error) do
+  defp compaction_done(
+         s,
+         _t,
+         {:error,
+          %{known_prompt_tokens: prompt, known_completion_tokens: completion, known_cost: cost} =
+            detail}
+       ) do
+    Nano.StateStore.add_node_tokens(prompt + completion)
+
+    log(s, :compaction_usage, %{
+      outcome: "failed",
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      cost: cost,
+      successful_summary_passes: detail[:successful_summary_passes] || 0
+    })
+
+    s =
+      %{s | tokens_used: s.tokens_used + prompt + completion, cost: s.cost + (cost || 0)}
+      |> check_budget()
+
+    compaction_failure(s, {:error, detail})
+  end
+
+  defp compaction_done(s, _t, error), do: compaction_failure(s, error)
+
+  defp compaction_failure(s, error) do
     log(s, :compaction_failed, %{error: brief(error)})
 
-    s
-    |> Map.put(:status, :idle)
-    |> halt(
-      :context,
+    s = Map.put(s, :status, :idle)
+
+    text =
       "Automatic harness compaction failed: #{brief(error)}; full history remains in the harness log"
-    )
-    |> end_turn("error")
+
+    s = if s.halted, do: note(s, text), else: halt(s, :context, text)
+    end_turn(s, "error")
   end
 
   @doc """
