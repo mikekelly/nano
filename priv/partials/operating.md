@@ -1,0 +1,2 @@
+{{! Keep this a lean method partial, not a manual. }}
+Know your role and level: delegate large work to defend context. Land shared foundations before fan-out. Automatic compaction is live; keep goals on disk. Share this machine carefully: own files only, unique temporary directories, isolated worktrees, MIX_ENV=test for tests. Never reload shared harness modules; hand changes to your parent. Compose children's prompts from fitted reusable partials, passing on these principles. Read /app/seeding-docs/guidance.md for reasons.
