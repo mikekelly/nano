@@ -124,4 +124,44 @@ defmodule BotsHealthTest do
              &(&1["text"] =~ "could not respond")
            )
   end
+
+  test "retry reuses the unanswered human message with new epoch and no fabricated post", ctx do
+    Agent.update(ctx.agent, fn _ -> {:error, {:agent_halted, :node_budget}} end)
+    {:ok, original} = Bots.say(ctx.sid, "Recover this exact question", ctx.opts)
+    assert_receive {:grant, old}
+    eventually(fn -> Bots.session(ctx.sid, ctx.opts)["status"] == "error" end)
+    before = Bots.session(ctx.sid, ctx.opts)
+    Agent.update(ctx.agent, fn _ -> {:ok, %{halted: nil}} end)
+    assert {:ok, recovered} = Bots.retry(ctx.sid, ctx.opts)
+    assert recovered["epoch"] == before["epoch"] + 1
+    assert recovered["messages"] == before["messages"]
+    assert recovered["pending_message_id"] == original["id"]
+    assert_receive {:grant, fresh}
+    assert old != fresh
+    assert {:error, :active} = Bots.retry(ctx.sid, ctx.opts)
+    assert {:error, :stale_token} = Bots.post(old, "old", ctx.opts)
+    assert {:ok, _} = Bots.post(fresh, "Recovered answer", ctx.opts)
+    eventually(fn -> Bots.session(ctx.sid, ctx.opts)["status"] == "idle" end)
+    humans = Enum.filter(Bots.session(ctx.sid, ctx.opts)["messages"], &(&1["kind"] == "human"))
+    assert humans == [original]
+    assert {:error, :not_errored} = Bots.retry(ctx.sid, ctx.opts)
+  end
+
+  test "retry refuses errors without a pending human and never unhalts the runtime", ctx do
+    assert {:error, :not_errored} = Bots.retry(ctx.sid, ctx.opts)
+
+    :sys.replace_state(ctx.opts[:server], fn state ->
+      %{state | data: put_in(state.data, ["sessions", ctx.sid, "status"], "error")}
+    end)
+
+    assert {:error, :no_pending_message} = Bots.retry(ctx.sid, ctx.opts)
+    Agent.update(ctx.agent, fn _ -> {:error, {:agent_halted, :node_budget}} end)
+    Bots.say(ctx.sid, "still halted", ctx.opts)
+    assert_receive {:grant, _}
+    eventually(fn -> Bots.session(ctx.sid, ctx.opts)["status"] == "error" end)
+    assert {:ok, _} = Bots.retry(ctx.sid, ctx.opts)
+    assert_receive {:grant, _}
+    eventually(fn -> Bots.session(ctx.sid, ctx.opts)["status"] == "error" end)
+    assert Agent.get(ctx.agent, & &1) == {:error, {:agent_halted, :node_budget}}
+  end
 end
