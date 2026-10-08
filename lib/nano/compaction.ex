@@ -29,10 +29,16 @@ defmodule Nano.Compaction do
           (i > 0 and m["role"] == "user") or (i > 1 and m["role"] == "assistant"),
           do: i
 
+    # keep is a soft target, not a refusal boundary. A default 50KB tool result
+    # alone can exceed 20K tokens yet fit easily in a large model window. Keep
+    # its complete call/result pair and let the final summary+system fit guard decide.
     cut =
       Enum.find(candidates, fn i ->
         size(Enum.drop(messages, i)) <= keep
-      end)
+      end) ||
+        Enum.find(Enum.reverse(candidates), fn i ->
+          size(Enum.drop(messages, i)) < window - reserve(window)
+        end)
 
     if cut, do: {:ok, Enum.take(messages, cut), Enum.drop(messages, cut)}, else: :no_prefix
   end
