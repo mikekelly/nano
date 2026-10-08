@@ -537,7 +537,52 @@ defmodule NanoWeb.AgentLiveTest do
     assert has_element?(view, "#timeline.debug")
   end
 
+  test "front-of-mind events appear in reading backlog and live without instruction authority",
+       ctx do
+    {_pid, id} = start!(ctx)
+    agent = %{id: id, name: ctx.name}
+
+    events = [
+      {:front_of_mind_bob,
+       %{
+         note: "<script>agent note</script>",
+         written_at: 123,
+         estimated_distance_tokens: 1200,
+         threshold_tokens: 1000,
+         reason: "distance",
+         probability: 0.9
+       }},
+      {:front_of_mind_drift, %{probability: 0.8, stored: true}},
+      {:front_of_mind_configuration, %{config: %{enabled: true}, note_set: true}},
+      {:front_of_mind_error, %{error: "review unavailable"}}
+    ]
+
+    for {type, fields} <- events, do: Nano.Log.write(agent, type, fields)
+    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}")
+    assert has_element?(view, "#timeline.reading li.front-of-mind", "Agent-owned working note")
+
+    for {type, _} <- events do
+      assert has_element?(
+               view,
+               "li.front-of-mind",
+               type |> Atom.to_string() |> String.replace("_", " ")
+             )
+    end
+
+    assert html =~ "estimated_distance_tokens"
+    assert html =~ "1200"
+    assert html =~ "review unavailable"
+    assert html =~ "&lt;script&gt;agent note&lt;/script&gt;"
+    refute html =~ "<script>agent note</script>"
+
+    for {type, fields} <- events, do: Nano.Log.write(agent, type, fields)
+    eventually(fn -> length(Regex.scan(~r/class="r front-of-mind"/, render(view))) == 8 end)
+    view |> element("nav.views a", "debug") |> render_click()
+    assert has_element?(view, "#timeline.debug li.entry", "front_of_mind_bob")
+  end
+
   # An event's message is printed Elixir, where a newline in a string is written \n: shown as
+
   # it was, a multi-line message ran together on one line ("First line.\nSecond line").
   test "a message's line breaks show as line breaks in both views, words never run together",
        ctx do

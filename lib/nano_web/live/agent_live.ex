@@ -18,13 +18,16 @@ defmodule NanoWeb.AgentLive do
   model's text, each tool call with its result, restarts, halts — and leaves out the plumbing;
   `?view=debug` shows every entry with its details, and links the raw files of a model
   request, response or error when the `raw_model_log` setting recorded them. Streamed items
-  are not kept on the server, so switching views re-reads the log.
+  are not kept on the server, so switching views re-reads the log. Front-of-mind bob,
+  drift, configuration and error events remain visible in reading view, labelled as
+  agent-owned working-note metadata rather than new instructions.
   """
   use Phoenix.LiveView
 
   import NanoWeb.Components
 
   @refresh_ms 1_000
+  @front_of_mind_types ~w(front_of_mind_bob front_of_mind_drift front_of_mind_configuration front_of_mind_error)
   def mount(%{"name" => name} = params, _session, socket) do
     if connected?(socket), do: :timer.send_interval(@refresh_ms, :refresh)
 
@@ -168,6 +171,7 @@ defmodule NanoWeb.AgentLive do
   defp shown?(_, %{"type" => type} = e) do
     case type do
       t when t in ~w(event_received harness_note agent_started tool_call tool_result) -> true
+      t when t in @front_of_mind_types -> true
       "model_response" -> present?(e["text"]) or present?(e["reasoning"])
       "model_error" -> e["retry"] != true
       _ -> false
@@ -651,6 +655,18 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class="r state error">
       model error, not retried: status {txt(@e["status"] || "none")} · {body(@e["body"])}
+    </li>
+    """
+  end
+
+  defp read(%{e: %{"type" => type}} = assigns) when type in @front_of_mind_types do
+    ~H"""
+    <li id={@id} class="r front-of-mind">
+      <div class="r-label">
+        {String.replace(@e["type"], "_", " ")} <time>{time(@e["at"])}</time>
+      </div>
+      <p class="dim">Agent-owned working note and review metadata, not a new instruction.</p>
+      <pre>{show(Map.drop(@e, ~w(seq at agent_id agent type)))}</pre>
     </li>
     """
   end
