@@ -1470,8 +1470,15 @@ defmodule NanoAgentTest do
     Process.exit(store, :kill)
     assert_receive {:DOWN, ^ref, _, _, _}
     wait_until(fn -> NanoAgent.info(ctx.name) != nil end)
-    assert Process.whereis(Nano.StateStore) != store
+    replacement = Process.whereis(Nano.StateStore)
+    assert replacement != store
     assert %{pid: ^pid, halted: nil} = NanoAgent.info(ctx.name)
+
+    # The process dashboard's standard set is the immutable boot PID snapshot. A
+    # restarted service is newly visible, not implicitly hidden by its registered name.
+    refute MapSet.member?(Nano.Application.boot_set(), replacement)
+    assert %{kind: :other, registered_name: Nano.StateStore} = Nano.Ops.process(replacement)
+    assert Enum.any?(Nano.Ops.processes(), &(&1.pid == replacement and &1.kind == :other))
 
     # It watches the agent again: a kill after the store restart is restored, not started fresh.
     Fake.push(ctx.model, text: "ok")

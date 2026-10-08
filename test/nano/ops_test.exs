@@ -142,7 +142,10 @@ defmodule Nano.OpsTest do
       assert %{kind: :agent, name: ^agent} = by_pid[agent_pid]
       assert %{kind: :user, name: ^user} = by_pid[user_pid]
       assert %{kind: :other, name: nil} = by_pid[other]
-      refute Map.has_key?(by_pid, Process.whereis(Nano.StateStore))
+      # Recovery tests can replace this PID after the boot snapshot; replacement services
+      # are visible as new processes, just like any other non-endpoint :nano process.
+      store = Process.whereis(Nano.StateStore)
+      assert Map.has_key?(by_pid, store) == not MapSet.member?(Nano.Application.boot_set(), store)
       refute Map.has_key?(by_pid, Process.whereis(:code_server))
 
       {agents, rest} = Enum.split_while(processes, &(&1.kind == :agent))
@@ -259,7 +262,10 @@ defmodule Nano.OpsTest do
              } =
                Ops.process(user)
 
-      assert %{kind: :standard, registered_name: Nano.StateStore} = Ops.process("Nano.StateStore")
+      store = Process.whereis(Nano.StateStore)
+      kind = if MapSet.member?(Nano.Application.boot_set(), store), do: :standard, else: :other
+      assert %{kind: ^kind, registered_name: Nano.StateStore} = Ops.process("Nano.StateStore")
+      assert %{kind: :standard, registered_name: :code_server} = Ops.process(:code_server)
       assert Ops.process(inspect(user_pid)).pid == user_pid
       assert Ops.process("nobody_#{System.unique_integer()}") == nil
     end
