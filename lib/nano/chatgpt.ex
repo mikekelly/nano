@@ -29,6 +29,7 @@ defmodule Nano.ChatGPT do
              id: id,
              name: id,
              context_length: 272_000,
+             input_modalities: ["text"],
              reasoning_levels: ~w(low medium high xhigh max),
              default_reasoning: if(id == "gpt-6.1-sol", do: "low", else: "medium")
            }
@@ -112,8 +113,8 @@ defmodule Nano.ChatGPT do
 
   ## Chat messages to Responses input items
 
-  defp input(%{"role" => "user", "content" => text}),
-    do: [%{type: "message", role: "user", content: [%{type: "input_text", text: text}]}]
+  defp input(%{"role" => "user"} = m),
+    do: [%{type: "message", role: "user", content: Seedling.Images.Wire.responses_content(m)}]
 
   # Reasoning first, as the model produced it, then the text, then the calls.
   defp input(%{"role" => "assistant"} = m) do
@@ -139,8 +140,14 @@ defmodule Nano.ChatGPT do
     reasoning ++ text ++ calls
   end
 
-  defp input(%{"role" => "tool"} = m),
-    do: [%{type: "function_call_output", call_id: m["tool_call_id"], output: m["content"]}]
+  defp input(%{"role" => "tool"} = m) do
+    output =
+      if Map.get(m, "images", []) == [],
+        do: m["content"],
+        else: Seedling.Images.Wire.responses_content(m)
+
+    [%{type: "function_call_output", call_id: m["tool_call_id"], output: output}]
+  end
 
   ## The event stream to a chat completions response
 
@@ -286,7 +293,7 @@ defmodule Nano.ChatGPT do
 
   @doc """
   The models the connected subscription offers, as `%{id, name, context_length,
-  reasoning_levels, default_reasoning}` (ids without the `openai-codex/` prefix; levels as
+  reasoning_levels, default_reasoning, input_modalities}` (ids without the `openai-codex/` prefix; levels as
   `Nano.Model.reasoning/3` gives them): the backend's list (`GET /models`, as the Codex CLI
   fetches it, in its order of priority), or the Codex CLI's bundled list if that cannot be had;
   `[]` when no subscription is connected. Cached for an hour, a fallback for a minute, and
@@ -334,7 +341,8 @@ defmodule Nano.ChatGPT do
         %{
           id: m["slug"],
           name: m["display_name"] || m["slug"],
-          context_length: m["context_window"]
+          context_length: m["context_window"],
+          input_modalities: m["input_modalities"] || ["text"]
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )

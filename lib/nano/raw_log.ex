@@ -40,8 +40,9 @@ defmodule Nano.RawLog do
   still there; each is written whole (a temp file, renamed).
 
   Headers that carry credentials (authorization, chatgpt-account-id, cookies, anything named
-  like a key, token or secret) are written as `[redacted]`. The bodies are not: a request
-  holds the agent's whole conversation.
+  like a key, token or secret) are written as `[redacted]`. The text bodies are not: a request
+  holds the agent's whole conversation. Inline `data:image/...;base64,...` attachments are
+  replaced by `[image data omitted]` so raw logs never duplicate immutable image storage.
 
   Recording never fails or holds up a model call: a file that cannot be written is skipped,
   with one warning in the node's log (`Logger`) until the node restarts. After each attempt
@@ -159,7 +160,16 @@ defmodule Nano.RawLog do
 
         write(name <> ".request.txt", fn ->
           method = req.method |> to_string() |> String.upcase()
-          [method, ?\s, URI.to_string(req.url), ?\n, headers(req.headers), ?\n, body(req.body)]
+
+          [
+            method,
+            ?\s,
+            URI.to_string(req.url),
+            ?\n,
+            headers(req.headers),
+            ?\n,
+            req.body |> body() |> IO.iodata_to_binary() |> Seedling.Images.Wire.redact()
+          ]
         end)
 
         req

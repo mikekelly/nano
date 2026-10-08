@@ -43,6 +43,8 @@ defmodule NanoWeb.Router do
     get "/agents/:name/log", ApiController, :log
     get "/agents/:name/stream", ApiController, :stream
     get "/raw/*path", ApiController, :raw
+    post "/images", ApiController, :upload_image
+    get "/images/:id", ApiController, :image
 
     get "/users", ApiController, :users
     post "/users", ApiController, :start_user
