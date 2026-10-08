@@ -20,6 +20,52 @@ defmodule Nano.ImageProvidersTest do
     %{ref: ref, url: "data:image/png;base64," <> Base.encode64(data)}
   end
 
+  test "catalog caches created before image support are refreshed after hot reload" do
+    FakeOpenRouter.start()
+    model = FakeOpenRouter.model(%{"architecture" => %{"input_modalities" => ["text", "image"]}})
+
+    old_config =
+      :erlang.phash2(
+        {Nano.Settings.get(:openrouter_api_key), Nano.Settings.get(:openrouter_base_url)}
+      )
+
+    :persistent_term.put(
+      {Nano.OpenRouter, :models},
+      {old_config, System.monotonic_time(:second) + 3600, [%{id: model}]}
+    )
+
+    assert Enum.find(Nano.OpenRouter.models(), &(&1.id == model)).input_modalities == [
+             "text",
+             "image"
+           ]
+
+    FakeChatGPT.start()
+    FakeChatGPT.listen()
+    Nano.ChatGPT.Auth.logout()
+    on_exit(fn -> Nano.ChatGPT.Auth.logout() end)
+    FakeChatGPT.auth(:poll, [{200, :approved}])
+    assert %{status: :pending} = Nano.ChatGPT.Auth.login()
+    eventually(fn -> Nano.ChatGPT.Auth.status().status == :connected end)
+    model = FakeChatGPT.model()
+
+    FakeChatGPT.models([
+      %{"slug" => model, "context_window" => 272_000, "input_modalities" => ["text", "image"]}
+    ])
+
+    old_config =
+      {Nano.Settings.get(:chatgpt_base_url), Nano.Settings.get(:chatgpt_client_version)}
+
+    :persistent_term.put(
+      {Nano.ChatGPT, :models},
+      {old_config, System.monotonic_time(:second) + 3600, [%{id: model}]}
+    )
+
+    assert Enum.find(Nano.ChatGPT.models(), &(&1.id == model)).input_modalities == [
+             "text",
+             "image"
+           ]
+  end
+
   defp messages(ref) do
     [
       %{"role" => "system", "content" => "test"},
