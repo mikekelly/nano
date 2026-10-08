@@ -41,7 +41,7 @@ to the existing tip, calls the same provider/model/reasoning, and extracts a lit
 summary from exactly one `Seedling.Compaction.provide_summary("...")` eval AST. It
 does **not** run that eval or any other code returned during automatic compaction.
 All attempts and invalid outputs remain logged; they never enter the conversation.
-Invalid responses retry the same request up to three times. Transport failures use the
+Invalid responses retry the same request, including its fixed output bound, up to three times. Transport failures use the
 normal timeout, backoff and retry lifecycle, without changing the checkpoint request.
 The normal model-call timeout applies (default permits long streamed replies).
 
@@ -124,5 +124,18 @@ agent's system prompt. Keep the default/agent prompt accurate about automatic co
 and point orientation at `Seedling.Compaction`, rather than repeating this document.
 
 Tests use scripted HTTP providers and real supervised GenServers, without provider
-spend. The real-provider crossing-threshold acceptance smoke is an operator-coordinated
-step after approved deployment; do not represent a scripted summary as that smoke.
+spend. A separate opt-in real-provider smoke lives at `scripts/compaction_smoke.exs`. It starts
+an isolated test VM with unique directories and an access-only credential snapshot,
+disables refresh, fills history through actual model evals, and verifies same-pid
+continuation after the model writes its own summary. It is never run by `mix test`.
+Do not represent a scripted summary as this smoke.
+
+Acceptance run on 2026-10-08 with `openai-codex/gpt-6.1-sol`, reasoning low: automatic
+threshold estimate 50,251 in a 65,536 window (16,384 reserve); actual checkpoint prompt
+46,942 tokens, completion 955, cache read 43,392; next prefix prompt 1,522, cache read 0.
+The real model's continuation eval reported the same pid and preserved counter = 15,
+without a halt. No transcript or fake response was injected. Total recorded spend was
+381,986 tokens. The initial smoke bounded cleanup after receipt of continuation while
+its final idle-model call was in flight; the continuation eval itself had its result.
+Credentials were removed from the isolated directories, with no shared token refresh,
+settings change, harness hot load or builder restart.
