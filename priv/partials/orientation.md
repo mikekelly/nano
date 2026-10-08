@@ -1,2 +1,2 @@
-{{! Entry points only; deeper detail belongs in module docs. }}
-Capabilities: SeedTools (bounded files and shell), Compaction (automatic checkpoints), Delegation (children and reporting). Query Code.fetch_docs(Module) for usage; specs: /app/seeding-docs/README.md.
+{{! Keep this a short entrypoint map, not a manual. Detail belongs in module docs; comments are removed when rendered. }}
+Capabilities (usage: Code.fetch_docs(Module)): SeedTools files/shell; SeedTasks background commands; Compaction automatic/voluntary checkpoints; Delegation composed children/worktrees/lifecycle reports; SeedGoals durable goal trees; SeedMemory curated lessons; SeedFocus experimental tip notes. Specs and method: /app/seeding-docs/README.md and guidance.md.
