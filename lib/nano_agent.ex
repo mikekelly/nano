@@ -1091,6 +1091,7 @@ defmodule NanoAgent do
   end
 
   defp charge_compaction(s, stats) do
+    if stats.responses != [], do: attest_model_success()
     Nano.StateStore.add_node_tokens(stats.tokens)
 
     Enum.each(stats.responses, fn response ->
@@ -1136,6 +1137,17 @@ defmodule NanoAgent do
     end
   end
 
+  # Optional recovery supervisor: a successful response is proof of provider access.
+  # Recovery attestation must never fail a working agent or expose credential errors.
+  defp attest_model_success do
+    if Code.ensure_loaded?(SafetyNet) and function_exported?(SafetyNet, :served, 0),
+      do: apply(SafetyNet, :served, [])
+
+    :ok
+  catch
+    _, _ -> :ok
+  end
+
   defp model_done(s, {:exit, reason}) do
     body = "model request task exited: " <> brief(reason)
 
@@ -1164,6 +1176,7 @@ defmodule NanoAgent do
   end
 
   defp model_done(s, {:ok, %{message: msg} = r}) do
+    attest_model_success()
     prompt = r.usage["prompt_tokens"] || 0
     completion = r.usage["completion_tokens"] || 0
     cached = get_in(r.usage, ["prompt_tokens_details", "cached_tokens"]) || 0
