@@ -386,4 +386,48 @@ defmodule Seedling.CompactionLifecycleTest do
     assert length(Enum.filter(Nano.Log.read(ctx.id), &(&1["type"] == "context_bob"))) == 2
     Fake.push(ctx.model, text: "done again")
   end
+
+  test "checkpoint retries freeze the output bound as well as the cached messages", ctx do
+    Fake.push(ctx.model, calls: [eval: "x = 42"], usage: {90_000, 100, 0})
+    send(ctx.pid, :brief)
+    request(ctx)
+    compact = request(ctx)
+    assert compact["max_tokens"] < 12_000
+    # The provider's exact prompt measurement changes the estimate, but not the request.
+    Fake.push(ctx.model, text: "invalid checkpoint", usage: {90_100, 100, 0})
+    retry = request(ctx)
+    assert retry == compact
+    Fake.push(ctx.model, calls: [eval: summary_code("Valid checkpoint after fixed-bound retry.")])
+    request(ctx)
+    Fake.push(ctx.model, text: "done")
+  end
+
+  test "live legacy state with missing keys migrates on an in-flight model completion without restart",
+       ctx do
+    send(ctx.pid, :legacy_brief)
+    request(ctx)
+
+    keys = [
+      :input_modalities,
+      :compaction,
+      :compaction_summary,
+      :compaction_fresh,
+      :compaction_events,
+      :compaction_pending_events,
+      :front_of_mind_compacted
+    ]
+
+    :sys.replace_state(ctx.pid, &Map.drop(&1, keys))
+    Fake.push(ctx.model, calls: [eval: "x = 42"], usage: {85000, 100, 0})
+    compact = request(ctx)
+    assert text(List.last(compact["messages"])) =~ "automatic compaction"
+    assert NanoAgent.whereis(ctx.name) == ctx.pid
+    Fake.push(ctx.model, calls: [eval: summary_code("Legacy checkpoint, x = 42.")])
+    resumed = request(ctx)
+    assert [_, brief, summary] = resumed["messages"]
+    assert text(brief) =~ "legacy_brief"
+    assert text(summary) =~ "Legacy checkpoint"
+    assert NanoAgent.info(ctx.name).input_modalities == ["text"]
+    Fake.push(ctx.model, text: "done")
+  end
 end

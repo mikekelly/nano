@@ -636,7 +636,7 @@ defmodule NanoAgent do
            " Your turn and token counters are reset to zero."}
 
         :compaction_failed ->
-          {%{Compaction.migrate(s) | compaction: %{attempt: 1}},
+          {%{Compaction.migrate(s) | compaction: Map.put(s.compaction, :attempt, 1)},
            " The unchanged automatic checkpoint request will be retried."}
 
         :context ->
@@ -929,8 +929,10 @@ defmodule NanoAgent do
     estimate = estimate(s)
     room = s.max_context - estimate
 
-    if s.max_context > 0 and room < @reply_room,
-      do: (before_delivery || s) |> context_halt(estimate) |> end_turn("budget"),
+    minimum = if s.compaction, do: max(@reply_room, s.compaction[:output] || 0), else: @reply_room
+
+    if s.max_context > 0 and room < minimum,
+      do: (before_delivery || s) |> context_halt(estimate, minimum) |> end_turn("budget"),
       else: call(s, line, estimate, room)
   end
 
@@ -944,7 +946,8 @@ defmodule NanoAgent do
     })
 
     s = append(s, %{"role" => "user", "content" => "<harness>#{text}</harness>"})
-    dispatch_request(%{s | compaction: %{attempt: 1}}, false)
+    output = min(12_000, min(s.max_output || 12_000, s.max_context - estimate(s)))
+    dispatch_request(%{s | compaction: %{attempt: 1, output: output}}, false)
   end
 
   defp apply_compaction(s, text, source) do
@@ -994,7 +997,7 @@ defmodule NanoAgent do
         log(s, :compaction_rejected, %{attempt: attempt, reason: reason})
 
         if attempt < Compaction.attempts() do
-          request(%{s | compaction: %{attempt: attempt + 1}}, false)
+          request(%{s | compaction: Map.put(s.compaction, :attempt, attempt + 1)}, false)
         else
           s
           |> halt(
@@ -1042,7 +1045,7 @@ defmodule NanoAgent do
         %{"role" => "system", "content" => system_prompt} | transcript
       ])
 
-  defp context_halt(s, estimate) do
+  defp context_halt(s, estimate, reply_room) do
     b = budget(s)
     log(s, :budget_exhausted, Map.merge(b, %{scope: "context", estimate: estimate}))
 
@@ -1051,7 +1054,7 @@ defmodule NanoAgent do
       :context,
       "Your next call to the model might not fit in your context of #{b.max_context} tokens: " <>
         "with what has arrived since your last response, this conversation could now be up to " <>
-        "about #{estimate} tokens, which leaves less than #{@reply_room} for your reply"
+        "about #{estimate} tokens, which leaves less than #{reply_room} for your reply"
     )
   end
 
@@ -1061,7 +1064,9 @@ defmodule NanoAgent do
     messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
     id = s.request_id + 1
     output = if s.max_context > 0, do: min(room, s.max_output || room), else: s.max_output
-    output = if s.compaction, do: min(output || 12_000, 12_000), else: output
+
+    output =
+      if s.compaction, do: s.compaction[:output] || min(output || 12_000, 12_000), else: output
 
     fields = %{
       request_id: id,
