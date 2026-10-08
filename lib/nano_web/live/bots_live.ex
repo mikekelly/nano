@@ -813,14 +813,42 @@ defmodule NanoWeb.BotsLive do
               <h3>{bot(@bots, r["bot_id"])["name"]} needs your answer</h3><.markdown text={
                 r["question"] || ""
               } />
-              <form :if={r["status"] == "pending"} phx-submit="answer">
+              <form :if={r["status"] == "pending" and r["kind"] != "setting"} phx-submit="answer">
                 <input type="hidden" name="request_id" value={r["id"]} /><label for={"answer-#{r["id"]}"}>Your answer</label><textarea
                   id={"answer-#{r["id"]}"}
                   name="answer"
                   required
                 ></textarea><button>Send answer</button>
               </form>
-              <p :if={r["status"] != "pending"}>Answered: {r["answer"]}</p>
+              <div
+                :if={r["status"] == "pending" and r["kind"] == "setting"}
+                id={"setting-request-#{r["id"]}"}
+                phx-hook="BotsSetting"
+                phx-update="ignore"
+                data-endpoint={"/bots/requests/#{r["id"]}/setting"}
+                class="setting-request"
+              >
+                <p>
+                  Save {r["setting_key"]} securely. Don’t paste credentials into the general chat.
+                </p>
+                <label for={"credential-#{r["id"]}"}>Credential {r["setting_key"]}</label>
+                <input
+                  id={"credential-#{r["id"]}"}
+                  type="password"
+                  name="password"
+                  autocomplete="new-password"
+                  spellcheck="false"
+                  autocapitalize="none"
+                />
+                <button type="button" data-save-setting>Save credential</button>
+                <p data-setting-status role="status" aria-live="polite"></p>
+              </div>
+              <p :if={r["status"] != "pending" and r["kind"] == "setting"}>
+                Credential {r["setting_key"]} saved.
+              </p>
+              <p :if={r["status"] != "pending" and r["kind"] != "setting"}>
+                Answered: {if is_binary(r["answer"]), do: r["answer"], else: "Answer saved."}
+              </p>
             </section>
             <div class="statuses" role="status" aria-live="polite">
               <p :for={{id, status} <- @chat["statuses"] || %{}} :if={status["state"] != "idle"}>
