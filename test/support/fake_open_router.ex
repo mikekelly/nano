@@ -23,7 +23,8 @@ defmodule Nano.FakeOpenRouter do
   `{name, args}` with args a map, a raw JSON string, or `{:raw, term}` to send `term` as the
   arguments value itself), `usage: {prompt, completion, cached}` (default `{100, 10, 0}`),
   `cost:` (default 0.001), `provider:`, `finish_reason:`, `reasoning:`, `reasoning_details:`. Or
-  `status:` (and optionally `body:`) for an error response. The success shape mirrors what
+  `status:` (and optionally `body:` and `headers:`, a list of `{name, value}`) for an error
+  response. The success shape mirrors what
   OpenRouter returned for anthropic/claude-haiku-4.5 in October 2026.
   """
   use GenServer
@@ -197,11 +198,12 @@ defmodule Nano.FakeOpenRouter do
              "prompt_tokens_details" => %{"cached_tokens" => cached, "cache_write_tokens" => 0},
              "cost" => opts[:cost] || 0.001
            }
-         }}
+         }, []}
 
       status ->
         {status,
-         opts[:body] || %{"error" => %{"code" => status, "message" => "fake error #{status}"}}}
+         opts[:body] || %{"error" => %{"code" => status, "message" => "fake error #{status}"}},
+         opts[:headers] || []}
     end
   end
 
@@ -229,14 +231,18 @@ defmodule Nano.FakeOpenRouter do
     def call(conn, _opts) do
       {:ok, raw, conn} = Plug.Conn.read_body(conn, length: 100_000_000)
 
-      {status, body} =
-        if String.ends_with?(conn.request_path, "/auth/keys"),
-          do: GenServer.call(Nano.FakeOpenRouter, {:exchange, Jason.decode!(raw)}),
-          else: Nano.FakeOpenRouter.request(Jason.decode!(raw))
+      {status, body, headers} =
+        if String.ends_with?(conn.request_path, "/auth/keys") do
+          {status, body} = GenServer.call(Nano.FakeOpenRouter, {:exchange, Jason.decode!(raw)})
+          {status, body, []}
+        else
+          Nano.FakeOpenRouter.request(Jason.decode!(raw))
+        end
 
       body = if is_binary(body), do: body, else: Jason.encode!(body)
 
-      conn
+      headers
+      |> Enum.reduce(conn, fn {k, v}, conn -> Plug.Conn.put_resp_header(conn, k, v) end)
       |> Plug.Conn.put_resp_content_type("application/json")
       |> Plug.Conn.send_resp(status, body)
     end

@@ -89,6 +89,7 @@ header.top {
 .badge.idle { background: var(--idle); }
 .badge.thinking { background: var(--thinking); }
 .badge.running_tool { background: var(--running); }
+.badge.waiting_retry { background: var(--thinking); }
 .badge.suspended { background: var(--suspended); }
 .badge.halted, .badge.down { background: var(--halted); }
 
@@ -386,6 +387,7 @@ ol.timeline.reading .r { margin: 0.9rem 0; }
 .agent-card.idle { border-top-color: var(--idle); }
 .agent-card.thinking { border-top-color: var(--thinking); }
 .agent-card.running_tool { border-top-color: var(--running); }
+.agent-card.waiting_retry { border-top-color: var(--thinking); }
 .agent-card.suspended { border-top-color: var(--suspended); }
 .agent-card.halted, .agent-card.down { border-top-color: var(--halted); }
 .agent-card { display: flex; flex-direction: column; }

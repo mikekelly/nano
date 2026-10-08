@@ -20,7 +20,9 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/processes/:target",
      "Process.info for one process, plus kind. :target is a URL-encoded pid string, an agent, user or registered name."},
     {"GET", "/api/agents",
-     "All agents: status, halted, suspended, model, reasoning, budget used, cost, restart count."},
+     "All agents: status (idle, thinking, running_tool, or waiting_retry: a model call failed " <>
+       "and it calls again at retry_at), halted, suspended, model, reasoning, budget used, " <>
+       "cost, restart count."},
     {"POST", "/api/agents",
      "Start an agent. Nothing has a default; required: name; model (a slug its provider " <>
        "lists: openai-codex/<model> runs on the ChatGPT subscription connected with " <>
@@ -49,7 +51,9 @@ defmodule NanoWeb.ApiController do
        "conversation never shrinks, so it halts again before the next model call), node_budget (the node-wide " <>
        "hourly token cap), usage_limit (the provider refused with a usage limit, e.g. the " <>
        "ChatGPT subscription's; un-halt once it has reset), provider_unavailable (its model's " <>
-       "provider was turned off: OpenRouter's key removed; set it again, then un-halt), " <>
+       "provider was turned off, OpenRouter's key removed, or refused its credentials; fix " <>
+       "that, then un-halt), model_refused (the provider refused its request as invalid; " <>
+       "un-halting sends it again), " <>
        "restart_brake (3 restarts within 60 s), start_failed (its process " <>
        "failed while starting; un-halting retries the start) or log_failed (its log could not " <>
        "be written; fix the disk first)."},

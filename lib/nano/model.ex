@@ -12,20 +12,102 @@ defmodule Nano.Model do
 
   @doc """
   One model call: `{:ok, %{message, finish_reason, usage, provider, cost}}` or `{:error, %{status,
-  body}}`, with `message` and `usage` in OpenRouter's chat completions shape. An error may also
-  carry `transient: true` (worth retrying) and `limit:` (a sentence saying which usage limit was
-  reached, for the agent's halt note). `max_output` bounds the response's tokens, reasoning
+  body, class}}`, with `message` and `usage` in OpenRouter's chat completions shape (`status` is
+  nil when no HTTP response came). `max_output` bounds the response's tokens, reasoning
   included, on OpenRouter (`max_tokens`). The ChatGPT subscription is sent no bound: its backend
   refuses `max_output_tokens` with a 400 (the Codex CLI and pi never send it), and the window
   its list gives is the input Codex works within, below the model's whole window.
+
+  Each provider sorts its failures into one `class`, which decides what `NanoAgent` does:
+
+    * `:transient`: no response, a timeout, a cut stream, a rate limit, an overloaded or failing
+      server. Worth retrying, after `retry_after:` milliseconds when the provider said how long.
+    * `:usage_limit`: a plan's usage limit or an account's credit is used up; `limit:` says which,
+      in a sentence. The agent halts until an operator un-halts it.
+    * `:auth`: the provider refused this node's credentials (after the ChatGPT subscription's
+      one refresh). The agent halts, `:provider_unavailable`.
+    * `:context`: the request does not fit the model's context. The agent halts, `:context`.
+    * `:refused`: the request is invalid, and sending it again would not change that (a 4xx
+      such as an unsupported parameter). The agent halts, `:model_refused`.
   """
   def chat(@prefix <> model, messages, tools, reasoning, _max_output),
     do: Nano.ChatGPT.chat(model, messages, tools, reasoning)
 
-  def chat(model, messages, tools, reasoning, max_output) do
-    with {:error, error} <- Nano.OpenRouter.chat(model, messages, tools, reasoning, max_output),
-         do: {:error, Map.put(error, :transient, Nano.OpenRouter.transient?(error))}
+  def chat(model, messages, tools, reasoning, max_output),
+    do: Nano.OpenRouter.chat(model, messages, tools, reasoning, max_output)
+
+  @doc """
+  The class (see `chat/5`) of an HTTP failure, by its status: none at all, 408, 409, 425, 429
+  or 5xx is `:transient`; 401 is `:auth`; 413, or a 400 or 422 whose message says the request
+  is too long for the context, is `:context`; any other 4xx is `:refused`. Providers decide
+  their own error codes first.
+  """
+  def class(status, body) do
+    cond do
+      status in [nil, 408, 409, 425, 429] or status >= 500 -> :transient
+      status == 401 -> :auth
+      status == 413 or (status in [400, 422] and context?(message(body))) -> :context
+      true -> :refused
+    end
   end
+
+  # How providers say a request is longer than the model's context (pi lists the many ways in
+  # packages/ai/src/utils/overflow.ts; these are the common ones).
+  defp context?(text),
+    do:
+      text =~
+        ~r/context[ _](length|window)|maximum context|prompt is too long|input is too long|exceeds? the (model's )?context|too many tokens/i
+
+  @doc """
+  Milliseconds the provider asked to wait before trying again, or nil: from a `retry-after-ms`
+  header, a `retry-after` header in seconds (an HTTP date is not read), or a message saying
+  "try again in 1.5s" (OpenAI's rate limits, as the Codex CLI reads them). `headers` as `Req`
+  gives them.
+  """
+  def retry_after(headers, body) do
+    header = fn name -> List.first(Map.get(headers, name, [])) end
+
+    cond do
+      ms = header.("retry-after-ms") -> number(ms)
+      s = header.("retry-after") -> number(s, 1000)
+      m = Regex.run(~r/try again in\s*(\d+(?:\.\d+)?)\s*(ms|s)/i, message(body)) -> later(m)
+      true -> nil
+    end
+  end
+
+  defp later([_, n, unit]), do: number(n, if(String.downcase(unit) == "ms", do: 1, else: 1000))
+
+  defp number(text, scale \\ 1) do
+    case Float.parse(String.trim(text)) do
+      {n, ""} when n >= 0 -> round(n * scale)
+      _ -> nil
+    end
+  end
+
+  @doc """
+  What a provider said about a failure, as text: the error object's message (or code), or the
+  body itself.
+  """
+  def message(body) do
+    error = if is_map(body), do: body["error"] || body, else: body
+
+    cond do
+      is_binary(error) ->
+        error
+
+      is_map(error) and is_binary(error["message"]) ->
+        error["message"]
+
+      is_map(error) and (error["code"] || error["type"]) ->
+        to_string(error["code"] || error["type"])
+
+      true ->
+        inspect(body, limit: 10, printable_limit: 300)
+    end
+  end
+
+  @doc "The provider of an agent's model, by name: \"OpenRouter\" or \"the ChatGPT subscription\"."
+  def provider(model), do: model |> split() |> elem(0) |> name()
 
   @doc """
   What `NanoAgent.start/1` checks of an agent's model, against its provider's model list: that

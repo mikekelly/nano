@@ -37,7 +37,7 @@ defmodule Nano.ChatGPT do
   def chat(model, messages, tools, reasoning) do
     case Nano.ChatGPT.Auth.token() do
       {:ok, creds} -> request(model, messages, tools, reasoning, creds, true)
-      {:error, message} -> {:error, %{status: nil, body: message}}
+      {:error, message} -> {:error, signed_out(nil, message)}
     end
   end
 
@@ -72,15 +72,22 @@ defmodule Nano.ChatGPT do
       {:ok, %{status: 401}} when again? ->
         case Nano.ChatGPT.Auth.refresh(creds.access_token) do
           {:ok, creds} -> request(model, [system | rest], tools, reasoning, creds, false)
-          {:error, message} -> {:error, %{status: 401, body: message}}
+          {:error, message} -> {:error, signed_out(401, message)}
         end
 
-      {:ok, %{status: status, body: body}} ->
-        {:error, error(status, body)}
+      {:ok, %{status: status, body: body} = resp} ->
+        {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->
-        {:error, %{status: nil, body: Exception.message(exception), transient: true}}
+        {:error, %{status: nil, body: Exception.message(exception), class: :transient}}
     end
+  end
+
+  # No token to send: while the subscription is still connected (its refresh failed, and is
+  # tried again every minute) that may pass; signed out, only an operator can connect it again.
+  defp signed_out(status, message) do
+    connected? = Nano.ChatGPT.Auth.status().status == :connected
+    %{status: status, body: message, class: if(connected?, do: :transient, else: :auth)}
   end
 
   # The originator names this client; the backend does not require Codex's (pi sends "pi").
@@ -145,10 +152,10 @@ defmodule Nano.ChatGPT do
 
   defp response(events) do
     case Enum.find(events, &(&1["type"] in @ends)) do
-      %{"type" => "response.failed", "response" => r} -> {:error, error(200, r)}
-      %{"type" => "error"} = e -> {:error, error(200, %{"error" => e})}
+      %{"type" => "response.failed", "response" => r} -> {:error, error(200, r, %{})}
+      %{"type" => "error"} = e -> {:error, error(200, %{"error" => e}, %{})}
       %{"response" => r} -> {:ok, message(r, events)}
-      nil -> {:error, %{status: 200, body: "the event stream ended early", transient: true}}
+      nil -> {:error, %{status: 200, body: "the event stream ended early", class: :transient}}
     end
   end
 
@@ -212,31 +219,38 @@ defmodule Nano.ChatGPT do
 
   ## Errors
 
-  # Codex's classification (codex-api/src/api_bridge.rs, sse/responses_error.rs): a usage
-  # limit, or a model the plan lacks, is final and halts the agent; quota and context errors
-  # are final; other rate limits, server errors and unknown stream failures are retried.
-  @final ~w(context_length_exceeded insufficient_quota credit_balance_exhausted invalid_prompt)
+  # Codex's classification (codex-api/src/api_bridge.rs, sse/responses_error.rs), in the
+  # classes of Nano.Model.chat/5: a usage limit, a model the plan lacks, or quota or credit
+  # used up is a usage limit; an over-long input is the context; an invalid prompt is refused;
+  # overloads, rate limits and other failures of the stream are transient (with the wait the
+  # backend asked for); anything else goes by its HTTP status.
   @limits ~w(usage_limit_reached usage_not_included)
+  @quota ~w(insufficient_quota credit_balance_exhausted)
 
-  defp error(status, body) do
+  defp error(status, body, headers) do
     e = if is_map(body) and is_map(body["error"]), do: body["error"], else: %{}
     kind = Enum.find([e["type"], e["code"]], &(&1 in @limits)) || e["code"]
+    quota? = kind in @quota or String.ends_with?(to_string(kind), "_spend_limit_exceeded")
+    error = %{status: status, body: body}
 
     cond do
-      kind in @limits ->
-        %{status: status, body: body, limit: limit(kind, e)}
+      kind in @limits or quota? ->
+        Map.merge(error, %{class: :usage_limit, limit: limit(kind, e)})
 
-      status == 200 ->
-        %{status: status, body: body, transient: kind not in @final}
+      kind == "context_length_exceeded" ->
+        Map.put(error, :class, :context)
+
+      kind == "invalid_prompt" ->
+        Map.put(error, :class, :refused)
 
       true ->
-        final = kind in @final or String.ends_with?(to_string(kind), "_spend_limit_exceeded")
+        class = if status == 200, do: :transient, else: Nano.Model.class(status, body)
+        error = Map.put(error, :class, class)
 
-        %{
-          status: status,
-          body: body,
-          transient: not final and (status in [408, 429] or status >= 500)
-        }
+        case class == :transient && Nano.Model.retry_after(headers, body) do
+          ms when is_integer(ms) -> Map.put(error, :retry_after, ms)
+          _ -> error
+        end
     end
   end
 
@@ -244,9 +258,16 @@ defmodule Nano.ChatGPT do
     plan = if e["plan_type"], do: " (#{e["plan_type"]})", else: ""
 
     what =
-      if kind == "usage_not_included",
-        do: "The ChatGPT plan#{plan} this node uses for you does not include this model",
-        else: "The ChatGPT plan#{plan} this node uses for you has reached its usage limit"
+      case kind do
+        "usage_not_included" ->
+          "The ChatGPT plan#{plan} this node uses for you does not include this model"
+
+        "usage_limit_reached" ->
+          "The ChatGPT plan#{plan} this node uses for you has reached its usage limit"
+
+        _ ->
+          "The ChatGPT account this node uses for you has no quota or credit left (#{kind})"
+      end
 
     case e["resets_at"] do
       at when is_integer(at) ->

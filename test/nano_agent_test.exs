@@ -2193,4 +2193,204 @@ defmodule NanoAgentTest do
     assert List.last(tool_texts(request!(ctx.model))) == "42"
     refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
   end
+
+  ## Failed model calls
+
+  # The first wait after a call whose attempts all failed, for one test.
+  defp model_wait(ms) do
+    saved = Application.get_env(:nano, :model_wait_ms)
+    Application.put_env(:nano, :model_wait_ms, ms)
+
+    on_exit(fn ->
+      if saved,
+        do: Application.put_env(:nano, :model_wait_ms, saved),
+        else: Application.delete_env(:nano, :model_wait_ms)
+    end)
+  end
+
+  defp failed_notes(id),
+    do:
+      for(
+        %{"text" => "My call to the model failed" <> _ = t} <- entries(id, :harness_note),
+        do: t
+      )
+
+  test "through an outage the agent is told, and called again on a growing wait without any message, until a call succeeds",
+       ctx do
+    model_wait(40)
+    {pid, id} = start!(ctx)
+
+    for status <- [503, 503, 503, 502, 502, 502, 500, 500, 500],
+        do: Fake.push(ctx.model, status: status)
+
+    Fake.push(ctx.model, text: "back")
+    send(pid, :only)
+    bodies = for _ <- 1..10, do: request!(ctx.model)
+    assert await(id, :model_response)["text"] == "back"
+    :sys.get_state(pid)
+
+    # One note per failed call, each wait about twice the last (±10%).
+    assert [first, second, third] = notes = failed_notes(id)
+    ms = &String.to_integer(hd(Regex.run(~r/\(in (\d+) ms\)/, &1, capture: :all_but_first)))
+    assert [a, b, c] = Enum.map(notes, ms)
+    assert a in 36..44 and b in 72..88 and c in 144..176
+
+    assert first =~
+             ~r/^My call to the model failed \(3 attempts\): HTTP 503: fake error 503\. I will call it again at \S+Z \(in \d+ ms\) without waiting for a message, or as soon as one arrives/
+
+    assert second =~
+             ~r/^My call to the model failed again \(3 attempts\): HTTP 502: fake error 502\. 2 calls in a row have failed since \S+Z\. I will call it again at/
+
+    assert third =~ "3 calls in a row"
+
+    # Each failed call ended its turn, and each new one sent the same history and the note.
+    assert for(e <- entries(id, :turn_ended), do: e["reason"]) ==
+             ~w(error error error no_tool_call)
+
+    assert [_system, event, n1, n2, n3] = List.last(bodies)["messages"]
+    assert delivery(event) =~ ":only"
+
+    assert for(m <- [n1, n2, n3], do: delivery(m)) ==
+             for(n <- notes, do: "<harness>#{n}</harness>")
+
+    assert length(entries(id, :event_received)) == 1
+
+    # Accounting as ever: every call a turn, tokens from the response alone.
+    assert %{status: :idle, retry_at: nil, budget: %{turns_used: 4, tokens_used: 110}} =
+             NanoAgent.info(ctx.name)
+
+    assert :sys.get_state(pid).retry == nil
+  end
+
+  test "waiting to call again shows when; it does not spin, and a message resumes at once", ctx do
+    {pid, id} = start!(ctx)
+    for _ <- 1..3, do: Fake.push(ctx.model, status: 503)
+    send(pid, :one)
+    for _ <- 1..3, do: request!(ctx.model)
+    note = await(id, :harness_note, &(&1["text"] =~ "My call to the model failed"))["text"]
+    %{tag: tag, retry: %{timer: timer}} = :sys.get_state(pid)
+    assert %{status: :waiting_retry, retry_at: at} = NanoAgent.info(ctx.name)
+    assert note =~ "I will call it again at #{at} (in "
+    {:ok, at, _} = DateTime.from_iso8601(at)
+    assert DateTime.diff(at, DateTime.utc_now()) in 25..34
+    refute_receive {:openrouter_request, _, _}, 300
+
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :two)
+    body = request!(ctx.model)
+
+    assert delivery(List.last(body["messages"])) =~
+             ~r/^<harness>My call to the model failed.*<\/harness>\n<event seq="2" [^>]*>:two<\/event>$/s
+
+    await(id, :model_response)
+    :sys.get_state(pid)
+    assert %{status: :idle, retry_at: nil} = NanoAgent.info(ctx.name)
+
+    # The wait's timer, when it fires, does nothing.
+    send(pid, {tag, :retry, timer})
+    refute_receive {:openrouter_request, _, _}, 100
+    assert NanoAgent.info(ctx.name).status == :idle
+  end
+
+  test "the wait a provider asks for is honoured: between attempts, or by the agent when longer",
+       ctx do
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, status: 429, headers: [{"retry-after-ms", "300"}])
+    Fake.push(ctx.model, text: "ok")
+    send(pid, :one)
+    request!(ctx.model)
+    t = System.monotonic_time(:millisecond)
+    request!(ctx.model)
+    assert System.monotonic_time(:millisecond) - t >= 250
+
+    assert %{"retry_after" => 300, "retry" => true, "class" => "transient"} =
+             await(id, :model_error)
+
+    await(id, :model_response)
+
+    # Longer than a call pauses between attempts (a minute): the agent waits it out instead.
+    Fake.push(ctx.model, status: 429, headers: [{"retry-after", "120"}])
+    send(pid, :two)
+    request!(ctx.model)
+    note = await(id, :harness_note, &(&1["text"] =~ "My call to the model failed"))["text"]
+
+    assert note =~
+             "My call to the model failed: HTTP 429: fake error 429. I will call it again at"
+
+    assert note =~ "(in 2.0 minutes)"
+    refute_receive {:openrouter_request, _, _}, 200
+
+    assert %{"retry_after" => 120_000, "retry" => false, "attempt" => 1} =
+             List.last(entries(id, :model_error))
+
+    {:ok, at, _} = DateTime.from_iso8601(NanoAgent.info(ctx.name).retry_at)
+    assert DateTime.diff(at, DateTime.utc_now()) in 115..121
+  end
+
+  test "a request refused as invalid halts the agent at once, with the provider's message", ctx do
+    {pid, id} = start!(ctx)
+    error = %{"error" => %{"code" => 400, "message" => "Unsupported parameter: 'reasoning'"}}
+    Fake.push(ctx.model, status: 400, body: error)
+    send(pid, :go)
+    request!(ctx.model)
+    assert await(id, :turn_ended)["reason"] == "error"
+    refute_receive {:openrouter_request, _, _}, 200
+    :sys.get_state(pid)
+    assert %{halted: :model_refused, status: :idle} = NanoAgent.info(ctx.name)
+    assert [%{"class" => "refused", "attempt" => 1, "retry" => false}] = entries(id, :model_error)
+
+    assert List.last(entries(id, :harness_note))["text"] ==
+             "OpenRouter refused my request to your model #{ctx.model} as invalid, and sending " <>
+               "it again would not change that (HTTP 400: Unsupported parameter: 'reasoning'), " <>
+               "so I have halted you: I will not call the model until an operator un-halts you."
+
+    # Un-halting sends it again.
+    Fake.push(ctx.model, text: "ok")
+    NanoAgent.unhalt(ctx.name)
+    request!(ctx.model)
+    assert await(id, :model_response)["text"] == "ok"
+  end
+
+  test "refused credentials, no credit and an over-long request halt the agent, saying why",
+       ctx do
+    error = &%{"error" => %{"code" => &1, "message" => &2}}
+
+    cases = [
+      {[status: 401, body: error.(401, "No auth credentials found")], :provider_unavailable,
+       "OpenRouter refused this node's credentials for your model"},
+      {[status: 402, body: error.(402, "Insufficient credits")], :usage_limit,
+       "OpenRouter refused for lack of credit on this node's account (Insufficient credits)"},
+      {[status: 400, body: error.(400, "This endpoint's maximum context length is 1000 tokens.")],
+       :context,
+       "OpenRouter refused my request because this conversation does not fit in the context"}
+    ]
+
+    for {{response, halted, text}, i} <- Enum.with_index(cases) do
+      ctx = %{ctx | model: Fake.model(), name: "#{ctx.name}-#{i}"}
+      {pid, id} = start!(ctx)
+      Fake.push(ctx.model, response)
+      send(pid, :go)
+      request!(ctx.model)
+      assert await(id, :turn_ended)["reason"] == "error"
+      refute_receive {:openrouter_request, _, _}, 100
+      :sys.get_state(pid)
+      assert NanoAgent.info(ctx.name).halted == halted
+      assert List.last(entries(id, :harness_note))["text"] =~ text
+    end
+  end
+
+  test "an agent restarted while waiting to call again calls at once", ctx do
+    {pid, id} = start!(ctx)
+    for _ <- 1..3, do: Fake.push(ctx.model, status: 503)
+    send(pid, :one)
+    for _ <- 1..3, do: request!(ctx.model)
+    await(id, :harness_note, &(&1["text"] =~ "My call to the model failed"))
+    Fake.push(ctx.model, text: "ok")
+    kill(ctx, id)
+    body = request!(ctx.model)
+    delivered = delivery(List.last(body["messages"]))
+    assert delivered =~ "<harness>My call to the model failed"
+    assert delivered =~ "while waiting to call the model again and was restarted"
+    assert await(id, :model_response)["text"] == "ok"
+  end
 end

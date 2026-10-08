@@ -436,6 +436,66 @@ defmodule Nano.ChatGPTTest do
     assert await(id, "model_response")["text"] == "ok"
   end
 
+  test "a rate limit's wait is honoured; context, quota and invalid requests halt, saying why" do
+    connect!()
+    {model, name, id} = start_agent!()
+
+    Fake.push(model,
+      failed: %{
+        "code" => "rate_limit_exceeded",
+        "message" => "Rate limit reached. Please try again in 300ms."
+      }
+    )
+
+    Fake.push(model, text: "ok")
+    NanoAgent.notify(name, :hi)
+    request!(model)
+    t = System.monotonic_time(:millisecond)
+    request!(model)
+    assert System.monotonic_time(:millisecond) - t >= 250
+    assert %{"retry_after" => 300, "retry" => true} = await(id, "model_error")
+    await(id, "model_response")
+
+    cases = [
+      {[failed: %{"code" => "context_length_exceeded", "message" => "Your input is too long."}],
+       :context,
+       "The ChatGPT subscription refused my request because this conversation does not fit"},
+      {[status: 429, body: %{"error" => %{"code" => "insufficient_quota"}}], :usage_limit,
+       "The ChatGPT account this node uses for you has no quota or credit left (insufficient_quota)"},
+      {[status: 400, body: %{"error" => %{"message" => "Unsupported parameter: 'x'"}}],
+       :model_refused,
+       "as invalid, and sending it again would not change that (HTTP 400: Unsupported parameter: 'x')"}
+    ]
+
+    for {response, halted, text} <- cases do
+      {model, name, id} = start_agent!()
+      Fake.push(model, response)
+      NanoAgent.notify(name, :hi)
+      request!(model)
+      eventually(fn -> NanoAgent.info(name).halted == halted end)
+      refute_receive {:chatgpt_request, ^model, _, _}, 100
+      assert List.last(entries(id, "harness_note"))["text"] =~ text
+    end
+  end
+
+  test "a 401 that a refresh cannot cure halts the agent: the subscription must be connected again" do
+    connect!()
+    {model, name, id} = start_agent!()
+    Fake.auth(:token, [{401, %{"error" => %{"code" => "refresh_token_expired"}}}])
+    Fake.push(model, status: 401)
+    NanoAgent.notify(name, :hi)
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      request!(model)
+      eventually(fn -> NanoAgent.info(name).halted == :provider_unavailable end)
+    end)
+
+    refute_receive {:chatgpt_request, ^model, _, _}, 100
+
+    assert List.last(entries(id, "harness_note"))["text"] =~
+             "The ChatGPT subscription refused this node's credentials for your model"
+  end
+
   test "models: the backend's list when it answers, else the known list" do
     assert Nano.ChatGPT.models() == []
     connect!()

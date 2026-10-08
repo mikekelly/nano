@@ -185,6 +185,7 @@ defmodule NanoWeb.Overview do
       agent.pid == nil -> "down: its process is not running"
       agent.halted -> "halted: #{txt(agent.halted)}"
       agent.suspended -> "suspended"
+      agent.status == :waiting_retry -> "a model call failed; calling again at #{agent.retry_at}"
       true -> recent |> Enum.reverse() |> doing()
     end
   end

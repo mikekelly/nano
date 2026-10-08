@@ -301,12 +301,17 @@ defmodule NanoWeb.Components do
 
   attr :agent, :map, required: true
 
-  @doc "An agent's state as badges: idle / thinking / running_tool, plus suspended, halted, down."
+  @doc """
+  An agent's state as badges: idle / thinking / running_tool / waiting_retry (with the time of
+  its next model call), plus suspended, halted, down.
+  """
   def status(assigns) do
     ~H"""
     <span class="badges">
       <span :if={@agent.pid == nil} class="badge down">down</span>
-      <span :if={@agent.pid} class={["badge", @agent.status]}>{@agent.status}</span>
+      <span :if={@agent.pid} class={["badge", @agent.status]}>{@agent.status}<span :if={
+        Map.get(@agent, :retry_at)
+      }> until {@agent.retry_at}</span></span>
       <span :if={@agent.suspended} class="badge suspended">suspended</span>
       <span :if={@agent.halted} class="badge halted">halted: {@agent.halted}</span>
     </span>
@@ -363,8 +368,13 @@ defmodule NanoWeb.Components do
 
   def halt_reason(:provider_unavailable),
     do:
-      "its model's provider was turned off (OpenRouter's API key removed); set the key in " <>
-        "Settings, then un-halt"
+      "its model's provider was turned off (OpenRouter's API key removed) or refused this " <>
+        "node's credentials; set the key or connect the subscription again, then un-halt"
+
+  def halt_reason(:model_refused),
+    do:
+      "the provider refused its request as invalid, which retrying would not change; the " <>
+        "halt note says why; un-halting sends the request again"
 
   def halt_reason(:restart_brake), do: "restart brake: it restarted 3 times within 60 s"
 

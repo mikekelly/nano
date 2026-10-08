@@ -22,8 +22,8 @@ defmodule Nano.FakeChatGPT do
 
   Response options: `text:`, `calls:` (as in `Nano.FakeOpenRouter`), `reasoning:` (a summary
   text; the item also carries encrypted content `"enc-<n>"`), `usage: {input, output,
-  cached}` (default `{100, 10, 0}`), `incomplete:` (a reason), or `status:` with `body:` for an
-  HTTP error, or `failed:` (an error map) for a stream that ends in `response.failed`.
+  cached}` (default `{100, 10, 0}`), `incomplete:` (a reason), or `status:` with `body:` (and
+  `headers:`, a list of `{name, value}`) for an HTTP error, or `failed:` (an error map) for a stream that ends in `response.failed`.
   """
   use GenServer
 
@@ -183,7 +183,7 @@ defmodule Nano.FakeChatGPT do
     cond do
       status = opts[:status] ->
         body = opts[:body] || %{"error" => %{"message" => "fake error #{status}"}}
-        {status, "application/json", Jason.encode!(body)}
+        {status, "application/json", Jason.encode!(body), opts[:headers] || []}
 
       failed = opts[:failed] ->
         sse(200, [%{"type" => "response.failed", "response" => %{"error" => failed}}])
@@ -295,10 +295,18 @@ defmodule Nano.FakeChatGPT do
           _ -> Jason.decode!(raw)
         end
 
-      {status, type, out} =
-        Nano.FakeChatGPT.request(Map.fetch!(@routes, conn.request_path), body, conn.req_headers)
+      {status, type, out, headers} =
+        case Nano.FakeChatGPT.request(
+               Map.fetch!(@routes, conn.request_path),
+               body,
+               conn.req_headers
+             ) do
+          {status, type, out} -> {status, type, out, []}
+          reply -> reply
+        end
 
-      conn
+      headers
+      |> Enum.reduce(conn, fn {k, v}, conn -> Plug.Conn.put_resp_header(conn, k, v) end)
       |> Plug.Conn.put_resp_content_type(type)
       |> Plug.Conn.send_resp(status, out)
     end

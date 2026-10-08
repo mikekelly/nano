@@ -180,10 +180,12 @@ defmodule NanoAgent do
 
   @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
-  while the agent is busy or suspended. `halted` is nil, `:budget`, `:context`, `:node_budget`,
-  `:usage_limit`, `:provider_unavailable`, `:restart_brake`, `:start_failed` or
-  `:log_failed`; `context_window` is the model's, as its provider listed it at start (nil if it
-  could not be had for an agent saved before it was recorded); `cache_hit_rate` is nil until
+  while the agent is busy or suspended. `status` is `:idle`, `:thinking`, `:running_tool` or
+  `:waiting_retry` (a model call failed and the agent will call again at `retry_at`, an
+  ISO 8601 time, else nil). `halted` is nil, `:budget`, `:context`, `:node_budget`,
+  `:usage_limit`, `:provider_unavailable`, `:model_refused`, `:restart_brake`, `:start_failed`
+  or `:log_failed`; `context_window` is the model's, as its provider listed it at start (nil if
+  it could not be had for an agent saved before it was recorded); `cache_hit_rate` is nil until
   the first response.
   """
   def info(name) do
@@ -196,6 +198,8 @@ defmodule NanoAgent do
         pid: pid,
         model: s.model,
         status: s.status,
+        retry_at:
+          with(:waiting_retry <- s.status, %{at: at} <- s[:retry], do: at, else: (_ -> nil)),
         halted: s.halted,
         suspended:
           match?(
@@ -349,6 +353,8 @@ defmodule NanoAgent do
       idle_called: false,
       wakeup_after: nil,
       wakeup: nil,
+      # Model calls failing in a row: %{failures, since, at, timer}, or nil (wait/2).
+      retry: nil,
       task: nil,
       spawned: []
     }
@@ -525,6 +531,7 @@ defmodule NanoAgent do
   # Only what the last save can support: a save is made before each eval and after its result.
   defp doing(%{task: %{kind: :eval, n: n}}), do: "during or just after eval (tool call #{n})"
   defp doing(%{status: :thinking}), do: "while waiting for a model response"
+  defp doing(%{status: :waiting_retry}), do: "while waiting to call the model again"
   defp doing(%{status: :running_tool}), do: "while handling your tool calls"
   defp doing(_), do: "while idle"
 
@@ -668,6 +675,13 @@ defmodule NanoAgent do
     noreply(maybe_start_turn(s))
   end
 
+  # The wait after a failed model call is over (wait/2); the note saying so is pending.
+  def handle_info(
+        {tag, :retry, id},
+        %{tag: tag, status: :waiting_retry, retry: %{timer: id}} = s
+      ),
+      do: noreply(maybe_start_turn(s))
+
   # Failed attempts reported by the model request task, logged here so entries stay in seq order.
   def handle_info({tag, :model_error, fields}, %{tag: tag} = s) do
     log(s, :model_error, fields)
@@ -689,7 +703,7 @@ defmodule NanoAgent do
         {s.id, "event-#{seq}"}
       )
 
-    at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+    at = timestamp(DateTime.utc_now())
 
     s = %{
       s
@@ -721,16 +735,24 @@ defmodule NanoAgent do
     %{s | pending: s.pending ++ ["<harness>#{text}</harness>"]}
   end
 
+  # A halt also ends a wait to call the model again (an operator turned the provider off).
   defp halt(s, why, text) do
+    status = if s.status == :waiting_retry, do: :idle, else: s.status
+
     note(
-      %{s | halted: why},
+      %{s | halted: why, status: status},
       text <> ", so I have halted you: I will not call the model until an operator un-halts you."
     )
   end
 
   ## The loop
 
-  defp maybe_start_turn(%{status: :idle, halted: nil, pending: [_ | _]} = s), do: request(s, true)
+  # Waiting to call the model again after a failure (wait/2), the next turn need not wait for
+  # the timer: a message starts it as soon as it arrives.
+  defp maybe_start_turn(%{status: status, halted: nil, pending: [_ | _]} = s)
+       when status in [:idle, :waiting_retry],
+       do: request(s, true)
+
   defp maybe_start_turn(s), do: s
 
   defp request(s, new_turn?) do
@@ -743,7 +765,10 @@ defmodule NanoAgent do
       s.halted ->
         end_turn(
           s,
-          if(s.halted in [:log_failed, :provider_unavailable], do: "error", else: "budget")
+          if(s.halted in [:log_failed, :provider_unavailable, :model_refused],
+            do: "error",
+            else: "budget"
+          )
         )
 
       reached?(node_used, cap) ->
@@ -850,9 +875,20 @@ defmodule NanoAgent do
     end
   end
 
+  # A model call makes up to @attempts attempts while it fails transiently (Nano.Model.chat/5),
+  # pausing between them for the `openrouter_backoff_ms` app env (1 s by default), doubling,
+  # or as long as the provider asks if that is longer, up to @longest_pause. If the provider
+  # asks for longer, or every attempt fails, the turn ends and the harness itself calls again
+  # after a wait (wait/2): the `model_wait_ms` app env (30 s by default), doubling with each
+  # call that fails in a row, up to 20 times that (10 minutes), or as long as the provider
+  # asks, up to a day. Pauses and waits are ±10%, so agents that failed together do not all
+  # call again together.
+  @attempts 3
+  @longest_pause 60_000
+
   @doc false
-  # Runs in a task: one model call with up to 3 attempts for transient errors. Failed attempts
-  # are reported to the agent, which logs them.
+  # Runs in a task: one model call, with its attempts. Failed attempts are reported to the
+  # agent, which logs them; the last failure is returned with the number of attempts made.
   def call_model(
         agent,
         tag,
@@ -868,23 +904,41 @@ defmodule NanoAgent do
         {:ok, Map.put(response, :latency_ms, System.monotonic_time(:millisecond) - started)}
 
       {:error, error} ->
-        {transient, error} = Map.pop(error, :transient, false)
-        retry = attempt < 3 and transient
+        pause = if attempt < @attempts and error.class == :transient, do: pause(error, attempt)
 
         send(
           agent,
           {tag, :model_error,
-           Map.merge(error, %{request_id: request_id, attempt: attempt, retry: retry})}
+           Map.merge(error, %{request_id: request_id, attempt: attempt, retry: pause != nil})}
         )
 
-        if retry do
-          Process.sleep(Application.get_env(:nano, :openrouter_backoff_ms, 1_000) * attempt)
+        if pause do
+          Process.sleep(pause)
           call_model(agent, tag, how, messages, request_id, attempt + 1)
         else
-          {:error, error}
+          {:error, Map.put(error, :attempts, attempt)}
         end
     end
   end
+
+  defp pause(error, attempt) do
+    first = Application.get_env(:nano, :openrouter_backoff_ms, 1_000)
+    backoff = jitter(first * 2 ** (attempt - 1))
+
+    case error[:retry_after] do
+      nil -> backoff
+      ms when ms <= @longest_pause -> max(ms, backoff)
+      _ -> nil
+    end
+  end
+
+  # The wait before calling again, after `failures` calls in a row have failed.
+  defp wait_ms(failures, retry_after) do
+    first = Application.get_env(:nano, :model_wait_ms, 30_000)
+    max(jitter(min(first * 2 ** (failures - 1), first * 20)), min(retry_after || 0, 86_400_000))
+  end
+
+  defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
 
   defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
 
@@ -898,18 +952,25 @@ defmodule NanoAgent do
       request_id: s.request_id,
       status: nil,
       body: body,
+      class: :transient,
       attempt: nil,
       retry: false
     })
 
-    model_done(s, {:error, body})
+    model_done(s, {:error, %{status: nil, body: body, class: :transient}})
   end
 
-  # A usage limit (the provider says which) is not retried: the agent waits halted for an operator.
-  defp model_done(s, {:error, %{limit: text}}),
-    do: s |> halt(:usage_limit, text) |> end_turn("error")
+  # The call counted, so a limit may halt the agent first. Otherwise the failure's class
+  # (Nano.Model.chat/5) decides: call again after a wait, or halt and say why.
+  defp model_done(s, {:error, error}) do
+    s = check_budget(s)
 
-  defp model_done(s, {:error, _}), do: s |> check_budget() |> end_turn("error")
+    cond do
+      s.halted -> end_turn(s, "error")
+      error.class == :transient -> wait(s, error)
+      true -> s |> refused(error) |> end_turn("error")
+    end
+  end
 
   defp model_done(s, {:ok, %{message: msg} = r}) do
     prompt = r.usage["prompt_tokens"] || 0
@@ -953,6 +1014,8 @@ defmodule NanoAgent do
       # The context: the size of this conversation as the provider last measured it, i.e.
       # this response's prompt plus its completion, which the next request at least contains.
       |> Map.put(:context_used, prompt + completion)
+      # Calls no longer fail in a row.
+      |> Map.put(:retry, nil)
       |> append(message)
 
     s =
@@ -962,6 +1025,91 @@ defmodule NanoAgent do
 
     if calls == [], do: end_turn(s, "no_tool_call"), else: run_calls(s)
   end
+
+  defp refused(s, %{class: :usage_limit, limit: text}), do: halt(s, :usage_limit, text)
+
+  defp refused(s, error) do
+    provider = upcase_first(Nano.Model.provider(s.model))
+    what = failure(error)
+
+    case error.class do
+      :auth ->
+        halt(
+          s,
+          :provider_unavailable,
+          "#{provider} refused this node's credentials for your model #{s.model} (#{what})"
+        )
+
+      :context ->
+        halt(
+          s,
+          :context,
+          "#{provider} refused my request because this conversation does not fit in the " <>
+            "context of your model #{s.model} (#{what})"
+        )
+
+      :refused ->
+        halt(
+          s,
+          :model_refused,
+          "#{provider} refused my request to your model #{s.model} as invalid, and sending " <>
+            "it again would not change that (#{what})"
+        )
+    end
+  end
+
+  # A failure that may pass ends the turn, but the agent is not left idle: it is told, and I
+  # wake it myself after a wait (wait_ms/2), with the same request and the note, or sooner if a
+  # message arrives (maybe_start_turn/1). The wait grows until a call succeeds.
+  defp wait(s, error) do
+    what = failure(error)
+    r = Map.get(s, :retry) || %{failures: 0, since: timestamp(DateTime.utc_now())}
+    n = r.failures + 1
+    ms = wait_ms(n, error[:retry_after])
+    at = timestamp(DateTime.add(DateTime.utc_now(), ms, :millisecond))
+    id = make_ref()
+    Process.send_after(self(), {s.tag, :retry, id}, ms)
+    tries = if (error[:attempts] || 1) > 1, do: " (#{error[:attempts]} attempts)", else: ""
+
+    text =
+      if n == 1,
+        do:
+          "My call to the model failed#{tries}: #{what}. I will call it again at #{at} (in " <>
+            "#{duration(ms)}) without waiting for a message, or as soon as one arrives; while " <>
+            "calls keep failing I keep calling, waiting longer each time.",
+        else:
+          "My call to the model failed again#{tries}: #{what}. #{n} calls in a row have failed " <>
+            "since #{r.since}. I will call it again at #{at} (in #{duration(ms)}), or as " <>
+            "soon as a message arrives."
+
+    s = note(s, text)
+    log(s, :turn_ended, %{reason: "error"})
+    retry = %{failures: n, since: r.since, at: at, timer: id}
+    s = Map.merge(s, %{status: :waiting_retry, calls: [], idle_called: false, retry: retry})
+
+    # Messages that arrived during the failed call do not wait.
+    if Enum.any?(s.pending, &String.starts_with?(&1, "<event")),
+      do: maybe_start_turn(s),
+      else: s
+  end
+
+  # What went wrong, for a note: the status (none, or a 200 whose stream failed) and what the
+  # provider said.
+  defp failure(error) do
+    said = brief(Nano.Model.message(error.body))
+
+    case error.status do
+      nil -> "no response: #{said}"
+      200 -> "the response failed: #{said}"
+      status -> "HTTP #{status}: #{said}"
+    end
+  end
+
+  defp duration(ms) when ms < 1_000, do: "#{ms} ms"
+  defp duration(ms) when ms < 120_000, do: "#{round(ms / 1_000)} s"
+  defp duration(ms), do: "#{Float.round(ms / 60_000, 1)} minutes"
+
+  defp upcase_first(<<c::utf8, rest::binary>>), do: String.upcase(<<c::utf8>>) <> rest
 
   # Halts when one of the agent's own limits is reached; tool calls already returned still run.
   # The context limit is held before each call (request/2); this catches a response that went
@@ -1303,6 +1451,8 @@ defmodule NanoAgent do
   ## Helpers
 
   defp append(s, message), do: %{s | transcript: s.transcript ++ [message]}
+
+  defp timestamp(time), do: time |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
   # The most of an event or result that is printed and kept in a spill file.
   @ceiling 8_388_608

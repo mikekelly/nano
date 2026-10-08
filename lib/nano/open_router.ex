@@ -18,13 +18,14 @@ defmodule Nano.OpenRouter do
   def reasoning_levels, do: @reasoning_levels
 
   @doc """
-  `{:ok, %{message, finish_reason, usage, provider, cost}} | {:error, %{status, body}}`.
+  `{:ok, %{message, finish_reason, usage, provider, cost}} | {:error, %{status, body, class}}`.
   `messages` are OpenAI-format maps with string keys, system message first. `reasoning` is one
   of `reasoning_levels/0`: `"off"` is sent explicitly (`reasoning.enabled: false`), since some
   models reason by default; a level is sent as `reasoning.effort`. `max_output`, unless nil, is
   sent as `max_tokens`: the most tokens the response may have, reasoning included on most
   providers (OpenRouter takes up to the context length less the prompt). `status` is nil when
-  no HTTP response was received.
+  no HTTP response was received; `class` (and `retry_after`, `limit`) as `Nano.Model.chat/5`
+  describes them.
   """
   def chat(model, messages, tools, reasoning \\ "off", max_output \\ nil) do
     key = Nano.Settings.get(:openrouter_api_key)
@@ -57,11 +58,38 @@ defmodule Nano.OpenRouter do
            cost: usage["cost"]
          }}
 
-      {:ok, %{status: status, body: body}} ->
-        {:error, %{status: status, body: body}}
+      {:ok, %{status: status, body: body} = resp} ->
+        {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->
-        {:error, %{status: nil, body: Exception.message(exception)}}
+        {:error, %{status: nil, body: Exception.message(exception), class: :transient}}
+    end
+  end
+
+  # A failure's class (`Nano.Model.chat/5`), by status: a 200 whose body is an error object
+  # (OpenRouter reports some upstream failures that way) goes by the object's code. 402 is the
+  # account's credit; 403 is a moderation refusal, not the key.
+  defp error(status, body, headers) do
+    code = if status == 200, do: is_map(body) && get_in(body, ["error", "code"]), else: status
+    code = if is_integer(code), do: code
+    error = %{status: status, body: body, class: Nano.Model.class(code, body)}
+
+    case code do
+      402 ->
+        %{error | class: :usage_limit}
+        |> Map.put(
+          :limit,
+          "OpenRouter refused for lack of credit on this node's account (#{Nano.Model.message(body)})"
+        )
+
+      403 ->
+        %{error | class: :refused}
+
+      _ ->
+        case Nano.Model.retry_after(headers, body) do
+          nil -> error
+          ms -> Map.put(error, :retry_after, ms)
+        end
     end
   end
 
@@ -132,16 +160,6 @@ defmodule Nano.OpenRouter do
     |> Enum.sort_by(& &1.id)
   catch
     _, _ -> []
-  end
-
-  @doc """
-  Whether a failed attempt is worth retrying: no response at all, 408, 429, 5xx, or a 200
-  whose body is an error object with one of those codes (OpenRouter reports some upstream
-  failures that way).
-  """
-  def transient?(%{status: status, body: body}) do
-    code = if status == 200, do: is_map(body) && get_in(body, ["error", "code"]), else: status
-    code in [nil, false, 408, 429] or (is_integer(code) and code >= 500)
   end
 
   defp cache([system | rest]), do: [mark(system) | List.update_at(rest, -1, &mark/1)]
