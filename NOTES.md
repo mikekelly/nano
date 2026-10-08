@@ -4,7 +4,7 @@ Branch `seedling/orion-harness`; never merged into main. Modules are callable fr
 
 ## Files and shell
 
-`Seedling.Tools` — Bounded helpers; errors as values; full shell output spilled to disk.
+`Seedling.Tools` — Bounded file paging/search/listing, exact multi-edits with diff, safe shell timeout/tail/full spill. read/sh retain compact metadata. See docs/tools.md; rg/fd-find required and installed by Dockerfile.
 
 ```elixir
 Seedling.Tools.read("/app/NOTES.md"); Seedling.Tools.sh("git status --short")

@@ -7,7 +7,8 @@ defmodule Seedling.Index do
         module: Seedling.Tools,
         example:
           ~s|Seedling.Tools.read("/app/NOTES.md"); Seedling.Tools.sh("git status --short")|,
-        detail: "Bounded helpers; errors as values; full shell output spilled to disk."
+        detail:
+          "Bounded file paging/search/listing, exact multi-edits with diff, safe shell timeout/tail/full spill. read/sh retain compact metadata. See docs/tools.md; rg/fd-find required and installed by Dockerfile."
       },
       %{
         name: "Background jobs",
