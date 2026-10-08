@@ -1,3 +1,23 @@
+# Completion checkpoint — 2026-10-08
+
+All requested seeding capabilities are implemented and integrated on `seedling/vega-garden`; main is untouched. The older intermediate snapshots below are retained for provenance, not current status. Capability entry points remain in `/app/NOTES.md` and `lib/vega/index.ex`.
+
+## Final verification
+
+- Current full isolated suite: **430 passed**, seed0, 39.6s; compile warnings-as-errors, format check and all three JavaScript hook suites passed. Evidence `/data/vega-tasks/rqgiI7ki95QGYYQl/output.log` (exit0). Earlier 428-test suite also passed with random seed500056-era integration. A later random-order 430-test run had two baseline Ops process-classification assertions fail after a StateStore pid restart; seed0 rerun passed. This order-sensitive baseline limitation is disclosed, not silently erased.
+- Native MCP media and image-aware compaction:11 passed with the optional native test actually running; focused agent/compaction suite89 passed after the same-estimator fix. Strict image upload fixtures are now genuine decoded PNGs; validation was not weakened.
+- Consumer Bots service safely restarted, preserving Muse, Dot and all three sessions. New UI, bounded peer context, workspaces, durable validation, private draft isolation and password-only credential conduit are live. Actual Dot-generated random token was repeated correctly by Muse from peer context, with no token in the human followup and no identity-memory storage. Evidence/usage in `bots-real-evidence.md`.
+- That real demo exposed a mixed calibrated-versus-native estimate false compaction halt. `a2c18a0` compares shrink on the same native basis while retaining the authoritative safe-window reserve. After parent reload/unhalt, **two actual Dot compactions succeeded**, pending followup was acknowledged once, queued retry deduplicated, both bots ended idle/unhalted. Original failure and repair remain documented.
+- Browser/Images/Compaction modules are live. Final desktop/mobile Chromium QA passed twice without chat/settings mutations, no overflow/window errors, functional trusted shortcuts, SVG/CSS faces and direct screenshot.image -> Images.view(ref) composition. Screenshots `/tmp/vega-browser-tools/qa/M_uo1oArywo/` and `final-live-qa/UFVmt4SAIQL_/`; see `vega-browser.md`. Headless notification show event is verified, OS delivery is not.
+- Entire old MCP subtree stopped before credential/media module loads, then safely restarted and reconnected `/opt/vega-mcp-tools` official filesystem. Current live tool discovery returned14 tools and actual NOTES read succeeded. Modern opt-in is fixture-tested; this official connection negotiates legacy2025-11-25. No claim of full latest-protocol SDK conformance.
+- Tasks guardian-retirement source now loaded after parent test tasks completed. Existing artifacts remain readable; no node-wide reboot performed.
+
+## Boundaries
+
+The Dockerfile and locked/checksummed runtimes are committed and individual installs exercised, but **a complete Docker image build is unexecuted**. Actual keys never entered these tests or credential evals; the direct password endpoint was tested with fake values only. Shared-root agents are not a sandbox; trusted root can read node settings/cache/trace. Credential setting-write plus request-confirmation is not a cross-file transaction. No autonomous peer wake loops, closed-tab notification push, OAuth/elicitation/tasks MCP, durable browser sessions, full-node live reboot, or universal webpage readability are claimed. Consult each capability's docs for quotas, failure/replay and security details.
+
+---
+
 # Integration update — 2026-10-08 (source versus live)
 
 This section supersedes the older intermediate snapshot below. Garden is at `c0fb5d3`; main remains untouched. Work is **not finished** and a final operator report has not been sent.
