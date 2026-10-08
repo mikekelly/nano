@@ -142,3 +142,29 @@ followup acknowledgement; it is idle/halted `compaction_failed`,8turns28160usedt
 idle/nohalt,8turns23824usedtokens,5316context. Parent notified; no unauthorized unhalt
 or settings/budget changes made. This does not invalidate Muse's completed peer-context
 proof, but is NOT an all-bots-idle-success claim. Existing private sessions remain idle.
+
+### Parent-authorized repair and final successful completion
+
+Sibling read-only diagnosis found mixed-estimator shrink comparison (new raw native
+bytes/2 vs old provider-calibrated usage). Parent integrated `a2c18a0` (sibling
+`8974279`), kept authoritative final safe-window reserve guard, loaded NanoAgent
+and unhalted Dot. This agent only observed: no additional person input, provider
+call initiation, live load, unhalt or settings change.
+
+- REAL repair compaction seq49→52,00:23:15→35: removes18/keeps4, SUCCESS,
+  4351prompt/940completion tokens.
+- Dot resumes and posts `5a0156209e07d6c26a6b`,00:23:38, correct reply_to
+  `cf2df54c87b93c174f07`: “Understood—I won’t generate another token, repeat its
+  value, or store it in memory.” Then idle tool59/turnend61.
+- Already-queued durable retry event50 received00:23:19 during compaction triggers
+  second REAL compaction62→64,00:23:40→00:24:01: removes4/keeps6, SUCCESS,
+  3673prompt/1030completion. Dot deduplicates answered input and idles67→69;
+  NO duplicate visible post.
+- Final Dot idle/nohalt,11turns53543usedtokens/5421context; Muse idle/nohalt,
+  8turns23824usedtokens/5316context. Both group UI statuses and private sessions idle.
+  Additional post-repair normal usage:3responses15276prompt/113completion;
+  successful compactions8024prompt/1970completion.
+
+Original failure evidence remains intact above and in the same log. Final repaired
+state proves peer retrieval, actual automatic compaction, continuation, durable
+acknowledgement and duplicate suppression; not guaranteed future provider success.
