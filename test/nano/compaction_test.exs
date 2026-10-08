@@ -141,7 +141,26 @@ defmodule Nano.CompactionTest do
     assert Enum.any?(Nano.Log.read(s.id), &(&1["type"] == "compaction_failed"))
   end
 
-  test "an oversized accepted checkpoint keeps the original transcript and count on failure", c do
+  test "an in-flight checkpoint task without newly added file metadata survives hot upgrade", c do
+    Fake.push(c.model, text: "first")
+    send(c.pid, :first)
+    request(c.model)
+    wait(fn -> NanoAgent.info(c.name).status == :idle end)
+    Fake.push(c.model, text: "second", usage: {15_500, 10, 0})
+    send(c.pid, :second)
+    request(c.model)
+    request(c.model)
+    :sys.replace_state(c.pid, &%{&1 | task: Map.delete(&1.task, :files)})
+    Fake.push(c.model, text: "Goal: retain task\nProgress: two turns done\nNext Steps: continue")
+    wait(fn -> NanoAgent.info(c.name).compactions == 1 end)
+    assert NanoAgent.whereis(c.name) == c.pid
+    assert NanoAgent.info(c.name).restart_count == 0
+    assert NanoAgent.info(c.name).halted == nil
+  end
+
+  test "an oversized accepted
+ checkpoint keeps the original transcript and count on failure",
+       c do
     :sys.replace_state(c.pid, &%{&1 | system_prompt: String.duplicate("p", 12_000)})
     Fake.push(c.model, text: "first")
     send(c.pid, :first)

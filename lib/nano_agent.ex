@@ -1401,6 +1401,7 @@ defmodule NanoAgent do
   defp compactable?(s), do: match?({:ok, _, _}, Nano.Compaction.plan(s.transcript, s.max_context))
 
   defp compact(s, resume) do
+    s = upgrade(s)
     {:ok, older, recent} = Nano.Compaction.plan(s.transcript, s.max_context)
 
     logged =
@@ -1416,7 +1417,7 @@ defmodule NanoAgent do
       task =
         Task.Supervisor.async_nolink(Nano.EvalSupervisor, Nano.Compaction, :summarize, [
           s.model,
-          s.reasoning,
+          Map.get(s, :reasoning, "off"),
           older,
           min(s.context_window || s.max_context, s.max_context)
         ])
@@ -1442,7 +1443,8 @@ defmodule NanoAgent do
     Nano.StateStore.add_node_tokens(prompt + completion)
     record = Path.join(env(:log_dir), s.id <> ".jsonl")
     prior = Map.get(s, :compaction_files, %{read: [], modified: []})
-    files = Map.new([:read, :modified], &{&1, Enum.uniq(prior[&1] ++ t.files[&1])})
+    observed = Map.get(t, :files, %{read: [], modified: []})
+    files = Map.new([:read, :modified], &{&1, Enum.uniq(prior[&1] ++ observed[&1])})
 
     summary =
       summary <>
