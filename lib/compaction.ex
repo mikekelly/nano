@@ -18,7 +18,7 @@ defmodule Compaction do
   def parse(code) do
     with {:ok, {{:., _, [{:__aliases__, _, [:Compaction]}, :provide_summary]}, _, [text]}} <-
            Code.string_to_quoted(code),
-         true <- is_binary(text),
+         {:ok, text} <- literal(text),
          :ok <- validate(text) do
       {:ok, text}
     else
@@ -27,6 +27,10 @@ defmodule Compaction do
          "Use exactly Compaction.provide_summary with one literal string of 1..48000 bytes"}
     end
   end
+
+  defp literal(text) when is_binary(text), do: {:ok, text}
+  defp literal({:sigil_S, _, [{:<<>>, _, [text]}, []]}) when is_binary(text), do: {:ok, text}
+  defp literal(_), do: {:error, :not_literal}
 
   def run(model, reasoning, messages, attempt \\ 1, reason \\ "") do
     note =
