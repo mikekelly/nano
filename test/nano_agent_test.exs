@@ -1702,11 +1702,13 @@ defmodule NanoAgentTest do
 
   test "a request that might not fit in the context is never sent: the agent halts", ctx do
     {pid, id} = start!(ctx, max_context: 20_000)
+    :sys.replace_state(pid, &Map.put(&1, :compaction_failed, true))
     # A result of 30,000 bytes may be 15,000 tokens: with the 4,000 measured that leaves
     # less than 4,096 for the reply.
     Fake.push(ctx.model, calls: [eval: ~s|String.duplicate("x", 30_000)|], usage: {3_900, 100, 0})
     send(pid, :go)
     request!(ctx.model)
+    Fake.push(ctx.model, status: 400, body: %{"error" => %{"message" => "Cannot summarize"}})
 
     assert %{
              "scope" => "context",
@@ -1718,7 +1720,8 @@ defmodule NanoAgentTest do
 
     assert estimate > 20_000 - 4_096
     assert await(id, :turn_ended, &(&1["reason"] == "budget"))
-    refute_receive {:openrouter_request, _, _}, 100
+    # failed no-tools summary; original history remains
+    request!(ctx.model)
     :sys.get_state(pid)
     assert %{halted: :context, budget: %{context_used: 4_000}} = NanoAgent.info(ctx.name)
     assert length(entries(id, :model_request)) == 1
@@ -1757,10 +1760,37 @@ defmodule NanoAgentTest do
     refute_receive {:openrouter_request, _, _}, 100
 
     assert List.last(entries(id, :harness_note))["text"] =~
-             "This conversation's context has reached 10500 of 10000 tokens, so I have halted you"
+             "Your next call to the model might not fit in your context of 10000 tokens"
 
     :sys.get_state(pid)
     assert NanoAgent.info(ctx.name).halted == :context
+  end
+
+  test "real agent crosses threshold and retains pid and eval bindings", ctx do
+    {pid, id} = start!(ctx, max_context: 30_000)
+    Fake.push(ctx.model, calls: [eval: "saved_binding = 42"], usage: {100, 10, 0})
+    Fake.push(ctx.model, calls: [eval: "String.duplicate(\"x\", 24_000)"], usage: {24_000, 10, 0})
+
+    Fake.push(ctx.model,
+      text: "Goal: continue. Progress: saved_binding = 42. Next Steps: report."
+    )
+
+    Fake.push(ctx.model, calls: [eval: "saved_binding"], usage: {300, 10, 0})
+    Fake.push(ctx.model, calls: [idle: nil])
+    send(pid, :go)
+    request!(ctx.model)
+    request!(ctx.model)
+    summary = request!(ctx.model)
+    assert summary["tools"] in [nil, []]
+    assert inspect(hd(summary["messages"])["content"]) =~ "summarization assistant"
+    resumed = request!(ctx.model)
+    assert inspect(resumed["messages"]) =~ "Automatic harness compaction checkpoint"
+    request!(ctx.model)
+    await(id, :compaction_completed)
+    await(id, :turn_ended)
+    assert NanoAgent.whereis(ctx.name) == pid
+    assert NanoAgent.info(ctx.name).halted == nil
+    assert Enum.count(entries(id, :tool_result), &(&1["result"] == "42")) == 2
   end
 
   test "a node-wide hourly cap of 0 is no cap", ctx do
