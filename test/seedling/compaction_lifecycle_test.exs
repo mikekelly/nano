@@ -529,6 +529,22 @@ defmodule Seedling.CompactionLifecycleTest do
 
     refute_receive {:openrouter_request, _, _}, 100
     assert {:error, _} = NanoAgent.refresh_context("not-running")
+    assert {:error, _} = NanoAgent.refresh_context(ctx.name, system_prompt: nil)
+
+    assert {:ok, :queued} =
+             NanoAgent.refresh_context(ctx.name,
+               system_prompt: "Explicit {{name}} prompt. Preserve the entire job."
+             )
+
+    explicit = :sys.get_state(ctx.pid)
+    assert explicit.prompt_file == nil
+
+    assert String.starts_with?(
+             explicit.system_prompt,
+             "Explicit #{ctx.name} prompt. Preserve the entire job."
+           )
+
+    refute_receive {:openrouter_request, _, _}, 100
   end
 
   @tag images: true
@@ -577,7 +593,12 @@ defmodule Seedling.CompactionLifecycleTest do
   test "an explicit refresh waits until automatic summary attempts finish so retries remain identical",
        ctx do
     {_, compact} = cross(ctx)
-    assert {:ok, :queued} = NanoAgent.refresh_context(ctx.name)
+
+    assert {:ok, :queued} =
+             NanoAgent.refresh_context(ctx.name,
+               system_prompt: "Explicit updated seed. Preserve custom job."
+             )
+
     :sys.get_state(ctx.pid)
     assert NanoAgent.info(ctx.name).context_refresh_pending == true
     Fake.push(ctx.model, text: "invalid checkpoint")
@@ -590,8 +611,29 @@ defmodule Seedling.CompactionLifecycleTest do
              &(text(&1) =~ "operator requested a live system-prompt refresh")
            )
 
+    assert text(hd(resumed["messages"])) =~ "Explicit updated seed. Preserve custom job."
     assert NanoAgent.info(ctx.name).context_refresh_pending == false
     assert NanoAgent.info(ctx.name).input_modalities_source == :provider_at_reload
     Fake.push(ctx.model, text: "done")
+  end
+
+  test "a reminder is retained even when its event/note log cannot be written", ctx do
+    note = "Persist this note even across a logging failure."
+    {:ok, _} = Seedling.FrontOfMind.set(ctx.name, note)
+    old_log_dir = Application.fetch_env!(:nano, :log_dir)
+    invalid_log_dir = Path.join(Application.fetch_env!(:nano, :test_dir), "not-dir-#{ctx.id}")
+    File.write!(invalid_log_dir, "a file, not a directory")
+
+    try do
+      Application.put_env(:nano, :log_dir, invalid_log_dir)
+      send(ctx.pid, :logging_failure_brief)
+      state = :sys.get_state(ctx.pid)
+      assert state.halted == :log_failed
+      assert Enum.any?(state.transcript, &String.contains?(&1["content"], note))
+      assert state.front_of_mind_compacted == false
+      refute_receive {:openrouter_request, _, _}, 100
+    after
+      Application.put_env(:nano, :log_dir, old_log_dir)
+    end
   end
 end

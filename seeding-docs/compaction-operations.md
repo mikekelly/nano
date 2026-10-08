@@ -145,7 +145,11 @@ failure rather than guessing. Legacy text-only defaults are not silently upgrade
 The queued refresh applies at a task/call-free boundary, after an in-flight model/eval
 completes, and never during automatic checkpoint retries. It rereads only the agent's
 own prompt file, or renders its saved inline custom template unchanged, so a default
-prompt refresh does not overwrite custom prompts. It appends an operator-origin note
+prompt refresh does not overwrite custom prompts. An explicit caller-selected
+`NanoAgent.refresh_context(name, system_prompt: template)` override is also supported:
+parent may substitute an exact known old seed prefix with the updated one while keeping
+the role/job suffix intact. The harness does not guess or rewrite arbitrary inline job
+text; this option switches the source to the supplied inline template. It appends an operator-origin note
 and logs `context_refreshed` with the updated prompt/capabilities. Idle agents are not
 woken or restarted. Inspect `NanoAgent.info(name).context_refresh_pending`; false means
 applied (or no request), and `input_modalities_source: :provider_at_reload` means current
