@@ -32,6 +32,7 @@ defmodule Seedling.MCP.Connection do
         workers: %{},
         session: nil,
         listening: nil,
+        listen_filter: %{},
         last_event_id: nil,
         retry: 100,
         watchers: MapSet.new(),
@@ -560,7 +561,8 @@ defmodule Seedling.MCP.Connection do
 
       if method == "notifications/subscriptions/acknowledged" do
         missing =
-          Map.keys(s.subs) -- (get_in(params, ["notifications", "resourceSubscriptions"]) || [])
+          (s.listen_filter["resourceSubscriptions"] || []) --
+            (get_in(params, ["notifications", "resourceSubscriptions"]) || [])
 
         if missing != [],
           do: emit(s, :subscription_rejected, %{"uris" => missing}, all_targets(s)),
@@ -732,7 +734,7 @@ defmodule Seedling.MCP.Connection do
           "io.modelcontextprotocol/clientCapabilities" => %{}
         }
 
-        s = %{s | seq: id, listening: id}
+        s = %{s | seq: id, listening: id, listen_filter: filter}
 
         send_wire(s, id, %{
           "jsonrpc" => "2.0",
