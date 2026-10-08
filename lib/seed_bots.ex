@@ -304,13 +304,22 @@ defmodule SeedBots do
           data =
             s.data
             |> put_in([:requests, rid], Map.merge(req, %{status: :answered, answer: text}))
-            |> update_in([:sessions, req.session_id, :messages], &(&1 ++ [message]))
+            |> update_in([:sessions, req.session_id], fn chat ->
+              %{
+                chat
+                | messages: chat.messages ++ [message],
+                  exchanges: 0,
+                  stopped: false,
+                  updated_at: message.inserted_at
+              }
+            end)
 
           case persist(s, data) do
             :ok ->
               if pid = s.pending[rid] || (req[:requester] && NanoAgent.whereis(req.requester)),
                 do: send(pid, {:seed_bots_answer, rid, text})
 
+              send(self(), {:route, req.session_id, message})
               broadcast()
               {:reply, :ok, %{s | data: data, pending: Map.delete(s.pending, rid)}}
 
