@@ -29,6 +29,15 @@ or drop for its own situation.
 | [`images.md`](images.md) | See images that arrive in messages and look at image files, on models that can |
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
+### Experimental
+
+Each of these tests a hypothesis rather than describing a settled capability: build one
+when asked to, so that it can be measured, and record what it showed.
+
+| File | Hypothesis |
+| --- | --- |
+| [`experimental/front-of-mind.md`](experimental/front-of-mind.md) | A short note the harness keeps restating near the tip of the context, with an optional drift check by a decision model, keeps an agent on course |
+
 Some seeding docs need something only the operators can supply, and say so at the top: an API
 key, which the operators supply as a node setting under its usual name (`EXA_API_KEY`). The
 node's settings (`Nano.Ops.settings/0`, or `GET /api/settings`) show which are set. Keep every seeding doc true of the running system: the agent
