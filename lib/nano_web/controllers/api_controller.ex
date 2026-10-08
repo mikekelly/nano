@@ -41,6 +41,9 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/agents/:name",
      "One agent: status, system prompt, budget (turns, tokens and context: used and max, " <>
        "0 = no limit), restart count."},
+    {"POST", "/api/agents/:name/images",
+     "Deliver validated PNG/JPEG/GIF base64 image and optional text to an agent."},
+    {"GET", "/api/images/:id", "Read an immutable content-addressed image used in a timeline."},
     {"POST", "/api/agents/:name/stop", "Terminate the agent and delete its state."},
     {"POST", "/api/agents/:name/restart",
      "Kill the agent with reason :operator_restart; it restarts with its history."},
@@ -48,7 +51,7 @@ defmodule NanoWeb.ApiController do
     {"POST", "/api/agents/:name/unhalt",
      "Clear a halt. halted is budget (the agent's turns or tokens), context (its next request, " <>
        "with room for the reply, might not fit in max_context, or a response passed it; the " <>
-       "conversation never shrinks, so it halts again before the next model call), node_budget (the node-wide " <>
+       "automatic compaction normally summarizes older history; a failed compaction is explicit), node_budget (the node-wide " <>
        "hourly token cap), usage_limit (the provider refused with a usage limit, e.g. the " <>
        "ChatGPT subscription's; un-halt once it has reset), provider_unavailable (its model's " <>
        "provider was turned off, OpenRouter's key removed, or refused its credentials; fix " <>
