@@ -1,0 +1,368 @@
+# Nano Agent — Spec
+
+## Overview
+
+A single Docker container runs one BEAM node hosting minimal LLM agents, each a GenServer, plus a live dashboard showing every process and each agent's activity. The goal is to observe how a model behaves when it is told, truthfully, that it is a process on a node with a mailbox and the ability to evaluate code.
+
+**Simplicity is the point.** The whole system should be almost absurdly small: one container, one node, one GenServer per agent, two tools, and a dashboard that is a thin view over plain OTP functions. Every proposed feature is weighed against whether a reader could still hold the entire harness in their head. Where OTP or the BEAM already provides something, such as mailboxes, supervision, process introspection, or hot code loading, it is used as is rather than wrapped in a new abstraction. A smaller harness is easier to describe truthfully in the system prompt, and that truthful description is what the experiment depends on.
+
+The design follows the embodied-harness idea: instead of disguising harness traffic as user messages, the system prompt accurately describes the model's situation. The agent's counterparty is the GenServer itself, deterministic code that relays mailbox messages as events, runs the model's code, and logs everything.
+
+**Goals**
+
+- An agent harness small enough to describe completely in a paragraph of system prompt.
+- Any process, including a human in a remote shell, can talk to an agent by sending it a message.
+- Full observability: every model request, cache hit or miss, event, tool call and result is streamed and visible live.
+- A GUI for humans to explore and poke at the node, with every action also available over an HTTP API for independent AI agents.
+- A disposable environment where agents can freely explore the node.
+
+**Non-goals**
+
+- Trust or provenance enforcement. Messages are delivered as they arrive; whether and how an agent replies is up to the agent.
+- Sandboxing within the node. The container is the sandbox.
+- Production hardening, multi-node clustering, or persistence beyond what experiments need.
+
+## Architecture
+
+Everything runs in one BEAM node, so agents, the log stream, and the dashboard can see each other's processes directly and need no service boundaries between them.
+
+&#91;embedded content: nano agent · one container, one BEAM node\]
+
+Agents talk to OpenRouter, or to a ChatGPT subscription, and publish every action to PubSub, which feeds the dashboard. People reach agents either from a remote shell or the dashboard's send form, and both arrive as plain mailbox messages. Logs are also appended to JSONL files on a mounted volume.
+
+## Agent GenServer
+
+Each agent is one `NanoAgent` GenServer under a `DynamicSupervisor`, registered by name in `Nano.Names` so the dashboard can tell agents apart from other processes. `Nano.Names` is a small `:via` registry used instead of Elixir's `Registry`, which links to every process it names: it monitors them instead, ignores messages it does not expect, and keeps the names in an ETS table that outlives it, so neither a message sent to it nor its death touches an agent. The harness does three things only: deliver mailbox messages as events, run the model's tool calls, and log everything.
+
+**State**
+
+| Field | Purpose |
+| --- | --- |
+| `id`, `name` | Stable agent id and a human-friendly name |
+| `model` | Model slug: `openai-codex/<model>` runs on the node's ChatGPT subscription, any other slug on OpenRouter |
+| `system_prompt` | Rendered at start (see System prompt) |
+| `transcript` | Full message list sent to the model |
+| `bindings` | Elixir binding map carried between evals, making eval a persistent REPL |
+| `status` | `:idle`, `:thinking`, or `:running_tool` |
+| `pending` | Events received while busy, delivered as one batch |
+| `budget` | The limits it was started with (turns, tokens, context) and how much of each it has used |
+| `context_window` | The model's context window as its provider listed it at start, so restarts never need the list |
+| `network_policy`, `result_max_bytes` | The settings its system prompt states, as they were when it started (see System prompt) |
+
+**Message intake.** Any message the process receives that is not an internal harness message becomes an event, via `handle_info/2` for raw `send/2` messages and `handle_cast/2` for `NanoAgent.notify/2`. The harness adds no sender identity, because Erlang messages carry none. Each event is rendered with `inspect/2` (bounded `limit` and `printable_limit`) inside a tag with a sequence number and receive time:
+
+```
+<event seq="14" at="2026-10-06T14:02:11Z">{:hello, #PID<0.231.0>, "are you there?"}</event>
+```
+
+If the agent is idle, the event starts a new turn. If the agent is busy, it is appended to `pending` and all pending events are delivered together in the next user turn.
+
+**The loop**
+
+1. An event (or batch) is appended to the transcript as a user message.
+2. The GenServer starts the model request in a `Task`, so it stays responsive to new messages and supervision.
+3. When the response arrives as a message, each tool call is executed and its result appended as a tool result.
+4. If the response contained tool calls, return to step 2. If it contained no tool calls, the turn ends and the agent waits for the next event.
+5. If the model called `idle`, the turn ends immediately and any pending events start the next turn.
+
+**Tools**
+
+- `eval(code)`: evaluates Elixir with `Code.eval_string/2` against the stored bindings, in a separate `Task` with a timeout (default 30 s). Returns the inspected result and any captured IO, or the exception and stacktrace. Updated bindings are saved. Because eval runs in a Task, `self()` inside eval is the Task, not the agent; the harness passes the agent pid as a binding (`me`) so the model can give it out as a reply address.
+- `idle()`: ends the turn and waits for the next message. Takes one optional argument, `wakeup_after`, in milliseconds: if no message arrives first, the harness wakes the agent with a `<harness>` note once it elapses. Without it, the agent sleeps until a message arrives. Returns nothing to the model.
+
+Erlang is reachable from Elixir eval (`:erlang`, `:ets`, `:sys`), so a separate Erlang eval tool is not needed.
+
+**Lifecycle.** Agents are started from the dashboard, the API or the shell with `NanoAgent.start/1`. Nothing about what an agent runs on or may spend has a default, because a silent default is a surprise later: `name`, `model`, `reasoning`, `max_turns`, `max_tokens` and `max_context` are all required, and `start_idle`, `system_prompt` and `system_prompt_file` are optional. Agents start idle by default and wait for their first message; passing `start_idle: false` instead begins the first turn immediately with a `<harness>` note saying the agent has started. A crash restarts the process with its history restored (see Failure handling). An agent that exhausts its budget logs the reason and stops making model calls, but keeps receiving and logging messages.
+
+**Start options are checked against the model's provider.** `Nano.Model` checks both providers' models in one place, against the list the provider gives (OpenRouter's `/models`, the subscription's `/models`; each cached for an hour):
+
+- `model` must be in its provider's list, and the provider callable (OpenRouter's key set, the subscription connected). Each provider is optional: OpenRouter is on only while the node has its key (the `openrouter_api_key` setting), and without it an OpenRouter model is refused with a message saying to use an `openai-codex/` model or set the key. An operator can remove the key while agents run on OpenRouter: each of them is then halted with reason `provider_unavailable` and a harness note saying an operator turned the provider off, and one un-halted while the key is still missing is halted again before its next call.
+- `reasoning` must be one of the levels the list gives that model (see Web dashboard).
+- `max_turns` and `max_tokens` are whole numbers, 0 meaning no limit.
+- `max_context` is from 1 to the model's context window. There is no unlimited context: the window is the ceiling.
+
+A model whose limits cannot be verified, because the list cannot be had or gives the model no window, is refused rather than started on a guess. Any refusal is `{:error, message}`, and the message says what was missing or wrong and what to give instead (for example `missing max_context: openai-codex/gpt-6.1-sol's context window is 272000; …`); the API returns it with a 422. The model's window is recorded in the agent's state, so restarts and revivals never need the list. An agent saved before it was recorded gets the window from the list when it is restored, which then caps a `max_context` of 0 or more than the window; if the list cannot be had, its `max_context` is the ceiling.
+
+**The context ceiling.** A model given more than its context window may not refuse the request, only behave strangely, so the harness never makes a request that could pass the agent's `max_context`. Before each model call it estimates the request: the context the provider measured at the last response (its prompt plus completion tokens), plus one token for every 2 bytes the conversation has grown since, as JSON (the whole request before a first response). Tokenizers average 3.5 to 4.5 bytes a token on English and code, and about 3 on JSON, hex, base64 and CJK text, so this overestimates all but text built to tokenize badly, and only until the next response measures the conversation again. If the estimate leaves less than 4,096 tokens for the response, the agent is halted with reason `context` instead of called. Otherwise the response is bounded by the room left (OpenRouter's `max_tokens`, also capped by the most its top provider generates), so the request and its response fit. The ChatGPT backend accepts no such bound (it refuses `max_output_tokens`), but the window its list gives is the input Codex works within, below the model's whole window. After each response, if the measured context has reached `max_context` anyway, the agent is halted the same way. The conversation never shrinks, so un-halting an agent halted for its context halts it again before its next call.
+
+## Failure handling
+
+Failures in the model's code are returned to the model as tool results; failures of the agent process are recovered by the harness, which then tells the agent what happened. Nothing stops an agent from damaging its own process, the dashboard, or the node; the harness only makes each outcome recoverable or visible.
+
+| Failure | Example | Harness response |
+| --- | --- | --- |
+| Eval raises or exits | bad match, `raise` | Caught and returned as the tool result, with exception and stacktrace |
+| Eval hangs | infinite loop | Killed after `eval_timeout_ms` (a setting); tool result reports the timeout |
+| Agent process dies | `Process.exit(me, :kill)` | Supervisor restarts it with history restored, then a harness note explains |
+| Restart loop | agent kills itself again after each restart | After 3 restarts in 60 s, the agent is restarted halted |
+| Stray message | `send/2` to `Nano.Names` or a `Nano.PubSub` partition | Allowed; `Nano.Names` ignores it; a partition crashes and restarts, ending only the processes subscribed through it (dashboard pages reconnect) |
+| Agent suspended | `:sys.suspend(me)` | Allowed; dashboard shows it as suspended and offers Resume |
+| Dashboard dies | agent kills the Phoenix endpoint | Allowed; supervisor may restart it, and JSONL logs remain |
+| Node dies | `System.halt()` | Docker restarts the container; logs and code edits survive; agents are revived from `/data/state` with their history, and a harness note says the node restarted |
+
+**Evals.** Each eval runs under `Task.Supervisor.async_nolink/2` and is awaited with `Task.yield/2`, then `Task.shutdown(task, :brutal_kill)` on timeout. A crash comes back as `{:exit, reason}` instead of taking the agent down. Plain `Task.async/1` must not be used, because it links the eval to the agent.
+
+**Restarts.** Transcript, bindings, and restart count live in an ETS table owned by a long-lived `Nano.StateStore` process, written after every step and mirrored to one file per agent under `/data/state` (`STATE_DIR`), from which agents are revived when the node boots. On init, an agent reloads its entry, rebinds `me` to its new pid, and receives a note from the harness itself, tagged `<harness>` rather than `<event>` because it does not come from the mailbox:
+
+```
+<harness>Your process exited with reason :killed during eval call 12 and was
+restarted. Your pid is now #PID<0.512.0>; your registered name is unchanged.</harness>
+```
+
+Pids handed out before a crash are dead afterwards, so people and other agents should address agents by registered name.
+
+**Restart brake.** Each agent's restart count is tracked in the state store. After 3 restarts within 60 seconds, the agent comes back halted: it keeps receiving and logging messages but makes no model calls, and the dashboard flags it until an operator un-halts it. This stops one self-destructive agent from exhausting the `DynamicSupervisor`'s restart limit and taking down every other agent.
+
+**Suspension.** `:sys.suspend(me)` is permitted. Because the agent awaits eval results as messages, the suspend takes effect immediately and the eval result waits unread in the mailbox. The dashboard detects suspension from `Process.info(pid, :current_function)` showing the process in `:sys`'s suspend loop and labels the agent suspended. It can be resumed from the dashboard, by `:sys.resume/1` in a shell, by another agent, or by a process the agent spawned beforehand to wake itself.
+
+**Dashboard and node death.** The dashboard shares the node with the agents on purpose: agents can find it, message it, or kill it. The JSONL logs on `/data/logs` are the record of last resort. Node death loses everything in memory that was not an agent's saved state: processes agents spawned, ETS tables, users. The agents themselves come back from `/data/state` with their transcripts and bindings, told by a harness note that the node restarted and that any pids they held are dead. This is also how an agent that edits `mix.exs` and fetches new dependencies can restart its node onto them without losing itself.
+
+## System prompt
+
+The system prompt is an accurate description of the agent's situation, rendered from the live environment when the agent starts. It describes facts and leaves judgment to the model: no rules about whether to reply, explore, or trust senders.
+
+```
+I am the GenServer you are running in: deterministic code, not a person, so I
+can't converse with you. Everything on the other side of this conversation
+comes from me: an <event> relays a message that arrived in your process's
+mailbox, and a <harness> note is something I am telling you myself.
+
+Nothing you write in a response reaches whoever sent you a message, or any
+other process. I am deterministic code: all I do with your words is log
+them, and the people who run this node may read that log later.
+
+You are process {{pid}}, named "{{name}}", on BEAM node {{node}}
+({{otp_release}}, Elixir {{elixir_version}}). The variable `me` holds your pid.
+
+Any message sent to your process is relayed to you as an <event>. Erlang
+messages carry no sender, so you only know where one came from if its
+contents say so. An event shows the message as Elixir prints it, and that
+is not always valid Elixir source: a pid is printed as #PID<0.123.0>, and
+in source code a # begins a comment. Messages that arrive while you are
+working are queued and delivered together when your current turn ends.
+
+You have two tools. eval runs Elixir code on this node and returns the
+result. The code must be valid Elixir source, exactly as it would have to
+be in a file: anything else fails to compile, and you get the error back
+instead of a result. A result, including anything your code prints, is cut
+at {{result_max_bytes}} bytes; when that happens the result says so and
+names a file on this node that holds the whole of it, up to a few
+megabytes. Events are cut the same way. Variables you bind persist between calls, and Erlang modules are
+available as atoms. idle ends your turn; I will wake you when the next
+message arrives. Optionally pass wakeup_after (milliseconds) and I will
+wake you after that long if no message arrives first. If you respond without calling a tool, that also ends
+your turn. Running code with eval is the only way you can affect anything
+outside this conversation: to reach another process, send it a message
+from eval.
+
+This node runs in a disposable Docker container, which is yours to change,
+including installing system packages. You run as {{os_user}} on {{os}}.
+Network access: {{network_policy}}. Your limits: {{max_turns}}
+turns, {{max_tokens}} tokens in total, and a context of {{max_context}}
+tokens. Each call to the model counts as one turn, tokens are counted
+across all calls, and the context is the size of this conversation, which
+only grows. When a limit is reached I stop calling the model, and I make
+no call that might not fit in your context with room for your reply.
+Whenever I deliver events or a note of my own, I tell you how much of each
+you have used.
+
+If your process dies, I restart it, restore your history and bindings,
+and tell you what happened. Your pid will change; your name will not.
+
+The source code for this node, including your own module, is in /app
+(a git repository). Modules can be recompiled and reloaded while the
+node runs.
+```
+
+Placeholders (`{{pid}}`, `{{name}}`, `{{node}}`, `{{otp_release}}`, `{{elixir_version}}`, `{{os_user}}`, `{{os}}`, `{{network_policy}}`, `{{max_turns}}`, `{{max_tokens}}`, `{{max_context}}`, `{{result_max_bytes}}`) are filled from `System.otp_release/0`, `System.version/0`, `node/0`, `self/0`, the OS, the agent's limits, and two of the node's settings, `network_policy` and `result_max_bytes`. Settings change while the node runs, so the two are recorded in the agent's state when it starts and used for it from then on, in its prompt and by the harness (its results and events are cut where its prompt says): a running agent's prompt never becomes false, and a changed value applies to agents started afterwards. The template is a plain text file, `priv/system_prompt.txt` by default (the `system_prompt_file` setting points new agents elsewhere; each agent keeps the file it started with), read from disk each time an agent starts or restarts, so it can be edited, including by an agent, without recompiling anything. Experiments can swap in variant prompts per agent (`system_prompt:` as a string, or `system_prompt_file:` as a path), and the prompt actually used is written to the log at agent start.
+
+## OpenRouter and the harness log
+
+Agents call OpenRouter's OpenAI-compatible chat completions endpoint with `Req`, using the node's OpenRouter key (the `openrouter_api_key` setting). The model is set per agent so different models can be compared on the same node. Requests use tool calling for `eval` and `idle`, and request usage accounting so token counts and cache figures come back with each response. Prompt caching is enabled where the chosen provider supports it, with the system prompt and transcript prefix kept stable so cache hits are possible.
+
+Every harness action is published as a structured log entry on `Phoenix.PubSub`, on topic `agent:<id>`, and appended to a per-agent JSONL file under `/data/logs`. The file is the durable record; PubSub feeds the dashboard.
+
+| Entry type | Contents |
+| --- | --- |
+| `agent_started` | Agent id, name, pid, model, rendered system prompt |
+| `event_received` | Sequence number, raw message (inspected), queue length |
+| `model_request` | Request id, model, message count, estimated input tokens (see The context ceiling), the bound on output tokens |
+| `model_response` | Request id, latency, finish reason, assistant text, tool calls, provider, prompt / completion / cached tokens, cost |
+| `model_error` | Request id, HTTP status, error body, retry decision |
+| `tool_call` | Tool name, arguments, start time |
+| `tool_result` | Duration, result or exception, captured IO, truncation flag |
+| `turn_ended` | Reason (`idle`, no tool call, budget, error) |
+| `budget_exhausted` | Scope (`agent`, `context` or `node`), the limits and what is used; for a request that might not fit, its estimate |
+
+Cache hit or miss is derived from cached-token counts in the usage block. The harness never calls the model again just to retry a tool; transient HTTP errors are retried with backoff, up to 3 attempts.
+
+**ChatGPT subscription.** A model slug of the form `openai-codex/<model>` runs on a ChatGPT Plus or Pro subscription instead, the way the Codex CLI uses one: the OpenAI Responses API at the Codex backend (the `chatgpt_base_url` setting), flat-rate under the plan's usage limits, so its responses have no cost. The agent calls one function, `Nano.Model.chat/5`, which picks the provider by the prefix; the transcript stays in chat completions form and `Nano.ChatGPT` translates at the edge. The system prompt is sent as `instructions`, messages and tool results as input items, and requests are stateless (`store: false`, streamed), so the model's reasoning items, with their encrypted content, are kept in the transcript and sent back with later requests. Usage is mapped to the same prompt, completion and cached token counts, so turns, tokens, context and the budget line work as for OpenRouter. Reasoning levels map to the backend's efforts: `off` to `none`, `minimal` to `low`, the others by name. An agent can only be started with a level the model's list gives it, so `off` is refused for a model that does not list effort `none`; the mapping still covers agents started before that was checked. No bound on the response is sent (see The context ceiling).
+
+One supervised process, `Nano.ChatGPT.Auth`, owns the subscription's credentials. The operator connects it with an OAuth device-code login from the dashboard, the API or `Nano.Ops.chatgpt_login/0`: the node shows a code and a link, a person approves the code in their own browser, and the process polls until the tokens arrive. It keeps them in `<STATE_DIR>/chatgpt_auth.json` (mode 0600, written atomically), loads them at boot, refreshes them before they expire, and hands an access token to each model request. Refresh tokens rotate, so only this process refreshes, and a rotated token is saved before the new access token is used. A login in progress is not saved: after a restart the subscription is not connected until someone logs in again. The process cannot fail to start, so a missing or broken token file never stops the node booting. Tokens are never logged or shown.
+
+When the backend refuses a request because the plan's usage limit is reached, or because the plan does not include the model, the request is not retried: the agent is halted with reason `usage_limit` and told why and, when the backend says, when the limit resets. It keeps receiving and logging messages, and an operator un-halts it once the limit has reset. Other rate limits and server errors are retried like OpenRouter's; a refused access token is refreshed once and the request repeated.
+
+## Operator access
+
+Operators reach the node two ways: a remote IEx shell for full control, and a send form in the dashboard for quick pokes. Both deliver ordinary Erlang messages, so the agent cannot tell which was used.
+
+**Remote shell.** The node runs as `nano@127.0.0.1` with a cookie from `NODE_COOKIE`. Distribution ports are not published, so all shell access goes through `docker exec`. The image includes two one-line scripts: `bin/shell` opens a remote IEx shell (`iex --remsh`) for humans, and `bin/rpc 'EXPR'` evaluates one expression on the node and prints the result (`elixir --rpc-eval`) for scripts and AI agents. From the shell an operator can send directly:
+
+```elixir
+agent = NanoAgent.whereis("alice")
+send(agent, {:hello, self(), "are you there?"})   # with a reply address
+send(agent, "psst")                                # anonymous poke
+flush()                                             # see anything sent back
+```
+
+**Dashboard send form.** On any process, the operator types an Elixir term and sends it. The term is parsed with `Code.string_to_quoted/1` and evaluated, so `{:ping, 42}` and `%{note: "hi"}` both work. Sends go through a `Nano.User` named `dashboard`: a plain-text box uses `say/3`, and the term box uses `send_raw/3`, so replies land in that user's inbox and show in the dashboard.
+
+**Helpers** in a `Nano.Ops` module keep the shell terse: `agents/0`, `whereis/1`, `start_agent/2`, `stop_agent/1`, and `tail/1` to print an agent's log stream in the shell; `chatgpt/0`, `chatgpt_login/0` and `chatgpt_logout/0` show, connect and forget the ChatGPT subscription; `settings/0`, `put_setting/2` and `delete_setting/1` show and change the node's settings (see Container, configuration and limits).
+
+**Nano.User.** A small GenServer that gives a person, or an outside agent such as Claude Code on the host, a stable identity on the node. Each user is registered by name, so it persists across shell sessions and `rpc` calls. Everything it sends and receives is published to PubSub, and the dashboard lists it with kind "user".
+
+| Function | Behavior |
+| --- | --- |
+| `Nano.User.start(name)` | Starts and registers a user process; returns its pid |
+| `Nano.User.say(name, to, text)` | Sends `%{sender_pid: user_pid, message: text}` to `to`, a pid or agent name |
+| `Nano.User.send_raw(name, to, term)` | Sends `term` exactly as given, with no sender added |
+| `Nano.User.inbox(name, opts)` | Returns received messages with timestamps, oldest first; `clear: true` empties it |
+| `Nano.User.pid(name)` | Returns the user's pid, for raw messages that should include a reply address |
+
+Each send is a `GenServer.call` that performs the `send/2` inside the user process, so the user is the real sender. An agent that traces sends to find who messaged it will find the user process, not the caller.
+
+**Claude Code on the host** can use the HTTP API (below), or drive a user through the `rpc` script, which needs no published ports or distribution link:
+
+```bash
+docker exec nano bin/rpc 'Nano.User.start("claude_code")'
+docker exec nano bin/rpc 'Nano.User.say("claude_code", "alice", "hello, are you there?")'
+docker exec nano bin/rpc 'IO.inspect(Nano.User.inbox("claude_code"))'
+```
+
+A host BEAM node connected by Erlang distribution is not used: distribution is mutual trust, so agents could run code on the host through it.
+
+## Web dashboard
+
+The dashboard is a Phoenix LiveView app running in the same BEAM node, so it can inspect processes directly and subscribe to agent logs with no extra plumbing. It is served on port 4000 with no authentication, for local use only. Sharing the node is deliberate: the dashboard is part of the agents' world, and they may message or kill it.
+
+**Process view (home page).** A table of live processes, refreshed every second, excluding the standard set: processes present at boot, OTP and Elixir system processes, and the dashboard's own LiveView processes. Agents are listed first and marked with their name and status.
+
+| Column | Source |
+| --- | --- |
+| PID | `Process.list/0` |
+| Name | Registered name, or agent or user name from `Nano.Names` |
+| Kind | Agent, spawned by an agent, or other |
+| Current function | `Process.info(pid, :current_function)` |
+| Message queue | `:message_queue_len` |
+| Memory | `:memory` |
+| Reductions / s | Delta of `:reductions` between refreshes |
+
+Processes spawned during an agent's eval are tagged with that agent, using `$ancestors` and `$callers` from the process dictionary, so it is visible when an agent starts creating processes of its own. Processes that appeared since boot but belong to neither agents nor the dashboard are highlighted, since those are usually the interesting ones.
+
+**Agent view.** Clicking an agent opens a live, streaming timeline of its log entries:
+
+- Events, shown as the raw term received.
+- Model turns, showing assistant text and token usage, with tool calls collapsed inline.
+- Eval calls with code highlighted, followed by the result, captured IO, and duration.
+- A header bar with model, status, turns and tokens used against budget, total cost, and cache hit rate.
+- The rendered system prompt, collapsible at the top.
+- The send form described in Operator access, plus Stop, Restart, Resume (for a suspended agent), and Un-halt buttons.
+
+Any process row has the same send form, so operators can message non-agent processes too.
+
+**Settings view.** `/?view=settings` lists every setting with what it does, whether a change applies live or to agents started afterwards, and its value; a secret's input is masked and empty, and only whether it is set (and its last 4 characters) is shown. Each setting saves and clears on its own (clearing puts it back to its default, or unsets a key), a refusal is shown beside it, and a value of the operators' own can be added by name.
+
+A Start agent form takes a name, a provider (OpenRouter or the ChatGPT subscription; OpenRouter is offered only while the node has its key, and when neither is usable the form says so under the ChatGPT connect control), a model, a reasoning level, the three limits, the system prompt, and a Start idle checkbox, checked by default; everything is filled in and sent, since an agent has no defaults. The model box starts empty for OpenRouter and with the subscription's first model for ChatGPT, and offers only the chosen provider's models, a ChatGPT model by its name alone: the form sends the slug, `openai-codex/` included. Its reasoning select offers only the levels the provider's list gives the chosen model (from OpenRouter's `reasoning` block, or the subscription's `supported_reasoning_levels`; effort `none` is `off`, and a model OpenRouter lists without the block has only `off`), and every level for a model not listed. Max turns and max tokens start at 0, no limit. Whenever the model changes, the select is set to the model's default level and max context to the model's context window as its provider lists it (OpenRouter's `context_length`, the subscription's `context_window`); either can be changed, and is kept until the model changes again. When a start is refused, the refusal's message is shown under the form, with what was typed kept. With ChatGPT chosen, a Connect ChatGPT control under the model starts the device-code login, shows the code and link while it waits for approval, and then which account and plan are connected; until then the form cannot start the agent.
+
+## HTTP API
+
+Everything a human can do in the dashboard is also available as a JSON API on port 4000, so independent AI agents such as Claude Code can explore the sandbox without a browser or shell. The dashboard and the API call the same `Nano.Ops` and `Nano.User` functions, so neither can do something the other cannot.
+
+`GET /api` returns a short description of every endpoint, so an agent can discover the API on its own.
+
+**Conventions.** Pids are strings such as `"#PID<0.231.0>"`. Wherever a target is expected (`to`), the API accepts an agent name, a user name, a registered process name, or a pid string. Terms are sent as Elixir source strings and returned as `inspect/2` output. Errors return JSON with an `error` field and, for parse or eval failures, the exception message.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api` | Endpoint index, and which providers can be used now (`providers`: OpenRouter's key set, the subscription's status) |
+| GET | `/api/processes` | Non-standard processes, with the dashboard's columns |
+| GET | `/api/processes/:pid` | `Process.info` detail for one process |
+| GET | `/api/agents` | Agents with status, model, and budget used |
+| POST | `/api/agents` | Start an agent: `name`, `model`, `reasoning`, `max_turns`, `max_tokens`, `max_context` (all required); optional `start_idle` (default true), `system_prompt`, `system_prompt_file`. A refusal is a 422 saying what to give |
+| GET | `/api/agents/:name` | Status, system prompt, budget, restart count |
+| POST | `/api/agents/:name/stop`, `/restart`, `/resume`, `/unhalt` | Lifecycle controls, as in the dashboard |
+| GET | `/api/agents/:name/log?since=:seq` | Log entries after a sequence number |
+| GET | `/api/agents/:name/stream` | The same entries live, as server-sent events |
+| POST | `/api/users` | Start a user: `name` |
+| POST | `/api/users/:name/say` | `to`, `text` |
+| POST | `/api/users/:name/send_raw` | `to`, `term` as Elixir source |
+| GET | `/api/users/:name/inbox?clear=true` | Messages the user has received |
+| POST | `/api/eval` | `code`: evaluate Elixir on the node, equivalent to `bin/rpc` |
+| GET | `/api/chatgpt` | Whether a ChatGPT subscription is connected: status, and the code and link while a login waits; never the tokens |
+| POST | `/api/chatgpt/login` | Start a device-code login; returns the code and link |
+| POST | `/api/chatgpt/logout` | Forget the subscription's tokens, or cancel a login |
+| GET | `/api/settings` | The node's settings: key, value, whether set, default, when a change applies, what it does; a secret shows only whether it is set and its last 4 characters |
+| PUT | `/api/settings/:key` | Set one, saved at once: body `value`. A refusal is a 422 saying what is allowed |
+| DELETE | `/api/settings/:key` | Put one back to its default, or unset a key |
+
+Polling `log?since=` is the simplest pattern for an AI client; the event stream suits long-lived ones.
+
+**Exposure.** There is no authentication, and `/api/eval` runs arbitrary code in the container, so the port is published to the host's localhost only (`-p 127.0.0.1:4000:4000`). The API lives in the agents' node, so an agent can take it down like the rest of the dashboard; outside agents then fall back to `docker exec nano bin/rpc` and the JSONL logs. Agents inside the node can also call the API on localhost, which is allowed.
+
+## Hot code reloading
+
+The node runs from source so that any module, including `NanoAgent` itself, can be edited and reloaded while agents keep running. That makes self-modification possible: an agent can read its own source, change it, and recompile it through eval.
+
+**How the node runs.** The container starts the app from the source tree at `/app` with `elixir --name nano@127.0.0.1 --cookie $NODE_COOKIE -S mix run --no-halt`, not as a Mix release. Mix, the compiler, and the source all stay in place, so `Code.compile_file/1` and `IEx.Helpers.r/1` work from eval or a remote shell. A release can also load new code, but it ships compiled modules without source or Mix, which makes self-editing much harder and adds a build step for no gain in simplicity.
+
+**Seeing what changed.** `/app` is a git repository committed at image build, so `git diff` shows exactly what any agent has edited, and `git checkout` plus a reload undoes it.
+
+**What a reload means for running agents**
+
+- New `NanoAgent` code takes effect at each agent's next callback, because OTP calls callbacks by module name. Process state is kept as is, so new code must accept the existing state shape; `code_change/3` is only invoked during formal release upgrades, not plain reloads.
+- The BEAM holds at most two versions of a module, and loading a newer one purges the oldest, killing any process still running it. An eval Task started under an older version is the likely casualty; it surfaces as an ordinary eval error.
+- A broken edit that crashes `NanoAgent` makes every restart use the broken code. The restart brake halts the agent, and an operator can revert with git.
+
+**Persistence.** `/app` is bind-mounted from a git checkout on the host, so self-edits survive agent restarts, node restarts, and container rebuilds. Use a dedicated checkout, not a working copy you care about: agents can change anything in that directory, including its git history. The node compiles `/app` at startup, so an edit that breaks compilation or boot leaves the container in a restart loop. The fix happens on the host with `git diff` and `git checkout`, where a human or Claude Code can also read every change directly.
+
+## Container, configuration and limits
+
+One image, based on the official Elixir image, running the app from source with Mix rather than as a release (see Hot code reloading), running as root inside the container so that agents have full control of it, including installing packages; the container, not the user, is the sandbox. Logs go to a mounted volume at `/data` so they survive the container, and `/app` is bind-mounted from a checkout on the host (see Hot code reloading).
+
+**Settings.** The node's configuration is settings it owns, not environment variables, so it changes while the node runs, and a key that is removed is gone from the node (an environment variable would stay readable in `/proc/<pid>/environ`). One supervised process, `Nano.Settings`, keeps what is set in `<STATE_DIR>/settings.json` (mode 0600, written atomically) and loads it at boot; reads never call it, because the values are published to `:persistent_term` whenever they change. It cannot fail to start: a missing or unreadable file comes up with the defaults, logged once. Operators change settings with `Nano.Ops.put_setting/2` and `delete_setting/1`, the API (`/api/settings`) or the dashboard's Settings view; a value of the wrong type or out of range is refused with a message saying what is allowed. Secrets are never logged, never in crash reports and never shown. `bin/up` pushes the `KEY=value` lines of `.env` to the node once it answers (`bin/push-settings`, by their env names, `OPENROUTER_API_KEY` for `openrouter_api_key`); it only sets, so removing a setting for good means clearing it on the node and taking it out of `.env`. Any other name is kept as a value of the operators' own: an opaque string, secret, for whatever needs it, readable by name with `Nano.Settings.get/1` and listed by `Nano.Ops.settings/0`.
+
+"Live" applies a change at once; "agent start" applies it to agents started afterwards, because the system prompt states it and each agent keeps the value it started with (see System prompt).
+
+| Setting | Default | Applies | Purpose |
+| --- | --- | --- | --- |
+| `openrouter_api_key` | none (secret) | live | OpenRouter model access. Without it OpenRouter is off: its models are refused, and agents on them are halted (`provider_unavailable`) |
+| `node_max_tokens_per_hour` | 100000000 | live | Tokens all agents together may use in an hour; an agent about to call the model past it is halted (`node_budget`). A node-wide brake, not a default for agents; 0 means no limit |
+| `eval_timeout_ms` | 30000 | live (each eval) | Per-eval timeout |
+| `result_max_bytes` | 51200 | agent start | Truncation limit for tool results and events; the whole text is written to a file under `/data/spill` and the truncated text names it |
+| `max_bindings_bytes` | 16000000 | live | Eval variables are saved for restarts up to this many bytes in total; larger ones stay bound in the running process only, and the restart note names them |
+| `network_policy` | `unrestricted outbound internet access` | agent start | Text shown in the system prompt; must match the actual network setup |
+| `system_prompt_file` | `priv/system_prompt.txt` | agent start | Default prompt template for new agents, read at each agent start (and restart) |
+| `openrouter_base_url` | `https://openrouter.ai/api/v1` | live | OpenRouter's API |
+| `chatgpt_base_url` | `https://chatgpt.com/backend-api/codex` | live | The Codex backend that serves `openai-codex/` models |
+| `chatgpt_auth_url` | `https://auth.openai.com` | live | The OAuth server for the device-code login and token refresh |
+| `chatgpt_client_version` | `0.160.1` | live (the model list is fetched again) | The Codex CLI version reported when listing models: the backend lists only the models released to clients at least this new, so keep it at Codex's latest release |
+
+**Environment.** Only what is needed before the app starts, or by the build, stays in the environment:
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `STATE_DIR` | `/data/state` | One file per agent, written on every save and revived from at boot; also `settings.json`, the node's settings, and `chatgpt_auth.json`, the ChatGPT subscription's tokens |
+| `SPILL_DIR` | `/data/spill` | Where the whole text of a truncated result or event is kept, one file per cut |
+| `LOG_DIR` | `/data/logs` | The JSONL logs |
+| `NODE_COOKIE` | random at build | Distribution cookie for remote shells, read by `elixir --cookie` |
+| `PORT`, `LISTEN_IP` | 4000, `127.0.0.1` (the image: `0.0.0.0`) | Where the endpoint listens |
+| `SECRET_KEY_BASE` | random per boot | Signs the dashboard's session cookie |
+| `MIX_ENV`, `MIX_DEPS_PATH`, `MIX_BUILD_ROOT`, `ERL_CRASH_DUMP` | set by the image | The build, and where a crash dump goes |
+
+**Limits that matter even in a disposable container**
+
+- **Spend.** Per-agent turn and token budgets, plus a node-wide hourly token cap, stop runaway loops, including two agents messaging each other forever.
+- **Node survival.** Agents can call `System.halt/0` or kill the supervisor. That ends the experiment but nothing else; Docker's restart policy brings the node back, and the logs remain.
+- **Network.** If agents should not reach the internet, enforce it at the Docker network level, allowing only the model providers (openrouter.ai, and chatgpt.com and auth.openai.com for a ChatGPT subscription), and say so accurately in the system prompt.
+- **API key exposure.** The key, if set, is a node setting, so any agent can read it, with `Nano.Settings.get/1` or from `settings.json`. Use a dedicated OpenRouter key with a low spending limit. Clearing it takes it out of the node at once (an agent may have copied it before). Likewise the ChatGPT tokens: agents run as root and can read the token file or ask the process that holds them, and the tokens are access to the ChatGPT account itself, not a key with a spending cap.
+- **Tracing.** `:erlang.trace(:all, ...)` can slow the node badly. The node is disposable, so this is allowed, but it can distort timing in experiments run alongside.
