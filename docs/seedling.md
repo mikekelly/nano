@@ -88,3 +88,7 @@ these counts. Real provider probes exercised checkpoints, both vision entry path
 Decision, Exa, and Bots chat/group/cross-session memory. Provider behavior is not made
 infallible by a transport test; one initial Bots colour-identification answer was wrong
 and was explicitly investigated rather than recorded as a passing vision result.
+On reinspection the bot correctly identified all four quadrants. An independent audit
+verified canonical image hashes and deterministic provider payload bytes against the
+source fixture; no delivery corruption was found, but the initial perception error
+remains part of the evidence.

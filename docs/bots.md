@@ -107,3 +107,25 @@ The browser harness uses installed Lightpanda and binds its CDP server to loopba
 and opens notification settings. Stop the fixture when done. Node 20 needs the
 experimental WebSocket flag; no npm packages are required. Tests use isolated storage
 and scripted runtimes rather than external paid providers.
+
+## Diagnosing a bot that cannot respond
+
+The runtime checks active grants with bounded asynchronous health probes. A halted
+agent is still a live process: process monitors alone cannot detect a node-budget,
+provider or operator halt. These conditions are now reported specifically rather
+than waiting for the response deadline. A blocked health probe cannot block chat,
+and stale probe results cannot revoke a newer speaking grant.
+
+After resolving the underlying condition, `Bots.retry(session_id)` retries an errored,
+inactive session's latest pending human message. It preserves the transcript and
+message ID, advances the session epoch, and grants fresh response tokens; it does
+not impersonate the person by appending a new message. It does not unhalt agents or
+change budgets. An operator can inspect the owning bot agent's `NanoAgent.info/1`
+and explicitly unhalt a budget-paused agent after capacity becomes available.
+The seed rechecks the node budget before every model call. Do not unhalt arbitrary
+operator/provider/agent-limit halts as a substitute for diagnosing them.
+
+This distinction was verified on the live deployment: the build exhausted the shared
+node budget before two consumer chats arrived. After the operator raised the cap,
+only affected budget-paused bot agents were resumed, and the original conversations
+received real responses. Earlier timeout notices remain in the transcript as evidence.
