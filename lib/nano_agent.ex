@@ -798,6 +798,7 @@ defmodule NanoAgent do
 
         user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
         next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        next = FrontOfMind.before_call(next)
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -1017,6 +1018,7 @@ defmodule NanoAgent do
         },
         summary
       )
+      |> FrontOfMind.after_compaction()
 
     if estimate(s) >= s.max_context - @reply_room do
       s
@@ -1267,7 +1269,7 @@ defmodule NanoAgent do
 
         {summary, s} ->
           log(s, :compaction_completed, %{summary: summary, voluntary: true})
-          Compaction.rebuild(s, summary)
+          Compaction.rebuild(s, summary) |> FrontOfMind.after_compaction()
       end
 
     cond do
