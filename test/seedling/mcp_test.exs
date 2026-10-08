@@ -44,7 +44,26 @@ defmodule Seedling.MCPTest do
             {:args, ["-u", @fixture, transport, era, dir]}
           ])
 
+        {:os_pid, os_pid} = Port.info(port, :os_pid)
+
         on_exit(fn ->
+          # Port.close only closes pipes; an HTTP listener never reads stdin.
+          case File.read("/proc/#{os_pid}/cmdline") do
+            {:ok, cmd} ->
+              if String.contains?(cmd, @fixture) and String.contains?(cmd, dir),
+                do: System.cmd("kill", ["-TERM", to_string(os_pid)], stderr_to_stdout: true)
+
+            _ ->
+              :ok
+          end
+
+          assert eventually(fn ->
+                   case File.read("/proc/#{os_pid}/stat") do
+                     {:ok, stat} -> String.contains?(stat, " Z ")
+                     _ -> true
+                   end
+                 end)
+
           try do
             Port.close(port)
           catch
@@ -328,5 +347,106 @@ defmodule Seedling.MCPTest do
 
     assert {:ok, %{status: :ready, subscriptions: ["file://demo"]}} =
              MCP.status("fixture", other_opts)
+  end
+
+  test "deferred agent delivery holds lifecycle and notifications until all servers are ready" do
+    ctx = setup_instance("stdio", "modern")
+    config_path = Path.join(ctx.dir, "config.json")
+    config = Jason.decode!(File.read!(config_path))
+
+    File.write!(
+      config_path,
+      Jason.encode!(put_in(config, ["servers", "second"], config["servers"]["fixture"]))
+    )
+
+    opts = Keyword.put(ctx.opts, :defer_events, true)
+    assert {:ok, %{status: :ready}} = MCP.connect("fixture", opts)
+    refute_receive %{mcp: "fixture"}, 200
+    assert {:ok, %{status: :ready}} = MCP.connect("second", opts)
+    assert {:ok, _} = MCP.subscribe("fixture", "file://demo", opts)
+    assert {:ok, _} = MCP.call("fixture", "echo", %{}, opts)
+    refute_receive %{mcp: _}, 350
+    assert :ok = MCP.release_events(ctx.agent, ctx.opts)
+    assert_receive %{mcp: "fixture", type: :connected}, 3000
+    assert_receive %{mcp: "second", type: :connected}, 3000
+    assert_receive %{type: :request, method: "tools/call"}, 3000
+    assert_receive %{type: :response, method: "tools/call"}, 3000
+    assert_receive %{method: "notifications/resources/updated"}, 3000
+    assert {:ok, %{status: :ready}} = MCP.status("fixture", ctx.opts)
+    assert {:ok, %{status: :ready}} = MCP.status("second", ctx.opts)
+  end
+
+  test "oversized resource updates retain routing envelope; spill failure does not crash manager" do
+    ctx = setup_instance("stdio", "modern")
+    assert {:ok, _} = MCP.connect("fixture", ctx.opts)
+    assert {:ok, _} = MCP.subscribe("fixture", "file://demo", ctx.opts)
+    assert_receive %{method: "notifications/resources/updated"}, 3000
+    parent = self()
+    other = "unrelated-" <> unique()
+
+    relay =
+      spawn(fn ->
+        Nano.Names.register_name({:agent, other}, self())
+
+        loop = fn loop ->
+          receive do
+            event ->
+              send(parent, {:unrelated, event})
+              loop.(loop)
+          end
+        end
+
+        loop.(loop)
+      end)
+
+    on_exit(fn ->
+      Process.exit(relay, :kill)
+      Nano.Names.unregister_name({:agent, other})
+    end)
+
+    assert eventually(fn -> Nano.Names.whereis_name({:agent, other}) == relay end)
+    assert {:ok, _} = MCP.connect("fixture", Keyword.put(ctx.opts, :agent, other))
+    manager = GenServer.whereis(MCP.manager(ctx.opts))
+    {:ok, client} = GenServer.call(manager, {:client, "fixture"})
+
+    payload = %{
+      type: :notification,
+      method: "notifications/resources/updated",
+      params: %{"uri" => "file://demo", "data" => String.duplicate("x", 5000)}
+    }
+
+    send(manager, {:mcp_client, "fixture", client, payload})
+
+    assert_receive %{
+                     truncated: true,
+                     type: :notification,
+                     method: "notifications/resources/updated",
+                     uri: "file://demo",
+                     path: path
+                   },
+                   3000
+
+    assert File.read!(path) =~ "file://demo"
+    refute_receive {:unrelated, %{truncated: true}}, 150
+    events_dir = Path.join([ctx.dir, "state", "events"])
+    File.rm_rf!(events_dir)
+    File.write!(events_dir, "not a directory")
+    send(manager, {:mcp_client, "fixture", client, payload})
+    assert_receive %{type: :event_spill_failed}, 3000
+    refute_receive {:unrelated, %{type: :event_spill_failed}}, 150
+    assert {:ok, %{status: :ready}} = MCP.status("fixture", ctx.opts)
+  end
+
+  test "HTTP workers die with a killed connection instead of outliving it until idle timeout" do
+    ctx = setup_instance("http", "modern")
+    assert {:ok, _} = MCP.connect("fixture", ctx.opts)
+    assert {:ok, _} = MCP.subscribe("fixture", "file://demo", ctx.opts)
+    assert_receive %{method: "notifications/resources/updated"}, 3000
+    {:ok, client} = GenServer.call(MCP.manager(ctx.opts), {:client, "fixture"})
+    workers = :sys.get_state(client).workers |> Map.values() |> Enum.map(& &1.pid)
+    assert workers != []
+    Process.exit(client, :kill)
+    assert eventually(fn -> Enum.all?(workers, &(not Process.alive?(&1))) end)
+    assert_receive %{method: "notifications/resources/updated"}, 3000
   end
 end
