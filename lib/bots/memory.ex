@@ -15,7 +15,7 @@ defmodule Bots.Memory do
   def remember(bot_id, session_id, key, value, opts) do
     memory = Keyword.get(opts, :memory, Memory)
 
-    with true <- is_binary(key) and byte_size(key) in 1..160,
+    with true <- is_binary(key) and String.valid?(key) and byte_size(key) in 1..160,
          {:ok, encoded} <- Jason.encode(value),
          true <- byte_size(encoded) <= @max_value,
          true <- Code.ensure_loaded?(memory) do
