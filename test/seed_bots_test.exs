@@ -9,7 +9,7 @@ defmodule SeedBotsTest do
   end
 
   test "identities, isolated sessions, messages and bounded exchanges persist", %{dir: dir} do
-    assert {:error, :invalid_name} = SeedBots.create_bot(%{name: " "})
+    assert {:error, :invalid_identity} = SeedBots.create_bot(%{name: " "})
     {:ok, bot} = SeedBots.create_bot(%{name: "Muse"})
     {:ok, a} = SeedBots.create_session([bot.id])
     {:ok, b} = SeedBots.create_session([bot.id])
