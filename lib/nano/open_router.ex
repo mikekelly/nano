@@ -105,7 +105,9 @@ defmodule Nano.OpenRouter do
   """
   def models do
     now = System.monotonic_time(:second)
-    config = :erlang.phash2({Nano.Settings.get(:openrouter_api_key), base_url()})
+    # Cache schema changes must invalidate entries created before modalities were retained.
+    config =
+      :erlang.phash2({:input_modalities_v1, Nano.Settings.get(:openrouter_api_key), base_url()})
 
     case Nano.Model.openrouter?() && :persistent_term.get({__MODULE__, :models}, nil) do
       false ->
