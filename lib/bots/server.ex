@@ -532,6 +532,33 @@ defmodule Bots.Server do
     end
   end
 
+  def handle_info({:health_check, token}, s) do
+    case s.grants[token] do
+      nil ->
+        {:noreply, s}
+
+      grant ->
+        checking? =
+          Enum.any?(s.jobs, fn {_ref, job} -> job.type == :health and job.token == token end)
+
+        if not checking? and function_exported?(s.runtime, :status, 3) do
+          bot = s.data["bots"][grant.bot_id]
+          session = s.data["sessions"][grant.sid]
+          job = %{type: :health, sid: grant.sid, epoch: grant.epoch, token: token}
+
+          {:noreply,
+           spawn_job(
+             s,
+             job,
+             fn -> s.runtime.status(bot, session, runtime_opts(s)) end,
+             Keyword.get(s.opts, :health_timeout, 500)
+           )}
+        else
+          {:noreply, s}
+        end
+    end
+  end
+
   def handle_info({:grant_timeout, token}, s) do
     case s.grants[token] do
       nil ->
@@ -568,6 +595,9 @@ defmodule Bots.Server do
             :route ->
               {:noreply, selected(s, job, result)}
 
+            :health ->
+              {:noreply, health_result(s, job, result)}
+
             :dispatch ->
               case result do
                 :ok ->
@@ -580,6 +610,7 @@ defmodule Bots.Server do
 
                     grant ->
                       grant = Map.put(grant, :monitor, Process.monitor(pid))
+                      send(self(), {:health_check, job.token})
                       {:noreply, %{s | grants: Map.put(s.grants, job.token, grant)}}
                   end
 
@@ -602,6 +633,34 @@ defmodule Bots.Server do
         end
     end
   end
+
+  defp health_result(s, job, result) do
+    case s.grants[job.token] do
+      nil ->
+        s
+
+      grant ->
+        if terminal_health?(result) do
+          release_grant(grant)
+          runtime_error(%{s | grants: Map.delete(s.grants, job.token)}, grant, result)
+        else
+          Process.send_after(
+            self(),
+            {:health_check, job.token},
+            Keyword.get(s.opts, :health_interval, 500)
+          )
+
+          s
+        end
+    end
+  end
+
+  defp terminal_health?({:error, {:agent_halted, _}}), do: true
+
+  defp terminal_health?({:error, reason})
+       when reason in [:agent_suspended, :agent_unavailable, :not_found, :name_conflict], do: true
+
+  defp terminal_health?(_), do: false
 
   defp selected(s, job, result) do
     session = s.data["sessions"][job.sid]
@@ -704,7 +763,34 @@ defmodule Bots.Server do
     end
   end
 
+  defp error_label({:error, reason}), do: error_label(reason)
+
+  defp error_label({:agent_halted, :node_budget}),
+    do:
+      "node hourly token budget reached; wait for budget capacity and ask an operator to resume the bot"
+
+  defp error_label({:agent_halted, :provider_unavailable}),
+    do:
+      "model provider is unavailable; an operator must restore provider access and resume the bot"
+
+  defp error_label({:agent_halted, reason})
+       when reason in [:budget, :context, :max_turns, :max_tokens, :max_context],
+       do: "bot safety limit reached; an operator must review its limits before resuming"
+
+  defp error_label({:agent_halted, :usage_limit}),
+    do: "model provider usage limit reached; wait for provider capacity before resuming"
+
+  defp error_label({:agent_halted, :model_refused}),
+    do: "model rejected this request; an operator must review it before resuming"
+
+  defp error_label({:agent_halted, _}), do: "bot halted; an operator must review and resume it"
+
+  defp error_label(:agent_suspended),
+    do: "bot suspended by an operator; resume it before retrying"
+
+  defp error_label(:agent_unavailable), do: "bot process is unavailable"
   defp error_label(:response_timeout), do: "response timed out"
+
   defp error_label(_), do: "runtime unavailable"
 
   defp remove_speaker(session, bid),
