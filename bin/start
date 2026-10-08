@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install once with safety_net/supervisor.py install; /data survives recreation.
 home="${SAFETY_NET_HOME:-/data/safety-net}"
-if [ -f "$home/runtime/supervisor.py" ]; then
+if [ -f "$home/runtime/supervisor.py" ] && [ -f "$home/config.json" ]; then
   exec python3 "$home/runtime/supervisor.py" --home "$home" run
 fi
 echo 'SAFETY NET: not installed; node is unprotected' >&2

@@ -19,7 +19,9 @@ defmodule SafetyNet do
     home = home()
 
     %{
-      installed: File.regular?(Path.join(home, "runtime/supervisor.py")),
+      installed:
+        File.regular?(Path.join(home, "runtime/supervisor.py")) and
+          File.regular?(Path.join(home, "config.json")),
       disabled: File.exists?(Path.join(home, "disabled")),
       lockup_protection:
         if(Application.get_env(:nano, :test_dir) == nil and System.get_env("SAFETY_NET_SESSION"),
