@@ -7,6 +7,12 @@ defmodule SeedTasks do
   and `cancel(handle)`. Completion is `{:seed_task, id, result}`; result has
   status, exit_code, bytes and output_path, never command output.
 
+  Defaults: `owner: self()` (the eval pid, **not** the agent), `timeout: 300_000`,
+  `cwd: File.cwd!()`, `env: []`, `root: "/data/seed_tasks"`. Agents must pass
+  `owner: "their-agent-name"` to receive completion after eval/agent restart.
+  PID owners get one send and have no durable acknowledgment/replay; if the
+  pid has died that notification is lost, but the disk result can be polled.
+
   Owner may be a pid or an agent name. Names are resolved again on delivery;
   workers wait while an agent is restarting. Workers are unlinked from eval,
   with `$callers` attribution for the dashboard. Caller/agent death does not
@@ -17,6 +23,15 @@ defmodule SeedTasks do
   records `:interrupted` and replay pending named-owner completions. Named
   recipients call `ack(handle)` after processing; delivery is at-least-once,
   deduplicate by task id. Unacknowledged delivery follows owner pid changes.
+  A live named pid receives one event per delivery worker, not repeated retries
+  to the same pid. Explicit reconciliation may create another delivery worker
+  and a duplicate event. Ack only **after** application-level processing:
+  `SeedTasks.ack(%{id: id, root: "/data/seed_tasks"})`. Preserve the returned
+  handle for custom roots: events omit root, and boot reconciliation/retention
+  for custom roots are caller responsibilities. Ack has no sender authorization;
+  this trusted-agent API assumes callers acknowledge only their own jobs.
+  Reconciliation reports interruption, not an invented exit code. Orphan OS
+  processes are never signaled using stale persisted pid numbers.
 
   Integration: SeedTools.sh may delegate to this API, but must not wrap it in
   a linked Task. No application supervisor or harness reload is required.
