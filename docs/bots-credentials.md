@@ -51,3 +51,5 @@ transcript/harness log, idempotence and ack; only settings.json contains it and 
 No live settings or actual secret values were changed/read into this agent context.
 Backend/controller focused tests2 plus existing service9 pass (11 total). Frontend
 password-control/JS tests and final full suite follow the frontend merge.
+
+Restart validation: isolated fake-value tests now prove answered metadata reloads after service restart, retry does not replace the setting, invalid credential-answer plaintext cannot be persisted, and missing CSRF is rejected. HTTP tests explicitly disable ConnTest's default CSRF bypass. Per-request lock uses canonical root + request ID rather than caller's server alias, stable across service restart.
