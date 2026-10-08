@@ -991,6 +991,7 @@ defmodule NanoAgent do
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
 
   defp compact(s) do
+    log(s, :compaction_started, %{estimate: estimate(s)})
     messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
 
     task =
