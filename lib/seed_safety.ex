@@ -2,7 +2,9 @@ defmodule SeedSafety do
   @moduledoc """
   Entry point for the external safety net. `status/0` reads its last secret-free
   event; `attest/0` certifies the current supervised boot after a successful model
-  response. Call it only after the configured credential keys have been validated.
+  response (source only). `attest(provider: "openrouter")` additionally validates
+  credential specs explicitly tagged provider="openrouter". Never pass a provider
+  unless the successful request used those configured credentials.
   `reject/3` marks the exact credential that received a definitive authentication
   rejection, never a timeout/rate limit. A newer replacement will not be reverted.
 
@@ -27,6 +29,9 @@ defmodule SeedSafety do
   starts/stops the existing BEAM, restores credentials or changes source. Active
   protection requires the watchdog to be the next container entrypoint. Template
   bin/seed-safety-config.json preserves /app/bin/start as the child command.
+  At most two launch snapshots are retained by default (keep_launches config).
+  Displaced source/credential evidence is never automatically deleted; operators
+  must archive/prune it explicitly. Monitor journal also needs log rotation.
   This module does not start anything or alter the shared node on load.
   """
   def status(dir \\ directory()) do
@@ -38,10 +43,20 @@ defmodule SeedSafety do
   end
 
   @doc "Certify only after a successful model response; no credentials enter this file."
-  def attest(dir \\ directory()) do
+  def attest(opts \\ []) do
+    dir = if is_binary(opts), do: opts, else: Keyword.get(opts, :dir, directory())
+    providers = if is_list(opts), do: List.wrap(Keyword.get(opts, :provider, [])), else: []
+
     case System.get_env("SEED_SAFETY_BOOT") do
-      nil -> {:error, :not_supervised}
-      boot -> write(dir, "attestation.json", %{boot: boot, time: System.system_time(:nanosecond)})
+      nil ->
+        {:error, :not_supervised}
+
+      boot ->
+        write(dir, "attestation.json", %{
+          boot: boot,
+          time: System.system_time(:nanosecond),
+          providers: providers
+        })
     end
   end
 

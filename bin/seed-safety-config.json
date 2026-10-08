@@ -1,24 +1,17 @@
 {
-  "timeout": 5,
+  "app": "/app",
+  "backoff": 10,
+  "boot_grace": 90,
   "command": [
     "/app/bin/start"
   ],
-  "state": "/data/seed-safety",
+  "credentials": [],
+  "failures": 3,
+  "interval": 20,
   "max_attempts": 3,
   "probe": [
     "/opt/seed-safety/probe"
   ],
-  "credentials": [
-    {
-      "keys": [
-        "openrouter_api_key"
-      ],
-      "path": "/data/state/settings.json"
-    }
-  ],
-  "app": "/app",
-  "interval": 20,
-  "failures": 3,
-  "backoff": 10,
-  "boot_grace": 90
+  "state": "/data/seed-safety",
+  "timeout": 5
 }

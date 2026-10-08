@@ -55,6 +55,8 @@ class Watchdog:
     def snapshot(self, target):
         shutil.copytree(self.app, target, symlinks=True, ignore=lambda directory,names: EXCLUDE.intersection(names))
     def start(self):
+        if self.launch and self.launch.exists() and not self.certified:
+            shutil.rmtree(self.launch)
         self.launch = self.state/('launch-'+str(time.time_ns())); self.snapshot(self.launch)
         self.token = str(time.time_ns())
         env = dict(os.environ, SEED_SAFETY_DIR=str(self.state), SEED_SAFETY_BOOT=self.token)
@@ -83,11 +85,21 @@ class Watchdog:
             link = self.state/('good-link-'+str(time.time_ns()))
             link.symlink_to(self.launch.name); os.replace(link,old)
             self.certified = True
-        backup = []
+        backup = read(self.state/'credentials.json', [])
+        verified = att.get('providers', [])
         for spec in self.c.get('credentials', []):
+            if spec.get('provider') not in verified: continue
             data = read(spec['path'], {})
             if not isinstance(data,dict): continue
-            backup.append(dict(path=spec['path'], values={k:data[k] for k in spec['keys'] if valid(data.get(k))}))
+            old_values = next((b['values'] for b in backup if b['path']==spec['path']), {})
+            values = dict(old_values)
+            values.update({k:data[k] for k in spec['keys'] if valid(data.get(k))})
+            backup = [b for b in backup if b['path']!=spec['path']]
+            backup.append(dict(path=spec['path'], values=values))
+        launches = sorted(self.state.glob('launch-*'),key=lambda p:p.stat().st_mtime,reverse=True)
+        retained = max(2,self.c.get('keep_launches',2))
+        for stale in launches[retained:]:
+            if not old.exists() or stale.resolve()!=old.resolve(): shutil.rmtree(stale)
         atomic(self.state/'credentials.json', backup); self.event('known_good' if self.certified else 'credentials_checkpoint', evidence=str(old) if self.certified else None)
     def credentials(self):
         rejected = read(self.state/'rejected.json', {}); changed = False
