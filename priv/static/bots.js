@@ -34,7 +34,17 @@
         this.handleEvent("bots:focus", ({id}) => {
           if (["recipient-input", "message-input"].includes(id)) this.el.querySelector(`#${id}`)?.focus()
         })
+        this.handleEvent("bots:reveal-message", ({id}) => {
+          this.following = false
+          const message = document.getElementById(id)
+          if (message && this.el.contains(message) && message.classList.contains("message-request")) {
+            message.tabIndex = -1
+            message.focus({preventScroll:true})
+            message.scrollIntoView({block:"center"})
+          }
+        })
         this.handleEvent("bots:sent", () => {
+
           const input = this.el.querySelector("#message-input")
           if (input) { input.value = ""; input.style.height = "auto"; input.focus() }
           this.following = true

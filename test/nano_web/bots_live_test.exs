@@ -218,6 +218,8 @@ defmodule NanoWeb.BotsLiveTest do
       )
 
     assert has_element?(view, ".message-request", "Which hotel should I book?")
+    assert has_element?(view, ".bots-pending-request", "1 request is waiting")
+    assert has_element?(view, ".bots-request-badge", "1")
     view |> element("button[phx-click=reply]") |> render_click()
     assert has_element?(view, ".bots-reply-banner", "Replying to a request")
     assert has_element?(view, "button[data-bots-attach][disabled]")
@@ -226,6 +228,8 @@ defmodule NanoWeb.BotsLiveTest do
     assert_receive {:bots_answer, ^id, "The quiet one, please."}
     assert has_element?(view, ".message-human", "The quiet one, please.")
     assert has_element?(view, ".bots-request", "Answered")
+    refute has_element?(view, ".bots-pending-request")
+    refute has_element?(view, ".bots-request-badge")
     refute has_element?(view, "button[phx-click=reply]")
     assert Bots.request_status(id, ctx.opts)["status"] == "answered"
     render_click(view, "reply", %{id: id})
@@ -319,9 +323,30 @@ defmodule NanoWeb.BotsLiveTest do
 
     view |> element(".bots-older") |> render_click()
     refute has_element?(view, ".bots-older")
+    render_patch(view, "/bots/" <> chat["id"])
+    assert has_element?(view, ".bots-older")
+    view |> element("button[phx-click=review-request]") |> render_click()
+    assert_push_event(view, "bots:reveal-message", %{id: _message_id})
+    refute has_element?(view, ".bots-older")
 
     assert Enum.count(LazyHTML.query(LazyHTML.from_fragment(render(view)), ".bots-message")) ==
              105
+  end
+
+  test "oversized messages are rejected explicitly without silently sending a truncated message",
+       ctx do
+    {:ok, view, _} = live(ctx.conn, "/bots")
+    view |> element("#recipient-" <> ctx.luna["id"]) |> render_click()
+    render_submit(view, "send", %{text: String.duplicate("界", 20_000)})
+    assert has_element?(view, ".bots-error", "too long")
+    assert Bots.snapshot(ctx.opts)["sessions"] == []
+  end
+
+  test "invalid bot names show their error inside the open dialog", ctx do
+    {:ok, view, _} = live(ctx.conn, "/bots")
+    view |> element("#recipient-create") |> render_click()
+    view |> form("#create-bot-form", %{bot: %{name: "   "}}) |> render_submit()
+    assert has_element?(view, "#create-bot-dialog .bots-modal-error", "couldn’t create")
   end
 
   test "empty messages do not create chats", ctx do
