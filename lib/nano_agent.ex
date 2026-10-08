@@ -604,6 +604,8 @@ defmodule NanoAgent do
     noreply(s)
   end
 
+  def handle_cast({:compact_summary, text}, s), do: noreply(Map.put(s, :compaction_pending, text))
+
   def handle_cast(:check_provider, s), do: noreply(check_provider(s))
 
   def handle_cast(:unhalt, %{halted: nil} = s), do: noreply(s)
@@ -794,9 +796,16 @@ defmodule NanoAgent do
         estimate = estimate(next)
         room = b.max_context - estimate
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        cond do
+          b.max_context > 0 and room < @reply_room ->
+            s |> context_halt(estimate) |> end_turn("budget")
+
+          b.max_context > 0 and room < min(16384, div(b.max_context, 3)) ->
+            compact(next)
+
+          true ->
+            call(next, new_turn? && line, estimate, room)
+        end
     end
   end
 
@@ -980,6 +989,29 @@ defmodule NanoAgent do
   end
 
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
+
+  defp compact(s) do
+    messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
+
+    task =
+      Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+        Compaction.run(s.model, s.reasoning, messages)
+      end)
+
+    %{s | status: :thinking, task: %{kind: :compaction, task: task}}
+  end
+
+  defp task_done(%{task: %{kind: :compaction}} = s, {:ok, text}) do
+    log(s, :compacted, %{summary: text})
+    s |> Map.put(:task, nil) |> Compaction.apply_summary(text) |> request(false)
+  end
+
+  defp task_done(%{task: %{kind: :compaction}} = s, error),
+    do:
+      s
+      |> Map.put(:task, nil)
+      |> halt(:compaction_failed, "Automatic compaction failed: #{inspect(error)}")
+      |> end_turn("error")
 
   defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
 
@@ -1208,6 +1240,8 @@ defmodule NanoAgent do
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
   defp run_calls(%{calls: []} = s) do
+    s = if s[:compaction_pending], do: Compaction.apply_summary(s, s.compaction_pending), else: s
+
     cond do
       not s.idle_called -> request(s, false)
       s.wakeup_after && s.pending == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")
