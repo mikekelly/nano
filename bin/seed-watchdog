@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """Independent supervisor: install under /opt/seed-safety, outside /app.
+ChatGPT credential spec: {provider:chatgpt,kind:chatgpt,path:...} backs up a
+coherent full schema including numeric expiry/account metadata. Source-only
+attestation never verifies credentials; only matching provider attestation does.
+Incomplete newer token generations need manual repair, never stale-token mixing.
 Config JSON: app, state, command argv, probe argv, credentials [{path, keys}],
 interval=20, timeout=5, boot_grace=90, failures=3, max_attempts=3, backoff=10.
 Probe must test BEAM responsiveness. Model success calls SeedSafety.attest().
@@ -39,6 +43,10 @@ def digest_tree(root):
             digest.update(str(path.relative_to(root)).encode())
             digest.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
     return digest.digest()
+def chatgpt_valid(data):
+    return isinstance(data,dict) and all(valid(data.get(k)) for k in ('access_token','refresh_token','account_id')) and type(data.get('expires_at')) is int and 0 < data['expires_at'] <= 253402300799 and all(data.get(k) is None or isinstance(data[k],str) for k in ('id_token','email','plan'))
+def chatgpt_fingerprint(data):
+    return hashlib.sha256((str(data.get('access_token',''))+'\0'+str(data.get('refresh_token',''))).encode()).hexdigest()
 class Watchdog:
     def __init__(self, config):
         self.c = config; self.app = Path(config['app']).resolve(); self.state = Path(config['state']).resolve()
@@ -90,6 +98,11 @@ class Watchdog:
         for spec in self.c.get('credentials', []):
             if spec.get('provider') not in verified: continue
             data = read(spec['path'], {})
+            if spec.get('kind') == 'chatgpt':
+                if chatgpt_valid(data):
+                    backup = [b for b in backup if b['path']!=spec['path']]
+                    backup.append(dict(path=spec['path'],kind='chatgpt',values=data))
+                continue
             if not isinstance(data,dict): continue
             old_values = next((b['values'] for b in backup if b['path']==spec['path']), {})
             values = dict(old_values)
@@ -101,16 +114,28 @@ class Watchdog:
         for stale in launches[retained:]:
             if not old.exists() or stale.resolve()!=old.resolve(): shutil.rmtree(stale)
         atomic(self.state/'credentials.json', backup); self.event('known_good' if self.certified else 'credentials_checkpoint', evidence=str(old) if self.certified else None)
-    def credentials(self):
+    def credentials(self, apply=True):
         rejected = read(self.state/'rejected.json', {}); changed = False
         for spec in read(self.state/'credentials.json', []):
             path = Path(spec['path']); current = read(path,{})
             if not isinstance(current,dict): current = {}
             restored = dict(current)
-            for key,value in spec['values'].items():
+            if spec.get('kind') == 'chatgpt':
+                saved = spec['values']
+                if not chatgpt_valid(saved): continue
+                rejected_pair = rejected.get(str(path),{}).get('@chatgpt') == chatgpt_fingerprint(current)
+                same_or_absent = all(not valid(current.get(k)) or current.get(k)==saved.get(k) for k in ('access_token','refresh_token'))
+                if rejected_pair or (not chatgpt_valid(current) and same_or_absent):
+                    restored.update(saved)
+                elif not chatgpt_valid(current):
+                    self.event('credentials_manual_intervention', reason='incomplete_newer_token_generation')
+            for key,value in ([] if spec.get('kind')=='chatgpt' else spec['values'].items()):
                 existing = current.get(key)
                 if not valid(existing) or rejected.get(str(path),{}).get(key) == fingerprint(existing): restored[key] = value
             if restored != current:
+                if not apply:
+                    changed = True
+                    continue
                 evidence = self.state/('credentials-evidence-'+str(time.time_ns()))
                 if path.exists(): shutil.copyfile(path,evidence); os.chmod(evidence,0o600)
                 atomic(path,restored); changed = True; self.event('credentials_restored', evidence=str(evidence))
@@ -162,7 +187,7 @@ class Watchdog:
                     alive = self.child.poll() is None; responsive = alive and self.probe()
                     if responsive:
                         failures = 0; self.certify()
-                        if not (self.state/'disabled').exists() and self.credentials(): self.recover('credentials')
+                        if not (self.state/'disabled').exists() and self.credentials(apply=False): self.recover('credentials')
                     elif not alive or time.monotonic()-self.started > self.c.get('boot_grace',90):
                         failures += 1
                         if not alive or failures >= self.c.get('failures',3):

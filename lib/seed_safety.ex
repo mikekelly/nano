@@ -15,8 +15,12 @@ defmodule SeedSafety do
   e.g. an installed copy of bin/rpc calling `Process.alive?(Process.whereis(Nano.Supervisor))`
   and exiting nonzero on false. Do not trust RPC exit zero without checking result.
   State defaults to /data/seed-safety and must be outside /app. Configure explicit
-  JSON credential files/keys (settings.json openrouter_api_key, operator keys;
-  OAuth requires validating its actual file schema separately).
+  JSON credential files/keys for settings.json openrouter_api_key/operator keys.
+  ChatGPT adapter config uses kind="chatgpt", provider="chatgpt" and path
+  /data/state/chatgpt_auth.json; no keys list. It validates string access/refresh
+  tokens and account_id, integer expires_at, optional id_token/email/plan, backs
+  up all metadata, and restores coherent pairs. Incomplete newer rotated pairs
+  are preserved and flagged rather than mixed with a stale backup.
 
   Recovery journals live at state/events.jsonl and status.json, with displaced
   work in source-evidence-* and secrets in credentials-evidence-* (root only).
@@ -87,6 +91,17 @@ defmodule SeedSafety do
       )
 
     write(dir, "rejected.json", updated)
+  end
+
+  @doc """
+  Mark a definitively rejected ChatGPT token generation. Both exact request access
+  token and its corresponding refresh token guard a concurrently rotated pair.
+  Never call on rate limits/timeouts or mere expiry: let Auth refresh normally.
+  Revoked or used refresh tokens may be unrecoverable even from a backup.
+  """
+  def reject_chatgpt(path, access, refresh, dir \\ directory())
+      when is_binary(access) and is_binary(refresh) do
+    reject(path, "@chatgpt", access <> <<0>> <> refresh, dir)
   end
 
   defp directory, do: System.get_env("SEED_SAFETY_DIR", "/data/seed-safety")
