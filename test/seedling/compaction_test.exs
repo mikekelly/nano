@@ -93,6 +93,26 @@ defmodule Seedling.CompactionTest do
     assert length(s.compaction_pending_events) == 1
     assert C.migrate(s) == s
     assert C.reserve(272_000) == 16384
-    assert C.reserve(20000) == 5000
+    assert C.reserve(20000) == 8192
+  end
+
+  test "legacy event parsing keeps literal closing tags inside received words and separates real headers" do
+    first =
+      ~s|<event seq="1" at="now">%{brief: "keep literal </event> and <harness> markers", request: "exact"}</event>|
+
+    second = ~s|<event seq="2" at="later">{:request, "also </event> stays"}</event>|
+
+    state =
+      C.migrate(%{
+        transcript: [
+          %{
+            "role" => "user",
+            "content" => first <> "\n" <> second <> "\n<harness>budget</harness>"
+          }
+        ],
+        pending: []
+      })
+
+    assert Enum.map(state.compaction_events, & &1.text) == [first, second]
   end
 end
