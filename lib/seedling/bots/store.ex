@@ -449,7 +449,7 @@ defmodule Seedling.Bots.Store do
       action == :ack and req["state"] != "answered" ->
         fail(s, "Only an answered request can be acknowledged.")
 
-      action == :ack and not Runtime.caller?(caller, target_pid(req["reply_to"])) ->
+      action == :ack and not reply_caller?(caller, req["reply_to"]) ->
         fail(s, "Only the reply recipient can acknowledge.")
 
       action == :cancel and req["state"] != "pending" ->
@@ -828,6 +828,11 @@ defmodule Seedling.Bots.Store do
       _ -> nil
     end
   end
+
+  defp reply_caller?(caller, %{"kind" => "agent", "name" => name}),
+    do: Runtime.authorized_agent?(caller, name)
+
+  defp reply_caller?(caller, target), do: Runtime.caller?(caller, target_pid(target))
 
   defp deliver_answer(req) do
     if pid = target_pid(req["reply_to"]),

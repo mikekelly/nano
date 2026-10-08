@@ -38,11 +38,12 @@ defmodule SeedlingWeb.BotLayouts do
           };
           const BotRecipients = {
             mounted() {
-              this.index=0;
+              this.index=-1;
               this.keydown = e => {
                 const buttons = Array.from(document.querySelectorAll("#recipient-menu button[data-recipient]"));
                 if (!buttons.length) return;
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); this.index=(this.index+(e.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length; buttons[this.index].focus(); }
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); this.index=this.index<0?(e.key==="ArrowDown"?0:buttons.length-1):(this.index+(e.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length; buttons[this.index].focus(); }
+                if (e.key === "Enter" && (e.target.id === "recipient-query" || e.target.hasAttribute("data-recipient"))) { e.preventDefault(); buttons[Math.max(this.index,0)].click(); }
                 if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) { e.preventDefault(); const b=buttons[Number(e.key)-1]; if(b) b.click(); }
               };
               this.el.addEventListener("keydown",this.keydown);
