@@ -4,15 +4,18 @@ defmodule NanoWeb.SettingsPanel do
   lists, with what it does, whether a change applies live or to agents started afterwards,
   and its value. A secret (a key, or any value of the operators' own) shows only whether it
   is set, and its input is masked and starts empty. Each setting saves and clears on its own,
-  and a value of the operators' own can be added by name. `NanoWeb.ProcessLive` handles the
-  events (`Nano.Ops.put_setting/2`, `Nano.Ops.delete_setting/1`) and keeps what they refuse,
-  shown beside the setting.
+  and a value of the operators' own can be added by name. Above them, the providers
+  (`Nano.Ops.providers/0`), each connected or not, with disconnect; they are connected from
+  the start form. `NanoWeb.ProcessLive` handles the events (`Nano.Ops.put_setting/2`,
+  `Nano.Ops.delete_setting/1`, the providers' logouts) and keeps what they refuse, shown
+  beside the setting.
   """
   use Phoenix.Component
 
   import NanoWeb.Components
 
   attr :settings, :list, required: true, doc: "Nano.Ops.settings/0"
+  attr :providers, :list, required: true, doc: "Nano.Ops.providers/0"
   attr :errors, :map, required: true, doc: "refusals, by setting name (\"\" for a new one)"
   attr :saves, :integer, required: true, doc: "counts changes, so inputs start over after one"
 
@@ -26,6 +29,30 @@ defmodule NanoWeb.SettingsPanel do
         ones for agents started afterwards (their system prompt states them, so
         a running agent keeps its own). Keys are never shown.
       </p>
+      <div :for={p <- @providers} id={"provider-#{p.id}"} class="setting">
+        <div class="name"><b>{p.name}</b> <span class="dim">provider</span></div>
+        <div class="row">
+          <span class="state">
+            {case p.status do
+              :connected -> "connected#{if p.detail, do: " #{p.detail}"}"
+              :pending -> "connecting"
+              _ -> "not connected: connect it from Start agent, above"
+            end}
+          </span>
+          <button
+            :if={p.status != :disconnected}
+            type="button"
+            class="small"
+            phx-click={"#{p.id}_logout"}
+            data-confirm={
+              p.status == :connected &&
+                "Disconnect #{p.name}? Agents on its models stop working until it is connected again."
+            }
+          >
+            {if p.status == :pending, do: "cancel", else: "disconnect"}
+          </button>
+        </div>
+      </div>
       <form
         :for={s <- @settings}
         id={"setting-#{s.key}"}

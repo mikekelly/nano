@@ -17,10 +17,11 @@ shell). [README.md](README.md) says what Nano Agent is and why.
 
 ## Running it
 
-`bin/up` builds and starts the node (http://127.0.0.1:4000) and pushes `.env` into its
-settings; `bin/reset` archives a run's data, puts the agents' clone (`../nano-checkout`, the
-node's `/app`) back to `main` and recreates the container. Models come from a ChatGPT
-subscription connected on the dashboard, or OpenRouter if its key is set.
+`bin/up` builds and starts the node (http://127.0.0.1:4000) and pushes every `KEY=value` line
+of `.env` into its settings; `bin/reset` archives a run's data, puts the agents' clone
+(`../nano-checkout`, the node's `/app`) back to `main` and recreates the container. Models
+come from the providers connected in the dashboard's start form: a ChatGPT subscription, or
+OpenRouter (its sign-in, or a key: the `openrouter_api_key` setting).
 
 ## Starting and talking to agents
 

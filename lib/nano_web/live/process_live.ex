@@ -5,7 +5,7 @@ defmodule NanoWeb.ProcessLive do
   users, the processes worth a look. `?view=debug` is the process table, with reductions per
   second as the delta since the previous read and a send form on every row. `?view=settings`
   is `NanoWeb.SettingsPanel`, the node's settings. The Start agent form calls
-  `Nano.Ops.start_agent/2`.
+  `Nano.Ops.start_agent/2`, and connects and disconnects the providers.
 
   For the cards' "now" line the page keeps each agent's last three log entries: read once when
   the agent is first seen, then followed on its PubSub topic. Users' message counts are read
@@ -19,6 +19,9 @@ defmodule NanoWeb.ProcessLive do
 
   def mount(params, _session, socket) do
     if connected?(socket), do: :timer.send_interval(@refresh_ms, :refresh)
+    providers = Nano.Ops.providers()
+    # Back from connecting OpenRouter (NanoWeb.OpenRouterController) without a key: say why.
+    openrouter_error = Phoenix.Flash.get(socket.assigns.flash, :openrouter_error)
 
     socket =
       socket
@@ -26,13 +29,12 @@ defmodule NanoWeb.ProcessLive do
       |> assign(recent: %{}, counts: %{}, setting_errors: %{}, saves: 0)
       # The model lists are fetched (and cached) by the providers; only a live page asks for them.
       |> assign(
-        start: %{},
+        start: if(openrouter_error, do: %{"provider" => "openrouter"}, else: %{}),
         start_error: nil,
         models:
-          if(connected?(socket),
-            do: %{"openrouter" => Nano.OpenRouter.models(), "chatgpt" => Nano.ChatGPT.models()},
-            else: %{}
-          ),
+          if(connected?(socket), do: Map.new(providers, &{&1.id, models(&1.id)}), else: %{}),
+        providers: providers,
+        openrouter_error: openrouter_error,
         chatgpt: Nano.Ops.chatgpt()
       )
       |> mount_shared()
@@ -95,6 +97,9 @@ defmodule NanoWeb.ProcessLive do
   def handle_event("pick_model", %{"id" => id}, socket),
     do: {:noreply, update(socket, :start, &Map.put(NanoWeb.StartForm.unchosen(&1), "model", id))}
 
+  def handle_event("pick_provider", %{"provider" => provider}, socket),
+    do: {:noreply, update(socket, :start, &NanoWeb.StartForm.choose(&1, provider))}
+
   def handle_event("start", params, socket) do
     name = String.trim(params["name"] || "")
 
@@ -120,6 +125,19 @@ defmodule NanoWeb.ProcessLive do
   def handle_event("chatgpt_logout", _params, socket) do
     Nano.Ops.chatgpt_logout()
     {:noreply, refresh(socket)}
+  end
+
+  # A pasted key: kept only as the setting, never in assigns.
+  def handle_event("openrouter_key", %{"key" => key}, socket) do
+    case Nano.Ops.put_setting(:openrouter_api_key, key) do
+      :ok -> {:noreply, socket |> assign(openrouter_error: nil) |> refresh()}
+      {:error, message} -> {:noreply, assign(socket, openrouter_error: message)}
+    end
+  end
+
+  def handle_event("openrouter_logout", _params, socket) do
+    Nano.Ops.openrouter_logout()
+    {:noreply, socket |> assign(openrouter_error: nil) |> refresh()}
   end
 
   def handle_event("save_setting", %{"key" => key, "value" => value}, socket),
@@ -167,14 +185,15 @@ defmodule NanoWeb.ProcessLive do
         Map.put(row, :rate, rate)
       end
 
-    chatgpt = Nano.Ops.chatgpt()
+    providers = Nano.Ops.providers()
+    changed = Enum.map(providers -- socket.assigns.providers, & &1.id)
 
-    # The subscription's models arrive once it is connected, and leave when it is not; a model
-    # box left blank meanwhile gets the provider's default again, with that model's settings.
+    # A provider's models arrive once it is connected, and leave when it is not; a model box
+    # left blank meanwhile gets the provider's default again, with that model's settings.
     socket =
-      if connected?(socket) and chatgpt.status != socket.assigns.chatgpt.status do
+      if connected?(socket) and changed != [] do
         socket
-        |> update(:models, &Map.put(&1, "chatgpt", Nano.ChatGPT.models()))
+        |> update(:models, &Map.merge(&1, Map.new(changed, fn id -> {id, models(id)} end)))
         |> update(:start, &if(&1["model"] == "", do: NanoWeb.StartForm.unchosen(&1), else: &1))
       else
         socket
@@ -182,7 +201,8 @@ defmodule NanoWeb.ProcessLive do
 
     socket
     |> assign(
-      chatgpt: chatgpt,
+      providers: providers,
+      chatgpt: Nano.Ops.chatgpt(),
       rows: rows,
       prev: Map.new(rows, &{&1.pid, &1.reductions}),
       prev_at: now,
@@ -233,6 +253,9 @@ defmodule NanoWeb.ProcessLive do
     assign(socket, recent: recent, counts: counts, users: users)
   end
 
+  defp models("openrouter"), do: Nano.OpenRouter.models()
+  defp models("chatgpt"), do: Nano.ChatGPT.models()
+
   defp tail(id) do
     Nano.Log.subscribe(id)
     Enum.take(Nano.Log.read(id), -3)
@@ -274,7 +297,9 @@ defmodule NanoWeb.ProcessLive do
           start={@start}
           models={@models}
           error={@start_error}
+          providers={@providers}
           chatgpt={@chatgpt}
+          openrouter_error={@openrouter_error}
         />
 
         <nav class="views">
@@ -299,6 +324,7 @@ defmodule NanoWeb.ProcessLive do
         <NanoWeb.SettingsPanel.settings_panel
           :if={@view == "settings"}
           settings={@settings}
+          providers={@providers}
           errors={@setting_errors}
           saves={@saves}
         />

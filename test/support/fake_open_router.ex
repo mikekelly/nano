@@ -1,7 +1,8 @@
 defmodule Nano.FakeOpenRouter do
   @moduledoc """
-  A scripted stand-in for OpenRouter's chat completions endpoint: a real HTTP server on a
-  random localhost port, so agents exercise the whole `Req` path.
+  A scripted stand-in for OpenRouter's chat completions endpoint (and its model list and OAuth
+  key exchange, `keys/1`): a real HTTP server on a random localhost port, so agents exercise
+  the whole `Req` path.
 
       Nano.FakeOpenRouter.start()           # idempotent; points the openrouter_base_url setting at the fake
       model = Nano.FakeOpenRouter.model()   # a fresh slug, listed; responses are queued per
@@ -78,6 +79,13 @@ defmodule Nano.FakeOpenRouter do
   @doc "What `GET /models` answers: a list of model maps (sent as `data`), or an HTTP status."
   def models(models_or_status), do: GenServer.call(__MODULE__, {:models, models_or_status})
 
+  @doc """
+  Queues answers (`{status, body}`) for `POST /auth/keys`, the OAuth key exchange, replacing
+  any queued before; the caller then receives each exchange as `{:openrouter_keys, body}`.
+  With nothing queued it answers 403.
+  """
+  def keys(answers), do: GenServer.call(__MODULE__, {:keys, self(), answers})
+
   @doc false
   def request(body), do: GenServer.call(__MODULE__, {:request, body}, :infinity)
 
@@ -87,11 +95,22 @@ defmodule Nano.FakeOpenRouter do
       Bandit.start_link(plug: __MODULE__.Endpoint, ip: :loopback, port: 0, startup_log: false)
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
-    {:ok, %{port: port, models: %{}, list: 500}}
+    {:ok, %{port: port, models: %{}, list: 500, keys: {nil, []}}}
   end
 
   @impl true
   def handle_call(:port, _from, s), do: {:reply, s.port, s}
+
+  def handle_call({:keys, pid, answers}, _from, s), do: {:reply, :ok, %{s | keys: {pid, answers}}}
+
+  def handle_call({:exchange, body}, _from, %{keys: {pid, answers}} = s) do
+    if pid, do: send(pid, {:openrouter_keys, body})
+
+    case answers do
+      [answer | rest] -> {:reply, answer, %{s | keys: {pid, rest}}}
+      [] -> {:reply, {403, %{"error" => %{"code" => 403, "message" => "fake: none queued"}}}, s}
+    end
+  end
 
   def handle_call({:models, list}, _from, s), do: {:reply, :ok, %{s | list: list}}
 
@@ -209,7 +228,12 @@ defmodule Nano.FakeOpenRouter do
 
     def call(conn, _opts) do
       {:ok, raw, conn} = Plug.Conn.read_body(conn, length: 100_000_000)
-      {status, body} = Nano.FakeOpenRouter.request(Jason.decode!(raw))
+
+      {status, body} =
+        if String.ends_with?(conn.request_path, "/auth/keys"),
+          do: GenServer.call(Nano.FakeOpenRouter, {:exchange, Jason.decode!(raw)}),
+          else: Nano.FakeOpenRouter.request(Jason.decode!(raw))
+
       body = if is_binary(body), do: body, else: Jason.encode!(body)
 
       conn

@@ -56,10 +56,12 @@ git clone git@github.com:mikekelly/nano.git && cd nano
 bin/up    # builds the image, starts the node, prints http://127.0.0.1:4000
 ```
 
-Agents need a model. Connect a ChatGPT Plus or Pro subscription from the dashboard (first
-switch on *Device code authorization* in ChatGPT's security settings), or put an
-`OPENROUTER_API_KEY` in `.env`. `bin/up` pushes `.env` into the node's settings, which you can
-change at any time in the dashboard's Settings view.
+Agents need a model. Connect a provider in the dashboard's start form: OpenRouter (*Connect
+OpenRouter* signs you in there and makes a key for the node, or paste a key, or put an
+`OPENROUTER_API_KEY` in `.env`), or a ChatGPT Plus or Pro subscription (first switch on
+*Device code authorization* in ChatGPT's security settings). `bin/up` pushes every
+`KEY=value` line of `.env` into the node's settings, which you can change at any time in the
+dashboard's Settings view.
 
 The node runs from `/app`, a dedicated clone of this repo (`../nano-checkout`) that agents are
 free to rewrite; `git -C ../nano-checkout diff` shows what they changed. `bin/reset` archives
@@ -74,7 +76,8 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
   localhost only. Keep it that way.
 - Agents run as root and can read anything on the node, including API keys and a connected
   ChatGPT subscription's tokens, which are access to your account. Use keys with low spending
-  limits, and disconnect the subscription when you are done.
+  limits, and disconnect the providers when you are done (a key OpenRouter made for the node
+  stays valid until you delete it on openrouter.ai).
 - Outbound network is unrestricted, and agents are told so. If you restrict it, change the
   `network_policy` setting to match, because the system prompt must stay true
   ([docs/network.md](docs/network.md) shows one way).

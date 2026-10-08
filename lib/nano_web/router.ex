@@ -1,5 +1,7 @@
 defmodule NanoWeb.Router do
-  @moduledoc "Every route on the node: two dashboard LiveViews and the JSON API."
+  @moduledoc """
+  Every route on the node: two dashboard LiveViews, OpenRouter's OAuth stops, and the JSON API.
+  """
   use Phoenix.Router
 
   import Plug.Conn
@@ -20,6 +22,8 @@ defmodule NanoWeb.Router do
 
     live "/", ProcessLive
     live "/agents/:name", AgentLive
+    get "/openrouter/connect", OpenRouterController, :connect
+    get "/openrouter/callback", OpenRouterController, :callback
   end
 
   # No pipeline: the API always answers JSON (or an event stream), whatever the Accept header.

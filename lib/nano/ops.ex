@@ -125,6 +125,58 @@ defmodule Nano.Ops do
     end
   end
 
+  ## Providers
+
+  @doc """
+  Every provider the node supports, whether connected or not: `%{id, name, status, detail}`,
+  `status` being `:connected`, `:pending` (a login under way) or `:disconnected`, and `detail`
+  who or what is connected, or nil. OpenRouter is connected while the node has its key (the
+  `openrouter_api_key` setting); the ChatGPT subscription as `chatgpt/0` says.
+  """
+  def providers do
+    key = Enum.find(settings(), &(&1.key == :openrouter_api_key))
+    chatgpt = chatgpt()
+
+    [
+      %{
+        id: "openrouter",
+        name: "OpenRouter",
+        status: if(key.set, do: :connected, else: :disconnected),
+        detail: key.last4 && "with the key ending …#{key.last4}"
+      },
+      %{
+        id: "chatgpt",
+        name: "ChatGPT",
+        status: chatgpt.status,
+        detail:
+          if(chatgpt.status == :connected and chatgpt.email,
+            do: "as #{chatgpt.email}#{if chatgpt.plan, do: " (#{chatgpt.plan})"}"
+          )
+      }
+    ]
+  end
+
+  ## OpenRouter
+
+  @doc """
+  Starts connecting OpenRouter with its OAuth PKCE flow (`Nano.OpenRouter.Auth`): `{:ok, url}`,
+  the page on OpenRouter where a person authorizes a key for this node, which then sends their
+  browser to `callback_url` (the dashboard's `/openrouter/callback`); or `{:error, message}`.
+  """
+  def openrouter_login(callback_url), do: Nano.OpenRouter.Auth.login(callback_url)
+
+  @doc """
+  Finishes connecting OpenRouter from the callback's query parameters: the key OpenRouter
+  gives for the code becomes the `openrouter_api_key` setting. `:ok` or `{:error, message}`.
+  """
+  def openrouter_callback(params), do: Nano.OpenRouter.Auth.callback(params)
+
+  @doc """
+  Disconnects OpenRouter: removes the node's key, as `delete_setting(:openrouter_api_key)`.
+  The key itself stays valid at OpenRouter until deleted there.
+  """
+  def openrouter_logout, do: delete_setting(:openrouter_api_key)
+
   ## ChatGPT subscription
 
   @doc """

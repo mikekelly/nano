@@ -38,12 +38,12 @@ code { background: var(--panel); padding: 0 0.2em; }
 .error { color: var(--halted); }
 
 input, textarea, button { font: inherit; }
-input[type="text"], input[type="number"], textarea {
+input[type="text"], input[type="number"], input[type="password"], textarea {
   border: 1px solid #c9ced6;
   border-radius: 3px;
   padding: 0.2rem 0.4rem;
 }
-button, summary.button {
+button, summary.button, a.button {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -54,14 +54,14 @@ button, summary.button {
   padding: 0.2rem 0.7rem;
   cursor: pointer;
 }
-button:hover, summary.button:hover { background: var(--panel); }
+button:hover, summary.button:hover, a.button:hover { background: var(--panel); }
 summary.button { list-style: none; }
 summary.button::-webkit-details-marker { display: none; }
 button.primary { background: var(--fg); border-color: var(--fg); color: #fff; padding: 0.35rem 1rem; }
 button.primary:hover { background: #3a3f4b; }
 .icon { flex: none; }
 button:disabled { opacity: 0.5; cursor: default; }
-button.small { padding: 0 0.45rem; font-size: 0.9em; }
+button.small, a.button.small { padding: 0 0.45rem; font-size: 0.9em; }
 button.warn { border-color: var(--suspended); color: var(--suspended); font-weight: bold; }
 
 /* Page */
@@ -93,29 +93,29 @@ header.top {
 .badge.halted, .badge.down { background: var(--halted); }
 
 /* Start form: every option in view, in aligned rows of labelled fields. */
-form.start {
+.start {
   padding: 0.8rem 1rem;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
   margin-bottom: 1rem;
 }
-form.start h2 { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.6rem; }
-form.start .fields {
+.start h2 { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.6rem; }
+.start .fields {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 0.6rem 1rem;
   align-items: start;
   margin-bottom: 0.6rem;
 }
-form.start .field { display: flex; flex-direction: column; gap: 0.2rem; color: var(--dim); font-size: 0.9em; min-width: 0; }
-form.start .field input, form.start .field select, form.start .field textarea { color: var(--fg); font-size: 1.1em; width: 100%; }
-form.start .field.model { grid-column: span 2; position: relative; }
+.start .field { display: flex; flex-direction: column; gap: 0.2rem; color: var(--dim); font-size: 0.9em; min-width: 0; }
+.start .field input, .start .field select, .start .field textarea { color: var(--fg); font-size: 1.1em; width: 100%; }
+.start .field.model { grid-column: span 2; position: relative; }
 /* Too narrow for two columns: spanning two would add a column and scroll sideways. */
-@media (max-width: 460px) { form.start .field.model { grid-column: auto; } }
-form.start .check { display: inline-flex; align-items: center; gap: 0.4rem; }
-form.start .hint { font-size: 0.85em; }
-form.start .matches {
+@media (max-width: 460px) { .start .field.model { grid-column: auto; } }
+.start .check { display: inline-flex; align-items: center; gap: 0.4rem; }
+.start .hint { font-size: 0.85em; }
+.start .matches {
   position: absolute;
   top: 100%;
   left: 0;
@@ -129,7 +129,7 @@ form.start .matches {
   border-radius: 6px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
-form.start .matches button {
+.start .matches button {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
@@ -140,12 +140,25 @@ form.start .matches button {
   color: var(--fg);
   text-align: left;
 }
-form.start .matches button:hover { background: var(--panel); }
-form.start .matches .id { white-space: nowrap; }
-form.start .matches .dim { flex: 1; min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-form.start .prompt { margin-bottom: 0.6rem; }
-/* The ChatGPT subscription's connection, under the fields while ChatGPT is the provider. */
-form.start .chatgpt {
+.start .matches button:hover { background: var(--panel); }
+.start .matches .id { white-space: nowrap; }
+.start .matches .dim { flex: 1; min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.start .prompt { margin-bottom: 0.6rem; }
+/* The provider picker: every provider, a dot for its state (green connected, amber connecting). */
+.start > .field { margin-bottom: 0.6rem; }
+.start .providers { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.start .provider { gap: 0.45rem; }
+.start .provider .dot { width: 0.55em; height: 0.55em; border-radius: 50%; background: #b8bec8; }
+.start .provider.connected .dot { background: var(--idle); }
+.start .provider.pending .dot { background: var(--thinking); }
+.start .provider .state { color: var(--dim); font-size: 0.85em; }
+.start .provider.on { background: var(--fg); border-color: var(--fg); color: #fff; }
+.start .provider.on:hover { background: #3a3f4b; }
+.start .provider.on .state { color: #c9ced6; }
+/* The chosen provider's connection, under the picker: who is connected, or how to connect. */
+.start .connection form { display: flex; gap: 0.4rem; flex: 1 1 14rem; max-width: 22rem; }
+.start .connection input { flex: 1; min-width: 0; }
+.start .connection {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -158,17 +171,17 @@ form.start .chatgpt {
   border-radius: 4px;
   overflow-wrap: anywhere;
 }
-form.start .chatgpt.connected { border-left-color: var(--idle); }
-form.start .chatgpt.pending { border-left-color: var(--thinking); }
-form.start .chatgpt .user-code { font-size: 1.2em; font-weight: bold; letter-spacing: 0.08em; padding: 0 0.4em; }
-form.start .segmented { display: inline-flex; border: 1px solid #b8bec8; border-radius: 4px; overflow: hidden; width: max-content; }
-form.start .segmented label { padding: 0.2rem 0.9rem; cursor: pointer; color: var(--fg); background: #fff; }
-form.start .segmented label + label { border-left: 1px solid #b8bec8; }
-form.start .segmented label.on { background: var(--fg); color: #fff; }
+.start .connection.connected { border-left-color: var(--idle); }
+.start .connection.pending { border-left-color: var(--thinking); }
+.start .connection .user-code { font-size: 1.2em; font-weight: bold; letter-spacing: 0.08em; padding: 0 0.4em; }
+.start .segmented { display: inline-flex; border: 1px solid #b8bec8; border-radius: 4px; overflow: hidden; width: max-content; }
+.start .segmented label { padding: 0.2rem 0.9rem; cursor: pointer; color: var(--fg); background: #fff; }
+.start .segmented label + label { border-left: 1px solid #b8bec8; }
+.start .segmented label.on { background: var(--fg); color: #fff; }
 /* Sized to nothing: `.field input`'s width: 100% would make each a page wide, scrolling sideways. */
-form.start .segmented input { position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0; margin: 0; }
-form.start .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; }
-form.start .error { margin: 0; }
+.start .segmented input { position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0; margin: 0; }
+.start .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; }
+.start .error { margin: 0; }
 
 /* Process table */
 table.processes { border-collapse: collapse; width: 100%; }
@@ -443,9 +456,8 @@ pre.code .cm { color: var(--dim); font-style: italic; }
 /* Settings: one small form per setting. */
 section.settings { max-width: 60rem; margin-top: 0.8rem; }
 section.settings > p { margin: 0 0 0.8rem; }
-form.setting { padding: 0.5rem 0; border-top: 1px solid var(--line); }
-form.setting .name { display: flex; gap: 0.6rem; align-items: baseline; }
-form.setting .row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.3rem 0; }
-form.setting .row input { flex: 1 1 18rem; min-width: 0; }
-form.setting input[type="password"] { border: 1px solid #c9ced6; border-radius: 3px; padding: 0.2rem 0.4rem; }
-form.setting .about, form.setting .error { margin: 0; font-size: 0.9em; }
+.setting { padding: 0.5rem 0; border-top: 1px solid var(--line); }
+.setting .name { display: flex; gap: 0.6rem; align-items: baseline; }
+.setting .row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.3rem 0; }
+.setting .row input { flex: 1 1 18rem; min-width: 0; }
+.setting .about, .setting .error { margin: 0; font-size: 0.9em; }

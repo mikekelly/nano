@@ -144,6 +144,13 @@ defmodule Nano.ChatGPT.Auth do
 
   def handle_call({:refresh, _}, _from, s), do: {:reply, credentials(s), s}
 
+  # Anyone may call or cast this process anything (an agent's eval, say); what it does not
+  # know is refused or ignored, never a crash that would lose a login in progress.
+  def handle_call(_msg, _from, s), do: {:reply, {:error, :unknown_call}, s}
+
+  @impl true
+  def handle_cast(_msg, s), do: {:noreply, s}
+
   # Codex's device flow: the user code is polled until approved, then exchanged with PKCE.
   @impl true
   def handle_info({:poll, ref}, %{login: %{ref: ref} = login} = s) do
@@ -186,7 +193,7 @@ defmodule Nano.ChatGPT.Auth do
 
   def handle_info(:refresh, %{tokens: %{}} = s), do: {:noreply, do_refresh(s)}
 
-  # Anyone may send this process anything; a stale poll or timer is ignored like the rest.
+  # A stale poll or timer is ignored like anything else sent here.
   def handle_info(_msg, s), do: {:noreply, s}
 
   defp fail(s, message), do: {:reply, {:error, message}, publish(%{s | error: message})}

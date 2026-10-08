@@ -134,6 +134,20 @@ defmodule Nano.ChatGPTTest do
     assert Auth.status().status == :disconnected
   end
 
+  test "the credentials process refuses or ignores what it does not know, keeping a login in progress" do
+    Fake.auth(:poll, List.duplicate({403, %{}}, 5))
+    pid = Process.whereis(Auth)
+    assert %{status: :pending, user_code: code} = Auth.login()
+
+    GenServer.cast(Auth, :junk)
+    send(Auth, {:junk, self()})
+    assert GenServer.call(Auth, :junk) == {:error, :unknown_call}
+    assert GenServer.call(Auth, {:login, :extra}) == {:error, :unknown_call}
+
+    assert Process.whereis(Auth) == pid
+    assert %{status: :pending, user_code: ^code} = Auth.status()
+  end
+
   ## Restarts
 
   test "credentials survive a restart of their process; a login in progress does not" do
@@ -522,7 +536,7 @@ defmodule Nano.ChatGPTTest do
     refute html =~ "Connect ChatGPT"
     refute has_element?(view, "#chatgpt")
 
-    view |> form("#start", %{provider: "chatgpt"}) |> render_change(%{_target: ["provider"]})
+    view |> element("#providers button", "ChatGPT") |> render_click()
     assert has_element?(view, "#chatgpt", "not connected")
     assert has_element?(view, "#start button.primary[disabled]")
     assert has_element?(view, "#start .actions", "connect the ChatGPT subscription first")
@@ -601,8 +615,8 @@ defmodule Nano.ChatGPTTest do
 
     # Back to OpenRouter: no model chosen, and nothing about the subscription.
     {:ok, view, _} = live(build_conn(), "/")
-    view |> form("#start", %{provider: "chatgpt"}) |> render_change(%{_target: ["provider"]})
-    view |> form("#start", %{provider: "openrouter"}) |> render_change(%{_target: ["provider"]})
+    view |> element("#providers button", "ChatGPT") |> render_click()
+    view |> element("#providers button", "OpenRouter") |> render_click()
     assert has_element?(view, "#start input[name=model][value='']")
     refute has_element?(view, "#chatgpt")
   end
@@ -621,20 +635,20 @@ defmodule Nano.ChatGPTTest do
     view |> form("#start", %{model: "gpt-5"}) |> render_change()
     assert has_element?(view, "#start .matches button .id", ~r/^openai\/gpt-5\.5$/)
     refute has_element?(view, "#start .matches button .id", ~r/^(openai-codex\/)?gpt-5\.5$/)
-    view |> form("#start", %{provider: "chatgpt"}) |> render_change(%{_target: ["provider"]})
+    view |> element("#providers button", "ChatGPT") |> render_click()
     view |> form("#start", %{model: "gpt-5"}) |> render_change()
     assert has_element?(view, "#start .matches button .id", ~r/^gpt-5\.5$/)
     refute has_element?(view, "#start .matches button .id", "/")
 
-    view |> form("#start", %{provider: "openrouter"}) |> render_change(%{_target: ["provider"]})
+    view |> element("#providers button", "OpenRouter") |> render_click()
 
     view |> form("#start", %{model: "openai-codex/gpt-5.5"}) |> render_change()
-    assert has_element?(view, "#start .segmented label.on", "ChatGPT")
+    assert has_element?(view, "#providers .provider.on", "ChatGPT")
     assert has_element?(view, "#chatgpt", "connected")
 
     # An OpenRouter slug typed under ChatGPT goes back to OpenRouter.
     view |> form("#start", %{model: "anthropic/claude-haiku-4.5"}) |> render_change()
-    assert has_element?(view, "#start .segmented label.on", "OpenRouter")
+    assert has_element?(view, "#providers .provider.on", "OpenRouter")
     refute has_element?(view, "#chatgpt")
 
     # Submitted without a change event, the slug is sent as it is.
@@ -648,7 +662,7 @@ defmodule Nano.ChatGPTTest do
     assert opts.("openrouter", "")[:model] == nil
   end
 
-  test "a node without an OpenRouter key: the subscription is the only provider" do
+  test "a node without an OpenRouter key: OpenRouter is listed, not connected; the subscription is chosen once connected" do
     Nano.TestSettings.delete(:openrouter_api_key)
 
     refused =
@@ -659,13 +673,13 @@ defmodule Nano.ChatGPTTest do
     assert %{"providers" => %{"openrouter" => false, "chatgpt" => "disconnected"}} =
              build_conn() |> get("/api") |> json_response(200)
 
-    # Neither provider: the form says so, over the subscription's connect control.
+    # Neither provider: both listed, and Start waits for the chosen one.
     {:ok, view, _} = live(build_conn(), "/")
-    refute has_element?(view, "#start input[name=provider][value=openrouter]")
-    assert has_element?(view, "#start .segmented label.on", "ChatGPT")
-    assert has_element?(view, "#chatgpt button", "Connect ChatGPT")
+    assert has_element?(view, "#providers .provider.on.disconnected", "OpenRouter")
+    assert has_element?(view, "#providers .provider.disconnected", "ChatGPT")
+    assert has_element?(view, "#openrouter", "Connect OpenRouter")
     assert has_element?(view, "#start button.primary[disabled]")
-    assert has_element?(view, "#start .actions", "no provider is on")
+    assert has_element?(view, "#start .actions", "connect OpenRouter first")
 
     # The API refuses an OpenRouter model, saying what to do.
     body = %{
@@ -683,18 +697,27 @@ defmodule Nano.ChatGPTTest do
              |> post("/api/agents", Jason.encode!(body))
              |> json_response(422)
 
-    # Only the subscription, connected: its models, and no OpenRouter option or notice.
+    # The subscription connected: it is chosen, with its models; OpenRouter is still offered.
     Fake.models([%{"slug" => "gpt-5.5", "display_name" => "GPT-5.5"}])
     connect!()
     send(view.pid, :refresh)
-    refute has_element?(view, "#start input[name=provider][value=openrouter]")
-    refute has_element?(view, "#start .actions", "no provider is on")
+    assert has_element?(view, "#providers .provider.on.connected", "ChatGPT")
+    assert has_element?(view, "#providers .provider.disconnected", "OpenRouter")
+    refute has_element?(view, "#start .actions", "first")
     assert has_element?(view, "#start input[name=model][value='gpt-5.5']")
 
-    # An OpenRouter slug typed in the box is refused, not offered.
+    # An OpenRouter slug typed in the box chooses OpenRouter, which is refused.
     view |> form("#start", %{model: "deepseek/deepseek-v4.1-flash"}) |> render_change()
-    assert has_element?(view, "#start .segmented label.on", "ChatGPT")
+    assert has_element?(view, "#providers .provider.on", "OpenRouter")
+    assert has_element?(view, "#start .actions", "connect OpenRouter first")
     view |> form("#start", %{name: body.name}) |> render_submit()
     assert has_element?(view, "#start .error", refused)
+
+    # Settings lists the subscription, and disconnects it.
+    {:ok, view, _} = live(build_conn(), "/?view=settings")
+    assert has_element?(view, "#provider-chatgpt", "connected as me@example.com (plus)")
+    view |> element("#provider-chatgpt button", "disconnect") |> render_click()
+    assert Auth.status().status == :disconnected
+    assert has_element?(view, "#provider-chatgpt", "not connected")
   end
 end

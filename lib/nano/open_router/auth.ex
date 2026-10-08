@@ -1,0 +1,148 @@
+defmodule Nano.OpenRouter.Auth do
+  @moduledoc """
+  Connects OpenRouter with its OAuth PKCE flow (https://openrouter.ai/docs/guides/overview/auth/oauth):
+  `login/1` gives the address to send a person to, `https://openrouter.ai/auth` with an S256
+  code challenge, a `state` and the dashboard's callback; once they authorize, OpenRouter
+  sends their browser back to the callback with a `code`, which `callback/1` exchanges at
+  `POST <openrouter_base_url>/auth/keys` for an API key of their own and stores as the
+  `openrouter_api_key` setting. OpenRouter accepts localhost callbacks on any port.
+
+  This process only holds the logins under way, each a `state` and its code verifier, for
+  15 minutes; a `state` is good once. The exchange runs in the caller. The key goes straight
+  into the settings: never logged, never returned.
+  """
+  use GenServer
+
+  @login_ms 15 * 60_000
+
+  ## API
+
+  @doc false
+  def start_link(_), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+
+  @doc """
+  Starts a login that returns to `callback_url`: `{:ok, url}`, the address on OpenRouter to
+  send the person to, or `{:error, message}`.
+  """
+  def login(callback_url) do
+    {state, verifier} = {random(16), random(32)}
+    challenge = Base.url_encode64(:crypto.hash(:sha256, verifier), padding: false)
+
+    with :ok <- call({:put, state, verifier}) do
+      query = [
+        callback_url: callback_url,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        state: state,
+        key_label: "Nano Agent"
+      ]
+
+      {:ok, authorize_url() <> "?" <> URI.encode_query(query)}
+    end
+  end
+
+  @doc """
+  Finishes a login from the callback's query parameters (`code`, `state`): the key is stored
+  as the `openrouter_api_key` setting. `:ok`, or `{:error, message}` saying why not.
+  """
+  def callback(%{"code" => code, "state" => state}) when is_binary(code) and is_binary(state) do
+    case call({:take, state}) do
+      {:ok, verifier} ->
+        exchange(code, verifier)
+
+      _ ->
+        {:error,
+         "this OpenRouter sign-in is unknown, already used or more than 15 minutes old: " <>
+           "connect again"}
+    end
+  end
+
+  def callback(_params),
+    do: {:error, "OpenRouter sent no authorization back (was access denied?): connect again"}
+
+  defp exchange(code, verifier) do
+    body = %{code: code, code_verifier: verifier, code_challenge_method: "S256"}
+    opts = [json: body, retry: false, receive_timeout: 15_000, connect_options: [timeout: 10_000]]
+
+    case Req.post(Nano.Settings.get(:openrouter_base_url) <> "/auth/keys", opts) do
+      {:ok, %{status: 200, body: %{"key" => key}}} when is_binary(key) ->
+        Nano.Settings.put(:openrouter_api_key, key)
+
+      {:ok, %{status: status, body: body}} ->
+        {:error,
+         "OpenRouter would not exchange the authorization for a key: #{why(status, body)}"}
+
+      {:error, e} ->
+        {:error, "could not reach OpenRouter for the key: #{Exception.message(e)}"}
+    end
+  end
+
+  # The HTTP status and OpenRouter's error message, never a whole body (a 200 that lacked the
+  # expected shape may still hold a key).
+  defp why(200, _), do: "HTTP 200 without a key"
+
+  defp why(status, body) do
+    case is_map(body) && get_in(body, ["error", "message"]) do
+      message when is_binary(message) -> "HTTP #{status}: #{String.slice(message, 0, 200)}"
+      _ -> "HTTP #{status}"
+    end
+  end
+
+  # OpenRouter's authorization page, on the host of its API: https://openrouter.ai/auth.
+  defp authorize_url do
+    uri = URI.parse(Nano.Settings.get(:openrouter_base_url))
+    URI.to_string(%{uri | path: "/auth", query: nil})
+  end
+
+  defp random(bytes), do: Base.url_encode64(:crypto.strong_rand_bytes(bytes), padding: false)
+
+  defp call(msg) do
+    GenServer.call(__MODULE__, msg, 10_000)
+  catch
+    :exit, reason ->
+      {:error, "the OpenRouter sign-in process did not answer (#{inspect(reason, limit: 5)})"}
+  end
+
+  ## Server
+
+  @impl true
+  def init(nil), do: {:ok, %{}}
+
+  @impl true
+  def handle_call({:put, state, verifier}, _from, logins) do
+    login = %{verifier: verifier, expires_at: now() + @login_ms}
+    {:reply, :ok, logins |> current() |> Map.put(state, login)}
+  end
+
+  def handle_call({:take, state}, _from, logins) do
+    {login, logins} = logins |> current() |> Map.pop(state)
+    {:reply, if(login, do: {:ok, login.verifier}, else: :error), logins}
+  end
+
+  # Anyone may call, cast or send this process anything; what it does not know is refused or
+  # ignored.
+  def handle_call(_msg, _from, logins), do: {:reply, {:error, :unknown_call}, logins}
+
+  @impl true
+  def handle_cast(_msg, logins), do: {:noreply, logins}
+
+  @impl true
+  def handle_info(_msg, logins), do: {:noreply, logins}
+
+  @impl true
+  # Crash reports and :sys.get_status print the state and the last message: never a verifier.
+  def format_status(status) do
+    status
+    |> Map.update(:state, nil, fn
+      %{} = logins -> Map.new(logins, fn {state, _} -> {state, :redacted} end)
+      other -> other
+    end)
+    |> Map.update(:message, nil, fn
+      {:put, state, _} -> {:put, state, :redacted}
+      message -> message
+    end)
+  end
+
+  defp current(logins), do: Map.reject(logins, fn {_, l} -> l.expires_at <= now() end)
+  defp now, do: System.system_time(:millisecond)
+end

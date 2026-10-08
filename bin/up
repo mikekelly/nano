@@ -1,12 +1,12 @@
 #!/bin/sh
 # Start the sandbox, making the agents' checkout if missing, then push the settings in .env to
 # the node (bin/push-settings). Needs nothing in .env: agents use OpenRouter once the node has
-# its key (OPENROUTER_API_KEY in .env, or set in the dashboard), the ChatGPT subscription once
-# connected, or both.
+# its key (connected or pasted in the dashboard, or OPENROUTER_API_KEY in .env), the ChatGPT
+# subscription once connected, or both.
 cd "$(dirname "$0")/.." || exit 1
 grep -q '^OPENROUTER_API_KEY=.' .env 2>/dev/null || grep -qs '"openrouter_api_key"' data/state/settings.json ||
   [ -f data/state/chatgpt_auth.json ] ||
-  echo "no model provider yet: agents need OPENROUTER_API_KEY=... in .env (then bin/up again), or the key set or ChatGPT connected on the dashboard"
+  echo "no model provider yet: connect OpenRouter or ChatGPT on the dashboard, or put OPENROUTER_API_KEY=... in .env (then bin/up again)"
 checkout=${NANO_CHECKOUT:-$(sed -n 's/^NANO_CHECKOUT=//p' .env 2>/dev/null)}; checkout=${checkout:-../nano-checkout}
 [ -d "$checkout" ] || { echo "cloning this repo to $checkout: the dedicated checkout the agents will edit"; git clone -q . "$checkout" || exit 1; }
 mkdir -p data && docker compose up -d --build || exit 1
