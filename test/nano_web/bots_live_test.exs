@@ -4,6 +4,13 @@ defmodule NanoWeb.BotsLiveTest do
   import Phoenix.LiveViewTest
   @endpoint NanoWeb.Endpoint
   setup do
+    supervised =
+      Enum.any?(Supervisor.which_children(Nano.Supervisor), fn {id, _, _, _} ->
+        id == Seedling.Bots
+      end)
+
+    if supervised, do: Supervisor.terminate_child(Nano.Supervisor, Seedling.Bots)
+
     dir =
       Path.join(
         System.tmp_dir!(),
@@ -15,6 +22,7 @@ defmodule NanoWeb.BotsLiveTest do
     on_exit(fn ->
       if Process.alive?(pid), do: GenServer.stop(pid)
       File.rm_rf(dir)
+      if supervised, do: Supervisor.restart_child(Nano.Supervisor, Seedling.Bots)
     end)
 
     :ok
