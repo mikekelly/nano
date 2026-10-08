@@ -9,6 +9,11 @@ defmodule NanoWeb.AgentLive do
   call shows its code followed by result, IO and duration. If the agent is stopped and
   started again under the same name it gets a new id, and the timeline switches to it.
 
+  Open goals are read from `Goals.open/2` on refresh, capped at 20 entries, independently
+  of the agent process. Stopped owners retain their panel; failed reads are explicit.
+  `goals_panel/1` renders a snapshot, and `refresh_goals/2` accepts a Memory `root:`
+  for isolated callers/tests (the dashboard uses the default `/data/memory`).
+
   Two views of the same entries: the reading view (default) tells the story — events, the
   model's text, each tool call with its result, restarts, halts — and leaves out the plumbing;
   `?view=debug` shows every entry with its details, and links the raw files of a model
@@ -31,6 +36,7 @@ defmodule NanoWeb.AgentLive do
       |> stream(:entries, [])
       |> mount_shared()
       |> sync()
+      |> refresh_goals()
 
     {:ok, socket}
   end
@@ -45,7 +51,7 @@ defmodule NanoWeb.AgentLive do
   defp view(%{"view" => "debug"}), do: "debug"
   defp view(_), do: "reading"
 
-  def handle_info(:refresh, socket), do: {:noreply, sync(socket)}
+  def handle_info(:refresh, socket), do: {:noreply, socket |> sync() |> refresh_goals()}
   def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_unread(socket)}
 
   def handle_info({:nano_log, %{agent_id: id, seq: seq} = entry}, socket)
@@ -267,6 +273,7 @@ defmodule NanoWeb.AgentLive do
         </details>
 
         <.live_component :if={@agent} module={NanoWeb.ImageComposer} id="image-composer" name={@name} />
+        <.goals_panel result={@goals} />
 
         <nav class="views">
           <.link
@@ -297,7 +304,59 @@ defmodule NanoWeb.AgentLive do
     """
   end
 
+  @doc "Refresh the bounded open-goal snapshot without contacting the owner; accepts Memory root:."
+  def refresh_goals(socket, opts \\ []) do
+    assign(socket, :goals, Goals.open(socket.assigns.name, Keyword.put(opts, :limit, 20)))
+  end
+
+  attr :result, :any, required: true, doc: "The tagged result of Goals.open/2."
+
+  @doc "Render a bounded Goals.open/2 snapshot, including unavailable and empty states."
+  def goals_panel(assigns) do
+    ~H"""
+    <section id="open-goals" class="prompt" aria-labelledby="open-goals-heading">
+      <h2 id="open-goals-heading">Open goals</h2>
+      <%= case @result do %>
+        <% {:ok, snapshot} -> %>
+          <p class="dim">
+            {snapshot.total} open · showing {length(snapshot.goals)} · {snapshot.omitted} omitted
+          </p>
+          <p :if={snapshot.goals == []}>No open goals.</p>
+          <ol>
+            <li :for={goal <- snapshot.goals}>
+              <strong>{goal["title"]}</strong>
+              <dl>
+                <div>
+                  <dt>Status</dt><dd>{goal["status"]}</dd>
+                </div>
+                <div>
+                  <dt>Goal ID</dt><dd><code>{goal["id"]}</code></dd>
+                </div>
+                <div>
+                  <dt>Parent ID</dt><dd><code>{goal["parent_id"] || "none (root)"}</code></dd>
+                </div>
+                <div>
+                  <dt>Why</dt><dd style="white-space: pre-wrap; overflow-wrap: anywhere">
+                    {goal["why"]}
+                  </dd>
+                </div>
+              </dl>
+            </li>
+          </ol>
+          <p :if={snapshot.omitted > 0} class="dim">
+            Panel truncated: {snapshot.omitted} additional open goals not shown. Use Goals.list/2 to review all goals.
+          </p>
+        <% {:error, _reason} -> %>
+          <p class="error" role="status">
+            Goals unavailable: the goal store could not be read or is corrupt.
+          </p>
+      <% end %>
+    </section>
+    """
+  end
+
   # Read with budget[key]: state saved before a limit existed lacks its keys.
+
   defp limits do
     [
       {"turns", :turns_used, :max_turns},
