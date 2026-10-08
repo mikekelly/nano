@@ -2,7 +2,7 @@ defmodule SeedMCP.Client do
   @moduledoc false
   use GenServer
   @version "2025-11-25"
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
   def init(opts) do
     Process.flag(:trap_exit, true)

@@ -140,6 +140,38 @@ defmodule SeedMCPTest do
     SeedMCP.stop(c)
   end
 
+  test "delegation startup awaits readiness, stable handles and runtime restoration", %{
+    opts: opts,
+    dir: dir
+  } do
+    owner = "mcp-owner-#{System.unique_integer([:positive])}"
+
+    spec =
+      opts[:server] |> Map.put("name", "delegated") |> Map.put("protocolVersion", "2025-11-25")
+
+    assert {:ok, %{"delegated" => via}} = SeedMCP.start_for(owner, [spec], state_dir: dir)
+    assert SeedMCP.status(via).phase == :ready
+    assert SeedMCP.handles(owner) == %{"delegated" => via}
+    assert {:ok, pid} = SeedMCP.connect(spec, owner: owner, state_dir: dir)
+    assert GenServer.whereis(via) == pid
+    assert {:ok, _} = SeedMCP.subscribe(via, "file:///delegated")
+    assert :ok = SeedMCP.Runtime.stop_for(owner)
+    assert SeedMCP.handles(owner) == %{}
+    assert {:ok, %{"delegated" => ^via}} = SeedMCP.restore(owner, state_dir: dir)
+    assert SeedMCP.status(via).subscriptions == ["file:///delegated"]
+    assert {:ok, _} = SeedMCP.tools(via)
+    assert :ok = SeedMCP.stop(via)
+    assert SeedMCP.handles(owner) == %{}
+  end
+
+  test "failed runtime startup rolls back new clients", %{dir: dir} do
+    owner = "mcp-failed-#{System.unique_integer([:positive])}"
+    spec = %{"name" => "bad", "command" => "/not/a/real/command"}
+    assert {:error, _} = SeedMCP.start_for(owner, [spec], state_dir: dir, timeout: 50)
+    assert SeedMCP.handles(owner) == %{}
+    assert {:error, _} = SeedMCP.connect(%{"command" => "missing"}, owner: owner)
+  end
+
   test "configuration and paging errors are values", %{dir: dir} do
     file = Path.join(dir, "config.json")
     File.write!(file, ~s({"mcpServers":{}}))
