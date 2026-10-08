@@ -5,7 +5,20 @@
   "command": [
     "/app/bin/start"
   ],
-  "credentials": [],
+  "credentials": [
+    {
+      "kind": "chatgpt",
+      "path": "/data/state/chatgpt_auth.json",
+      "provider": "chatgpt"
+    },
+    {
+      "keys": [
+        "openrouter_api_key"
+      ],
+      "path": "/data/state/settings.json",
+      "provider": "openrouter"
+    }
+  ],
   "failures": 3,
   "interval": 20,
   "max_attempts": 3,

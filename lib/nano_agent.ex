@@ -1242,7 +1242,8 @@ defmodule NanoAgent do
   end
 
   defp model_done(s, {:ok, %{message: msg} = r}) do
-    SeedSafety.attest(provider: Nano.Model.provider(s.model))
+    provider = if String.starts_with?(s.model, "openai-codex/"), do: "chatgpt", else: "openrouter"
+    SeedSafety.attest(provider: provider)
     prompt = r.usage["prompt_tokens"] || 0
     completion = r.usage["completion_tokens"] || 0
     cached = get_in(r.usage, ["prompt_tokens_details", "cached_tokens"]) || 0
