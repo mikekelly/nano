@@ -507,6 +507,7 @@ defmodule Nano.ChatGPTTest do
       %{
         "slug" => "gpt-x",
         "display_name" => "GPT-X",
+        "input_modalities" => ["text", "image"],
         "context_window" => 1000,
         "supported_reasoning_levels" => efforts.(~w(low medium high xhigh max ultra)),
         "default_reasoning_level" => "low"
@@ -523,6 +524,7 @@ defmodule Nano.ChatGPTTest do
              %{
                id: "gpt-x",
                name: "GPT-X",
+               input_modalities: ["text", "image"],
                context_length: 1000,
                reasoning_levels: ~w(low medium high xhigh max),
                default_reasoning: "low"
@@ -530,6 +532,7 @@ defmodule Nano.ChatGPTTest do
              %{
                id: "gpt-y",
                name: "gpt-y",
+               input_modalities: ["text"],
                context_length: nil,
                reasoning_levels: ~w(off low medium),
                default_reasoning: "off"
@@ -553,6 +556,7 @@ defmodule Nano.ChatGPTTest do
              hd(Nano.ChatGPT.models())
 
     assert hd(Nano.ChatGPT.models()).reasoning_levels == ~w(low medium high xhigh max)
+    assert Enum.all?(Nano.ChatGPT.models(), &(&1.input_modalities == ["text", "image"]))
   end
 
   ## Operator surfaces

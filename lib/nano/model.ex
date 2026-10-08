@@ -8,6 +8,16 @@ defmodule Nano.Model do
   The start form picks a provider, then a model there, and joins them back into a slug.
   """
 
+  @doc "Catalog input modalities; absent or malformed metadata is conservatively text-only."
+  def input_modalities(values) when is_list(values) do
+    case Enum.filter(values, &is_binary/1) |> Enum.uniq() do
+      [] -> ["text"]
+      modalities -> modalities
+    end
+  end
+
+  def input_modalities(_), do: ["text"]
+
   @prefix "openai-codex/"
 
   @doc """

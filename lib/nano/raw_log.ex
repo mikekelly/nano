@@ -1,6 +1,6 @@
 defmodule Nano.RawLog do
   @moduledoc """
-  A debugging record of the exact bytes of model requests and responses, for the agents the
+  A debugging record of model requests and responses (image data and secrets redacted), for the agents the
   `raw_model_log` setting names (`on?/1`), from their next request. The harness log keeps
   what the providers' answers were decoded to; this keeps what went over the wire, so a
   question such as "did the model send these words run together, or did we join them?" can
@@ -40,8 +40,10 @@ defmodule Nano.RawLog do
   still there; each is written whole (a temp file, renamed).
 
   Headers that carry credentials (authorization, chatgpt-account-id, cookies, anything named
-  like a key, token or secret) are written as `[redacted]`. The bodies are not: a request
-  holds the agent's whole conversation.
+  like a key, token or secret) are written as `[redacted]`. Inline image data URLs in
+  requests, responses and errors are replaced by `[redacted image data]`. Other body
+  bytes are retained: a request holds the agent's whole conversation. Timing offsets refer
+  to original wire bytes, not the redacted files. Compressed response bodies are omitted.
 
   Recording never fails or holds up a model call: a file that cannot be written is skipped,
   with one warning in the node's log (`Logger`) until the node restarts. After each attempt
@@ -55,7 +57,23 @@ defmodule Nano.RawLog do
   @warned {__MODULE__, :warned}
   @secret ~r/authorization|cookie|account|key|token|secret|password/i
 
+  @doc "Redact inline image data URLs, including JSON-escaped slashes, from a log string."
+  def redact(text) when is_binary(text) do
+    Regex.replace(
+      ~r/data:image(?:\\*\/)[^,\s"'<>]*,[A-Za-z0-9+\/_=\\%-]*/i,
+      text,
+      "[redacted image data]"
+    )
+  end
+
+  @doc "Recursively redact image data in decoded provider responses/errors before harness logging."
+  def sanitize(text) when is_binary(text), do: redact(text)
+  def sanitize(list) when is_list(list), do: Enum.map(list, &sanitize/1)
+  def sanitize(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, sanitize(v)} end)
+  def sanitize(other), do: other
+
   @doc "Where the files are: `<LOG_DIR>/raw`."
+
   def dir, do: Path.join(Application.fetch_env!(:nano, :log_dir), "raw")
 
   @doc "Whether an agent's model requests are recorded now (setting `raw_model_log`), by its name."
@@ -189,7 +207,7 @@ defmodule Nano.RawLog do
         resp = %{resp | body: IO.iodata_to_binary(body)}
 
         write(req.private.raw_model_log <> ".response.txt", fn ->
-          ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, resp.body]
+          ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, logged_body(resp)]
         end)
 
         write(req.private.raw_model_log <> ".timing.txt", fn ->
@@ -200,6 +218,13 @@ defmodule Nano.RawLog do
 
       nil ->
         {req, resp}
+    end
+  end
+
+  defp logged_body(resp) do
+    case Map.get(resp.headers, "content-encoding", []) do
+      enc when enc in [[], ["identity"]] -> resp.body
+      _ -> "[compressed response body omitted]"
     end
   end
 
@@ -231,7 +256,7 @@ defmodule Nano.RawLog do
     result =
       try do
         with :ok <- File.mkdir_p(Path.dirname(path)),
-             :ok <- File.write(tmp, content.()),
+             :ok <- File.write(tmp, content.() |> IO.iodata_to_binary() |> redact()),
              do: File.rename(tmp, path)
       rescue
         e -> {:error, Exception.message(e)}
