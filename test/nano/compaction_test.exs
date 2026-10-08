@@ -45,7 +45,34 @@ defmodule Nano.CompactionTest do
         )
   end
 
-  test "real GenServer threshold crossing automatically summarizes, keeps identity/mailbox/bindings and resumes",
+  test "opt-in reproducible smoke driver executes its complete protocol", c do
+    Fake.push(c.model, calls: [eval: "sentinel = 73"])
+    Fake.push(c.model, text: "READY")
+    Fake.push(c.model, text: "ACK", usage: {15_500, 10, 0})
+
+    Fake.push(c.model,
+      text: "Goal: retain sentinel\nProgress: set sentinel=73\nNext Steps: verify"
+    )
+
+    Fake.push(c.model, calls: [eval: "sentinel"])
+    Fake.push(c.model, text: "73")
+    path = Path.expand("../../priv/smoke/compaction.exs", __DIR__)
+    assert_raise RuntimeError, ~r/confirm_spend/, fn -> Code.eval_file(path) end
+
+    {driver, _} =
+      Code.eval_string(File.read!(path), confirm_spend: true, notify: self(), model: c.model)
+
+    assert_receive {:compaction_smoke, report_path, %{result: :passed, final_tool_result: "73"}},
+                   5000
+
+    assert report_path == driver.report_path
+    assert File.read!(report_path) =~ "compactions: 1"
+    wait(fn -> NanoAgent.whereis(driver.name) == nil end)
+    File.rm!(report_path)
+  end
+
+  test "real GenServer threshold
+ crossing automatically summarizes, keeps identity/mailbox/bindings and resumes",
        c do
     Fake.push(c.model, calls: [eval: "kept_binding = 42"])
     Fake.push(c.model, text: "first complete")
@@ -144,12 +171,15 @@ defmodule Nano.CompactionTest do
     request(c.model)
     summary_call = request(c.model)
     assert summary_call["tools"] == []
-    wait(fn -> NanoAgent.info(c.name).compactions == 1 end)
+    Fake.push(c.model, text: "completed after cutoff")
+    resumed = request(c.model)
+    assert inspect(resumed["messages"]) =~ "cut off"
+    wait(fn -> NanoAgent.info(c.name).status == :idle end)
+    assert NanoAgent.info(c.name).compactions == 1
     assert NanoAgent.info(c.name).halted == nil
   end
 
-  test "a long single turn checkpoints
- at an assistant boundary without orphaning results",
+  test "a long single turn checkpoints at an assistant boundary without orphaning results",
        c do
     Fake.push(c.model, calls: [eval: "File.read!(\"/etc/hostname\")"])
     Fake.push(c.model, calls: [eval: "value = 81"], usage: {15_500, 10, 0})
@@ -201,8 +231,7 @@ defmodule Nano.CompactionTest do
     end
   end
 
-  test "cut retains complete tool call/result pairs
- and serialization bounds tool output" do
+  test "cut retains complete tool call/result pairs and serialization bounds tool output" do
     messages = [
       %{"role" => "user", "content" => "old"},
       %{"role" => "assistant", "tool_calls" => [%{"id" => "a"}]},

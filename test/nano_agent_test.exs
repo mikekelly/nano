@@ -1599,11 +1599,14 @@ defmodule NanoAgentTest do
     await(id, :turn_ended)
 
     # A batched delivery has one line, after all its events.
-    Fake.push(ctx.model, text: "ok")
+    # Hold the second event's HTTP response until both following events are queued.
+    # Otherwise a fast fake can finish between send(:third) and send(:fourth).
     send(pid, :second)
     request!(ctx.model)
     send(pid, :third)
     send(pid, :fourth)
+    assert length(:sys.get_state(pid).pending) == 2
+    Fake.push(ctx.model, text: "ok")
     body = request!(ctx.model)
     last = List.last(body["messages"])
     assert [_, _] = String.split(delivery(last), "\n")
