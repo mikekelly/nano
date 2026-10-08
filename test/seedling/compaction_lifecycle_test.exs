@@ -64,7 +64,7 @@ defmodule Seedling.CompactionLifecycleTest do
     assert List.last(compact["messages"]) |> text() =~ "automatic compaction"
     assert compact["max_tokens"] <= 12_000
 
-    assert Enum.map(Enum.take(compact["messages"], 2), &text/1) ==
+    assert Enum.map(Enum.take(compact["messages"], length(original["messages"])), &text/1) ==
              Enum.map(original["messages"], &text/1)
 
     {original, compact}
@@ -342,5 +342,48 @@ defmodule Seedling.CompactionLifecycleTest do
     assert text(summary) =~ "Summary incorporates child findings"
     assert NanoAgent.whereis(child_name) == child
     Fake.push(ctx.model, text: "done")
+  end
+
+  test "front-of-mind reminders run mid-turn and log measured distance events", ctx do
+    {:ok, _} = Seedling.FrontOfMind.set(ctx.name, "Stay on the delegated task.")
+    {:ok, _} = Seedling.FrontOfMind.configure(ctx.name, threshold: 1000)
+    Fake.push(ctx.model, calls: [eval: "1 + 1"], usage: {10000, 100, 0})
+    send(ctx.pid, :reminder_brief)
+    first = request(ctx)
+    assert text(List.last(first["messages"])) =~ "Stay on the delegated task"
+    assert await(ctx, :context_bob)["reason"] == "initial"
+    next = request(ctx)
+    assert text(List.last(next["messages"])) =~ "re-shown by the harness (distance)"
+    assert Enum.any?(next["messages"], &(&1["role"] == "tool" and text(&1) == "2"))
+    bob = await(ctx, :context_bob, 2)
+    assert bob["distance_tokens"] > 1000
+    assert bob["estimated_bob_tokens"] > 0
+    assert await(ctx, :bobbing_config)["config"]["threshold"] == 1000
+    Fake.push(ctx.model, text: "done")
+  end
+
+  test "front-of-mind re-shows once after compaction and never changes checkpoint retries", ctx do
+    {:ok, _} = Seedling.FrontOfMind.set(ctx.name, "Retain the exact constraint.")
+    {:ok, _} = Seedling.FrontOfMind.configure(ctx.name, threshold: 1_000_000)
+    {_, compact} = cross(ctx)
+    Fake.push(ctx.model, text: "invalid checkpoint")
+    retry = request(ctx)
+    assert retry == compact
+    assert length(Enum.filter(Nano.Log.read(ctx.id), &(&1["type"] == "context_bob"))) == 1
+
+    Fake.push(ctx.model,
+      calls: [eval: summary_code("The task continues with the same constraint.")]
+    )
+
+    resumed = request(ctx)
+    assert text(List.last(resumed["messages"])) =~ "re-shown by the harness (compaction)"
+    assert await(ctx, :context_bob, 2)["reason"] == "compaction"
+    assert :sys.get_state(ctx.pid).front_of_mind_compacted == false
+    Fake.push(ctx.model, text: "done", usage: {3000, 100, 0})
+    await(ctx, :turn_ended)
+    send(ctx.pid, :next_task)
+    request(ctx)
+    assert length(Enum.filter(Nano.Log.read(ctx.id), &(&1["type"] == "context_bob"))) == 2
+    Fake.push(ctx.model, text: "done again")
   end
 end

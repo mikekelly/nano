@@ -867,12 +867,56 @@ defmodule NanoAgent do
             s
           end
 
-        if compact_due?(next) do
-          begin_compaction(next)
+        next = front_of_mind(next)
+
+        if next.halted do
+          end_turn(next, "error")
         else
-          dispatch_request(next, new_turn? && line, s)
+          if compact_due?(next) do
+            begin_compaction(next)
+          else
+            dispatch_request(next, new_turn? && line, s)
+          end
         end
     end
+  end
+
+  # Automatic checkpoint retries freeze the entire tip, including these notes. Running
+  # a hook there again could advance durable cursors and destroy the identical prefix.
+  defp front_of_mind(s) do
+    activity =
+      s.transcript
+      |> Enum.take(-4)
+      |> Enum.map_join("\n", fn message ->
+        content = message["content"] || ""
+        if is_binary(content), do: String.slice(content, 0, 500), else: ""
+      end)
+
+    case Seedling.FrontOfMind.before_call(s.name, estimate(s),
+           compacted: s.front_of_mind_compacted,
+           recent_activity: activity
+         ) do
+      {:ok, %{messages: messages, events: events}} ->
+        logged = Enum.map(events, fn event -> log(s, event.type, Map.delete(event, :type)) end)
+
+        if Enum.any?(logged, &(&1 == :error)) do
+          halt(s, :log_failed, @log_failed)
+        else
+          Enum.reduce(messages, %{s | front_of_mind_compacted: false}, fn text, state ->
+            if log(state, :harness_note, %{text: text}) == :ok,
+              do: append(state, %{"role" => "user", "content" => "<harness>#{text}</harness>"}),
+              else: halt(state, :log_failed, @log_failed)
+          end)
+        end
+
+      {:error, reason} ->
+        log(s, :bobbing_error, %{reason: inspect(reason)})
+        s
+    end
+  catch
+    kind, reason ->
+      log(s, :bobbing_error, %{reason: Exception.format_banner(kind, reason)})
+      s
   end
 
   defp compact_due?(s) do
@@ -929,6 +973,7 @@ defmodule NanoAgent do
           compaction: nil,
           compaction_summary: nil,
           compaction_fresh: true,
+          front_of_mind_compacted: true,
           context_used: 0,
           measured_bytes: 0,
           halted: if(s.halted == :context, do: nil, else: s.halted)
