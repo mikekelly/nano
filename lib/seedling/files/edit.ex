@@ -24,7 +24,11 @@ defmodule Seedling.Files.Edit do
         )
 
       true ->
-        endings = if String.contains?(original, "\r\n"), do: :crlf, else: :lf
+        endings =
+          if String.contains?(original, "\r\n") and
+               not String.contains?(String.replace(original, "\r\n", ""), "\n"),
+             do: :crlf,
+             else: :lf
 
         ranges =
           Enum.reduce_while(replacements, {:ok, []}, fn {old, new}, {:ok, ranges} ->
@@ -33,6 +37,8 @@ defmodule Seedling.Files.Edit do
 
             case locate(original, old, Keyword.get(opts, :tolerant, true)) do
               {:ok, {start, len}, tolerant} ->
+                new = preserve_local_endings(new, original, start, len)
+
                 if binary_part(original, start, len) == new do
                   {:halt,
                    Files.error(
@@ -132,6 +138,33 @@ defmodule Seedling.Files.Edit do
     do: text |> String.replace("\r\n", "\n") |> String.replace("\n", "\r\n")
 
   defp line_endings(text, :lf), do: text
+
+  defp preserve_local_endings(new, original, start, len) do
+    matched = binary_part(original, start, len)
+    suffix = binary_part(original, start, byte_size(original) - start)
+
+    style =
+      cond do
+        String.contains?(matched, "\r\n") and
+            not String.contains?(String.replace(matched, "\r\n", ""), "\n") ->
+          :crlf
+
+        String.contains?(matched, "\n") ->
+          :lf
+
+        true ->
+          case :binary.match(suffix, "\n") do
+            {pos, 1} when pos > 0 ->
+              if binary_part(suffix, pos - 1, 1) == "\r", do: :crlf, else: :lf
+
+            _ ->
+              :lf
+          end
+      end
+
+    new = String.replace(new, "\r\n", "\n")
+    line_endings(new, style)
+  end
 
   defp normalize(text) do
     tokens =

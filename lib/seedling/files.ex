@@ -30,25 +30,36 @@ defmodule Seedling.Files do
   `:glob`, `:limit` (500 entries/100 matches), `:max_bytes` (16 KB), and grep
   `:literal`, `:ignore_case`, `:context`, `:max_line_chars` (500). Lists include
   `:entries`; grep includes `:matches` and context entries. Empty searches succeed.
+  Globs support *, **, ?, character classes and {a,b} alternation. A pattern
+  without / matches basenames; patterns with / match full relative paths. Glob
+  filtering happens after ripgrep so it cannot override ignores. Search byte caps
+  account for both display text and structured metadata.
   Search output is streamed from a shell spool, so large results do not enter
   context; the complete machine output is at `:output_path`.
   """
 
   alias Seedling.Shell
   alias Seedling.Files.Edit
+  alias Seedling.Files.Glob
 
   @doc "Read a bounded page, with next_offset when more lines remain."
   def read(path, opts \\ []) do
+    with :ok <- arguments(path, opts), do: do_read(path, opts)
+  end
+
+  defp do_read(path, opts) do
     offset = Keyword.get(opts, :offset, 1)
     limit = Keyword.get(opts, :limit, 200)
     cap = Keyword.get(opts, :max_bytes, 16_000)
 
     if positive?(offset) and positive?(limit) and positive?(cap) do
-      with {:ok, io} <- File.open(path, [:read, :binary]) do
+      with :ok <- readable(path),
+           {:ok, io} <- File.open(path, [:read, :binary]) do
         result = read_lines(io, path, offset, limit, cap, 0, [], 0, nil)
         File.close(io)
         result
       else
+        {:error, %{reason: _}} = error -> error
         {:error, reason} -> file_error(:read, path, reason)
       end
     else
@@ -173,7 +184,8 @@ defmodule Seedling.Files do
 
   @doc "Create or atomically rewrite a file; parent directories are created."
   def write(path, content) when is_binary(content) do
-    with :ok <- writable(path),
+    with :ok <- arguments(path, []),
+         :ok <- writable(path),
          :ok <- File.mkdir_p(Path.dirname(path)),
          :ok <- atomic_write(path, content) do
       {:ok,
@@ -199,7 +211,8 @@ defmodule Seedling.Files do
   def edit(path, replacements, opts) when is_list(replacements) and is_list(opts) do
     cap = Keyword.get(opts, :max_file_bytes, 2_000_000)
 
-    with :ok <- writable(path),
+    with :ok <- arguments(path, opts),
+         :ok <- writable(path),
          {:ok, stat} <- File.stat(path),
          :ok <-
            if(positive?(cap) and stat.size <= cap,
@@ -229,8 +242,19 @@ defmodule Seedling.Files do
     end
   end
 
+  def edit(_, _, _),
+    do:
+      error(
+        :invalid_replacement,
+        "Pass old/new strings or a list of {old, new} pairs and keyword options."
+      )
+
   @doc "List a directory, including dotfiles, sorted and marking directories with /."
   def ls(path \\ ".", opts \\ []) do
+    with :ok <- arguments(path, opts), do: do_ls(path, opts)
+  end
+
+  defp do_ls(path, opts) do
     with {:ok, names} <- File.ls(path) do
       entries =
         names
@@ -253,9 +277,14 @@ defmodule Seedling.Files do
 
   @doc "Find files by glob. Paths are relative to cwd, without leading ./; no directories."
   def find(glob, opts \\ []) do
+    with :ok <- arguments(glob, opts), do: do_find(glob, opts)
+  end
+
+  defp do_find(glob, opts) do
     cwd = Keyword.get(opts, :cwd, ".")
 
     with :ok <- search_options(opts, 500),
+         {:ok, matcher} <- Glob.compile(glob),
          {:ok, result} <-
            rg(
              [
@@ -265,10 +294,6 @@ defmodule Seedling.Files do
                "--no-require-git",
                "-g",
                "!.git",
-               "--type-add",
-               "seedling:" <> glob,
-               "-t",
-               "seedling",
                "--",
                "."
              ],
@@ -280,7 +305,9 @@ defmodule Seedling.Files do
         Stream.resource(fn -> {io, ""} end, &null_chunk/1, fn {io, _} -> File.close(io) end)
 
       bounded_entries(
-        stream |> Stream.map(&String.trim_leading(&1, "./")),
+        stream
+        |> Stream.map(&String.trim_leading(&1, "./"))
+        |> Stream.filter(&Glob.match?(matcher, &1)),
         cwd,
         Keyword.get(opts, :limit, 500),
         Keyword.get(opts, :max_bytes, 16_000),
@@ -292,6 +319,14 @@ defmodule Seedling.Files do
 
   @doc "Search a regex or literal, with bounded match counts, lines and optional context."
   def grep(pattern, opts \\ []) do
+    with :ok <- arguments(pattern, opts), do: do_grep(pattern, opts)
+  end
+
+  defp do_grep(pattern, opts) do
+    with :ok <- search_options(opts, 100), do: do_grep_valid(pattern, opts)
+  end
+
+  defp do_grep_valid(pattern, opts) do
     path = Keyword.get(opts, :path, ".")
     cwd = if File.dir?(path), do: path, else: Path.dirname(Path.expand(path))
     target = if File.dir?(path), do: ".", else: Path.basename(path)
@@ -299,22 +334,20 @@ defmodule Seedling.Files do
     args = args ++ if(Keyword.get(opts, :literal, false), do: ["--fixed-strings"], else: [])
     args = args ++ if(Keyword.get(opts, :ignore_case, false), do: ["--ignore-case"], else: [])
 
-    args =
-      args ++
-        if(Keyword.has_key?(opts, :glob),
-          do: ["--type-add", "seedling:" <> Keyword.fetch!(opts, :glob), "-t", "seedling"],
-          else: []
-        )
-
     args = args ++ ["--context", to_string(Keyword.get(opts, :context, 0)), "--", pattern, target]
 
     with :ok <- search_options(opts, 100),
+         {:ok, matcher} <-
+           if(Keyword.has_key?(opts, :glob),
+             do: Glob.compile(Keyword.fetch!(opts, :glob)),
+             else: {:ok, nil}
+           ),
          {:ok, result} <- rg(args, cwd, opts) do
-      search_lines(result.output_path, opts)
+      search_lines(result.output_path, opts, matcher)
     end
   end
 
-  defp search_lines(path, opts) do
+  defp search_lines(path, opts, matcher) do
     limit = Keyword.get(opts, :limit, 100)
     cap = Keyword.get(opts, :max_bytes, 16_000)
     chars = Keyword.get(opts, :max_line_chars, 500)
@@ -337,26 +370,32 @@ defmodule Seedling.Files do
             display =
               "#{String.trim_leading(file, "./")}#{sep}#{data["line_number"]}#{sep} #{text}"
 
-            if (type == "match" and state.matches >= limit) or
-                 state.bytes + byte_size(display) + 1 > cap do
-              {:halt, %{state | truncated: true}}
-            else
-              entry = %{
-                path: String.trim_leading(file, "./"),
-                line: data["line_number"],
-                text: text,
-                kind: String.to_existing_atom(type),
-                truncated: cut_line
-              }
+            cond do
+              not Glob.match?(matcher, file) ->
+                {:cont, state}
 
-              {:cont,
-               %{
-                 state
-                 | entries: [{entry, display} | state.entries],
-                   matches: state.matches + if(type == "match", do: 1, else: 0),
-                   bytes: state.bytes + byte_size(display) + 1,
-                   lines_truncated: state.lines_truncated or cut_line
-               }}
+              (type == "match" and state.matches >= limit) or
+                  state.bytes + byte_size(display) + byte_size(text) + byte_size(file) + 192 > cap ->
+                {:halt, %{state | truncated: true}}
+
+              true ->
+                entry = %{
+                  path: String.trim_leading(file, "./"),
+                  line: data["line_number"],
+                  text: text,
+                  kind: if(type == "match", do: :match, else: :context),
+                  truncated: cut_line
+                }
+
+                {:cont,
+                 %{
+                   state
+                   | entries: [{entry, display} | state.entries],
+                     matches: state.matches + if(type == "match", do: 1, else: 0),
+                     bytes:
+                       state.bytes + byte_size(display) + byte_size(text) + byte_size(file) + 192,
+                     lines_truncated: state.lines_truncated or cut_line
+                 }}
             end
 
           _ ->
@@ -383,7 +422,11 @@ defmodule Seedling.Files do
      %{
        text:
          if(entries == [],
-           do: "No matches found",
+           do:
+             if(result.truncated,
+               do: "No matches fit within max_bytes; increase max_bytes.",
+               else: "No matches found"
+             ),
            else: Enum.map_join(entries, "\n", &elem(&1, 1))
          ),
        entries: Enum.map(entries, &elem(&1, 0)),
@@ -465,7 +508,11 @@ defmodule Seedling.Files do
        %{
          path: path,
          entries: kept,
-         text: if(kept == [], do: empty, else: Enum.join(kept, "\n")),
+         text:
+           if(kept == [],
+             do: if(cut, do: "No entries fit within max_bytes; increase max_bytes.", else: empty),
+             else: Enum.join(kept, "\n")
+           ),
          truncated: cut,
          notice:
            if(cut,
@@ -488,8 +535,14 @@ defmodule Seedling.Files do
       {:ok, %{type: :directory}} ->
         error(:eisdir, "#{path} is a directory; choose a file path.")
 
-      {:ok, _} ->
+      {:ok, %{type: :regular}} ->
         :ok
+
+      {:ok, %{type: type}} ->
+        error(
+          :unsupported_file_type,
+          "Refusing to write #{type} at #{path}; choose a regular file."
+        )
 
       {:error, :enoent} ->
         :ok
@@ -515,6 +568,41 @@ defmodule Seedling.Files do
 
     File.rm(temp)
     result
+  end
+
+  defp arguments(value, opts) do
+    cond do
+      not is_binary(value) or String.contains?(value, <<0>>) ->
+        error(:invalid_argument, "Pass a string path/pattern without NUL bytes.")
+
+      not is_list(opts) or not Keyword.keyword?(opts) ->
+        error(:invalid_options, "Options must be a keyword list.")
+
+      not valid_path?(Keyword.get(opts, :path, ".")) or
+          not valid_path?(Keyword.get(opts, :cwd, ".")) ->
+        error(:invalid_path, "path and cwd must be nonempty strings without NUL bytes.")
+
+      true ->
+        :ok
+    end
+  end
+
+  defp valid_path?(path), do: is_binary(path) and path != "" and not String.contains?(path, <<0>>)
+
+  defp readable(path) do
+    case File.stat(path) do
+      {:ok, %{type: :regular}} ->
+        :ok
+
+      {:ok, %{type: :directory}} ->
+        file_error(:read, path, :eisdir)
+
+      {:ok, %{type: type}} ->
+        error(:unsupported_file_type, "Cannot page #{type} at #{path}; choose a regular file.")
+
+      {:error, reason} ->
+        file_error(:read, path, reason)
+    end
   end
 
   defp positive?(n), do: is_integer(n) and n > 0
