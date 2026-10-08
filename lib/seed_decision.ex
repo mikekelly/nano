@@ -15,7 +15,7 @@ defmodule SeedDecision do
   Atom or string state/candidate keys are accepted.
 
   Defaults: endpoint `https://api.typesafe.ai/v1/systemone`, model `jev-latest`,
-  timeout 5 seconds, threshold 0.75 for replies / 0.7 for memory. At most 64
+  timeout at most 5 seconds (default 5 seconds), threshold 0.75 for replies / 0.7 for memory. At most 64
   candidates and 128 KiB of JSON state are accepted to bound cost.
 
   Options are per call, with no changes to global configuration:
@@ -78,7 +78,7 @@ defmodule SeedDecision do
   defp valid_config?(c) do
     is_binary(c.endpoint) and valid_url?(c.endpoint) and
       is_binary(c.model) and String.trim(c.model) != "" and
-      is_integer(c.timeout) and c.timeout > 0 and
+      is_integer(c.timeout) and c.timeout > 0 and c.timeout <= 5_000 and
       probability?(c.threshold) and
       is_integer(c.max_memories) and c.max_memories >= 0 and c.max_memories <= 64 and
       is_function(c.http, 1)
