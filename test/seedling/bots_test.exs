@@ -76,6 +76,8 @@ defmodule Seedling.BotsTest do
     sid = session(ctx, [ctx.bot])
     {:ok, _} = Bots.say(sid, "silent", ctx.opts)
     refute_receive {:delivered, _, _, _, _, _}, 50
+    {:ok, gated} = Bots.snapshot(ctx.opts)
+    assert gated.statuses[{sid, ctx.bot}] == "quiet"
     {:ok, _} = Bots.say(sid, "Hello", ctx.opts)
     assert_receive {:delivered, _, _, _, _, pid}
     send(pid, {:quiet, self(), ctx.bot, sid, ctx.opts})

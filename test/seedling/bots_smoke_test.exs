@@ -41,12 +41,19 @@ defmodule Seedling.Bots.SmokeTest do
                },
                root: root,
                notify: self(),
-               timeout: 100
+               timeout: 500
              )
 
     assert handle.root == root
     assert_receive {:bots_smoke, ^root, {:error, e}}, 3000
-    assert e =~ "timeout"
+    assert e.message =~ "timeout"
+    assert is_list(e.diagnostics)
+
+    assert Enum.any?(
+             e.diagnostics,
+             &(&1.status in ["thinking", "Considering whether to respond"])
+           )
+
     {:ok, snapshot} = Bots.snapshot(root: root)
     assert length(snapshot.bots) == 2
     assert [%{"paused" => true}] = snapshot.sessions
@@ -60,6 +67,39 @@ defmodule Seedling.Bots.SmokeTest do
     assert File.exists?(Path.join(root, "store.json"))
     server = Bots.server(root)
     GenServer.stop(server)
+    File.rm_rf!(root)
+  end
+
+  test "startup refusal is retained in error diagnostics even though no harness agent/log was created" do
+    Fake.start()
+    # Ensure the fake catalogue exists but does not list this model.
+    Fake.model()
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "bots-smoke-refusal-" <> Base.encode16(:crypto.strong_rand_bytes(8))
+      )
+
+    {:ok, _} =
+      Bots.Smoke.start(
+        %{
+          model: "missing/smoke-never-listed",
+          reasoning: "off",
+          max_context: 64000,
+          max_turns: 8,
+          max_tokens: 40000
+        },
+        root: root,
+        notify: self(),
+        timeout: 500
+      )
+
+    assert_receive {:bots_smoke, ^root, {:error, e}}, 3000
+    assert Enum.any?(e.diagnostics, &String.starts_with?(&1.status, "Unable to reply:"))
+    assert e.logs == []
+    assert File.dir?(Path.join(root, "computers"))
+    GenServer.stop(Bots.server(root))
     File.rm_rf!(root)
   end
 end

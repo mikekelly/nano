@@ -72,4 +72,37 @@ defmodule Seedling.Bots.GateTest do
     refute html =~ "<img"
     assert html =~ "&lt;img"
   end
+
+  defmodule NeverCalled do
+    def probability(_, _, _), do: raise("single direct chat must not call a classifier")
+  end
+
+  defmodule InspectDecision do
+    def probability(state, instructions, _) do
+      send(self(), {:gate_state, Jason.decode!(state), instructions})
+      {:ok, %{probability: 0.9}}
+    end
+  end
+
+  test "a person's direct sole-bot request cannot be silently vetoed by a cheap classifier" do
+    assert Gate.reply?(
+             %{"id" => "muse"},
+             %{"bots" => ["muse"], "exchanges" => 0, "messages" => []},
+             %{"from" => "human", "text" => "Please remember quiet hotels"},
+             decision: NeverCalled
+           )
+  end
+
+  test "group gate includes bot identity, treats explicit human requests distinctly and excludes duplicate current message" do
+    bot = %{"id" => "muse", "name" => "Muse"}
+    previous = %{"id" => "1", "from" => "dots", "text" => "An earlier suggestion"}
+    current = %{"id" => "2", "from" => "human", "text" => "Muse and Dots, each say hello"}
+    session = %{"bots" => ["muse", "dots"], "exchanges" => 0, "messages" => [previous, current]}
+    assert Gate.reply?(bot, session, current, decision: InspectDecision)
+    assert_receive {:gate_state, state, instructions}
+    assert state["bot"]["id"] == "muse"
+    assert [%{"text" => "An earlier suggestion"}] = state["recent"]
+    assert instructions =~ "explicit human request"
+    assert instructions =~ "bot repetition"
+  end
 end
