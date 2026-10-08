@@ -14,6 +14,8 @@ ENV MIX_ENV=prod \
     LISTEN_IP=0.0.0.0 \
     ERL_CRASH_DUMP=/data/erl_crash.dump
 
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Hex and rebar, a git identity, the node's default cookie, and git's blessing for a
@@ -40,8 +42,9 @@ RUN MIX_ENV=test MIX_BUILD_PATH=/tmp/warm mix deps.compile && rm -rf /tmp/warm
 
 # The image's own copy of the source, committed so `git diff` shows what agents change.
 COPY . .
+RUN bin/seed-install-safety /app /opt/seed-safety
 RUN mix compile && git init -q -b main && git add -A && git commit -qm "image build"
 
 VOLUME /data
 EXPOSE 4000
-CMD ["bin/start"]
+CMD ["/opt/seed-safety/watchdog", "/opt/seed-safety/config.json"]

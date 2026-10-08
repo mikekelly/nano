@@ -56,6 +56,8 @@ defmodule Nano.Application do
       best_effort(fn ->
         Nano.StateStore.load()
         NanoAgent.revive(Nano.AgentSupervisor)
+        Delegation.restore()
+        SeedTasks.reconcile()
       end)
 
       {:ok, sup}
