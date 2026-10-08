@@ -500,7 +500,22 @@ defmodule NanoAgent do
   # come from the model's list if it can be had, and the window then caps max_context (which
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
-  defp upgrade(%{context_window: _} = s), do: Map.put_new(s, :input_modalities, [])
+  defp upgrade(%{context_window: _, input_modalities: _} = s), do: s
+
+  defp upgrade(%{context_window: _} = s) do
+    modalities =
+      case Nano.Model.lookup(s.model) do
+        {:ok, entry} -> entry[:input_modalities] || []
+        _ -> []
+      end
+
+    s
+    |> Map.put(:input_modalities, modalities)
+    |> Map.put(
+      :system_prompt,
+      (s.system_prompt || "") <> "\n\n" <> SeedImages.orientation(modalities)
+    )
+  end
 
   defp upgrade(s) do
     entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
@@ -1005,13 +1020,18 @@ defmodule NanoAgent do
   # agent, which logs them; the last failure is returned with the number of attempts made.
   # With `raw` (Nano.RawLog), each attempt is recorded as "<raw>-<attempt>", and the response
   # and each failure name their attempt's files (`raw:`).
+  def call_model(agent, tag, how, messages, request_id, attempt \\ 1)
+
+  def call_model(agent, tag, {model, reasoning, output, raw}, messages, request_id, attempt),
+    do: call_model(agent, tag, {model, reasoning, output, raw, []}, messages, request_id, attempt)
+
   def call_model(
         agent,
         tag,
         {model, reasoning, max_output, raw, modalities} = how,
         messages,
         request_id,
-        attempt \\ 1
+        attempt
       ) do
     started = System.monotonic_time(:millisecond)
 
