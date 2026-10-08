@@ -3,8 +3,12 @@
 Every NanoAgent automatically checkpoints older history when the estimated next request
 or latest measured context reaches its window minus a reserve (16,384 tokens, scaled down
 for small windows). The original pid, name, mailbox, eval bindings and working files stay
-untouched. Summaries use a separate tool-free call to the same model, with up to three
-transient-error attempts, and are charged to agent/node token and cost totals, not agent
+untouched. Summaries use separate tool-free calls to the same model, with up to three
+transient-error attempts per call. Usually one call suffices; if serialized history itself
+exceeds the conservative input bound, chronological chunks update a bounded prior
+checkpoint across passes instead of discarding data or halting. Oversized individual
+records use UTF-8-safe annotated continuations. Successful pass usage/cost is aggregated
+for the harness accounting, and are charged to agent/node token and cost totals, not agent
 turns. Recent turns are retained verbatim, cutting only at user/assistant boundaries so every
 kept tool result retains its call. Long single turns checkpoint their earlier request/progress. Existing checkpoints are updated.
 
