@@ -198,7 +198,7 @@ defmodule SeedDecision do
       connect_options: [timeout: config.timeout]
     ]
 
-    case config.http.(opts) do
+    case bounded_http(config.http, opts, config.timeout) do
       {:ok, %{status: 200, body: body}} -> answers(body)
       {:ok, %{status: status}} when is_integer(status) -> {:error, {:http_status, status}}
       {:error, _} -> {:error, {:unavailable, :transport_error}}
@@ -208,6 +208,26 @@ defmodule SeedDecision do
     _ -> {:error, {:unavailable, :transport_error}}
   catch
     _, _ -> {:error, {:unavailable, :transport_error}}
+  end
+
+  # Req's connection and receive timeouts cover separate phases. A task deadline
+  # also bounds the whole call, including slow injected transports.
+  defp bounded_http(http, opts, timeout) do
+    task =
+      Task.async(fn ->
+        try do
+          http.(opts)
+        rescue
+          _ -> {:error, :transport_error}
+        catch
+          _, _ -> {:error, :transport_error}
+        end
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> {:error, :transport_error}
+    end
   end
 
   defp answers(body) when is_binary(body) do

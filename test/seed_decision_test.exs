@@ -129,6 +129,28 @@ defmodule SeedDecisionTest do
     end
   end
 
+  test "whole-call deadline cancels a slow transport without inventing a decision" do
+    listener = self()
+
+    http = fn _ ->
+      send(listener, {:transport_pid, self()})
+      Process.sleep(:infinity)
+    end
+
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, {:unavailable, :transport_error}} =
+             SeedDecision.decide(:reply, @reply,
+               api_key: "test-only-key",
+               timeout: 30,
+               http: http
+             )
+
+    assert System.monotonic_time(:millisecond) - started < 1_000
+    assert_receive {:transport_pid, pid}
+    refute Process.alive?(pid)
+  end
+
   test "HTTP failures are explicit and do not expose response bodies" do
     for status <- [301, 401, 422, 429, 500, 529] do
       assert {:error, {:http_status, ^status}} =
