@@ -35,7 +35,11 @@ defmodule Nano.Application do
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           NanoWeb.Endpoint
-        ],
+        ] ++
+          if(Application.get_env(:nano, :seed_bots_enabled, true),
+            do: [{SeedBots, directory: "/data/bots"}],
+            else: []
+          ),
         &retrying/1
       )
 

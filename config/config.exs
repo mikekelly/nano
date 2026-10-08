@@ -13,6 +13,7 @@ config :nano, NanoWeb.Endpoint,
   render_errors: [formats: [json: NanoWeb.Error, html: NanoWeb.Error], layout: false]
 
 config :phoenix, :json_library, Jason
+config :nano, :seed_bots_enabled, config_env() != :test
 
 config :logger, :default_formatter, format: "$time [$level] $message\n"
 

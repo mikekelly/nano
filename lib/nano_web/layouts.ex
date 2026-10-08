@@ -69,7 +69,20 @@ defmodule NanoWeb.Layouts do
           document.addEventListener("keydown", e =>
             e.key === "Escape" && document.querySelectorAll("details.dropdown[open]").forEach(d => (d.open = false)))
 
+          let lastBotNotification = 0
+          window.addEventListener("seed-bots:notifications", async () => {
+            if ("Notification" in window) await Notification.requestPermission()
+          })
+          window.addEventListener("phx:seed-bots:message", event => {
+            if (!document.hidden || !("Notification" in window) || Notification.permission !== "granted") return
+            if (Date.now() - lastBotNotification < 30000) return
+            lastBotNotification = Date.now()
+            const notification = new Notification(event.detail.title || "Bot message", {body: event.detail.body || "A bot has a message for you."})
+            notification.onclick = () => { window.focus(); notification.close() }
+          })
+
           window.addEventListener("DOMContentLoaded", () => {
+
             const csrf = document.querySelector("meta[name='csrf-token']").content
             // When the server closes the socket (its endpoint restarting), LiveView reloads the page
             // after a random 5-10 s, meant to spread out many clients; one operator needs only ~1 s.
