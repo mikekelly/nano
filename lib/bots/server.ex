@@ -146,6 +146,48 @@ defmodule Bots.Server do
     end
   end
 
+  def handle_call({:retry, sid}, _, s) do
+    with {:ok, session} <- fetch_session(s, sid) do
+      original =
+        Enum.find(Enum.reverse(session["messages"]), fn msg ->
+          msg["kind"] == "human" and msg["id"] in session["pending_human_ids"]
+        end)
+
+      cond do
+        active?(s.grants, sid) or routing?(s, sid) or session["status"] == "thinking" ->
+          {:reply, {:error, :active}, s}
+
+        session["status"] != "error" ->
+          {:reply, {:error, :not_errored}, s}
+
+        is_nil(original) ->
+          {:reply, {:error, :no_pending_message}, s}
+
+        true ->
+          session =
+            session
+            |> Map.put("status", "thinking")
+            |> Map.put("epoch", session["epoch"] + 1)
+            |> Map.put("pending_speakers", [])
+            |> Map.put("pending_message_id", original["id"])
+            |> Map.put("bot_exchanges", 0)
+            |> Map.put("ceiling_noted", false)
+
+          case save(s, put_session(s.data, session), sid) do
+            {:ok, next} ->
+              next = cancel_session(next, sid)
+              send(self(), {:route, sid, session["epoch"], original})
+              {:reply, {:ok, session}, next}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, s}
+          end
+      end
+    else
+      error -> {:reply, error, s}
+    end
+  end
+
   def handle_call({:stop, sid}, _, s) do
     with {:ok, session} <- fetch_session(s, sid) do
       session =

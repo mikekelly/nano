@@ -70,6 +70,9 @@ defmodule Bots do
   def stop(id, opts \\ []), do: call({:stop, id}, opts)
   def preferences(attrs, opts \\ []), do: call({:preferences, attrs}, opts)
 
+  @doc "Retry an errored inactive session's pending human message with fresh grants; never fabricates a message or unhalts agents."
+  def retry(id, opts \\ []), do: call({:retry, id}, opts)
+
   def post(token, text, opts \\ []),
     do: call({:post, token, text, Keyword.put(opts, :actor, actor())}, opts)
 
