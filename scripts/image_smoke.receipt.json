@@ -1,0 +1,20 @@
+{
+  "answer": "{\"left\":\"red\",\"right\":\"blue\"}",
+  "at": "2026-10-08T16:09:40.116621Z",
+  "bytes": 515,
+  "completion_tokens": 13,
+  "credential_files_removed": true,
+  "height": 96,
+  "image_id": "fc6286acf16553065264a571e5219a0d8e77997ee6f0cf71afbc7082ca3029b6",
+  "input_modalities": [
+    "text",
+    "image"
+  ],
+  "isolated_vm": true,
+  "model": "openai-codex/gpt-6.1-sol",
+  "prompt_tokens": 379,
+  "refresh_disabled": true,
+  "result": "passed",
+  "script_revision": "918b9ea77c7b1b581e4dbdebf1e0bd6888bbd8ad",
+  "width": 160
+}
