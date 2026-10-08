@@ -110,4 +110,43 @@ defmodule CompactionTest do
     assert {:error, _} = Compaction.parse("Compaction.provide_summary(~s|Goal|)")
     assert {:error, _} = Compaction.parse("Compaction.provide_summary(~S|Goal|u)")
   end
+
+  test "received multipart events retain attached immutable image references" do
+    first = ~s|<event seq="1">original image brief</event>|
+    second = ~s|<event seq="2">new image</event>|
+
+    image = %{
+      "type" => "seed_image",
+      "image" => %{"path" => "/tmp/immutable", "sha256" => "digest"}
+    }
+
+    s = %{
+      transcript: [
+        %{
+          "role" => "user",
+          "content" => [
+            %{"type" => "text", "text" => first},
+            image,
+            %{"type" => "text", "text" => "<harness>budget</harness>"}
+          ]
+        },
+        %{"role" => "assistant", "content" => "not carried"},
+        %{"role" => "user", "content" => [%{"type" => "text", "text" => second}, image]}
+      ],
+      max_context: 100_000,
+      id: "images",
+      pending: [image]
+    }
+
+    compacted = Compaction.apply_summary(s, "Goal: continue")
+    assert [first_event, second_event, _summary] = compacted.transcript
+    assert first_event["content"] == [%{"type" => "text", "text" => first}, image]
+    assert second_event["content"] == [%{"type" => "text", "text" => second}, image]
+    assert compacted.pending == [image]
+    assert compacted.compaction_generation == 1
+    # Image costs, not tiny JSON reference length, determine retained-event budget.
+    compacted = Compaction.apply_summary(%{s | max_context: 40000}, "Goal: continue")
+    assert length(compacted.transcript) == 2
+    assert hd(compacted.transcript)["content"] == first_event["content"]
+  end
 end
