@@ -36,7 +36,7 @@ A separate24k-context CompactCheck session automatically compacted at13:23:59–
 and retained all three constraints: human confirmation before booking, £200 maximum,
 and quiet/near-railway accommodation. The subsequent consumer post retained these
 constraints; the run used103083 tokens/11 turns within its finite40-turn/1M-token budget.
-No eval/tool/reasoning output is promoted into the consumer chat.
+A fresh neutral-path image in Dots session `14ff2e897f375dfa` was correctly described as bright green, avoiding earlier blue-image context as a confound. IDs and the compaction log are in [docs/bots-goals.md](bots-goals.md). All six demo agents were stopped without deleting their saved native IDs/checkpoints; catalog (three bots/five sessions) survived a controlled broker restart. No eval/tool/reasoning output is promoted into the consumer chat.
 
 Browser desktop notification delivery to an actual person's OS cannot be established
 in a headless node. Permission/visibility/rate/quiet-hour mechanics are implemented and
@@ -44,13 +44,7 @@ tested; that is not a claim that a real desktop notification brought a person ba
 
 ## Verification status
 
-The latest combined green integration run before final regression imports passed409
-ExUnit tests, whole `mix format --check-formatted`, and `mix compile --warnings-as-errors`.
-An independent fresh archived source snapshot passed400 tests with exit0. Targeted
-builder/reviewer counts above apply to their exact source revisions, not every later edit.
-At draft time one imported long-image regression fails against the new shared16KB
-caption boundary; the owner is fixing the bounded envelope/error-status integration.
-This paragraph will be replaced with final exact verification, not hidden by a rerun.
+The integrated feature source `d9097ac1` passed428 tests (seed156132), whole format check and compile-WAE. An independent clean archive rerun with seed989775 deterministically failed3/428 tests: restarted StateStore was misclassified by an immutable boot-PID snapshot. A narrow current-supervisor classification correction and final rerun are in progress. The earlier16KB image-caption integration failure is fixed and native400/refusal, budget-halt,500/retry and stopped-ID revival regressions pass. Final exact verification will replace this interim paragraph; targeted builder counts apply to their own revisions.
 
 Expected logs include an intentionally induced `:retry_start`; existing test source has
 unused-variable/default-argument warnings. These are separate from production compile-WAE.
@@ -67,6 +61,7 @@ providers and use unique roots/port0 listeners, never operator keys.
   fail closed; bytes are hash-verified on read and never embedded in durable transcripts.
 - A20k recent-history target incorrectly prevented compaction of a safe25k paired tail.
   The target is now soft; the final actual context-size guard still rejects unsafe output.
+- Parent's accumulated serialized history exceeded the summarizer's safe request window and halted explicitly. Bounded multi-stage checkpoint updates recovered the same pid/mailbox/bindings without deleting original history; partial failed-pass accounting is also being finalized.
 - Temporary eval PID ownership originally lost research/CDP events. Stable agent names
   now survive eval completion/agent restart, with explicit lifecycle tests.
 - MCP oversized-event bounding once changed routing; routing now uses original metadata
@@ -74,7 +69,7 @@ providers and use unique roots/port0 listeners, never operator keys.
   EOF/TERM/KILL cleanup, independent of the client being brutally killed.
 - One child's `MIX_ENV=test command && next_command` shell chain accidentally compiled
   its worktree into shared production disk artifacts. The parent restored the `/app/priv`
-  symlink, verified assets200, and will regenerate the final tested production disk build.
+  symlink and regenerated all65 production modules from integrated `/app` with WAE (exit0), verified assets200, and will repeat incremental compilation after final fixes.
   Set environment on the entire subprocess/chain. No keys or live state were altered.
 - Background jobs survive eval/agent restart, not a node/container restart. Use cancel,
   not brutal BEAM worker kill. Bare send is not exactly-once acknowledged delivery; the

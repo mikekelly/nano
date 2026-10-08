@@ -2,6 +2,8 @@
 
 Branch `seedling/orion-harness`; never merged into main. Modules are callable from eval.
 
+Delivery/evidence: [docs/seedling-report.md](docs/seedling-report.md); independent review: [docs/audit.md](docs/audit.md); consumer workflow: [docs/bots-goals.md](docs/bots-goals.md).
+
 ## Files and shell
 
 `Seedling.Tools` — Bounded file paging/search/listing, exact multi-edits with diff, safe shell timeout/tail/full spill. read/sh retain compact metadata. See docs/tools.md; rg/fd-find required and installed by Dockerfile.
@@ -28,7 +30,7 @@ Seedling.Delegation.subagent("scout", model: "openai-codex/gpt-6.1-sol", reasoni
 
 ## Automatic checkpoints
 
-`Nano.Compaction` — Harness automatically summarizes older history before context exhaustion and within long tool loops; preserves pid/mailbox/bindings, paired recent turns and durable logs. Structured checkpoint plus deterministic files list; actual subscription threshold/sentinel73 test passed (docs/live-compaction-images-smoke.md). docs/compaction-and-images.md; explicit failure/retry, pre-call safety remains.
+`Nano.Compaction` — Harness automatically summarizes older history before context exhaustion and within long tool loops; preserves pid/mailbox/bindings, paired recent turns and durable logs. Structured checkpoint plus deterministic files list; oversized serialized lifetimes use bounded update stages without losing originals on partial failure; actual subscription threshold/sentinel73 test passed (docs/live-compaction-images-smoke.md). docs/compaction-and-images.md; explicit failure/retry, pre-call safety remains.
 
 ```elixir
 NanoAgent.info("orion")
@@ -68,7 +70,7 @@ Seedling.Decision.evaluate("Recent activity", %{"drift" => Seedling.Decision.nou
 
 ## Images
 
-`Nano.Images` — Immutable sniffed and fully decoded single-frame PNG/JPEG/GIF refs, bounded bytes/dimensions. Fresh vision agents receive actual pixels on provider wire; text-only agents get explicit warning. API POST /api/agents/:name/images {base64,text}, GET /api/images/:id and dashboard upload/timeline. Live image API routes and dashboard active; actual Codex external/eval vision tests passed. docs/compaction-and-images.md.
+`Nano.Images` — Immutable sniffed and fully decoded single-frame PNG/JPEG/GIF refs, bounded bytes/dimensions. Fresh vision agents receive actual pixels on provider wire; text-only agents get explicit warning. API POST /api/agents/:name/images {base64,text}, GET /api/images/:id and dashboard upload/timeline. Live image API routes and dashboard active; external/eval image admission shares a16KB caption cap and irreducible-context guard; actual Codex external/eval vision tests passed. docs/compaction-and-images.md.
 
 ```elixir
 Nano.Images.view("/tmp/screenshot.png")
@@ -100,7 +102,7 @@ Seedling.Browser.run(url, [{:fill, "#q", "text"}, {:click, "#go"}]); Seedling.Br
 
 ## MCP
 
-`Seedling.MCP` — Durable current2026-07-28/legacy2025-11-25 stdio+HTTP JSON/SSE clients. Config priv/seedling/mcp.json, tools/resources/prompts discovery, call/read/subscribe stable-name mailbox events, bounded result_page. Supervised live startup active. docs/seedling/mcp.md lists subset/no OAuth or sampling, offline event-memory limit. Delegation optional servers gated until all ready before first turn; constructor guard handles eval death/error without orphaning child.
+`Seedling.MCP` — Durable current2026-07-28/legacy2025-11-25 stdio+HTTP JSON/SSE clients. Config priv/seedling/mcp.json, tools/resources/prompts discovery, call/read/subscribe stable-name mailbox events, bounded result_page. Supervised live startup active. docs/seedling/mcp.md lists subset/no OAuth or sampling, offline event-memory limit. Delegation optional servers gated until all ready before first turn; constructor guard handles eval death/error without orphaning child. Birth-checked EOF/TERM/KILL watchdog contains direct noncooperative stdio roots, not descendant trees.
 
 ```elixir
 Seedling.MCP.servers(); Seedling.MCP.connect("configured-server", agent: "orion"); Seedling.MCP.tools("configured-server")
@@ -108,7 +110,7 @@ Seedling.MCP.servers(); Seedling.MCP.connect("configured-server", agent: "orion"
 
 ## Consumer bots
 
-`Seedling.Bots` — Open /bots (existing endpoint, live200/assets200). Durable identity/face/logical workspace; one agent per bot/session, shared memory, group conversations, safe Markdown/downloads, thinking status. request_human(bot,question,reply_to: me), answer(id,text,session:), acknowledge(id) durable named outbox. Source tested, final demo/regressions pending; docs/bots-goals.md. Logical computers share root container, not security sandboxes.
+`Seedling.Bots` — Open /bots (existing endpoint, live200/assets200). Durable identity/face/logical workspace; one agent per bot/session, shared memory, group conversations, safe Markdown/downloads, thinking status. request_human(bot,question,reply_to: me), answer(id,text,session:), acknowledge(id) durable named outbox. Actual finite-model memory/restart/group/neutral-green-image/human-ack/automatic-compaction acceptance passed; provider refusal/budget pause/retry and16KB image envelope have native regressions. Saved session IDs revive; corrupt catalog blocks visibly. docs/bots-goals.md. Logical computers share root container, not security sandboxes.
 
 ```elixir
 {:ok,b}=Seedling.Bots.create("Muse", model: "openai-codex/gpt-6.1-sol", reasoning: "low", max_context: 64000); {:ok,s}=Seedling.Bots.session([b["id"]]); Seedling.Bots.say(s["id"], "Hello")
