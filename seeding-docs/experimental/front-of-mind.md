@@ -1,7 +1,7 @@
 # Seeding doc (experimental): front of mind
 
 Experimental: the outcome is a hypothesis to test, not a settled capability. Build it so
-its effect can be measured, and record what you find.
+its effect can be measured.
 
 ## Outcome
 

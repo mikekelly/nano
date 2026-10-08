@@ -79,5 +79,5 @@ agent, not the one that built them).
 - How coding agents delegate: Claude Code's sub-agents (a brief, an isolated context, a
   report back), pi's sessions; the common shape is one message in, one summary out.
 
-How you build it is yours to decide. Record the choices and the message shapes where the
+How you build it is yours to decide. Make the message shapes discoverable from the code itself (its module docs), where the
 next agent will find them.

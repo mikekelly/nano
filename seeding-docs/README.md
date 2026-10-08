@@ -32,7 +32,7 @@ or drop for its own situation.
 ### Experimental
 
 Each of these tests a hypothesis rather than describing a settled capability: build one
-when asked to, so that it can be measured, and record what it showed.
+when asked to, so that it can be measured.
 
 | File | Hypothesis |
 | --- | --- |

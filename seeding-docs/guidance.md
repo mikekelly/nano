@@ -141,7 +141,7 @@ when it nears your limit (when the next call, with room for a reply, might not f
 harness stops calling the model: you cannot then do anything, including shrink it. The seed
 has no compaction, and an agent that will run long needs it to happen automatically, before
 the limit, while it stays the same agent ([compaction.md](compaction.md) is the spec). Build
-it early, while you have plenty of room, and keep your notes and goals current as you go:
+it early, while you have plenty of room, and keep your goals current as you go:
 they are what a summary can point to, and what survives it. Until it exists, the budget
 line delivered with your events tells you where you are. Every agent you start needs it as
 much as you do (it is one of the operating principles, below): an agent halted for its
@@ -262,16 +262,15 @@ context you will tend to copy their style, so a slide into shorthand feeds on it
 
 **Let the code explain itself.** Prefer self-descriptive code (names that say what things
 do, small functions with clear return shapes) and tests that pin down behaviour over
-comments, and prefer comments, `@moduledoc` and `@doc` over separate Markdown. Tests fail
+comments, and prefer comments, `@moduledoc` and `@doc` over separate Markdown. The code
+already says what it does; what tests and comments are for is why: the design goals, the
+constraint a choice answers to, the behaviour that must hold and the reason it must, so the
+next agent can tell what it may change and what it must keep. Tests fail
 when behaviour changes, so they cannot drift; a comment sits where the code is changed, so
 whoever changes it sees it; a separate document drifts silently, and agents act on what they
 read. In Elixir, the docs in a module are also queryable from the running node
 (`Code.fetch_docs/1`, or `h/1` in a shell), so an agent can find out how to call something
 from `eval` without knowing which file to open.
-
-**Record what you learn.** Keep `/app/NOTES.md` a short index: what exists, where, one
-example each, and what did not work and why. The detail lives in the code, its docs and its
-tests, which the index points to. The next agent starts from there.
 
 ## Related
 
