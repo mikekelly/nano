@@ -18,6 +18,14 @@ defmodule Seedling.Index do
           "Completion event %{background: id,status: code,reason: atom,output: path,bytes: n}. tail(path), cancel(pid), info(pid). Survives agent restart, not node restart."
       },
       %{
+        name: "Delegation",
+        module: Seedling.Delegation,
+        example:
+          ~s|Seedling.Delegation.subagent("scout", model: "openai-codex/gpt-6.1-sol", reasoning: "high", max_turns: 40, max_tokens: 200000, max_context: 100000, prompt: "Investigate", pre: ["/app/NOTES.md"], message: "Begin")|,
+        detail:
+          "Composed prompts, hashed pre-reading, explicit worktree revision, optional MCP. Durable completion/failure/restart events by parent name. report/2, result/1, tell/2; docs/seedling/delegation.md."
+      },
+      %{
         name: "Goals",
         module: Seedling.Goals,
         example:

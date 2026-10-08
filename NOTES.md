@@ -18,6 +18,14 @@ Seedling.Tools.read("/app/NOTES.md"); Seedling.Tools.sh("git status --short")
 Seedling.Background.start("MIX_ENV=test mix test", owner: "orion", timeout: 120000)
 ```
 
+## Delegation
+
+`Seedling.Delegation` — Composed prompts, hashed pre-reading, explicit worktree revision, optional MCP. Durable completion/failure/restart events by parent name. report/2, result/1, tell/2; docs/seedling/delegation.md.
+
+```elixir
+Seedling.Delegation.subagent("scout", model: "openai-codex/gpt-6.1-sol", reasoning: "high", max_turns: 40, max_tokens: 200000, max_context: 100000, prompt: "Investigate", pre: ["/app/NOTES.md"], message: "Begin")
+```
+
 ## Goals
 
 `Seedling.Goals` — Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard integration pending.
