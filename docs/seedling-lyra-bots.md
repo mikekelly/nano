@@ -53,3 +53,21 @@ connected page (no offline push/service worker). Live requester pid not durable:
 answer after restart. Single trusted household, no tenant auth. Snapshot rewrites full
 history; large deployments should use append-only storage. Per-bot computer is a workspace,
 not isolation from root agent execution.
+
+## Follow-up validation
+
+create_bot/3 accepts model: and max_context: per bot; default model now gpt-6.1-sol.
+Human reply_to: may be a registered agent name, persisted with request; answered requests
+redeliver on named-agent incarnation change or broker restart. Recipients deduplicate IDs
+(at-least-once, not exactly-once). Pid-only requests remain live-only. Session queues persist
+pending recipient IDs, enqueue after atomic write within store order, rank memories outside
+store lock, and retry affected session on queue crash. Concurrent startup/ordering barrier test
+passes. 7 focused tests now pass.
+
+Actual gpt-6.1-sol smoke: two bots, individual/group sessions, both distinct consumer posts,
+Muse durable preference remembered in separate session via Jev semantic retrieval. Actual
+Chromium page hidden with Notifications permission granted emitted native generic notification
+on human request; browser answered Quiet Hotel A in chat, named lyra-bots received answer.
+Screenshot /tmp/lyra-bots/.browser/bots.png (runtime artifact, not committed).
+16k actual bot compaction triggered but summarizer returned oversized checkpoint and halted;
+reported to continuity sibling, retest pending. No success claim for that yet.

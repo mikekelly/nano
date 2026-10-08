@@ -27,8 +27,8 @@ defmodule Seedling.Bots do
 
   def snapshot, do: GenServer.call(server(), :snapshot)
 
-  def create_bot(name, description \\ "A thoughtful, helpful companion"),
-    do: call({:bot, name, description})
+  def create_bot(name, description \\ "A thoughtful, helpful companion", opts \\ []),
+    do: call({:bot, name, description, opts})
 
   def create_session(ids), do: call({:session, ids})
 
@@ -70,19 +70,8 @@ defmodule Seedling.Bots do
   defp call(msg), do: GenServer.call(server(), msg)
   def subscribe, do: Phoenix.PubSub.subscribe(Nano.PubSub, "seedling:bots")
 
-  def say(session, text) do
-    with {:ok, message} <- post(session, "human", text) do
-      state = snapshot()
-
-      for bot <- state.sessions[session].bots do
-        Task.start(fn ->
-          Seedling.Bots.Agent.deliver(state.bots[bot], state.sessions[session], message)
-        end)
-      end
-
-      {:ok, message}
-    end
-  end
+  def say(session, text), do: call({:say, session, text})
+  def delivered(session, message, bot), do: call({:delivered, session, message, bot})
 
   def init(opts) do
     path = opts[:path] || Path.join(Application.fetch_env!(:nano, :state_dir), "bots.json")
@@ -100,7 +89,9 @@ defmodule Seedling.Bots do
         _ -> data
       end
 
-    {:ok, %{path: path, data: data, waiters: %{}}}
+    Process.send_after(self(), :retry_answers, 1000)
+    send(self(), :restore_dispatch)
+    {:ok, %{path: path, data: data, waiters: %{}, queues: %{}}}
   end
 
   defp decode(raw) do
@@ -120,12 +111,17 @@ defmodule Seedling.Bots do
   defp now, do: System.system_time(:millisecond)
   def handle_call(:snapshot, _, s), do: {:reply, s.data, s}
 
-  def handle_call({:bot, name, description}, _, s) do
-    if valid?(name, 80) and valid?(description, 2000) do
+  def handle_call({:bot, name, description, opts}, _, s) do
+    if valid?(name, 80) and valid?(description, 2000) and
+         (is_nil(opts[:model]) or valid?(opts[:model], 200)) and
+         (is_nil(opts[:max_context]) or
+            (is_integer(opts[:max_context]) and opts[:max_context] >= 2048)) do
       bot = %{
         id: id(),
         name: String.trim(name),
         description: description,
+        model: opts[:model],
+        max_context: opts[:max_context],
         color: Enum.random(~w(#bc8ce2 #74bbaa #e5ad70 #81abe0)),
         face: Enum.random(~w(● ◆ ✦)),
         created: now()
@@ -155,16 +151,20 @@ defmodule Seedling.Bots do
     end
   end
 
-  def handle_call({:post, sid, bot, text}, _, s) do
+  def handle_call({:say, sid, text}, _, s), do: append_message(s, sid, "human", text, true)
+  def handle_call({:post, sid, bot, text}, _, s), do: append_message(s, sid, bot, text, false)
+
+  def handle_call({:delivered, sid, mid, bot}, _, s) do
     session = s.data.sessions[sid]
 
-    if session && (bot == "human" or bot in session.bots) && valid?(text, 32000) do
-      msg = %{id: id(), author: bot, text: text, created: now()}
-      session = %{session | messages: session.messages ++ [msg], updated: now()}
-      save(s, put_in(s.data, [:sessions, sid], session), {:ok, msg})
-    else
-      {:reply, {:error, :invalid_message}, s}
-    end
+    messages =
+      Enum.map(session.messages, fn m ->
+        if m.id == mid,
+          do: Map.put(m, :pending, List.delete(Map.get(m, :pending, []), bot)),
+          else: m
+      end)
+
+    save(s, put_in(s.data, [:sessions, sid, :messages], messages), :ok)
   end
 
   def handle_call({:remember, bot, text, tags}, _, s) do
@@ -213,7 +213,8 @@ defmodule Seedling.Bots do
           |> Enum.filter(&(bot in &1.bots))
           |> Enum.max_by(& &1.updated, fn -> nil end)
 
-    if session && bot in session.bots && valid?(question, 4000) && is_pid(pid) do
+    if session && bot in session.bots && valid?(question, 4000) &&
+         (is_pid(pid) or (is_binary(pid) and valid?(pid, 200))) do
       request = %{
         id: id(),
         bot: bot,
@@ -221,6 +222,8 @@ defmodule Seedling.Bots do
         question: question,
         status: "pending",
         answer: nil,
+        reply_to: requester_name(pid),
+        delivered: false,
         created: now()
       }
 
@@ -246,9 +249,9 @@ defmodule Seedling.Bots do
 
       case persist(s.path, data) do
         :ok ->
-          if pid = s.waiters[rid], do: send(pid, {:human_answer, rid, text})
+          send(self(), :deliver_answers)
           broadcast()
-          {:reply, :ok, %{s | data: data, waiters: Map.delete(s.waiters, rid)}}
+          {:reply, :ok, %{s | data: data}}
 
         error ->
           {:reply, error, s}
@@ -256,6 +259,120 @@ defmodule Seedling.Bots do
     else
       {:reply, {:error, :invalid_request}, s}
     end
+  end
+
+  defp enqueue(s, session, message) do
+    pid = Seedling.Bots.Queue.enqueue(session, message)
+    queues = Map.get(s, :queues, %{})
+
+    queues =
+      if Map.has_key?(queues, session.id),
+        do: queues,
+        else: Map.put(queues, session.id, Process.monitor(pid))
+
+    Map.put(s, :queues, queues)
+  end
+
+  def handle_info(:restore_dispatch, s) do
+    s =
+      Enum.reduce(s.data.sessions, s, fn {_, session}, s ->
+        Enum.reduce(session.messages, s, fn msg, s ->
+          if Map.get(msg, :pending, []) != [], do: enqueue(s, session, msg), else: s
+        end)
+      end)
+
+    {:noreply, s}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, s) do
+    queues = Map.get(s, :queues, %{})
+    sid = Enum.find_value(queues, fn {id, r} -> if r == ref, do: id end)
+    s = Map.put(s, :queues, Map.delete(queues, sid))
+
+    s =
+      if sid do
+        session = s.data.sessions[sid]
+
+        Enum.reduce(session.messages, s, fn msg, s ->
+          if Map.get(msg, :pending, []) != [], do: enqueue(s, session, msg), else: s
+        end)
+      else
+        s
+      end
+
+    {:noreply, s}
+  end
+
+  def handle_info(:retry_answers, s) do
+    Process.send_after(self(), :retry_answers, 5000)
+    handle_info(:deliver_answers, s)
+  end
+
+  def handle_info(:deliver_answers, s) do
+    {data, waiters} =
+      Enum.reduce(s.data.requests, {s.data, s.waiters}, fn {id, r}, {data, waiters} ->
+        name = Map.get(r, :reply_to)
+        target = if name, do: NanoAgent.whereis(name), else: waiters[id]
+        replay? = is_binary(name) and is_pid(target) and target != waiters[id]
+
+        if r.status == "answered" and (not Map.get(r, :delivered, false) or replay?) do
+          if is_pid(target) and Process.alive?(target) do
+            send(target, {:human_answer, id, r.answer})
+
+            {put_in(data, [:requests, id], Map.put(r, :delivered, true)),
+             if(name, do: Map.put(waiters, id, target), else: Map.delete(waiters, id))}
+          else
+            {data, waiters}
+          end
+        else
+          {data, waiters}
+        end
+      end)
+
+    if data != s.data or waiters != s.waiters do
+      case persist(s.path, data) do
+        :ok -> {:noreply, %{s | data: data, waiters: waiters}}
+        _ -> {:noreply, s}
+      end
+    else
+      {:noreply, s}
+    end
+  end
+
+  defp append_message(s, sid, bot, text, dispatch?) do
+    session = s.data.sessions[sid]
+
+    if session && (bot == "human" or bot in session.bots) && valid?(text, 32000) do
+      msg = %{
+        id: id(),
+        author: bot,
+        text: text,
+        created: now(),
+        pending: if(dispatch?, do: session.bots, else: [])
+      }
+
+      session = %{session | messages: session.messages ++ [msg], updated: now()}
+
+      case save(s, put_in(s.data, [:sessions, sid], session), {:ok, msg}) do
+        {:reply, {:ok, _} = result, updated} ->
+          updated = if dispatch?, do: enqueue(updated, session, msg), else: updated
+          {:reply, result, updated}
+
+        other ->
+          other
+      end
+    else
+      {:reply, {:error, :invalid_message}, s}
+    end
+  end
+
+  defp requester_name(name) when is_binary(name), do: name
+
+  defp requester_name(pid) do
+    Enum.find_value(Nano.Names.all(), fn
+      {{:agent, name}, ^pid} -> name
+      _ -> nil
+    end)
   end
 
   defp valid?(v, max), do: is_binary(v) and String.trim(v) != "" and byte_size(v) <= max

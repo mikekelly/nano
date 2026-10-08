@@ -33,7 +33,7 @@ defmodule Seedling.Bots.Agent do
     if pid = NanoAgent.whereis(name) do
       {:ok, pid}
     else
-      model = Nano.Settings.get("BOT_MODEL") || "openai-codex/gpt-5.4"
+      model = Map.get(bot, :model) || Nano.Settings.get("BOT_MODEL") || "openai-codex/gpt-6.1-sol"
       workspace = Path.join([Application.fetch_env!(:nano, :state_dir), "bot-workspaces", bot.id])
       File.mkdir_p!(workspace)
 
@@ -61,7 +61,7 @@ defmodule Seedling.Bots.Agent do
           reasoning: entry.default_reasoning,
           max_turns: 0,
           max_tokens: 0,
-          max_context: min(64000, entry.context_length),
+          max_context: min(Map.get(bot, :max_context) || 64000, entry.context_length),
           start_idle: true,
           system_prompt: prompt
         )
