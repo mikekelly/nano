@@ -34,6 +34,7 @@ defmodule Nano.Application do
           Nano.OpenRouter.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
+          {Seedling.Delegation.Supervisor, [restore: false]},
           {Seedling.Bots, []},
           {Seedling.Research.Pending, []},
           {Seedling.Background.Recovery, []},
@@ -56,6 +57,7 @@ defmodule Nano.Application do
       best_effort(fn ->
         Nano.StateStore.load()
         NanoAgent.revive(Nano.AgentSupervisor)
+        Seedling.Delegation.Supervisor.restore()
       end)
 
       {:ok, sup}
