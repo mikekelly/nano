@@ -44,7 +44,7 @@ defmodule Seedling.Shell.Worker do
              "--wait",
              "/bin/sh",
              "-c",
-             "printf '%s' \"$$\" > \"$1\"; exec /bin/sh -c \"$2\" >> \"$3\" 2>&1",
+             "printf '%s' \"$$\" > \"$1\" || exit 125; exec /bin/sh -c \"$2\" >> \"$3\" 2>&1",
              "seedling-shell",
              task.group_path,
              command,
@@ -161,6 +161,10 @@ defmodule Seedling.Shell.Worker do
 
   def kill_group(task, attempts \\ 20) do
     case File.read(task.group_path) do
+      {:ok, ""} when attempts > 0 ->
+        Process.sleep(10)
+        kill_group(task, attempts - 1)
+
       {:ok, pid_text} ->
         case Integer.parse(pid_text) do
           {pid, ""} when pid > 1 ->
