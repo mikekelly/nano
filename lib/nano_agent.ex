@@ -833,7 +833,8 @@ defmodule NanoAgent do
         measured_bytes: bytes(next.system_prompt, transcript)
     }
 
-    if next.context_used < estimate(s) and next.max_context - next.context_used >= @reply_room do
+    if bytes(next.system_prompt, next.transcript) < bytes(s.system_prompt, s.transcript) and
+         next.max_context - next.context_used >= @reply_room do
       if log(s, :compaction_completed, %{
            model: t.model,
            summary: summary,

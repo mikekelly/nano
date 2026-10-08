@@ -96,7 +96,106 @@ defmodule Vega.CompactionTest do
            )
   end
 
-  test "provider error retains original history and explicitly halts", c do
+  test "reset raw estimate can exceed calibrated old estimate while truly shrinking safely" do
+    model = Fake.model()
+    name = "mixed-compaction-#{System.unique_integer([:positive])}"
+    Fake.listen(model)
+
+    {:ok, pid} =
+      NanoAgent.start(
+        [name: name] ++
+          Fake.opts(model,
+            max_context: 24_000,
+            system_prompt: String.duplicate("system rule ", 450)
+          )
+      )
+
+    on_exit(fn ->
+      if live = NanoAgent.whereis(name) do
+        DynamicSupervisor.terminate_child(Nano.AgentSupervisor, live)
+        NanoAgent.kill_tasks(live)
+      end
+
+      Nano.StateStore.delete(name)
+    end)
+
+    Fake.push(model,
+      text: String.duplicate("old ", 3_500),
+      calls: [idle: nil],
+      usage: {3_500, 100, 0}
+    )
+
+    send(pid, :first)
+    req(model)
+    wait(pid, &(&1.status == :idle and &1.call_seq == 1))
+    send(pid, String.duplicate("fresh ", 1_670))
+    req(model)
+    prior = :sys.get_state(pid)
+    assert prior.status == :compacting
+    # Source's latest response measured the transcript through its assistant, not
+    # the idle result or newly arrived user. Compare growth without needing @tools.
+    measured_prefix = Enum.take(prior.transcript, 2)
+    growth = Vega.Compaction.tokens(prior.transcript) - Vega.Compaction.tokens(measured_prefix)
+    calibrated_before = prior.context_used + growth
+    Fake.push(model, text: String.duplicate("digest ", 780), usage: {4_351, 909, 0})
+    resumed = req(model)
+    assert Jason.encode!(resumed) =~ "harness automatically compacted"
+    during = :sys.get_state(pid)
+    assert during.context_used > calibrated_before
+    assert during.context_used < 24_000 - 4_096
+    # Same-basis source and replacement bytes show actual shrink even though the
+    # conservative reset exceeds the earlier provider-calibrated estimate.
+    assert Vega.Compaction.tokens(during.transcript) < Vega.Compaction.tokens(prior.transcript)
+    Fake.push(model, calls: [idle: nil])
+    final = wait(pid, &(&1.status == :idle and &1.call_seq == 2))
+    assert final.halted == nil
+  end
+
+  test "same-basis shrink still cannot bypass the final safe reply-room guard" do
+    model = Fake.model()
+    name = "unsafe-compaction-#{System.unique_integer([:positive])}"
+    Fake.listen(model)
+
+    {:ok, pid} =
+      NanoAgent.start(
+        [name: name] ++
+          Fake.opts(model,
+            max_context: 24_000,
+            system_prompt: String.duplicate("system rule ", 2_200)
+          )
+      )
+
+    on_exit(fn ->
+      if live = NanoAgent.whereis(name) do
+        DynamicSupervisor.terminate_child(Nano.AgentSupervisor, live)
+        NanoAgent.kill_tasks(live)
+      end
+
+      Nano.StateStore.delete(name)
+    end)
+
+    Fake.push(model,
+      text: String.duplicate("old ", 3_500),
+      calls: [idle: nil],
+      usage: {3_500, 100, 0}
+    )
+
+    send(pid, :first)
+    req(model)
+    wait(pid, &(&1.status == :idle and &1.call_seq == 1))
+    send(pid, String.duplicate("fresh ", 1_670))
+    req(model)
+    original = :sys.get_state(pid).transcript
+    Fake.push(model, text: String.duplicate("digest ", 780), usage: {4_351, 909, 0})
+    final = wait(pid, &(&1.halted == :compaction_failed))
+    assert final.transcript == original
+    refute_receive {:openrouter_request, ^model, _}, 100
+  end
+
+  test "provider error retains
+
+ original history and explicitly halts",
+       c do
     Fake.push(c.model,
       text: String.duplicate("old ", 2_000),
       calls: [idle: nil],

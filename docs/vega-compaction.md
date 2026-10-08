@@ -145,3 +145,19 @@ or incomplete exchange is rejected. The unchanged NanoAgent final estimate and
 request guard must still fit system prompt and installed summary: fallback does
 not guarantee a safe request or loosen any guard. Image metadata itself is never
 hydrated for summarization or described as visible to the summarizer.
+
+### Calibrated-vs-reset shrink acceptance fix
+
+Real Dot bot evidence exposed a false halt: its provider-calibrated old estimate
+was 8,619, while unmeasured old native bytes/2 were 17,643. Kept suffix+system/tools
+alone were 6,857 raw-estimate tokens. An accepted 909-completion-token summary could
+raise the conservative reset above 8,619 while still reducing actual context and
+remaining far below the safe 19,904 ceiling for its 24,000 window.
+
+Compaction acceptance now compares **replacement bytes against original bytes on
+the same native estimator basis**, not new raw tokens against an old calibrated
+estimate. The final 4,096 reply-room guard is unchanged; request estimation still
+uses provider calibration after the next response. Regression test deliberately
+constructs a safe reset larger than the old calibrated estimate and verifies
+resume rather than false halt. The original Dot failure record remains intact;
+implementation agent performed read-only diagnosis, no unhalt/load/provider call.
