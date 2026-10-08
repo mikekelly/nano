@@ -1,4 +1,4 @@
-# Seeding: delegation
+# Seeding doc: delegation
 
 ## Outcome
 

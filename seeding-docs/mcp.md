@@ -1,4 +1,4 @@
-# Seeding: MCP, and MCP events
+# Seeding doc: MCP, and MCP events
 
 ## Outcome
 

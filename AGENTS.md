@@ -8,7 +8,7 @@ shell). [README.md](README.md) says what Nano Agent is and why.
 | | |
 | --- | --- |
 | [bootstrap/SPEC.md](bootstrap/SPEC.md) | The design. Source of truth: nearly every sentence is a requirement |
-| [seedings/](seedings/README.md) | Specs for capabilities agents grow from the seed |
+| [seeding-docs/](seeding-docs/README.md) | Specs for capabilities agents grow from the seed |
 | `priv/system_prompt.txt` | The prompt template, read at every agent start |
 | `lib/nano_agent.ex` | The harness: one agent, one GenServer |
 | `lib/nano/ops.ex` | Everything an operator can do; the dashboard and API are skins over it |
@@ -42,10 +42,10 @@ curl -s 'localhost:4000/api/agents/alice/log?since=0'     # everything alice doe
 An agent sees a message as Elixir prints it, with no sender attached unless the message
 carries one; `say` includes yours.
 
-## Planting a seeding
+## Planting seeding docs
 
 Start an agent with generous limits and send it a first message that asks it to read
-`/app/seedings/guidance.md` and then the seedings to build, and to message you as things work.
+`/app/seeding-docs/guidance.md` and then the seeding docs to build, and to message you as things work.
 When the run is over: commit the clone to `seedling/<agent>-<what>` and push it, record the
 run in `RUNS.md` on the `runs` branch, and `bin/reset`.
 

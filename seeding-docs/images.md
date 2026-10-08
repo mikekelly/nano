@@ -1,4 +1,4 @@
-# Seeding: images
+# Seeding doc: images
 
 ## Outcome
 

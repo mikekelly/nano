@@ -1,4 +1,4 @@
-# Seeding: goal setting
+# Seeding doc: goal setting
 
 ## Outcome
 

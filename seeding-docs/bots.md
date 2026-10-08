@@ -1,4 +1,4 @@
-# Seeding: bots
+# Seeding doc: bots
 
 ## Outcome
 

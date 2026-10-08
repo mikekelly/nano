@@ -1,4 +1,4 @@
-# Guidance that goes with every seeding
+# Guidance that goes with every seeding doc
 
 You are building a capability for the harness you run in, from a spec. These principles
 apply to all of them. The first one is the reason the others exist.
@@ -219,5 +219,5 @@ did not work and why. The next agent starts from there.
 
 ## Related
 
-- The seedings these principles apply to: [README.md](README.md) lists them. Each links back here.
+- The seeding docs these principles apply to: [README.md](README.md) lists them. Each links back here.
 - The seed's own rules: [AGENTS.md](../AGENTS.md) (main stays minimal; seedlings never merge), [SPEC.md](../bootstrap/SPEC.md) (the thesis; simplicity).

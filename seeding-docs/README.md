@@ -1,20 +1,20 @@
-# Seedings
+# Seeding docs
 
-The vocabulary: `main` is the *seed*, the minimal harness; a *seeding* is a design spec
-planted in an agent, asking it to grow a capability the seed deliberately lacks; a *seedling*
+The vocabulary: `main` is the *seed*, the minimal harness; a *seeding doc* is a design
+spec planted in an agent, asking it to grow a capability the seed deliberately lacks; a *seedling*
 is the branch that grows (`seedling/<agent>-<what>`, never merged into `main`).
 
-Each seeding is a high-level spec for one capability of a fuller harness. It states the
+Each seeding doc is a high-level spec for one capability of a fuller harness. It states the
 **outcome** — what must be true when the work is done — then **considerations** worth
 weighing and **inspiration** worth reading, and stops there: how to get to the outcome is
-the agent's decision, and every seeding says so. The agent reads the spec from `/app`
+the agent's decision, and every seeding doc says so. The agent reads the spec from `/app`
 and builds the capability in the checkout, as modules under `/app/lib` plus whatever else
-it needs, following `guidance.md`, which goes with every seeding.
+it needs, following `guidance.md`, which goes with every seeding doc.
 
-Each seeding says why each of its parts matters, so an agent can decide what to keep, adapt
+Each seeding doc says why each of its parts matters, so an agent can decide what to keep, adapt
 or drop for its own situation.
 
-## Seedings
+## The seeding docs
 
 | File | Capability |
 | --- | --- |
@@ -29,7 +29,7 @@ or drop for its own situation.
 | [`images.md`](images.md) | See images that arrive in messages and look at image files, on models that can |
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
-Some seedings need something only the operators can supply, and say so at the top: an API
+Some seeding docs need something only the operators can supply, and say so at the top: an API
 key, which the operators supply as a node setting under its usual name (`EXA_API_KEY`). The
-node's settings (`Nano.Ops.settings/0`, or `GET /api/settings`) show which are set. Keep every seeding true of the running system: the agent
+node's settings (`Nano.Ops.settings/0`, or `GET /api/settings`) show which are set. Keep every seeding doc true of the running system: the agent
 acts on what it reads here.

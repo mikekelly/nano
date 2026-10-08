@@ -1,4 +1,4 @@
-# Seeding: search and research
+# Seeding doc: search and research
 
 Needs a key for Exa (exa.ai), which the operators may have supplied as a node setting under
 its usual name, `EXA_API_KEY`; the node's settings (`Nano.Ops.settings/0`, or

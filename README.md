@@ -88,5 +88,5 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
 | --- | --- |
 | [bootstrap/SPEC.md](bootstrap/SPEC.md) | The design in full: the agent, its prompt, limits and halts, settings, the API |
 | [AGENTS.md](AGENTS.md) | For AI agents working on this repository |
-| [seedings/](seedings/README.md) | Specs for capabilities agents can grow from the seed |
+| [seeding-docs/](seeding-docs/README.md) | Specs for capabilities agents can grow from the seed |
 | [priv/system_prompt.txt](priv/system_prompt.txt) | The system prompt template |
