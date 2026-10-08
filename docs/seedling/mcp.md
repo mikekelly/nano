@@ -277,6 +277,15 @@ assertion expected `:first` but observed `:noproc`. Repeating the complete suite
 with the same seed (982695) passed all 285; this timing-sensitive failure was
 reported, not hidden or modified by MCP.
 
+A live isolated instance on the running node was also exercised at 13:05 UTC:
+real stdio and port-0 HTTP fixtures connected, tools/resources/prompts discovered,
+echo/read/get-prompt called, subscriptions acknowledged and pushed resource
+updates delivered to stable agent `orion-mcp` as ordinary harness events. Both
+transports' request/response/progress/log/update maps appear in that agent's
+timeline. Config/default service were untouched, no modules reloaded for this
+demo, and fixture/supervisor cleanup occurred in the same eval. Local evidence
+was saved under `/tmp/orion-mcp-live-c93c3f2cc2/wire.jsonl` (ephemeral).
+
 Follow-up regressions check multi-server deferred-event release, oversized
 resource routing plus spill-failure safety, and HTTP worker cleanup on a killed
 client. HTTP fixture teardown explicitly sends identity-checked OS TERM and
