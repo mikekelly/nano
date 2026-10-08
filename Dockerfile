@@ -16,6 +16,12 @@ ENV MIX_ENV=prod \
 
 WORKDIR /app
 
+# Seedling tool dependencies: bounded file searches, process-group/file-size controls,
+# scripted protocol tests and Node-based reference MCP servers.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ripgrep util-linux python3 nodejs npm \
+ && rm -rf /var/lib/apt/lists/*
+
 # Hex and rebar, a git identity, the node's default cookie, and git's blessing for a
 # checkout mounted over /app that another uid owns.
 RUN install -d /opt/nano /data/logs /data/state \
