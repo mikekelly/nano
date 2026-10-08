@@ -39,7 +39,7 @@ defmodule Seedling.Index do
         example:
           ~s|Seedling.Goals.create(me, "Deliver capability", "Why it matters"); Seedling.Goals.review(me)|,
         detail:
-          "Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard integration forthcoming; real orchestration goals persisted for orion."
+          "Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard goal tree/front-of-mind panel active; real orchestration goals persisted for orion."
       },
       %{
         name: "Memory",
@@ -69,7 +69,7 @@ defmodule Seedling.Index do
         module: Nano.Images,
         name: "Images",
         detail:
-          "Immutable sniffed and fully decoded single-frame PNG/JPEG/GIF refs, bounded bytes/dimensions. Fresh vision agents receive actual pixels on provider wire; text-only agents get explicit warning. API POST /api/agents/:name/images {base64,text}, GET /api/images/:id and dashboard upload/timeline. Hot source integration done, router live reload forthcoming. docs/compaction-and-images.md.",
+          "Immutable sniffed and fully decoded single-frame PNG/JPEG/GIF refs, bounded bytes/dimensions. Fresh vision agents receive actual pixels on provider wire; text-only agents get explicit warning. API POST /api/agents/:name/images {base64,text}, GET /api/images/:id and dashboard upload/timeline. Live image API routes and dashboard active; actual Codex external/eval vision tests passed. docs/compaction-and-images.md.",
         example: "Nano.Images.view(\"/tmp/screenshot.png\")"
       },
       %{
@@ -102,6 +102,14 @@ defmodule Seedling.Index do
           "Durable current2026-07-28/legacy2025-11-25 stdio+HTTP JSON/SSE clients. Config priv/seedling/mcp.json, tools/resources/prompts discovery, call/read/subscribe stable-name mailbox events, bounded result_page. Supervised live startup active. docs/seedling/mcp.md lists subset/no OAuth or sampling, offline event-memory limit. Delegation optional servers gated before first turn; constructor glue pending final tests.",
         example:
           "Seedling.MCP.servers(); Seedling.MCP.connect(\"configured-server\", agent: \"orion\"); Seedling.MCP.tools(\"configured-server\")"
+      },
+      %{
+        module: Seedling.Bots,
+        name: "Consumer bots",
+        detail:
+          "Open /bots (existing endpoint, live200/assets200). Durable identity/face/logical workspace; one agent per bot/session, shared memory, group conversations, safe Markdown/downloads, thinking status. request_human(bot,question,reply_to: me), answer(id,text,session:), acknowledge(id) durable named outbox. Source tested, final demo/regressions pending; docs/bots-goals.md. Logical computers share root container, not security sandboxes.",
+        example:
+          "{:ok,b}=Seedling.Bots.create(\"Muse\", model: \"openai-codex/gpt-6.1-sol\", reasoning: \"low\", max_context: 64000); {:ok,s}=Seedling.Bots.session([b[\"id\"]]); Seedling.Bots.say(s[\"id\"], \"Hello\")"
       }
     ]
   end
