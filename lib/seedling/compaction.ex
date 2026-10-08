@@ -119,6 +119,7 @@ defmodule Seedling.Compaction do
     |> Map.put_new(:compaction, nil)
     |> Map.put_new(:compaction_summary, nil)
     |> Map.put_new(:compaction_fresh, false)
+    |> Map.put_new(:front_of_mind_compacted, false)
     |> Map.put_new_lazy(:compaction_events, fn ->
       for %{"role" => "user"} = message <- s.transcript,
           event <- recover_message_events(message),
