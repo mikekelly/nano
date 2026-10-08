@@ -45,7 +45,6 @@ defmodule Vega.BrowserQA do
     {:ok, b} =
       B.start(
         backend: :chromium,
-        node: System.get_env("VEGA_BROWSER_NODE") || "/tmp/vega-browser-tools/node",
         agent: nil,
         root: Path.join(root, "session"),
         lifetime: 90_000

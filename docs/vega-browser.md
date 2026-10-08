@@ -246,3 +246,32 @@ that Docker build was **not** run here. Current copied native image-path Node22
 reports v22.21.1, while `/usr/bin/node` stays20 for MCP. Deterministic fallback
 tests use a missing task-local path (no shared /data files moved) to verify
 image-node22 before system-node and stable-file before image.
+
+### Final live UI recheck (2026-10-08)
+
+After the parent loaded SVG glyph/privacy/credential UI fixes, the child reran
+Chromium against the live `/bots` without chat/settings mutation. Desktop1280x800
+reported3rows/14message nodes (a separate authorized peer demo was active), no
+horizontal overflow, no operator timeline. Mobile390x844 reported scrollWidth390
+and hidden sidebar inchat. Ctrl+1 still selected Muse/Dot, Escape dismissed
+recipient choices, ArrowDown+Enter opened the unsaved create form, Back returned
+to list. Notification permission UI granted/enabled, no window errors. Latest
+six artifacts: `/tmp/vega-browser-tools/qa/M_uo1oArywo/*.png`.
+
+Also verified **live library composition**, without a module reload:
+`Vega.Browser.start(backend: :chromium)` chose the durable default runtime;
+`{:ok, shot} = Vega.Browser.screenshot(b)` followed by
+`Vega.Images.view(shot.image)` successfully attached desktop and mobile PNGs
+by native immutable ref. This agent could actually inspect those final image
+attachments: custom face/icons rendered; messages/header/composer and mobile
+list/settings were clean consumer UI rather than operator/eval timeline.
+Additional direct-composition artifact copies are under
+`/tmp/vega-browser-tools/final-live-qa/UFVmt4SAIQL_/`.
+Earlier verification above did not imply visual inspection; final attachments do.
+
+The standalone QA and real-browser tests now use `node_runtime()` rather than a
+hardcoded development /tmp path, so packaged node22/durable defaults are usable
+on a fresh provisioned image. Seven focused tests passed seed882448 with runtime
+environment unset; the default-runtime live QA exited0. No live modules/settings
+were modified; disposable browser processes were stopped. Notifications checked
+permission and local fixture onshow, not OS popup/click/push/reboot delivery.

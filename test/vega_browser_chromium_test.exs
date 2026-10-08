@@ -1,7 +1,7 @@
 defmodule Vega.BrowserChromiumTest do
   use ExUnit.Case, async: true
   alias Vega.Browser
-  @node System.get_env("VEGA_BROWSER_NODE") || "/tmp/vega-browser-tools/node"
+  @node Vega.Browser.node_runtime()
   @tag skip:
          if(File.regular?(@node) and File.regular?("/usr/bin/chromium"),
            do: false,
