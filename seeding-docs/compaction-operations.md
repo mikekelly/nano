@@ -66,7 +66,19 @@ the checkpoint exists, and the exact full JSONL log path. Context measurement is
 to a fresh-prefix estimate; identity, pid, bindings, children, mailbox, budgets, disk
 files and cumulative cost remain unchanged. The next call is an uncached prefix.
 
+## Goals and front-of-mind integration
+
+`Seedling.FrontOfMind.before_call/3` runs at each ordinary model-call boundary with the
+estimated context tip and at most 2,000 characters of recent activity. Its notes append
+at the tip and measured events are logged. A completed automatic or voluntary checkpoint
+forces a re-show once on the next model call, independently of the durable token cursor.
+During automatic summary attempts this hook is frozen along with the request: re-running
+it could change the cached prefix, lose a bob, or violate unchanged retries. Provider
+transport attempts already resend the exact request inside their model task. Hook errors
+are logged as `bobbing_error`, never represented as a successful intervention.
+
 ## Operator recovery and diagnostics
+
 
 Log events: `compaction_started`, `compaction_rejected`, `compaction_completed` (including
 summary and full record path). Status stays `thinking`/`running_tool` during work.
@@ -89,7 +101,7 @@ checked once against the hard guard rather than repeatedly summarized forever.
 State is persisted in the agent's normal state file; no new global process or table is
 required. New fields are filled lazily for live older agents and at restoration:
 `compaction`, `compaction_summary`, `compaction_fresh`, `compaction_events`,
-`compaction_pending_events`, and saved `input_modalities` (legacy defaults text-only).
+`compaction_pending_events`, `front_of_mind_compacted`, and saved `input_modalities` (legacy defaults text-only).
 Old rendered user events are recovered from the transcript, excluding harness notes.
 Legacy state lacks exact child-report metadata, so those events remain external. If an
 old batched user message has images but lacks per-event metadata, all its images are
