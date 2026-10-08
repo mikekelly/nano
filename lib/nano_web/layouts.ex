@@ -16,6 +16,8 @@ defmodule NanoWeb.Layouts do
         <meta name="csrf-token" content={Plug.CSRFProtection.get_csrf_token()} />
         <.live_title>{assigns[:page_title] || "nano"}</.live_title>
         <link rel="stylesheet" href="/app.css" />
+        <script defer src="/bots.js">
+        </script>
         <script defer src="/assets/phoenix/phoenix.min.js">
         </script>
         <script defer src="/assets/phoenix_live_view/phoenix_live_view.min.js">

@@ -27,6 +27,8 @@ defmodule Nano.Application do
           # The node's settings; its init cannot fail either.
           Nano.Settings,
           Nano.StateStore,
+          Seedling.Delegation.Manager,
+          Seedling.Bots,
           {Task.Supervisor, name: Nano.EvalSupervisor},
           # Holds the ChatGPT subscription's tokens; its init cannot fail, so it cannot stop the boot.
           Nano.ChatGPT.Auth,
