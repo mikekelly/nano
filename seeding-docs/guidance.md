@@ -260,8 +260,18 @@ between them, not run-together shorthand or names only you coined. A channel rea
 models drifts towards what is cheapest for models, and once your own messages are in your
 context you will tend to copy their style, so a slide into shorthand feeds on itself.
 
-**Record what you learn.** Add to `/app/NOTES.md`: what you built, how to call it, what
-did not work and why. The next agent starts from there.
+**Let the code explain itself.** Prefer self-descriptive code (names that say what things
+do, small functions with clear return shapes) and tests that pin down behaviour over
+comments, and prefer comments, `@moduledoc` and `@doc` over separate Markdown. Tests fail
+when behaviour changes, so they cannot drift; a comment sits where the code is changed, so
+whoever changes it sees it; a separate document drifts silently, and agents act on what they
+read. In Elixir, the docs in a module are also queryable from the running node
+(`Code.fetch_docs/1`, or `h/1` in a shell), so an agent can find out how to call something
+from `eval` without knowing which file to open.
+
+**Record what you learn.** Keep `/app/NOTES.md` a short index: what exists, where, one
+example each, and what did not work and why. The detail lives in the code, its docs and its
+tests, which the index points to. The next agent starts from there.
 
 ## Related
 
