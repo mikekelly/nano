@@ -130,6 +130,13 @@ defmodule Seedling.ImageWireTest do
     assert raw =~ "caption"
   end
 
+  test "raw log redaction handles JSON's escaped slashes without leaking a base64 suffix" do
+    body = ~S|{"image_url":"data:image\/png;base64,AAA\/BBBB==","text":"keep this"}|
+    redacted = Seedling.Images.Wire.redact(body)
+    assert redacted == ~S|{"image_url":"[image data omitted]","text":"keep this"}|
+    refute redacted =~ "BBBB"
+  end
+
   defp call(id),
     do: %{
       "id" => id,
