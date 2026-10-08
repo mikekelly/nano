@@ -34,6 +34,7 @@ defmodule Nano.Application do
           Nano.OpenRouter.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
+          {Seedling.Background.Recovery, []},
           NanoWeb.Endpoint
         ],
         &retrying/1
