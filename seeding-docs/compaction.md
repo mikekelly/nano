@@ -45,25 +45,30 @@ ways to get one, with different trade-offs; choose for your situation, and say w
   file the agent read is cut too, so the summary should say where things are (pi lists the
   files read and modified) for the agent to read again; and the summariser never sees the
   model's own reasoning, which only the next shape keeps in view.
-- **At the tip of the cached conversation.** A compaction instruction is appended to the
-  agent's conversation as it is, and the model's reply is the summary. The Codex backend's
-  own compaction works this way, from a trigger item at the end of the conversation
-  (github.com/openai/codex, `codex-rs/core/src/compact_remote_v2.rs`). What it buys: the
-  conversation is already cached from the agent's last call, so reading it is nearly free
-  and only the summary is paid for in full; nothing is re-serialised, so the input is
-  exactly what the provider measured; and the summary is written with everything in view,
-  including the model's carried reasoning. What it needs: room at the tip for the
-  instruction and the summary, which the reserve provides; the same model, since a cache
-  does not carry over to another; and keeping the model to summarising, since it is still
-  the agent, with its own system prompt and tools. The summary can come back through the
-  tool the agent already has: ask it to call a function such as
-  `Compaction.provide_summary(text)` from `eval`, and accept the reply only if its code is
-  exactly that one call with a string, taking the summary from it without running anything
-  else (an agent mid-compaction should not get to run other code). The tools stay as they
-  were, so the cached prefix holds (adding or removing a tool changes it). Providers cache by
-  prefix, and the harness holds the conversation, so a reply that is not a summary is simply
-  not kept: send the same request again, perhaps more firmly, and the whole history is read
-  from the cache again; only the instruction and the new reply cost anything.
+- **At the tip of the cached conversation.** The harness appends a note of its own at the
+  end of the agent's conversation, as it delivers any note, and the model's reply carries
+  the summary. The Codex backend's own compaction works this way, from a trigger item at the
+  end of the conversation (github.com/openai/codex, `codex-rs/core/src/compact_remote_v2.rs`).
+  The note says what is happening and what is needed, plainly enough that it is not
+  mistaken for anything else: the context limit is near, automatic compaction is starting,
+  do not ignore this; call a function such as `Compaction.provide_summary(text)` from `eval`
+  with a summary of a stated shape (the checkpoint format below), and why: everything above
+  will be replaced by it. The harness accepts the reply only if its code is exactly that one
+  call with a string, and takes the summary from it without running anything else (an agent
+  mid-compaction should not run other code). Anything else is not kept: the harness sends
+  the same request again, unchanged, up to a set number of times, and then gives up and
+  says so. A retry is cheap: providers cache by prefix, the harness holds the
+  conversation, and the tools stay as they were (adding or removing one changes the cached
+  prefix), so the whole history is read from the cache and only the note and the new reply
+  cost anything. What this shape buys: nearly free reading; nothing re-serialised, so the
+  input is exactly what the provider measured; and the summary written with everything in
+  view, including the model's carried reasoning. What it needs: room at the tip for the note
+  and the summary, which the reserve provides; and the same model, since a cache does not
+  carry over to another.
+
+  The same function is how an agent compacts **voluntarily**: it calls it from `eval` with
+  its own summary whenever it judges the moment right (between tasks, say), and no note is
+  needed.
 
 Either way:
 
