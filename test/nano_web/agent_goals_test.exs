@@ -30,6 +30,46 @@ defmodule NanoWeb.AgentGoalsTest do
     assert has_element?(view, "#timeline", "bobbing config")
   end
 
+  test "event, paired eval result and orphan tool result attachments render in both timeline modes" do
+    Nano.FakeOpenRouter.start()
+    model = Nano.FakeOpenRouter.model()
+    Nano.FakeOpenRouter.listen(model)
+    name = "image-timeline-" <> Base.encode16(:crypto.strong_rand_bytes(8))
+    {:ok, _} = Nano.Ops.start_agent(name, Nano.FakeOpenRouter.opts(model, start_idle: true))
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+    agent = Nano.Ops.agent(name)
+    ref = %{"id" => String.duplicate("a", 64), "width" => 1, "height" => 1}
+    Nano.Log.write(agent, :event_received, %{message: "image", event_seq: 1, images: [ref]})
+
+    Nano.Log.write(agent, :tool_call, %{
+      call_id: "paired",
+      call_seq: 1,
+      name: "eval",
+      arguments: %{code: "image"}
+    })
+
+    Nano.Log.write(agent, :tool_result, %{
+      call_id: "paired",
+      ok: true,
+      result: "image result",
+      images: [ref]
+    })
+
+    Nano.Log.write(agent, :tool_result, %{
+      call_id: "orphan",
+      ok: true,
+      result: "orphan image",
+      images: [ref]
+    })
+
+    for suffix <- ["", "?view=debug"] do
+      {:ok, view, _} = live(build_conn(), "/agents/#{name}" <> suffix)
+      assert has_element?(view, "#timeline img[src='/api/images/#{ref["id"]}']")
+      html = view |> element("#timeline") |> render()
+      assert length(String.split(html, "alt=\"Attached image\"")) - 1 == 3
+    end
+  end
+
   test "agent page shows open goals and why and refreshes status" do
     name = "goals-ui-" <> Base.encode16(:crypto.strong_rand_bytes(8))
 
