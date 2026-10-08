@@ -83,10 +83,10 @@ defmodule NanoAgent do
                 "name must be letters, digits, _ . or - (it is how the agent is addressed), " <>
                   "not #{inspect(name)}"}
            ),
-         {:ok, entry} <- Nano.Model.check(opts[:model], opts[:reasoning], opts[:max_context]),
          :ok <- limit_option(opts, :max_turns, "the number of model calls"),
          :ok <- limit_option(opts, :max_tokens, "prompt and completion tokens, summed"),
          :ok <- other_options(opts),
+         {:ok, entry} <- Nano.Model.check(opts[:model], opts[:reasoning], opts[:max_context]),
          {:ok, template, file} <- template(opts) do
       more = [
         id: new_id(name),

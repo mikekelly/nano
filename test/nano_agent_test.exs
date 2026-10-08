@@ -2514,4 +2514,20 @@ defmodule NanoAgentTest do
     assert_in_delta state.cost, 0.003, 0.000001
     refute_receive {:openrouter_request, _, _}, 50
   end
+
+  test "locally malformed budgets and options are refused before model catalog lookup" do
+    opts = [
+      name: "local-validation",
+      model: "fake/unknown",
+      reasoning: "off",
+      max_context: 1000,
+      max_turns: 10,
+      max_tokens: 1000
+    ]
+
+    for {key, value} <- [max_turns: "1", max_tokens: "100", start_idle: "false", system_prompt: 1] do
+      assert {:error, message} = NanoAgent.start(Keyword.put(opts, key, value))
+      assert String.starts_with?(message, "#{key} must be")
+    end
+  end
 end
