@@ -21,3 +21,16 @@ No automatic review hook, reparent/delete, or inherited parent completion.
 
 `Seedling.Index.generate(root: "/app")` atomically writes `NOTES.md` from sorted
 `docs/seedling-*.md`; `render/1` previews. Regeneration is explicit, not a boot hook.
+
+### Search hardening
+
+`Seedling.Files.find(glob)` now uses gitignore-aware `rg --files --hidden` and
+excludes `.git`; `grep(pattern, path, limit: 100, bytes: 16000, timeout: 5000)`
+streams output through a port, stops globally on the cap, and closes the subprocess.
+`literal:`, `ignore_case:`, `glob:` supported. No matches yields status 1; regex or
+filesystem errors yield `{:error, %{status: ..., text: ...}}`. Capped status is nil
+because the subprocess was stopped before natural exit. Both functions advertise
+`truncated`; grep also gives a notice. Requires ripgrep. Find glob prefix sets the
+search directory; existing path-shaped glob API retained. Ignore files follow
+ripgrep semantics (gitignore applies in a repository). Reads/search never mutate
+node settings. Files' original read/write/edit/ls functions unchanged.

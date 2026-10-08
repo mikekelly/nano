@@ -65,33 +65,135 @@ defmodule Seedling.Files do
     end
   end
 
+  @doc "Gitignore-aware glob search via rg. Hidden files included, .git excluded."
   def find(glob, opts \\ []) do
-    paths = Path.wildcard(glob, match_dot: true)
+    parts = Path.split(glob)
+    prefix = Enum.take_while(parts, &(not String.contains?(&1, ["*", "?", "[", "{"])))
+    prefix = if length(prefix) == length(parts), do: Enum.drop(prefix, -1), else: prefix
+    base = if prefix == [], do: ".", else: Path.join(prefix)
+    pattern = parts |> Enum.drop(length(prefix)) |> Path.join()
     limit = Keyword.get(opts, :limit, 1000)
-    {:ok, %{paths: Enum.take(paths, limit), truncated: length(paths) > limit}}
+
+    with {:ok, result} <-
+           rg(
+             ["--files", "--hidden", "-g", "!.git", "-g", pattern, "."],
+             base,
+             limit,
+             Keyword.put(opts, :line_bytes, 4096)
+           ) do
+      paths =
+        result.text
+        |> String.split("\n", trim: true)
+        |> Enum.map(fn p ->
+          p = String.trim_leading(p, "./")
+          if base == ".", do: p, else: Path.join(base, p)
+        end)
+
+      {:ok, %{paths: paths, truncated: result.truncated}}
+    end
   end
 
+  @doc "Globally bounded streaming matches, not rg's per-file --max-count."
   def grep(pattern, path \\ "/app", opts \\ []) do
     args =
-      ["--hidden", "-n", "--max-count", to_string(Keyword.get(opts, :limit, 100))] ++
-        if(Keyword.get(opts, :literal, false), do: ["-F"], else: []) ++ [pattern, path]
+      ["--hidden", "--color", "never", "-n", "-g", "!.git"] ++
+        if(Keyword.get(opts, :literal, false), do: ["-F"], else: []) ++
+        if(Keyword.get(opts, :ignore_case, false), do: ["-i"], else: []) ++
+        case Keyword.get(opts, :glob) do
+          nil -> []
+          glob -> ["-g", glob]
+        end ++ ["--", pattern, path]
 
-    try do
-      {out, status} = System.cmd("rg", args, stderr_to_stdout: true)
+    rg(args, Keyword.get(opts, :cwd, "."), Keyword.get(opts, :limit, 100), opts)
+  end
 
-      {:ok,
-       %{
-         text:
-           out
-           |> String.split("\n")
-           |> Enum.take(Keyword.get(opts, :limit, 100))
-           |> Enum.map(&String.slice(&1, 0, 500))
-           |> Enum.join("\n"),
-         status: status,
-         notice: "Capped matches and lines; refine or use read/2"
-       }}
-    rescue
-      e -> {:error, Exception.message(e)}
+  defp rg(args, cwd, limit, opts) when is_integer(limit) and limit > 0 do
+    case System.find_executable("rg") do
+      nil ->
+        {:error, "rg executable missing; install ripgrep"}
+
+      exe ->
+        cap = Keyword.get(opts, :bytes, 16_000)
+        timeout = Keyword.get(opts, :timeout, 5000)
+
+        port =
+          Port.open({:spawn_executable, exe}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            {:args, args},
+            {:cd, Path.expand(cwd)}
+          ])
+
+        deadline = System.monotonic_time(:millisecond) + timeout
+
+        try do
+          collect(port, "", limit, cap, deadline, Keyword.get(opts, :line_bytes, 500))
+        after
+          if Port.info(port), do: Port.close(port)
+        end
     end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp rg(_, _, _, _), do: {:error, "limit must be a positive integer"}
+
+  defp collect(port, acc, limit, cap, deadline, line_cap) do
+    receive do
+      {^port, {:data, data}} ->
+        next = acc <> data
+        count = length(:binary.matches(next, "\n"))
+
+        if byte_size(next) > cap or count > limit do
+          finish(binary_part(next, 0, min(byte_size(next), cap)), nil, true, limit, line_cap)
+        else
+          collect(port, next, limit, cap, deadline, line_cap)
+        end
+
+      {^port, {:exit_status, status}} ->
+        if status in [0, 1],
+          do: finish(acc, status, false, limit, line_cap),
+          else: {:error, %{status: status, text: acc}}
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) ->
+        {:error, %{reason: :timeout, text: acc}}
+    end
+  end
+
+  defp finish(text, status, truncated, limit, line_cap) do
+    text =
+      if truncated and line_cap > 500 and not String.ends_with?(text, "\n") do
+        case :binary.matches(text, "\n") |> List.last() do
+          nil -> ""
+          {at, _} -> binary_part(text, 0, at + 1)
+        end
+      else
+        text
+      end
+
+    lines = String.split(text, "\n", trim: true)
+
+    long = Enum.any?(lines, &(byte_size(&1) > line_cap))
+    kept = lines |> Enum.take(limit) |> Enum.map(&safe_prefix(&1, line_cap)) |> Enum.join("\n")
+
+    {:ok,
+     %{
+       text: kept,
+       status: status,
+       truncated: truncated or long,
+       notice:
+         if(truncated or long,
+           do:
+             "Output capped globally (matches, bytes or line-length limit); refine search or raise limit/bytes and read matching files",
+           else: nil
+         )
+     }}
+  end
+
+  defp safe_prefix(text, cap) do
+    # Binary truncation may split UTF-8; scrub incomplete/invalid sequences.
+    prefix = binary_part(text, 0, min(byte_size(text), cap))
+    prefix |> String.chunk(:valid) |> Enum.filter(&String.valid?/1) |> Enum.join()
   end
 end
