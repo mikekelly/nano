@@ -20,7 +20,17 @@ defmodule WorkspaceTest do
     assert {:error, _} = Workspace.edit(path, "c", "c")
     assert {:error, _} = Workspace.edit(path, "missing", "c")
     assert {:error, _} = Workspace.read(path, offset: 20)
-    assert {:error, _} = Workspace.read(path, bytes: 1)
+    assert {:ok, "a\n[Showing" <> _} = Workspace.read(path, bytes: 1)
+  end
+
+  test "exact byte caps account only for returned line separators", %{dir: dir} do
+    path = Path.join(dir, "exact-cap")
+    File.write!(path, "abc")
+    assert {:ok, "abc"} = Workspace.read(path, bytes: 3)
+    assert {:error, _} = Workspace.read(path, bytes: 2)
+    File.write!(path, "abc\ndef\n")
+    assert {:ok, "abc\ndef"} = Workspace.read(path, bytes: 7)
+    assert {:ok, "abc\n[Showing" <> _} = Workspace.read(path, bytes: 6)
   end
 
   test "streamed pages count actual lines and byte cuts give the next offset", %{dir: dir} do
