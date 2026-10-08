@@ -85,6 +85,22 @@ defmodule NanoWeb.AgentGoalsTest do
     end
   end
 
+  test "a pre-reload socket missing goals renders safely before its next sync" do
+    name = "legacy-goals-" <> Base.encode16(:crypto.strong_rand_bytes(8))
+    {:ok, view, _} = live(build_conn(), "/agents/#{name}")
+    %{socket: socket} = :sys.get_state(view.pid)
+    legacy_assigns = Map.delete(socket.assigns, :goals)
+    # Render exactly the assigns held by a pre-feature mounted LiveView.
+    rendered = NanoWeb.AgentLive.render(legacy_assigns)
+    assert %Phoenix.LiveView.Rendered{} = rendered
+    html = rendered |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()
+    assert html =~ "agent-goals"
+    # A normal socket retains its already loaded snapshot instead of replacing it.
+    {:ok, _} = Seedling.Goals.create(name, title: "Still visible", why: "Unchanged assigns")
+    send(view.pid, :refresh)
+    assert has_element?(view, "#agent-goals", "Still visible")
+  end
+
   test "agent page shows open goals and why and refreshes status" do
     name = "goals-ui-" <> Base.encode16(:crypto.strong_rand_bytes(8))
 

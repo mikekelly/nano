@@ -181,6 +181,9 @@ defmodule NanoWeb.AgentLive do
   defp present?(value), do: value not in [nil, ""]
 
   def render(assigns) do
+    # A socket mounted before a code reload gains this assign at its next sync.
+    assigns = assign_new(assigns, :goals, fn -> Seedling.Goals.dashboard(assigns.name) end)
+
     ~H"""
     <header class="top">
       <h1><.link navigate="/">nano</.link> / {@name}</h1>
