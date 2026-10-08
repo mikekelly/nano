@@ -182,6 +182,36 @@ defmodule Seedling.DelegationTest do
     assert summary =~ "no live process"
   end
 
+  test "constructor death terminates half-setup child and reports a durable error", c do
+    assert {:ok, child} = D.subagent(c.name, c.opts)
+
+    constructor =
+      spawn(fn ->
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    D.SetupGuard.start(constructor, c.name, child.id)
+    Process.exit(constructor, :kill)
+    assert_receive %{type: :delegation, status: :error, summary: summary}, 2000
+    assert summary =~ "constructor exited during setup"
+    wait(fn -> NanoAgent.whereis(c.name) == nil end)
+    assert D.result(c.name).status == :error
+  end
+
+  test "setup guard releases on success and does not kill a replacement job", c do
+    assert {:ok, child} = D.subagent(c.name, c.opts)
+    assert :ok = D.SetupGuard.run(c.name, child.id, [], [], fn -> :ok end)
+    assert Process.alive?(child.pid)
+    DynamicSupervisor.terminate_child(Nano.AgentSupervisor, child.pid)
+    assert {:ok, replacement} = D.subagent(c.name, c.opts)
+    assert NanoAgent.info(c.name).id != child.id
+    D.SetupGuard.fail(c.name, child.id, [], [], "old setup failed")
+    assert Process.alive?(replacement.pid)
+    assert D.result(c.name) == nil
+  end
+
   defp wait(fun, attempts \\ 100)
 
   defp wait(fun, n) when n > 0 do
