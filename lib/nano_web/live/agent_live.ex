@@ -12,7 +12,7 @@ defmodule NanoWeb.AgentLive do
   Open goals are read from `Goals.open/2` on refresh, capped at 20 entries, independently
   of the agent process. Stopped owners retain their panel; failed reads are explicit.
   `goals_panel/1` renders a snapshot, and `refresh_goals/2` accepts a Memory `root:`
-  for isolated callers/tests (the dashboard uses the default `/data/memory`).
+  for isolated callers/tests (the dashboard uses `Memory.default_root/0`).
 
   Two views of the same entries: the reading view (default) tells the story — events, the
   model's text, each tool call with its result, restarts, halts — and leaves out the plumbing;
@@ -355,7 +355,6 @@ defmodule NanoWeb.AgentLive do
   end
 
   # Read with budget[key]: state saved before a limit existed lacks its keys.
-
   defp limits do
     [
       {"turns", :turns_used, :max_turns},
