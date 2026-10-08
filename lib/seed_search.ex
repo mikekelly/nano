@@ -13,7 +13,7 @@ defmodule SeedSearch do
   and answers are stored in SeedWeb's cache and return bounded slices. Search/contents
   lists stop at a 16 KB aggregate budget and announce `truncated`; `content_id`
   (search) or `content_ids` (contents) let SeedWeb.read retrieve everything. Research
-  immediately returns a local job pid; later the caller receives
+  immediately returns a local job pid; later the owning agent receives
   `{:seed_search, job_pid, :completed | :error, result}`. Results include provider
   run id and a cached JSON slice with citations/output intact. Polling has a deadline;
   `resume(id)` watches an existing run after caller restart, `cancel(id)` cancels it
@@ -136,12 +136,27 @@ defmodule SeedSearch do
          do: {:ok, page}
   end
 
-  @doc "Start research without waiting in eval. Notification goes to caller or notify: pid."
+  @doc """
+  Start research without waiting in eval. Notification defaults to the FIRST pid in
+  `Process.get(:\"$callers\", [])`, the owning agent in Nano eval tasks, falling back
+  to `self()` outside a task. `notify: pid` overrides that default. `owner: \"name\"`
+  takes precedence and resolves NanoAgent.whereis/1 anew for EVERY event, allowing
+  restarted named agents to receive later events. An absent named owner does not
+  crash the job; inspect jobs/1 or job/2 to recover missed events.
+
+  Run ID/latest status/result-cache ID are atomically saved BEFORE events to
+  `/data/seed-search/research-jobs`. `job_dir:` overrides this; with an explicit
+  `cache_dir:` the default is its `research-jobs` subdirectory (isolated tests).
+  Disk availability is checked before creating a billed run. Only metadata is
+  stored, never queries, credentials, or full results. The watcher does not survive
+  VM restart: jobs() finds runs and resume(id) reattaches without starting a new run.
+  """
+
   def research(query, opts \\ []) do
     if is_binary(query) and String.trim(query) != "" do
-      with :ok <- credentials(opts), true <- is_pid(Keyword.get(opts, :notify, self())) do
-        notify = Keyword.get(opts, :notify, self())
-
+      with :ok <- credentials(opts),
+           {:ok, notify} <- notification_target(opts),
+           :ok <- prepare_jobs(opts) do
         pid =
           spawn(fn ->
             params =
@@ -153,14 +168,18 @@ defmodule SeedSearch do
 
             case api(:post, "/agent/runs", params, opts) do
               {:ok, %{"id" => id}} ->
-                send(notify, {:seed_search, self(), :started, %{run_id: id}})
-                poll(id, notify, deadline(opts), opts)
+                if valid_run_id(id) == :ok do
+                  save_and_emit(notify, id, "queued", :started, %{run_id: id}, opts)
+                  poll(id, notify, deadline(opts), opts)
+                else
+                  emit(notify, :error, {:error, :invalid_provider_response})
+                end
 
               {:error, _} = error ->
-                send(notify, {:seed_search, self(), :error, error})
+                emit(notify, :error, error)
 
               _ ->
-                send(notify, {:seed_search, self(), :error, {:error, :invalid_provider_response}})
+                emit(notify, :error, {:error, :invalid_provider_response})
             end
           end)
 
@@ -174,11 +193,12 @@ defmodule SeedSearch do
     end
   end
 
+  @doc "Watch an existing provider run. Routing and durable state defaults match research/2."
   def resume(id, opts \\ []) do
     with :ok <- valid_run_id(id),
          :ok <- credentials(opts),
-         true <- is_pid(Keyword.get(opts, :notify, self())) do
-      notify = Keyword.get(opts, :notify, self())
+         {:ok, notify} <- notification_target(opts),
+         :ok <- prepare_jobs(opts) do
       {:ok, %{pid: spawn(fn -> poll(id, notify, deadline(opts), opts) end), run_id: id}}
     else
       false -> {:error, :invalid_notify_pid}
@@ -192,7 +212,14 @@ defmodule SeedSearch do
 
   defp poll(id, notify, deadline, opts) do
     if System.monotonic_time(:millisecond) >= deadline do
-      send(notify, {:seed_search, self(), :error, %{reason: :research_timeout, run_id: id}})
+      save_and_emit(
+        notify,
+        id,
+        "watch_timeout",
+        :error,
+        %{reason: :research_timeout, run_id: id},
+        opts
+      )
     else
       case api(:get, "/agent/runs/#{id}", nil, opts) do
         {:ok, %{"status" => status} = data} when status in ["completed", "failed", "cancelled"] ->
@@ -202,24 +229,149 @@ defmodule SeedSearch do
                  do: %{run_id: id, status: status, page: page}
 
           event = if status == "completed", do: :completed, else: :error
-          send(notify, {:seed_search, self(), event, result})
+          save_and_emit(notify, id, status, event, result, opts)
 
         {:ok, %{"status" => status}} when status in ["queued", "running"] ->
           Process.sleep(max(Keyword.get(opts, :poll_interval, 5000), 1))
           poll(id, notify, deadline, opts)
 
         {:error, _} = error ->
-          send(notify, {:seed_search, self(), :error, %{run_id: id, reason: error}})
+          save_and_emit(notify, id, "watch_error", :error, %{run_id: id, reason: error}, opts)
 
         _ ->
-          send(
+          save_and_emit(
             notify,
-            {:seed_search, self(), :error, %{run_id: id, reason: :invalid_provider_response}}
+            id,
+            "watch_error",
+            :error,
+            %{run_id: id, reason: :invalid_provider_response},
+            opts
           )
       end
     end
   rescue
-    _ -> send(notify, {:seed_search, self(), :error, %{run_id: id, reason: :watcher_failed}})
+    _ -> emit(notify, :error, %{run_id: id, reason: :watcher_failed})
+  end
+
+  @doc "Read a durable run record (string-keyed JSON map), without a network request."
+  def job(id, opts \\ []) do
+    with :ok <- valid_run_id(id),
+         {:ok, text} <- File.read(job_path(id, opts)),
+         {:ok, record} <- Jason.decode(text),
+         true <- is_map(record),
+         do: {:ok, record}
+  rescue
+    _ -> {:error, :invalid_job_record}
+  end
+
+  @doc "List up to 50 durable run summaries (maximum limit 100); truncation is explicit."
+  def jobs(opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+
+    if is_integer(limit) and limit in 1..100 do
+      files = Path.wildcard(Path.join(job_dir(opts), "*.json"))
+
+      records =
+        files
+        |> Enum.sort_by(
+          fn file ->
+            case File.stat(file, time: :posix) do
+              {:ok, stat} -> stat.mtime
+              _ -> 0
+            end
+          end,
+          :desc
+        )
+        |> Enum.take(limit)
+        |> Enum.flat_map(fn file ->
+          with {:ok, text} <- File.read(file),
+               {:ok, record} <- Jason.decode(text),
+               true <- is_map(record) do
+            [Map.take(record, ["run_id", "status", "updated_at", "content_id", "owner"])]
+          else
+            _ -> []
+          end
+        end)
+
+      selected = bounded_rows(records)
+      {:ok, %{jobs: selected, truncated: length(files) > length(selected)}}
+    else
+      {:error, :invalid_job_limit}
+    end
+  end
+
+  defp notification_target(opts) do
+    cond do
+      Keyword.has_key?(opts, :owner) ->
+        case opts[:owner] do
+          name when is_binary(name) and byte_size(name) in 1..200 -> {:ok, {:agent, name}}
+          _ -> {:error, :invalid_owner_name}
+        end
+
+      true ->
+        default =
+          case Process.get(:"$callers", []) do
+            [pid | _] when is_pid(pid) -> pid
+            _ -> self()
+          end
+
+        case Keyword.get(opts, :notify, default) do
+          pid when is_pid(pid) -> {:ok, {:pid, pid}}
+          _ -> {:error, :invalid_notify_pid}
+        end
+    end
+  end
+
+  defp emit({:pid, pid}, event, result), do: send(pid, {:seed_search, self(), event, result})
+
+  defp emit({:agent, name}, event, result) do
+    if pid = NanoAgent.whereis(name), do: send(pid, {:seed_search, self(), event, result})
+    :ok
+  end
+
+  defp job_dir(opts) do
+    Keyword.get(opts, :job_dir) ||
+      if(opts[:cache_dir],
+        do: Path.join(opts[:cache_dir], "research-jobs"),
+        else: "/data/seed-search/research-jobs"
+      )
+  end
+
+  defp job_path(id, opts),
+    do:
+      Path.join(job_dir(opts), Base.encode16(:crypto.hash(:sha256, id), case: :lower) <> ".json")
+
+  defp prepare_jobs(opts) do
+    dir = job_dir(opts)
+    probe = Path.join(dir, ".probe-#{System.unique_integer([:positive])}")
+    with :ok <- File.mkdir_p(dir), :ok <- File.write(probe, ""), :ok <- File.rm(probe), do: :ok
+  rescue
+    _ -> {:error, :job_state_unavailable}
+  end
+
+  defp save_and_emit(target, id, status, event, result, opts) do
+    record = %{run_id: id, status: status, updated_at: System.system_time(:second)}
+
+    record =
+      case target do
+        {:agent, name} -> Map.put(record, :owner, name)
+        _ -> record
+      end
+
+    record =
+      case result do
+        %{page: %{id: cache_id}} -> Map.put(record, :content_id, cache_id)
+        _ -> record
+      end
+
+    path = job_path(id, opts)
+    tmp = path <> ".#{System.unique_integer([:positive])}"
+
+    saved =
+      with :ok <- File.write(tmp, Jason.encode!(record)), :ok <- File.rename(tmp, path), do: :ok
+
+    if saved != :ok, do: emit(target, :error, %{reason: :job_state_write_failed, run_id: id})
+    emit(target, event, result)
   end
 
   defp deadline(opts),

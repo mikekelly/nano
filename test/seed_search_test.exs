@@ -55,6 +55,10 @@ defmodule SeedSearchTest do
             output: %{content: "done", citations: [%{url: "https://example.com"}]}
           })
 
+        "/agent/runs/agent_run_delayed" ->
+          Process.sleep(150)
+          json(conn, %{id: "agent_run_delayed", status: "completed", output: %{content: "done"}})
+
         "/agent/runs/agent_run_wait" ->
           json(conn, %{id: "agent_run_wait", status: "running"})
 
@@ -186,5 +190,95 @@ defmodule SeedSearchTest do
     assert {:ok, full} = SeedWeb.read(result.content_id, opts)
     assert full.truncated
     assert full.text =~ "must not appear"
+  end
+
+  test "default owner outlives launching eval task for research and resume", %{opts: opts} do
+    parent = self()
+
+    launcher =
+      spawn(fn ->
+        Process.put(:"$callers", [parent])
+        result = SeedSearch.research("question", opts)
+        send(parent, {:launched, self(), result})
+      end)
+
+    assert_receive {:launched, ^launcher, {:ok, %{pid: job_pid}}}, 2000
+    ref = Process.monitor(launcher)
+    assert_receive {:DOWN, ^ref, :process, ^launcher, _}, 2000
+    assert_receive {:seed_search, ^job_pid, :started, %{run_id: "agent_run_test"}}, 2000
+    assert_receive {:seed_search, ^job_pid, :completed, _}, 2000
+    assert {:ok, record} = SeedSearch.job("agent_run_test", opts)
+    assert record["status"] == "completed"
+    assert is_binary(record["content_id"])
+    assert {:ok, %{jobs: [stored]}} = SeedSearch.jobs(opts)
+    assert stored["run_id"] == "agent_run_test"
+    assert {:error, :invalid_job_limit} = SeedSearch.jobs(opts ++ [limit: 0])
+
+    spawn(fn ->
+      Process.put(:"$callers", [parent])
+      send(parent, {:resumed, SeedSearch.resume("agent_run_delayed", opts)})
+    end)
+
+    assert_receive {:resumed, {:ok, %{pid: resumed_pid}}}, 2000
+    assert_receive {:seed_search, ^resumed_pid, :completed, _}, 2000
+  end
+
+  test "named owner resolves at event time, including after replacement", %{opts: opts} do
+    parent = self()
+    name = "seed-search-owner-#{System.unique_integer([:positive])}"
+
+    first =
+      spawn(fn ->
+        receive do
+          event -> send(parent, {:first_owner, event})
+        end
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    second =
+      spawn(fn ->
+        receive do
+          event -> send(parent, {:second_owner, event})
+        end
+      end)
+
+    assert :yes = Nano.Names.register_name({:agent, name}, first)
+
+    on_exit(fn ->
+      Nano.Names.unregister_name({:agent, name})
+      Process.exit(first, :kill)
+      Process.exit(second, :kill)
+    end)
+
+    # No new provider task: resume an existing fake run and replace owner while poll waits.
+    {:ok, %{pid: pid}} = SeedSearch.resume("agent_run_delayed", opts ++ [owner: name])
+    Nano.Names.unregister_name({:agent, name})
+    assert :yes = Nano.Names.register_name({:agent, name}, second)
+    send(first, :stop)
+    assert_receive {:second_owner, {:seed_search, ^pid, :completed, _}}, 2000
+    refute_receive {:first_owner, {:seed_search, ^pid, _, _}}, 20
+    assert {:ok, %{"owner" => ^name}} = SeedSearch.job("agent_run_delayed", opts)
+  end
+
+  test "missing named owner still leaves durable result and credentials are not recorded", %{
+    opts: opts
+  } do
+    {:ok, %{pid: pid}} =
+      SeedSearch.resume(
+        "agent_run_test",
+        opts ++ [owner: "missing-#{System.unique_integer([:positive])}"]
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2000
+    assert {:ok, record} = SeedSearch.job("agent_run_test", opts)
+    refute Jason.encode!(record) =~ "fake-test-key"
+    assert record["status"] == "completed"
+    blocked = Path.join(opts[:cache_dir], "blocked")
+    File.write!(blocked, "not a directory")
+    assert {:error, _} = SeedSearch.research("question", opts ++ [job_dir: blocked])
   end
 end
