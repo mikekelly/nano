@@ -164,6 +164,55 @@ defmodule SeedMCPTest do
     assert SeedMCP.handles(owner) == %{}
   end
 
+  test "bootstrap event recipient gates first child turn without changing persistence", %{
+    opts: opts,
+    dir: dir
+  } do
+    parent = self()
+    owner = "mcp-gated-#{System.unique_integer([:positive])}"
+
+    child =
+      spawn(fn ->
+        loop = fn loop ->
+          receive do
+            message ->
+              send(parent, {:child_received, message})
+              loop.(loop)
+          end
+        end
+
+        loop.(loop)
+      end)
+
+    assert :yes = Nano.Names.register_name({:agent, owner}, child)
+
+    on_exit(fn ->
+      Process.exit(child, :kill)
+      SeedMCP.Runtime.stop_for(owner)
+    end)
+
+    spec = opts[:server] |> Map.put("name", "gated") |> Map.put("protocolVersion", "2025-11-25")
+
+    assert {:ok, %{"gated" => via}} =
+             SeedMCP.start_for(owner, [spec], state_dir: dir, event_owner: self())
+
+    assert_receive %{mcp: "gated", event: :connected}
+    refute_receive {:child_received, _}, 50
+    send(child, {:original_task, "do the work"})
+    assert :ok = SeedMCP.owner(via, owner)
+    assert {:ok, _} = SeedMCP.subscribe(via, "file:///gated")
+    assert_receive {:child_received, {:original_task, "do the work"}}
+    assert_receive {:child_received, %{mcp: "gated", event: :request}}
+    assert SeedMCP.status(via).subscriptions == ["file:///gated"]
+    assert :ok = SeedMCP.Runtime.stop_for(owner)
+
+    assert {:ok, %{"gated" => restored}} =
+             SeedMCP.restore(owner, state_dir: dir, event_owner: self())
+
+    assert SeedMCP.status(restored).subscriptions == ["file:///gated"]
+    assert :ok = SeedMCP.Runtime.stop_for(owner)
+  end
+
   test "failed runtime startup rolls back new clients", %{dir: dir} do
     owner = "mcp-failed-#{System.unique_integer([:positive])}"
     spec = %{"name" => "bad", "command" => "/not/a/real/command"}
