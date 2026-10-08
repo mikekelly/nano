@@ -32,7 +32,7 @@ defmodule Nano.OpenRouter do
 
     body = %{
       model: model,
-      messages: cache(messages),
+      messages: if(tools == [], do: messages, else: cache(messages)),
       tools: tools,
       usage: %{include: true},
       reasoning: if(reasoning == "off", do: %{enabled: false}, else: %{effort: reasoning})

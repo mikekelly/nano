@@ -1383,7 +1383,16 @@ defmodule NanoAgent do
         min(s.context_window || s.max_context, s.max_context)
       ])
 
-    %{s | task: %{kind: :compaction, task: task, recent: recent, resume: resume}}
+    %{
+      s
+      | task: %{
+          kind: :compaction,
+          task: task,
+          recent: recent,
+          resume: resume,
+          files: Nano.Compaction.files(older)
+        }
+    }
   end
 
   defp compaction_done(s, t, {:ok, summary, r}) do
@@ -1391,15 +1400,26 @@ defmodule NanoAgent do
     completion = r.usage["completion_tokens"] || 0
     Nano.StateStore.add_node_tokens(prompt + completion)
     record = Path.join(env(:log_dir), s.id <> ".jsonl")
+    prior = Map.get(s, :compaction_files, %{read: [], modified: []})
+    files = Map.new([:read, :modified], &{&1, Enum.uniq(prior[&1] ++ t.files[&1])})
 
-    checkpoint = %{
-      "role" => "user",
-      "content" =>
-        "<harness>History compacted automatically by the harness using #{s.model}; full record: #{record}. Your pid, mailbox and bindings are unchanged.</harness>\n" <>
-          summary
-    }
+    summary =
+      summary <>
+        "\n\nFiles read (literal eval paths): " <>
+        Enum.join(files.read, ", ") <>
+        "\nFiles modified (literal eval paths): " <> Enum.join(files.modified, ", ")
+
+    checkpoint =
+      %{
+        "role" => "user",
+        "content" =>
+          "<harness>History compacted automatically by the harness using #{s.model}; full record: #{record}. Your pid, mailbox and bindings are unchanged.</harness>\n" <>
+            summary
+      }
 
     transcript = [checkpoint | t.recent]
+    original = s
+    s = Map.put(s, :compaction_files, files)
 
     s = %{
       s
@@ -1414,7 +1434,7 @@ defmodule NanoAgent do
 
     if estimate(s) >= s.max_context - Nano.Compaction.reserve(s.max_context) do
       compaction_done(
-        s,
+        %{original | tokens_used: s.tokens_used, cost: s.cost},
         t,
         {:error, "checkpoint and recent history still exceed the safe context size"}
       )
@@ -1467,13 +1487,20 @@ defmodule NanoAgent do
   def run_eval(code, bindings) do
     gl = Process.group_leader()
     {:ok, io} = StringIO.open("")
-    result = eval(code, bindings, io)
+    # Dynamic dispatch also supports an eval implementation swapped during a live upgrade.
+    result = apply(__MODULE__, :eval, [code, bindings, io])
     Process.group_leader(self(), gl)
     {output, spawned} = release(io, gl, self())
 
     case result do
       {:ok, value, bindings, warnings, _images} ->
         {{:ok, value, bindings}, output <> warnings, spawned}
+
+      {:ok, value, bindings, warnings} ->
+        {{:ok, value, bindings}, output <> warnings, spawned}
+
+      {:ok, value, bindings} ->
+        {{:ok, value, bindings}, output, spawned}
 
       error ->
         {error, output, spawned}
@@ -1579,6 +1606,13 @@ defmodule NanoAgent do
       true -> ""
     end
   end
+
+  # Tasks started before a hot upgrade may return the seed's old result shape.
+  defp eval_done(s, t, {:ok, value, bindings, warnings}),
+    do: eval_done(s, t, {:ok, value, bindings, warnings, []})
+
+  defp eval_done(s, t, {:ok, value, bindings}),
+    do: eval_done(s, t, {:ok, value, bindings, "", []})
 
   defp eval_done(s, %{call: call, started: started, io: io, task: task} = t, result) do
     {output, spawned} = release(io, Process.group_leader(), task.pid)
