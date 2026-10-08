@@ -29,11 +29,14 @@ are expressed is yours):
   window, the reasoning levels and whether it can take images. A weak model on a hard job
   usually costs more than it saves (it loops, misreads, or breaks shared code), and the
   flat-rate ChatGPT subscription and per-token OpenRouter price the same job differently;
-- an isolated working copy of `/app` at a given git revision when the job needs one.
-  `/app` is the running node's source: agents editing it at once overwrite each other, and
-  a half-finished edit is compiled into the node everyone depends on at the next reload or
-  restart. A copy lets a child edit, compile and test undisturbed, and the parent decides
-  what comes back; a read-only job needs none;
+- an isolated working copy of `/app` when the job needs one, at a revision the delegator
+  always names: there is no default. `/app` is the running node's source: agents editing it
+  at once overwrite each other, and a half-finished edit is compiled into the node everyone
+  depends on at the next reload or restart. A copy lets a child edit, compile and test
+  undisturbed, and the parent decides what comes back; a read-only job needs none. Where the
+  child starts is a real decision, not a detail: the delegator's own HEAD may hold
+  uncommitted or half-done work, the child may need `main`, a shared foundation, or a
+  sibling's branch, and a silent default would start it somewhere nobody chose;
 - an optional first message, or starting idle;
 - optional MCP servers it can use from its first turn (see [mcp.md](mcp.md)), so it has
   their tools without spending context finding and connecting them.
