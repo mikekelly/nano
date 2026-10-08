@@ -2,7 +2,12 @@ defmodule MemoryTest do
   use ExUnit.Case, async: true
 
   setup do
-    root = Path.join(System.tmp_dir!(), "deneb-memory-#{System.unique_integer([:positive])}")
+    root =
+      Path.join(
+        Application.fetch_env!(:nano, :test_dir),
+        "deneb-memory-#{System.unique_integer([:positive])}"
+      )
+
     on_exit(fn -> File.rm_rf!(root) end)
     %{opts: [root: root]}
   end
