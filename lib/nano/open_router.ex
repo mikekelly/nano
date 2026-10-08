@@ -59,6 +59,15 @@ defmodule Nano.OpenRouter do
          }}
 
       {:ok, %{status: status, body: body} = resp} ->
+        if status == 401 and is_binary(key) do
+          try do
+            path = Path.join(Application.fetch_env!(:nano, :state_dir), "settings.json")
+            SeedSafety.reject(path, "openrouter_api_key", key)
+          catch
+            _, _ -> :ok
+          end
+        end
+
         {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->

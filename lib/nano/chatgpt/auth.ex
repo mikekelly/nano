@@ -52,6 +52,9 @@ defmodule Nano.ChatGPT.Auth do
   """
   def refresh(stale), do: call({:refresh, stale}, 60_000)
 
+  @doc "Record definitive post-refresh backend rejection only if the request still owns the current token generation."
+  def reject(stale_access), do: call({:reject, stale_access}, 60_000)
+
   defp call(msg, timeout) do
     GenServer.call(__MODULE__, msg, timeout)
   catch
@@ -144,6 +147,13 @@ defmodule Nano.ChatGPT.Auth do
 
   def handle_call({:refresh, _}, _from, s), do: {:reply, credentials(s), s}
 
+  def handle_call({:reject, stale}, _from, %{tokens: %{"access_token" => stale}} = s) do
+    reject_generation(s.tokens)
+    {:reply, :ok, s}
+  end
+
+  def handle_call({:reject, _}, _from, s), do: {:reply, :stale_generation, s}
+
   # Anyone may call or cast this process anything (an agent's eval, say); what it does not
   # know is refused or ignored, never a crash that would lose a login in progress.
   def handle_call(_msg, _from, s), do: {:reply, {:error, :unknown_call}, s}
@@ -219,6 +229,12 @@ defmodule Nano.ChatGPT.Auth do
     end
   end
 
+  defp reject_generation(tokens) do
+    SeedSafety.reject_chatgpt(path(), tokens["access_token"], tokens["refresh_token"])
+  catch
+    _, _ -> :ok
+  end
+
   defp do_refresh(s) do
     body = %{
       client_id: @client_id,
@@ -234,6 +250,7 @@ defmodule Nano.ChatGPT.Auth do
 
       # The refresh token is expired, revoked or already used: only a new login helps.
       :permanent ->
+        reject_generation(s.tokens)
         Logger.warning("Nano.ChatGPT.Auth: refresh refused (#{why(result)}); signing out")
         File.rm(path())
 

@@ -62,6 +62,49 @@ defmodule Nano.ChatGPTTest do
     eventually(fn -> (pid = Process.whereis(Auth)) && pid != old end)
   end
 
+  defp rejected_generation do
+    file = Path.join([Application.fetch_env!(:nano, :test_dir), "seed-safety", "rejected.json"])
+
+    case File.read(file) do
+      {:ok, json} -> Jason.decode!(json)
+      {:error, :enoent} -> %{}
+    end
+  end
+
+  test "definitive rejection fingerprints only the still-current complete generation" do
+    connect!()
+    current = saved()
+    before = rejected_generation()
+    assert :stale_generation = Auth.reject("obsolete-access")
+    assert rejected_generation() == before
+    assert :ok = Auth.reject(current["access_token"])
+
+    expected =
+      :crypto.hash(:sha256, current["access_token"] <> <<0>> <> current["refresh_token"])
+      |> Base.encode16(case: :lower)
+
+    assert rejected_generation()[path()]["@chatgpt"] == expected
+    assert Auth.status().status == :connected
+  end
+
+  test "permanent refresh rejection records generation before removal, transient errors do not" do
+    connect!()
+    current = saved()
+    before = rejected_generation()
+    Fake.auth(:token, [{503, %{"error" => "temporarily_unavailable"}}])
+    assert {:ok, _} = Auth.refresh(current["access_token"])
+    assert rejected_generation() == before
+    Fake.auth(:token, [{400, %{"error" => "invalid_grant"}}])
+    assert {:error, _} = Auth.refresh(current["access_token"])
+
+    expected =
+      :crypto.hash(:sha256, current["access_token"] <> <<0>> <> current["refresh_token"])
+      |> Base.encode16(case: :lower)
+
+    assert rejected_generation()[path()]["@chatgpt"] == expected
+    refute File.exists?(path())
+  end
+
   ## Device-code login
 
   test "device flow: a code to enter, polling while pending, then tokens saved 0600" do

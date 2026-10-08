@@ -80,6 +80,14 @@ defmodule Nano.ChatGPT do
         end
 
       {:ok, %{status: status, body: body} = resp} ->
+        if status == 401 and not again? do
+          try do
+            Nano.ChatGPT.Auth.reject(creds.access_token)
+          catch
+            _, _ -> :ok
+          end
+        end
+
         {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->

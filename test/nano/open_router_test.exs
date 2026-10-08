@@ -10,7 +10,29 @@ defmodule Nano.OpenRouterTest do
     on_exit(fn -> :persistent_term.erase({Nano.OpenRouter, :models}) end)
   end
 
-  test "models/0 parses the list, sorted by id, and caches it" do
+  test "only definitive 401 fingerprints the exact request key, never moderation 403" do
+    key = Nano.Settings.get(:openrouter_api_key)
+    marker = Path.join([Application.fetch_env!(:nano, :test_dir), "seed-safety", "rejected.json"])
+    model = Fake.model()
+    Fake.push(model, status: 401, body: %{"error" => %{"message" => "invalid key"}})
+
+    assert {:error, %{status: 401}} =
+             Nano.OpenRouter.chat(model, [%{"role" => "user", "content" => "hi"}], [])
+
+    data = Jason.decode!(File.read!(marker))
+    path = Path.join(Application.fetch_env!(:nano, :state_dir), "settings.json")
+    expected = :crypto.hash(:sha256, key) |> Base.encode16(case: :lower)
+    assert data[path]["openrouter_api_key"] == expected
+    Fake.push(model, status: 403, body: %{"error" => %{"message" => "moderation"}})
+
+    assert {:error, %{status: 403}} =
+             Nano.OpenRouter.chat(model, [%{"role" => "user", "content" => "hi"}], [])
+
+    assert Jason.decode!(File.read!(marker)) == data
+  end
+
+  test "models/0 parses
+ the list, sorted by id, and caches it" do
     Fake.models([
       %{
         "id" => "b/two",
