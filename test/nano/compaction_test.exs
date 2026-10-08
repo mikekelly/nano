@@ -231,7 +231,48 @@ defmodule Nano.CompactionTest do
     end
   end
 
-  test "cut retains complete tool call/result pairs and serialization bounds tool output" do
+  test "retention target is soft: a 50KB recent tool pair still compacts in a 272K window" do
+    older =
+      Enum.flat_map(1..10, fn _ ->
+        [
+          %{"role" => "user", "content" => String.duplicate("u", 50_000)},
+          %{"role" => "assistant", "content" => "done"}
+        ]
+      end)
+
+    recent = [
+      %{"role" => "user", "content" => "new request"},
+      %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{"id" => "recent-call", "function" => %{"name" => "eval", "arguments" => "{}"}}
+        ]
+      },
+      %{
+        "role" => "tool",
+        "tool_call_id" => "recent-call",
+        "content" => String.duplicate("r", 50_000)
+      }
+    ]
+
+    transcript = older ++ recent
+    assert Nano.Compaction.due?(272_000, Nano.Compaction.size(transcript))
+    assert {:ok, prefix, suffix} = Nano.Compaction.plan(transcript, 272_000)
+    assert prefix != []
+    assert Nano.Compaction.size(suffix) > 20_000
+    assert Nano.Compaction.size(suffix) < 272_000 - Nano.Compaction.reserve(272_000)
+
+    assert [
+             %{"role" => "assistant", "tool_calls" => [%{"id" => "recent-call"}]},
+             %{"role" => "tool", "tool_call_id" => "recent-call"}
+           ] = Enum.take(suffix, -2)
+
+    # In a tiny window this same pair is truly irreducible, not merely over the soft target.
+    assert :no_prefix = Nano.Compaction.plan(recent, 20_000)
+  end
+
+  test "cut retains complete tool
+ call/result pairs and serialization bounds tool output" do
     messages = [
       %{"role" => "user", "content" => "old"},
       %{"role" => "assistant", "tool_calls" => [%{"id" => "a"}]},
