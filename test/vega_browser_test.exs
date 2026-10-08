@@ -1,7 +1,7 @@
 defmodule Vega.BrowserTest do
   use ExUnit.Case, async: true
   alias Vega.Browser
-  @node System.get_env("VEGA_BROWSER_NODE") || "/tmp/vega-browser-tools/node"
+  @node Vega.Browser.node_runtime()
 
   test "missing prerequisites and option validation are explicit" do
     assert {:error, :node_22_and_lightpanda_required} = Browser.start(node: "/does/not/exist")
