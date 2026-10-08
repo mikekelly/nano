@@ -173,6 +173,9 @@ reason go to Nano.Log/timeline PubSub. Missing services NEVER get invented proba
   inserts initially, after >=100 estimated tokens and immediately after reset. Goals work
   independently while note is disabled. Tests cover Unicode limits, attribution, clear, durable
   reads and distance logs.
+- Bob logs measure planned context assembly. If admission instead starts compaction, that
+  planned insertion may be discarded; `model_request` is the actual delivery record, and
+  the post-compaction hook reasserts reminders into the safely fitted checkpoint.
 - No randomized model-behavior comparison established improved alignment. Attention/efficacy
   remains **unproven**. This is mechanics/cost evidence, not causation. Compare matched tasks and
   randomized enabled/disabled trials when researching it.
@@ -194,3 +197,41 @@ writes or fixed ports. First full integrated worktree suite: **299 passed**; fin
 records subsequent tests/format results. Separate physical computers, guaranteed automatic
 memory extraction, infinite archives, instantaneous peer debate and actual browser permission
 popups are explicitly not claimed. Unit comparisons establish bobbing mechanics, not efficacy.
+
+## Live acceptance record (2026-10-08, supplied provider)
+
+Real model: `openai-codex/gpt-6.1-sol`, low reasoning. Demo session agents used finite
+18-turn/300,000-token limits; the long-chat check used 40 turns/1,000,000 tokens.
+Fixtures are retained for inspection, not production user data.
+
+| Check | Actual result / artifact |
+|---|---|
+| Two identities + single/group sessions | Muse `19a286f5a24b7f52`, Dots `e21edda02864772f`; both independently posted as themselves in group `0f6e35bf43265c68`. |
+| Cross-session memory without shared transcript | Single `19e9dd95b7f9907b` explicitly saved “quiet hotels near railway stations; £200”; separate `d3045131ed6b3ce6` recalled it via per-bot memory. Independent session-agent names/context windows were verified. |
+| Agent restart | Second-session Muse changed pid, `restart_count: 1`; subsequent real post still recalled both preference and budget. Identity/catalog unchanged. |
+| Real vision in chat | Initial group blue-image check was confounded by filename/prior colour. Stronger fresh Dots session `14ff2e897f375dfa` saw neutral `visual-probe.png` and posted **Bright green.** Image was actually green; native log marks `visible_to_model: true`. Immutable SHA-256 `396d2fc5123e6c45192e885271f5494adbffe8f2258133ddbc0d85fa690c9ee2`, file `89f5c5effb3bda01`. |
+| Human request provenance + correlation | Request `6242356ce566dc85` recorded actual requester/reply target `orion-bots`; wrong session rejected; December 12–15 answer delivered and acknowledged. |
+| Offline named reply target | `337db56f530b8266` answered while target absent; after registration an automatic 30-second sweep delivered once and the receiver acknowledged. Durable status shows one attempt and acknowledged (no manual outbox trigger). |
+| Automatic long-chat compaction | Controlled 24k session `58406e42953e39e9`, agent `bot-2d805019224ac33f-58406e42953e39e9`, compacted once (13:23:59 started /13:24:23 completed). The actual checkpoint explicitly retained “never book without confirmation”, £200, quiet railway hotels. Subsequent real chat retained all three. 103,083 cumulative tokens /11 turns at completion, within finite limits. No compaction/eval traffic appeared in consumer posts. |
+| Trusted keyboard JavaScript | Executed latest `bots.js` in an ephemeral-port Lightpanda fixture: Cmd/Ctrl+K focused To and Ctrl+1 chose the first actual recipient (not Create). This covers keyboard behavior, not graphical notification permission. |
+| Actual consumer rendering | Lightpanda fetched the real `/bots?session=0f6e35bf43265c68`; showed labelled chat, requester provenance, safe image preview and download link. No eval/tool/harness transcript appeared. This is a rendering smoke, not proof of a persistent browser WebSocket or notification popup. |
+| Front-of-mind mechanics | Builder's actual note automatically bobbed 33 times by 13:34. Distance/reason recorded. Deterministic enabled/disabled and independent drift controls tested. Efficacy remains unproven. |
+
+Regression tests additionally exercise named replacement targets, persisted retry backoff,
+ack authorization/dedup suppression, watcher restart recovery and paused/retry states,
+24 long multibyte messages plus validated image delivery, original-text paging after restart,
+actual-window admission and blocked startup on corrupt catalog (no overwrite/no node death).
+A stopped saved session is revived with its **existing native agent ID**, not a fresh `start/1`
+that would erase history. Paused/budget-exhausted agents show a human-visible status. Real native agents with scripted
+HTTP providers test hard refusal, turn-budget halt, transient retry and stopped-ID revival.
+Image captions fit the shared 16,000-byte guard; delivery errors become explicit status, not
+perpetual thinking. Cuts retain the latest human request first and page durable originals.
+Drift can run while bobbing is disabled, and logs both controls; network timeout and adapter
+programming errors are sanitized but distinguishable.
+
+Final isolated integrated worktree run: **358 tests passed**, `mix format --check-formatted`
+and `mix compile --warnings-as-errors` passed (`MIX_ENV=test`, unique build root).
+Run output: `/tmp/seedling-tools/1791469497668141-72354.log`. Parent's broader merged suite
+includes other siblings and is validated separately. Browser notification permission/popups and
+physical OS isolation remain untested/unimplemented; server limits and notification events are
+covered by tests. The task demonstrates a trusted local beta, not a hardened multi-user product.

@@ -105,23 +105,54 @@ defmodule Seedling.Bots do
   defp caller_agent, do: Store.agent(caller_pid())
   @impl true
   def init(opts) do
-    with {:ok, d} <- Store.get(:bots, "catalog", @empty, opts) do
-      table =
-        if Keyword.get(opts, :name, __MODULE__) == __MODULE__,
-          do: :ets.new(@table, [:named_table, :set, :protected, read_concurrency: true]),
-          else: :ets.new(@table, [:set, :protected])
+    {d, blocked} =
+      case Store.get(:bots, "catalog", @empty, opts) do
+        {:ok,
+         %{
+           "bots" => bots,
+           "sessions" => sessions,
+           "requests" => requests,
+           "notifications" => notifications
+         } = d}
+        when is_map(bots) and is_map(sessions) and is_map(requests) and is_map(notifications) ->
+          {d, nil}
 
-      :ets.insert(table, {:snapshot, d})
-      Process.send_after(self(), :expire, 30_000)
-      send(self(), :schedule)
-      send(self(), :outbox)
-      send(self(), :restore_watchers)
-      {:ok, %{doc: d, table: table, opts: opts, waiters: %{}, watchers: %{}, active: %{}}}
-    end
+        _ ->
+          {Map.put(
+             @empty,
+             "service_error",
+             "Bot storage is unavailable or corrupt. Ask an operator to restore it; no durable data was overwritten."
+           ), :store_unavailable}
+      end
+
+    table =
+      if Keyword.get(opts, :name, __MODULE__) == __MODULE__,
+        do: :ets.new(@table, [:named_table, :set, :protected, read_concurrency: true]),
+        else: :ets.new(@table, [:set, :protected])
+
+    :ets.insert(table, {:snapshot, d})
+    Process.send_after(self(), :expire, 30_000)
+    send(self(), :schedule)
+    send(self(), :outbox)
+    send(self(), :restore_watchers)
+
+    {:ok,
+     %{
+       doc: d,
+       blocked: blocked,
+       table: table,
+       opts: opts,
+       waiters: %{},
+       watchers: %{},
+       active: %{}
+     }}
   end
 
   @impl true
   def handle_call(:snapshot, _from, s), do: {:reply, s.doc, s}
+
+  def handle_call(_msg, _from, %{blocked: reason} = s) when not is_nil(reason),
+    do: {:reply, {:error, reason}, s}
 
   def handle_call({:create, name, opts}, _from, s) do
     cond do
@@ -434,10 +465,20 @@ defmodule Seedling.Bots do
   end
 
   @impl true
-  def handle_info({:nano_log, %{type: :turn_ended, agent_id: id}}, s) do
+  def handle_info({:nano_log, %{type: :turn_ended, agent_id: id} = entry}, s) do
     case s.watchers[id] do
-      {session, bot} -> handle_cast({:delivery, session, bot, "idle", id}, s)
-      _ -> {:noreply, s}
+      {session, bot} ->
+        handle_cast(
+          {:delivery, session, bot,
+           if(entry[:reason] in ["budget", "error"],
+             do: "temporarily unavailable; operator can inspect",
+             else: "idle"
+           ), id},
+          s
+        )
+
+      _ ->
+        {:noreply, s}
     end
   end
 
@@ -491,6 +532,9 @@ defmodule Seedling.Bots do
       end
     end
   end
+
+  def handle_info(:restore_watchers, %{blocked: reason} = s) when not is_nil(reason),
+    do: {:noreply, s}
 
   def handle_info(:restore_watchers, s) do
     {doc, watchers} =

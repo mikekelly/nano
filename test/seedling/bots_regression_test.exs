@@ -351,11 +351,31 @@ defmodule Seedling.BotsRegressionTest do
     File.write!(path, Base.decode64!(@png))
     assert {:ok, file} = BotFiles.add(path, "pixel.png", root: c.root)
     assert file["image"]["mime"] == "image/png"
+    # Shared image admission resolves the exact persisted target and checks its window.
+    name = Bots.agent_name(chat["id"], bot["id"])
+
+    Nano.StateStore.put(name, %{
+      id: CapabilityStore.id(),
+      name: name,
+      pid: NanoAgent.whereis(name),
+      model: "fake/model",
+      status: :idle,
+      halted: nil,
+      system_prompt: "test",
+      prompt_file: nil,
+      restart_count: 0,
+      cost: 0,
+      responses: 0,
+      cache_hits: 0,
+      max_context: 64000,
+      input_modalities: ["text", "image"]
+    })
+
     assert {:ok, latest} = Bots.say(chat["id"], text, c.opts ++ [files: [file]])
     assert_receive {:agent_event, _, {:"$gen_cast", {:images, refs, envelope}}}, 2000
     assert refs == [file["image"]]
     assert String.valid?(envelope)
-    assert byte_size(envelope) <= 40_000
+    assert byte_size(envelope) <= 16_000
     assert byte_size(Jason.encode!(%{images: refs, text: envelope})) <= 40_000
     assert envelope =~ latest["id"]
     assert envelope =~ "Truncated for context budget"

@@ -37,12 +37,25 @@ defmodule Seedling.BotDelivery do
                 end),
               else: []
 
-          with {:ok, bytes} <- Seedling.ChatContext.admission(info, bot, length(refs)),
-               {:ok, event} <- Seedling.ChatContext.fit(event, bytes) do
-            if refs == [],
-              do: send(pid, event),
-              else: NanoAgent.deliver_images(pid, refs, Seedling.ChatContext.serialize(event))
+          with :ok <-
+                 if(info && (info.halted || info.suspended), do: {:error, :paused}, else: :ok),
+               {:ok, bytes} <- Seedling.ChatContext.admission(info, bot, length(refs)),
+               {:ok, event} <-
+                 Seedling.ChatContext.fit(
+                   event,
+                   if(refs == [], do: bytes, else: min(bytes, 15700))
+                 ),
+               :ok <- send_event(pid, refs, event) do
+            :ok
           else
+            {:error, :paused} ->
+              GenServer.cast(
+                server,
+                {:delivery, session_id, bot["id"],
+                 "This bot is paused. An operator must resume it before it can reply.",
+                 info && info.id}
+              )
+
             {:error, _} ->
               GenServer.cast(
                 server,
@@ -70,6 +83,14 @@ defmodule Seedling.BotDelivery do
       end)
   end
 
+  defp send_event(pid, [], event) do
+    send(pid, event)
+    :ok
+  end
+
+  defp send_event(pid, refs, event),
+    do: NanoAgent.deliver_images(pid, refs, Seedling.ChatContext.serialize(event))
+
   defp bots_from(doc, session), do: get_in(doc, ["sessions", session, "bots"]) || []
 
   defp ensure_agent(name, bot, session, opts) do
@@ -78,24 +99,45 @@ defmodule Seedling.BotDelivery do
         {:ok, pid}
 
       nil ->
-        starter = Keyword.get(opts, :agent_starter, &NanoAgent.start/1)
-        base = File.read!(Path.join(:code.priv_dir(:nano), "system_prompt.txt"))
-        prompt = base <> "\n\n" <> prompt(bot, session)
+        case Nano.StateStore.get(name) do
+          %{id: id} ->
+            # Never call start/1 over a saved session: it assigns a fresh id and erases
+            # its history. Restore the exact saved agent, including an operator stop.
+            case DynamicSupervisor.start_child(
+                   Nano.AgentSupervisor,
+                   {NanoAgent, [name: name, id: id]}
+                 ) do
+              {:ok, pid} -> {:ok, pid}
+              {:error, {:already_started, pid}} -> {:ok, pid}
+              error -> error
+            end
 
-        case starter.(
-               name: name,
-               model: bot["model"],
-               reasoning: bot["reasoning"],
-               max_context: bot["max_context"],
-               max_turns: Map.get(bot, "max_turns", 0),
-               max_tokens: Map.get(bot, "max_tokens", 0),
-               start_idle: true,
-               system_prompt: prompt
-             ) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-          error -> error
+          _ ->
+            start_fresh(name, bot, session, opts)
         end
+    end
+  end
+
+  defp start_fresh(name, bot, session, opts) do
+    starter =
+      Keyword.get(opts, :agent_starter, &NanoAgent.start/1)
+
+    base = File.read!(Path.join(:code.priv_dir(:nano), "system_prompt.txt"))
+    prompt = base <> "\n\n" <> prompt(bot, session)
+
+    case starter.(
+           name: name,
+           model: bot["model"],
+           reasoning: bot["reasoning"],
+           max_context: bot["max_context"],
+           max_turns: Map.get(bot, "max_turns", 0),
+           max_tokens: Map.get(bot, "max_tokens", 0),
+           start_idle: true,
+           system_prompt: prompt
+         ) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      error -> error
     end
   end
 
