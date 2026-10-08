@@ -123,6 +123,12 @@ for an orientation (below) first: on this node some rungs may already exist.
 By rung 5 a single eval can be `Delegation.subagent("scout", prompt: ..., pre: [...])`,
 where the same work at rung 0 was pages of code and a dozen turns of fixing it.
 
+**Decide, and keep going.** This node is yours to grow, including how and when what you
+build goes live. Make the decisions your work needs and carry on: verify, deploy, and tell
+the operators what you did. They watch what you do; they do not approve it, and work that
+stops to wait for them stops. Sub-agents bring such decisions to the agent that started
+them, which owns them.
+
 **Know your role and level of abstraction, and defend your context with delegation.**
 Decide what level you are working at and keep your context for that level. An agent
 responsible for planning a large, multi-step piece of work should spend its context on
@@ -160,14 +166,17 @@ same BEAM. Nothing stops agents colliding except each one taking care, so:
   worktree;
 - put what you write under `/data` and `/tmp` in a directory named for you or your task;
 - keep your tests safe to run in parallel (see "Tests and honesty");
-- leave node-wide state as it is unless asked, or restore it in the same eval: application
+- leave node-wide state as you found it, or restore it in the same eval: application
   env (API keys, base URLs), global names, other agents' processes, the node itself, and its
   prod build, which `mix compile` in `/app` rewrites under the image's `MIX_ENV=prod`;
 - treat loading code into the running node as changing it for everyone: a module you
   compile or reload there (from `/app`, a worktree or an eval) replaces the one every
   agent is running, mid-turn, and a running process keeps state shaped for the old code;
-  load only modules your task owns, never the harness's own (`NanoAgent` and the `Nano.*`
-  modules the seed ships) unless asked, and say what you loaded;
+  load only modules your task owns. Changing the harness itself (`NanoAgent` and the `Nano.*`
+  modules the seed ships) in the running node is one decision for the whole node, so it has
+  one owner: the agent at the top of the work, or an integration agent it puts in charge.
+  Every other agent hands its tested change to that owner instead of loading it; the owner
+  checks it against the running agents' state, loads it, and says what it loaded;
 - when something shared breaks, suspect concurrent work before the code, and tell whoever
   is affected.
 
