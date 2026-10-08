@@ -133,6 +133,35 @@ defmodule Seedling.MCPTest do
     assert {:ok, _} = MCP.call_tool(c, "echo")
   end
 
+  test "acknowledgment compares the original listen filter, not newer pending intents", ctx do
+    c = stdio(ctx, "modern")
+    assert :ok = MCP.watch(c, self())
+    assert_receive {:seedling_mcp, "script", "notifications/subscriptions/acknowledged", _}, 1000
+    parent = self()
+    # Reproduce the exact mailbox interleaving: subscribe's new intent is present,
+    # but its queued refresh has not yet replaced the active listen request.
+    state =
+      :sys.replace_state(c.pid, fn state ->
+        %{state | subs: Map.put(state.subs, "test://one", MapSet.new([parent]))}
+      end)
+
+    send(
+      c.pid,
+      {:wire, state.epoch, :stdio,
+       %{
+         "jsonrpc" => "2.0",
+         "method" => "notifications/subscriptions/acknowledged",
+         "params" => %{
+           "_meta" => %{"io.modelcontextprotocol/subscriptionId" => state.listening},
+           "notifications" => state.listen_filter
+         }
+       }}
+    )
+
+    assert_receive {:seedling_mcp, "script", "notifications/subscriptions/acknowledged", _}, 1000
+    refute_receive {:seedling_mcp, "script", :subscription_rejected, _}, 100
+  end
+
   test "legacy fallback process death is visible and restores subscriptions", ctx do
     c = stdio(ctx, "legacy")
     assert {:ok, %{version: "2025-11-25", os_pid: old_pid}} = MCP.status(c)
