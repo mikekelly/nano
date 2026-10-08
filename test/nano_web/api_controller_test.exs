@@ -421,7 +421,8 @@ defmodule NanoWeb.ApiControllerTest do
                post_json("/api/agents", agent_body(name, %{system_prompt_file: file}))
                |> json_response(201)
 
-      assert rest == "#{name}, read from a file."
+      assert String.starts_with?(rest, "#{name}, read from a file.")
+      assert rest =~ "Your model cannot see images"
 
       assert %{
                "error" =>

@@ -15,6 +15,30 @@ defmodule Nano.CompactionTest do
     assert old ++ recent == messages
   end
 
+  test "bounded serialization retains newest progress and deterministic paths" do
+    old = %{
+      "role" => "user",
+      "content" => "previous checkpoint: important decision" <> String.duplicate("x", 20000)
+    }
+
+    call = %{
+      "role" => "assistant",
+      "tool_calls" => [
+        %{
+          "function" => %{"name" => "eval", "arguments" => "File.read!(\"/app/lib/critical.ex\")"}
+        }
+      ]
+    }
+
+    latest = %{"role" => "tool", "content" => String.duplicate("z", 20000) <> "LATEST_STATUS"}
+    text = Nano.Compaction.serialize([old, call, latest], 10000)
+    assert text =~ "previous checkpoint"
+    assert text =~ "LATEST_STATUS"
+    assert text =~ "omitted"
+    assert Nano.Compaction.files([call]) == ["/app/lib/critical.ex"]
+    assert Nano.Compaction.summary_limit(10000) == 1250
+  end
+
   test "small history is kept intact and reserve scales" do
     messages = [%{"role" => "user", "content" => "hi"}]
     assert Nano.Compaction.split(messages, 30000) == {[], messages}

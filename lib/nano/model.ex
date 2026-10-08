@@ -31,10 +31,10 @@ defmodule Nano.Model do
       such as an unsupported parameter). The agent halts, `:model_refused`.
   """
   def chat(@prefix <> model, messages, tools, reasoning, _max_output),
-    do: Nano.ChatGPT.chat(model, messages, tools, reasoning)
+    do: Nano.ChatGPT.chat(model, Nano.Images.expand(messages), tools, reasoning)
 
   def chat(model, messages, tools, reasoning, max_output),
-    do: Nano.OpenRouter.chat(model, messages, tools, reasoning, max_output)
+    do: Nano.OpenRouter.chat(model, Nano.Images.expand(messages), tools, reasoning, max_output)
 
   @doc """
   The class (see `chat/5`) of an HTTP failure, by its status: none at all, 408, 409, 425, 429
