@@ -61,5 +61,36 @@ defmodule Vega.MCPReferenceTest do
     assert File.read!(path) == "hello from Vega MCP"
     assert {:ok, result} = MCP.call_tool(server, read_tool, %{"path" => "/etc/passwd"})
     assert result["isError"] == true
+    # Genuine PNG returned by the official read_media_file tool must not place its
+    # bare base64 in eval/transcript/spill JSON. Pixel decoding is deferred to intent.
+    chunk = fn type, data ->
+      <<byte_size(data)::32, type::binary, data::binary, :erlang.crc32(type <> data)::32>>
+    end
+
+    png =
+      <<137, 80, 78, 71, 13, 10, 26, 10>> <>
+        chunk.("IHDR", <<2::32, 2::32, 8, 2, 0, 0, 0>>) <>
+        chunk.("IDAT", :zlib.compress(<<0, 255, 0, 0, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0>>)) <>
+        chunk.("IEND", "")
+
+    png_path = Path.join(dir, "media.png")
+    File.write!(png_path, png)
+    assert {:ok, media} = MCP.call_tool(server, "read_media_file", %{"path" => png_path})
+    refute media["isError"]
+    part = Enum.find(media["content"], &(&1["type"] == "image"))
+
+    assert %{"type" => "mcp_media_ref", "mimeType" => "image/png", "visible" => false} =
+             ref = part["media"]
+
+    refute inspect(media, limit: :infinity) =~ Base.encode64(png)
+    assert byte_size(Jason.encode!(media)) < 2048
+    assert {:ok, ^ref} = MCP.media_info(ref)
+
+    if Code.ensure_loaded?(Vega.Images) do
+      assert {:ok, %{"type" => "image_ref"} = canonical} = MCP.view_image(ref)
+      assert canonical in apply(Vega.Images, :take_views, [])
+    else
+      assert {:error, :images_unavailable} = MCP.view_image(ref)
+    end
   end
 end

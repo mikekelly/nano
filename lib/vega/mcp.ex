@@ -202,6 +202,11 @@ defmodule Vega.MCP do
     do:
       request_async(name, "tools/call", %{"name" => tool, "arguments" => arguments}, agent, opts)
 
+  @doc "Metadata-only page of cached MCP media references; never returns payload bytes."
+  def media_page(opts \\ []), do: Vega.MCP.Media.page(opts)
+  def media_info(ref), do: Vega.MCP.Media.info(ref)
+  def view_image(ref), do: Vega.MCP.Media.view_image(ref)
+
   defp invoke(name, message, timeout \\ 5_000) do
     with {:ok, pid} <- lookup(name), do: safe_call(pid, message, timeout)
   end
@@ -256,6 +261,7 @@ defmodule Vega.MCP.Supervisor do
         Vega.MCP.Config,
         Vega.MCP.State,
         {Task.Supervisor, name: Vega.MCP.Requests},
+        Vega.MCP.Media.Cache,
         {DynamicSupervisor,
          strategy: :one_for_one, name: Vega.MCP.Connections, max_restarts: 100, max_seconds: 10}
       ],

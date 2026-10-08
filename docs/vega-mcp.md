@@ -273,3 +273,63 @@ environment). The library does not invent a secret-on-disk auth store.
 **Upgrade:** stop the existing MCP subtree *before* loading these hardened modules,
 then restart it and connect the configured names. Old DynamicSupervisor specifications
 contain raw configs and cannot be made safe simply by hot-loading a new worker callback.
+
+## MCP media and explicit native vision
+
+Known tool `{type: "image" | "audio", data: "<bare base64>", mimeType: ...}`
+parts and resource `{uri: ..., blob: "<base64>"}` contents are normalized **before**
+JSON preview/spill and event delivery. The original `data`/`blob` field is removed
+and replaced by `media: %{type: "mcp_media_ref", id: ..., kind: ..., mimeType: ...,
+bytes: ..., verification: "deferred", visible: false}`. Text, citations, annotations,
+resource URIs and outgoing MCP request/wire framing remain unchanged. This is a
+normalized library return shape, not a claim the model saw pixels. Successful RPCs,
+notifications and background completions cannot incidentally print those bare base64
+fields into the provider context or timeline. Ordinary text is not guessed to be
+base64 or rewritten.
+
+```elixir
+{:ok, result} = Vega.MCP.call_tool("vega-filesystem", "read_media_file",
+  %{"path" => "/app/example.png"})
+ref = hd(result["content"])["media"]
+Vega.MCP.media_info(ref) # metadata only, no payload or arbitrary path
+Vega.MCP.media_page(limit: 20, offset: 0) # metadata-only cache listing
+Vega.MCP.view_image(ref) # explicit intent, not automatic context/vision cost
+```
+
+The media cache is under `<vega_mcp_state_dir>/media`: directory **0700**, decoded
+payload and metadata files **0600**. IDs are opaque content-addressed hashes bound
+to bytes + canonical MIME/kind, not caller-supplied paths. Default hard limits:
+**3,750,000 decoded bytes per file**, **5,000,000 encoded bytes per part**,
+**20 media parts per result/event**, **64,000,000 cache payload bytes** and
+**128 cache entries**. Admissions are serialized, deduplicated and quota checked;
+cache exhaustion returns `mcp_media_error` metadata, never the original payload.
+Invalid/empty/oversized base64 likewise becomes small explicit error metadata, with
+`visible: false`. Audio and other binary blobs use opaque binary descriptors; no
+image-view claim is made. Cache sidecars do not contain base64/payload. Directory
+reload charges orphan payloads against quota even if their sidecar is unavailable.
+There is no automatic eviction while older result refs may be in use; delete a
+specific cached ref with `Vega.MCP.Media.delete(ref)` or manage this private directory
+as an operator. Deletion makes old MCP refs explicitly unavailable; it does not delete
+an already imported immutable `Vega.Images` attachment.
+
+Pixel decoding is **deferred** until `view_image`, so a connection worker does not
+run native image codecs. On explicit view, the helper verifies the private payload
+identity, calls optional **`Vega.Images.import_file(path)`**, checks canonical MIME
+and raw hash, then **`Vega.Images.view(image_ref)`** to queue the verified native
+attachment. It reuses the strict image seeding; there is no MCP decoder implementation
+or header-only validation bypass. A malformed PNG can be cached as unverified bytes
+but cannot become visible without that strict decoder. Missing Images support returns
+`:images_unavailable`; a missing decoder, invalid pixels, corrupt payload, MIME/hash
+mismatch, or missing cache returns an explicit error, never a fictional successful
+view. Media Cache `format_status` and abnormal termination use the same raw-message/
+reason/log redaction as credential-bearing services.
+
+Verification (2026-10-07): standalone MCP full suite **284 passed, 1 skipped**
+(28.6s), including official filesystem `read_media_file` returning a genuine 2x2 PNG
+as a small opaque ref without any bare base64. Six media tests cover result/event/
+async/spill normalization, text/citation retention, private permissions, both quotas,
+disk restart, malformed/oversized inputs and cheap metadata pages. The one explicit
+skip is native Images integration because the standalone MCP branch does not include
+that sibling module; it runs automatically on the integrated tree and checks strict
+native view plus malformed-pixel refusal. Reference integration also calls native
+view when Images is present. Images references are queued only by explicit view intent.
