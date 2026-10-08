@@ -55,3 +55,10 @@ restart/result cap, persisted queued result and boot ordering, initialized real 
 before idle child's first turn, isolated git worktree revision. Full pre-MCP integration
 suite 273 passed. Actual live model child smoke called report: 1 turn, 2113 tokens,
 summary "real child success". Only owned Seedling modules were loaded live; no Nano reload.
+
+Startup rollback: readiness setup does not install watchers. Watch activation occurs only after
+child and durable monitor succeed. Failures stop/delete ONLY the child created in that call
+and the corresponding monitor; newly installed MCP watches are removed via MCP.unwatch.
+Reused MCP clients are never killed. Unreachable clients can prevent best-effort unwatch
+cleanup; parent should inspect their durable watchers after infrastructure failures.
+Failure tests cover missing facts_file after MCP setup and monitor record write failure.

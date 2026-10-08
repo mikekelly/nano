@@ -22,20 +22,112 @@ defmodule Seedling.Delegation do
            NanoAgent.start(
              Keyword.take(opts, [:model, :reasoning, :max_turns, :max_tokens, :max_context]) ++
                [name: name, start_idle: true, system_prompt: prompt]
-           ),
-         {:ok, monitor} <- watch(name, opts[:parent], Keyword.get(opts, :poll_ms, 1000)) do
-      if Keyword.has_key?(opts, :message),
-        do: tell(name, %{message: opts[:message], sender: opts[:parent], delegation: name})
+           ) do
+      finish_start(name, opts, pid, tree, pre, mcp)
+    end
+  end
 
-      {:ok,
-       %{
-         name: name,
-         pid: pid,
-         monitor: monitor,
-         worktree: tree,
-         mcp: mcp,
-         pre: Enum.map(pre, &Map.drop(&1, [:text]))
-       }}
+  defp finish_start(name, opts, pid, tree, pre, mcp) do
+    watched =
+      try do
+        watch(name, opts[:parent], Keyword.get(opts, :poll_ms, 1000))
+      rescue
+        e -> {:error, Exception.message(e)}
+      catch
+        :exit, reason -> {:error, reason}
+      end
+
+    case watched do
+      {:ok, monitor} ->
+        case activate_mcp(name, opts) do
+          :ok ->
+            if Keyword.has_key?(opts, :message),
+              do: tell(name, %{message: opts[:message], sender: opts[:parent], delegation: name})
+
+            {:ok,
+             %{
+               name: name,
+               pid: pid,
+               monitor: monitor,
+               worktree: tree,
+               mcp: mcp,
+               pre: Enum.map(pre, &Map.drop(&1, [:text]))
+             }}
+
+          error ->
+            DynamicSupervisor.terminate_child(Seedling.Delegation.Workers, monitor)
+            File.rm(Seedling.Delegation.Supervisor.file(name))
+            rollback_child(name, pid)
+            error
+        end
+
+      error ->
+        rollback_child(name, pid)
+        error
+    end
+  end
+
+  defp rollback_child(name, pid) do
+    # Only the process created by this call, never a reused child/client.
+    DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+    NanoAgent.kill_tasks(pid)
+    Nano.StateStore.delete(name)
+  end
+
+  defp activate_mcp(name, opts) do
+    servers = Keyword.get(opts, :mcp, []) || []
+    sup = Keyword.get(opts, :mcp_supervisor, Seedling.MCP.Connections)
+
+    result =
+      Enum.reduce_while(servers, {:ok, []}, fn server, {:ok, installed} ->
+        result =
+          try do
+            clients = apply(Seedling.MCP.Supervisor, :connections, [sup])
+            pid = Map.fetch!(clients, server)
+
+            case apply(Seedling.MCP, :watch, [pid, name]) do
+              :ok -> {:ok, pid}
+              error -> error
+            end
+          rescue
+            e -> {:error, Exception.message(e)}
+          catch
+            :exit, reason -> {:error, reason}
+          end
+
+        case result do
+          {:ok, pid} -> {:cont, {:ok, [pid | installed]}}
+          error -> {:halt, {:error, error, installed}}
+        end
+      end)
+
+    case result do
+      {:ok, _} ->
+        :ok
+
+      {:error, error, installed} ->
+        clients =
+          try do
+            apply(Seedling.MCP.Supervisor, :connections, [sup])
+          rescue
+            _ -> %{}
+          catch
+            :exit, _ -> %{}
+          end
+
+        cleanup = installed ++ Enum.map(servers, &clients[&1])
+
+        Enum.each(Enum.filter(Enum.uniq(cleanup), &is_pid/1), fn pid ->
+          try do
+            apply(Seedling.MCP, :unwatch, [pid, name])
+          rescue
+            _ -> :ok
+          catch
+            :exit, _ -> :ok
+          end
+        end)
+
+        {:error, {:mcp_watch, error}}
     end
   end
 
@@ -58,6 +150,9 @@ defmodule Seedling.Delegation do
 
       not is_integer(opts[:max_context]) or opts[:max_context] < 8192 ->
         {:error, :context_must_leave_reporting_room}
+
+      not is_integer(Keyword.get(opts, :poll_ms, 1000)) or Keyword.get(opts, :poll_ms, 1000) <= 0 ->
+        {:error, :invalid_poll_ms}
 
       NanoAgent.whereis(name) != nil ->
         {:error, :name_in_use}
@@ -149,7 +244,7 @@ defmodule Seedling.Delegation do
   end
 
   @doc "Connect child notification routing to already-supervised MCP clients before the first turn."
-  def setup_mcp(name, opts) do
+  def setup_mcp(_name, opts) do
     servers = Keyword.get(opts, :mcp, []) || []
 
     if servers == [] do
@@ -165,8 +260,7 @@ defmodule Seedling.Delegation do
 
         Enum.reduce_while(servers, {:ok, []}, fn server, {:ok, acc} ->
           with {:ok, pid} <- apply(Seedling.MCP, :ensure_connection, [server, connection_opts]),
-               :ok <- mcp_ready(pid, deadline),
-               :ok <- apply(Seedling.MCP, :watch, [pid, name]) do
+               :ok <- mcp_ready(pid, deadline) do
             {:cont, {:ok, acc ++ [server]}}
           else
             error -> {:halt, {:error, {:mcp, server, error}}}
