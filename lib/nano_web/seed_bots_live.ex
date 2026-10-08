@@ -8,10 +8,12 @@ defmodule NanoWeb.SeedBotsLive do
   """
   use Phoenix.LiveView
   alias Phoenix.LiveView.JS
-  alias Nano.SeedBots
 
   def mount(_params, _session, socket) do
-    if connected?(socket), do: SeedBots.subscribe()
+    if connected?(socket) do
+      SeedBots.subscribe()
+      :timer.send_interval(1000, :statuses)
+    end
 
     {:ok,
      socket
@@ -27,9 +29,18 @@ defmodule NanoWeb.SeedBotsLive do
        creating: false,
        error: nil,
        notice: nil,
+       statuses: %{},
+       requests: %{},
        notifications: false
      )
      |> refresh()}
+  end
+
+  def handle_info(:statuses, socket) do
+    statuses =
+      if socket.assigns.current, do: SeedBots.statuses(socket.assigns.current.id), else: %{}
+
+    {:noreply, assign(socket, statuses: statuses)}
   end
 
   def handle_info({:seed_bots, _}, socket) do
@@ -156,6 +167,22 @@ defmodule NanoWeb.SeedBotsLive do
   def handle_event("notifications", _, socket),
     do: {:noreply, assign(socket, notifications: not socket.assigns.notifications)}
 
+  def handle_event("stop", _, socket) do
+    if socket.assigns.current, do: SeedBots.stop(socket.assigns.current.id)
+    {:noreply, socket}
+  end
+
+  def handle_event("answer", %{"request" => rid, "text" => text}, socket) do
+    case SeedBots.answer(rid, text) do
+      :ok ->
+        {:noreply, refresh(socket)}
+
+      _ ->
+        {:noreply,
+         assign(socket, error: "Could not submit answer; request may already be answered.")}
+    end
+  end
+
   def handle_event("dismiss", _, socket), do: {:noreply, assign(socket, notice: nil)}
 
   defp ensure_session(%{assigns: %{current: nil, selected: ids}}),
@@ -169,7 +196,20 @@ defmodule NanoWeb.SeedBotsLive do
     current =
       if socket.assigns.current, do: Enum.find(sessions, &(&1.id == socket.assigns.current.id))
 
-    assign(socket, bots: SeedBots.bots(), sessions: sessions, current: current)
+    requests =
+      for s <- sessions,
+          m <- s.messages,
+          rid = Map.get(m, :request_id),
+          rid != nil,
+          into: %{},
+          do: {rid, SeedBots.request(rid)}
+
+    assign(socket,
+      bots: SeedBots.bots(),
+      sessions: sessions,
+      current: current,
+      requests: requests
+    )
   end
 
   defp matches?(text, query), do: String.contains?(String.downcase(text), String.downcase(query))
@@ -193,6 +233,7 @@ defmodule NanoWeb.SeedBotsLive do
   end
 
   defp author_name(author, _) when author in [:user, "user"], do: "You"
+  defp author_name("system", _), do: "Chat"
   defp author_name(author, bots), do: bot(bots, author).name
   attr :bot, :map, required: true
 
@@ -261,7 +302,19 @@ defmodule NanoWeb.SeedBotsLive do
             phx-value-id={id}
             aria-label={"Remove #{bot(@bots, id).name}"}
           >×</button></span>
+          <button :if={@current} phx-click="stop">Stop bots</button>
         </header>
+        <p
+          :for={{bid, status} <- @statuses}
+          :if={status != :idle}
+          role="status"
+          class="sb-muted"
+          style="margin:10px 28px"
+        >
+          {bot(@bots, bid).name}: {if status == :thinking,
+            do: "Thinking…",
+            else: "Unavailable; check operator dashboard"}
+        </p>
         <div :if={!@current} class="sb-picker">
           <form phx-change="query">
             <input
@@ -324,6 +377,15 @@ defmodule NanoWeb.SeedBotsLive do
             <span class="sb-author">{author_name(m.author, @bots)}</span><div class="sb-bubble">
               {m.text}
             </div>
+            <form
+              :if={Map.get(m, :request_id) && get_in(@requests, [m.request_id, :status]) == :pending}
+              phx-submit="answer"
+              class="sb-chip"
+            >
+              <input type="hidden" name="request" value={Map.get(m, :request_id)} />
+              <input name="text" aria-label="Answer request" required class="sb-input" />
+              <button type="submit">Answer</button>
+            </form>
           </li>
         </ol>
         <div :if={!@current || @current.messages == []} class="sb-empty">

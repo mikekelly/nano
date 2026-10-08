@@ -92,27 +92,33 @@ defmodule SeedBots do
 
   def handle_call({:session, id}, _, s), do: {:reply, s.data.sessions[id], s}
 
-  def handle_call({:create_bot, attrs}, _, s) do
+  def handle_call({:create_bot, attrs}, _, s) when is_map(attrs) do
     name = Map.get(attrs, :name, Map.get(attrs, "name", ""))
 
-    if valid_text?(name, 80) do
-      bot = %{
-        id: id(),
-        name: String.trim(name),
-        description:
-          Map.get(
-            attrs,
-            :description,
-            Map.get(attrs, "description", "A helpful, thoughtful companion.")
-          ),
-        color: Enum.random(["#6366f1", "#0891b2", "#c026d3", "#ea580c", "#059669"])
-      }
+    description =
+      Map.get(
+        attrs,
+        :description,
+        Map.get(attrs, "description", "A helpful, thoughtful companion.")
+      )
 
+    description = if description == "", do: "A helpful, thoughtful companion.", else: description
+    color = Map.get(attrs, :color, Map.get(attrs, "color"))
+
+    color =
+      if is_binary(color) and color =~ ~r/^#[0-9a-fA-F]{6}$/,
+        do: color,
+        else: Enum.random(["#6366f1", "#0891b2", "#c026d3", "#ea580c", "#059669"])
+
+    if valid_text?(name, 80) and valid_text?(description, 2000) do
+      bot = %{id: id(), name: String.trim(name), description: description, color: color}
       commit(s, put_in(s.data, [:bots, bot.id], bot), {:ok, bot})
     else
-      {:reply, {:error, :invalid_name}, s}
+      {:reply, {:error, :invalid_identity}, s}
     end
   end
+
+  def handle_call({:create_bot, _}, _, s), do: {:reply, {:error, :invalid_identity}, s}
 
   def handle_call({:create_session, ids, opts}, _, s) do
     ids = Enum.uniq(ids)
@@ -219,8 +225,9 @@ defmodule SeedBots do
     end
   end
 
-  def handle_call({:memories, bot, query}, _, s) do
-    {:reply, retrieve(s, bot, query), s}
+  def handle_call({:memories, bot, query}, from, s) do
+    spawn(fn -> GenServer.reply(from, retrieve(s, bot, query)) end)
+    {:noreply, s}
   end
 
   def handle_call({:ask, sid, bot, question, pid}, _, s) do
@@ -259,8 +266,17 @@ defmodule SeedBots do
     case s.data.requests[rid] do
       %{status: :pending} = req ->
         if valid_text?(text, 32_000) do
+          message = %{
+            id: id(),
+            author: "user",
+            text: text,
+            inserted_at: System.system_time(:millisecond)
+          }
+
           data =
-            put_in(s.data, [:requests, rid], Map.merge(req, %{status: :answered, answer: text}))
+            s.data
+            |> put_in([:requests, rid], Map.merge(req, %{status: :answered, answer: text}))
+            |> update_in([:sessions, req.session_id, :messages], &(&1 ++ [message]))
 
           case persist(s, data) do
             :ok ->
@@ -308,7 +324,7 @@ defmodule SeedBots do
               _ -> false
             end
 
-          if respond, do: send(owner, {:deliver, sid, bid, msg})
+          if respond, do: send(owner, {:deliver, sid, bid, msg, retrieve(s, bid, msg.text)})
         end)
       end
     end
@@ -316,7 +332,7 @@ defmodule SeedBots do
     {:noreply, s}
   end
 
-  def handle_info({:deliver, sid, bid, msg}, s) do
+  def handle_info({:deliver, sid, bid, msg, memories}, s) do
     chat = s.data.sessions[sid]
 
     if chat.stopped or chat.exchanges >= 8 or Keyword.get(s.opts, :agents, true) == false do
@@ -337,7 +353,7 @@ defmodule SeedBots do
             author: msg.author,
             text: msg.text,
             conversation: Enum.take(chat.messages, -30),
-            memories: retrieve(s, bid, msg.text)
+            memories: memories
           })
 
           {:noreply, %{s | agents: Map.put(s.agents, {sid, bid}, pid)}}

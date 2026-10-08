@@ -17,6 +17,8 @@ defmodule NanoWeb.SeedBotsLiveTest do
       creating: false,
       error: nil,
       notice: nil,
+      statuses: %{},
+      requests: %{},
       notifications: false
     }
   end
