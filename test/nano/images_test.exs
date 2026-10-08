@@ -2,7 +2,7 @@ defmodule Nano.ImagesTest do
   use ExUnit.Case, async: false
   alias Nano.FakeOpenRouter, as: Fake
 
-  @png "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6NUAAAAAASUVORK5CYII="
+  @png "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAAB3RJTUUH6goIDC8zUNkCFQAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAldEVYdGRhdGU6Y3JlYXRlADIwMjYtMTAtMDhUMTI6NDc6NTErMDA6MDAp2KFtAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDI2LTEwLTA4VDEyOjQ3OjUxKzAwOjAwWIUZ0QAAACh0RVh0ZGF0ZTp0aW1lc3RhbXAAMjAyNi0xMC0wOFQxMjo0Nzo1MSswMDowMA+QOA4AAAAASUVORK5CYII="
 
   setup do
     dir = Path.join(System.tmp_dir!(), "orion-images-#{System.unique_integer([:positive])}")
@@ -63,6 +63,17 @@ defmodule Nano.ImagesTest do
   test "rejects bad type, size, dimensions and path traversal" do
     assert {:error, _} = Nano.Images.from_base64("%%")
     assert {:error, _} = Nano.Images.store("not png")
+
+    assert {:error, _} =
+             Nano.Images.store(<<137, 80, 78, 71, 13, 10, 26, 10, 13::32, "IHDR", 1::32, 1::32>>)
+
+    assert {:error, _} =
+             Nano.Images.store(
+               Base.decode64!(
+                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6NUAAAAAASUVORK5CYII="
+               )
+             )
+
     assert {:error, _} = Nano.Images.store(String.duplicate("x", 3_750_001))
 
     assert {:error, _} =

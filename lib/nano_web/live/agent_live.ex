@@ -29,6 +29,11 @@ defmodule NanoWeb.AgentLive do
       |> stream_configure(:entries, dom_id: &"e-#{&1["seq"]}")
       |> stream(:entries, [])
       |> mount_shared()
+      |> allow_upload(:image,
+        accept: ~w(.png .jpg .jpeg .gif),
+        max_entries: 1,
+        max_file_size: 3_750_000
+      )
       |> sync()
 
     {:ok, socket}
@@ -67,6 +72,26 @@ defmodule NanoWeb.AgentLive do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  def handle_event("validate-image", _, socket), do: {:noreply, socket}
+
+  def handle_event("send-image", params, socket) do
+    text = Map.get(params, "image_text", "")
+
+    results =
+      consume_uploaded_entries(socket, :image, fn %{path: path}, _entry ->
+        {:ok, Nano.Ops.send_image(socket.assigns.name, path, text)}
+      end)
+
+    notice =
+      case results do
+        [:ok] -> {:ok, "image sent"}
+        [{:error, reason}] -> {:error, inspect(reason)}
+        _ -> {:error, "select one valid PNG, JPEG or GIF image (at most 3.75 MB)"}
+      end
+
+    {:noreply, assign(socket, notice: notice)}
   end
 
   def handle_event("draft", params, socket),
@@ -160,10 +185,18 @@ defmodule NanoWeb.AgentLive do
 
   defp shown?(_, %{"type" => type} = e) do
     case type do
-      t when t in ~w(event_received harness_note agent_started tool_call tool_result) -> true
-      "model_response" -> present?(e["text"]) or present?(e["reasoning"])
-      "model_error" -> e["retry"] != true
-      _ -> false
+      t
+      when t in ~w(event_received harness_note agent_started tool_call tool_result images_received compaction_completed compaction_failed) ->
+        true
+
+      "model_response" ->
+        present?(e["text"]) or present?(e["reasoning"])
+
+      "model_error" ->
+        e["retry"] != true
+
+      _ ->
+        false
     end
   end
 
@@ -234,7 +267,24 @@ defmodule NanoWeb.AgentLive do
                 <.send_form id="send-raw" to={@name} draft={@draft} sent={@sent} boxes={["term"]} />
               </div>
             </details>
+            <details id="image-menu">
+              <summary class="button">Send image</summary>
+              <form id="image-form" phx-change="validate-image" phx-submit="send-image">
+                <.live_file_input upload={@uploads.image} />
+                <input
+                  name="image_text"
+                  placeholder="Message with image (optional)"
+                  maxlength="16000"
+                />
+                <p :for={entry <- @uploads.image.entries}>
+                  {entry.client_name} · {entry.progress}%
+                  <span :for={error <- upload_errors(@uploads.image, entry)}>{inspect(error)}</span>
+                </p>
+                <button type="submit">Send image</button>
+              </form>
+            </details>
             <button phx-click="stop"><.icon name="stop" /> Stop</button>
+
             <button phx-click="restart" disabled={@agent.pid == nil}><.icon name="restart" /> Restart</button>
             <button :if={@agent.suspended} phx-click="resume" class="warn"><.icon name="play" />
             Resume</button>
@@ -315,6 +365,36 @@ defmodule NanoWeb.AgentLive do
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
       <pre>{printed(@e["message"])}</pre>
+    </li>
+    """
+  end
+
+  defp entry(%{e: %{"type" => "images_received"}} = assigns) do
+    ~H"""
+    <li id={@id} class="entry images">
+      <.meta e={@e} label="image attachments" />
+      <p :if={!@e["visible_to_model"]}>The model cannot see these images.</p>
+      <a :for={ref <- @e["images"] || []} href={image_src(ref)} target="_blank" rel="noopener">
+        <img
+          src={image_src(ref)}
+          alt={"Image attachment #{ref["width"]} × #{ref["height"]}"}
+          loading="lazy"
+          style="max-width:100%;max-height:480px"
+        />
+      </a>
+    </li>
+    """
+  end
+
+  defp entry(%{e: %{"type" => type}} = assigns)
+       when type in ~w(compaction_started compaction_completed compaction_failed) do
+    ~H"""
+    <li id={@id} class="entry note compaction">
+      <.meta e={@e} label={@e["type"]} />
+      <p>Automatic harness compaction · {txt(@e["model"])}</p>
+      <pre :if={@e["summary"]}>{txt(@e["summary"])}</pre>
+      <pre :if={@e["error"]}>{txt(@e["error"])}</pre>
+      <p :if={@e["record"]}>Full record: {txt(@e["record"])}</p>
     </li>
     """
   end
@@ -509,6 +589,9 @@ defmodule NanoWeb.AgentLive do
     """
   end
 
+  defp read(%{e: %{"type" => type}} = assigns)
+       when type in ~w(images_received compaction_completed compaction_failed), do: entry(assigns)
+
   defp read(%{e: %{"type" => "harness_note"}} = assigns) do
     ~H"""
     <li id={@id} class={["r note", halt_note?(@e["text"]) && "halt"]}>{txt(@e["text"])}</li>
@@ -594,6 +677,12 @@ defmodule NanoWeb.AgentLive do
   end
 
   defp read(assigns), do: ~H|<li id={@id} hidden></li>|
+
+  defp image_src(%{"id" => id}) when is_binary(id) do
+    if id =~ ~r/\A[0-9a-f]{64}\z/, do: "/api/images/" <> id, else: nil
+  end
+
+  defp image_src(_), do: nil
 
   # The harness's own notes about halting and un-halting say "halted you".
   defp halt_note?(text), do: is_binary(text) and String.contains?(text, "halted you")

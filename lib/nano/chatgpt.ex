@@ -313,7 +313,8 @@ defmodule Nano.ChatGPT do
       Nano.ChatGPT.Auth.status().status != :connected ->
         []
 
-      match?({^config, until, _} when until > now, cached) ->
+      match?({^config, until, _} when until > now, cached) and
+          Enum.all?(elem(cached, 2), &Map.has_key?(&1, :input_modalities)) ->
         elem(cached, 2)
 
       true ->

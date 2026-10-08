@@ -62,6 +62,43 @@ defmodule Nano.ChatGPTTest do
     eventually(fn -> (pid = Process.whereis(Auth)) && pid != old end)
   end
 
+  test "image references become Responses input_image parts only at the wire boundary" do
+    connect!()
+    model = Fake.model()
+
+    png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAAB3RJTUUH6goIDC8zUNkCFQAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAldEVYdGRhdGU6Y3JlYXRlADIwMjYtMTAtMDhUMTI6NDc6NTErMDA6MDAp2KFtAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDI2LTEwLTA4VDEyOjQ3OjUxKzAwOjAwWIUZ0QAAACh0RVh0ZGF0ZTp0aW1lc3RhbXAAMjAyNi0xMC0wOFQxMjo0Nzo1MSswMDowMA+QOA4AAAAASUVORK5CYII="
+
+    assert {:ok, ref} = Nano.Images.from_base64(png)
+
+    messages = [
+      %{"role" => "system", "content" => "See image"},
+      %{"role" => "user", "content" => Nano.Images.parts("Describe", [ref])}
+    ]
+
+    Fake.push(model, text: "seen")
+
+    task =
+      Task.async(fn -> Nano.Model.chat("openai-codex/" <> model, messages, [], "off", 1000) end)
+
+    assert_receive {:chatgpt_request, ^model, body, _headers}, 2000
+
+    assert [
+             %{
+               "role" => "user",
+               "content" => [
+                 %{"type" => "input_text", "text" => "Describe"},
+                 %{"type" => "input_image", "image_url" => url}
+               ]
+             }
+           ] = body["input"]
+
+    assert url == "data:image/png;base64," <> png
+    refute Map.has_key?(body, "prompt_cache_key")
+    assert {:ok, _} = Task.await(task)
+    refute inspect(messages) =~ png
+  end
+
   ## Device-code login
 
   test "device flow: a code to enter, polling while pending, then tokens saved 0600" do
