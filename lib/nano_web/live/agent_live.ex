@@ -101,7 +101,7 @@ defmodule NanoWeb.AgentLive do
     name = socket.assigns.name
     agent = Nano.Ops.agent(name)
     spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
-    socket = assign(socket, agent: agent, spawned: spawned)
+    socket = assign(socket, agent: agent, spawned: spawned, goals: Seedling.Goals.dashboard(name))
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -161,10 +161,18 @@ defmodule NanoWeb.AgentLive do
 
   defp shown?(_, %{"type" => type} = e) do
     case type do
-      t when t in ~w(event_received harness_note agent_started tool_call tool_result) -> true
-      "model_response" -> present?(e["text"]) or present?(e["reasoning"])
-      "model_error" -> e["retry"] != true
-      _ -> false
+      t
+      when t in ~w(event_received harness_note agent_started tool_call tool_result context_bob drift_judgement bobbing_config bobbing_error) ->
+        true
+
+      "model_response" ->
+        present?(e["text"]) or present?(e["reasoning"])
+
+      "model_error" ->
+        e["retry"] != true
+
+      _ ->
+        false
     end
   end
 
@@ -266,6 +274,8 @@ defmodule NanoWeb.AgentLive do
           <pre>{@agent.system_prompt}</pre>
         </details>
 
+        <.goals_panel goals={@goals} />
+
         <nav class="views">
           <.link
             :for={{v, icon} <- [{"reading", "book"}, {"debug", "list"}]}
@@ -292,6 +302,35 @@ defmodule NanoWeb.AgentLive do
         </div>
       </main>
     </div>
+    """
+  end
+
+  attr :goals, :any, required: true
+
+  defp goals_panel(assigns) do
+    ~H"""
+    <section id="agent-goals" class="goals-panel">
+      <h3>Goals</h3>
+      <%= case @goals do %>
+        <% {:ok, snapshot} -> %>
+          <p class="dim">{snapshot.open} open / {snapshot.total} total</p>
+          <p :if={snapshot.open == 0} class="dim">No open goals.</p>
+          <ul>
+            <li :for={goal <- snapshot.goals} data-goal-id={goal["id"]}>
+              <strong>{goal["title"]}</strong>
+              · {goal["status"]}
+              <span :if={goal["id"] == snapshot.current_id}> · current</span>
+              <span :if={goal["parent_id"]} class="dim"> · step of {goal["parent_id"]}</span>
+              <p>Why: {goal["why"]}</p>
+            </li>
+          </ul>
+          <p :if={snapshot.truncated} class="dim">Showing the first 50 open goals.</p>
+        <% :loading -> %>
+          <p class="dim">Loading goals…</p>
+        <% {:error, reason} -> %>
+          <p class="error">Goals unavailable: {inspect(reason)}</p>
+      <% end %>
+    </section>
     """
   end
 
@@ -591,6 +630,17 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class="r state error">
       model error, not retried: status {txt(@e["status"] || "none")} · {body(@e["body"])}
+    </li>
+    """
+  end
+
+  defp read(%{e: %{"type" => type}} = assigns)
+       when type in ~w(context_bob drift_judgement bobbing_config bobbing_error) do
+    ~H"""
+    <li id={@id} class="r note">
+      <div class="r-label">{String.replace(@e["type"], "_", " ")} <time>{time(@e["at"])}</time></div>
+      <pre :if={@e["text"]}>{@e["text"]}</pre>
+      <pre>{show(Map.drop(@e, ~w(seq at agent_id agent type text)))}</pre>
     </li>
     """
   end
