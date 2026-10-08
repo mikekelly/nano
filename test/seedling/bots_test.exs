@@ -170,4 +170,50 @@ defmodule Seedling.BotsTest do
     assert {:error, _} = Bots.memories(ctx.bot, "query", ctx.opts ++ [limit: 99])
     assert {:ok, _} = Bots.snapshot(ctx.opts)
   end
+
+  test "malformed arguments, dead servers and corrupt identities return errors without replacement",
+       ctx do
+    assert {:error, _} = Bots.snapshot(:bad)
+    assert {:error, _} = Bots.create_bot("Bad", ctx.opts ++ [description: 1])
+    assert {:error, _} = Bots.configure(%{{:bad, :key} => 1}, ctx.opts)
+    assert {:error, _} = Bots.notification_limits("id", %{{:bad, :key} => 1}, ctx.opts)
+    assert {:error, _} = Bots.say("id", %{}, ctx.opts)
+    assert {:error, _} = Bots.attach(5, "file", ctx.opts)
+    assert {:error, _} = Bots.remember(ctx.bot, "Fact", ctx.opts ++ [session: %{}])
+    assert {:error, _} = Bots.ask_human(ctx.bot, "Question", ctx.opts ++ [expires_in: "soon"])
+    assert Process.alive?(ctx.server)
+    root = Path.join(ctx.root, "broken")
+    File.mkdir_p!(root)
+
+    invalid =
+      Jason.encode!(%{
+        version: 1,
+        bots: %{"bad" => nil},
+        sessions: %{},
+        memories: %{},
+        requests: %{},
+        attachments: %{},
+        config: %{}
+      })
+
+    File.write!(Path.join(root, "store.json"), invalid)
+    assert {:error, e} = Bots.server(root)
+    assert e =~ "valid backup"
+    assert {:error, _} = Bots.snapshot(root: root)
+    assert File.read!(Path.join(root, "store.json")) == invalid
+    GenServer.stop(ctx.server)
+    assert {:error, e} = Bots.snapshot(ctx.opts)
+    assert e =~ "unavailable"
+  end
+
+  test "single-bot proactive messages do not consume a bot-to-bot budget", ctx do
+    sid = session(ctx, [ctx.bot])
+    {:ok, _} = Bots.configure(%{exchange_ceiling: 1}, ctx.opts)
+    {:ok, _} = Bots.say(sid, "Hello", ctx.opts)
+    assert_receive {:delivered, _, _, _, _, pid}
+    assert {:ok, _} = post(ctx, pid, ctx.bot, sid, "First")
+    assert {:ok, _} = post(ctx, pid, ctx.bot, sid, "Second")
+    {:ok, snapshot} = Bots.snapshot(ctx.opts)
+    assert hd(snapshot.sessions)["exchanges"] == 0
+  end
 end

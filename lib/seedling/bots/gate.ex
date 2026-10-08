@@ -18,8 +18,8 @@ defmodule Seedling.Bots.Gate do
         bot: Map.take(bot, ~w(name description voice)),
         participants: session["bots"],
         exchanges: session["exchanges"],
-        message: Map.take(message, ~w(from name text)),
-        recent: Enum.take(session["messages"], -6) |> Enum.map(&Map.take(&1, ~w(from name text)))
+        message: compact_message(message),
+        recent: Enum.take(session["messages"], -6) |> Enum.map(&compact_message(&1, 700))
       })
 
     decision = opts[:decision] || Seedling.Decision
@@ -58,7 +58,7 @@ defmodule Seedling.Bots.Gate do
            }}
         end)
 
-      state = Jason.encode!(%{bot: bot["name"], message: message["text"]})
+      state = Jason.encode!(%{bot: bot["name"], message: String.slice(message["text"], 0, 3000)})
 
       result =
         if Code.ensure_loaded?(decision),
@@ -69,7 +69,7 @@ defmodule Seedling.Bots.Gate do
         {:ok, %{answers: answers}} when is_map(answers) ->
           candidates
           |> Enum.with_index()
-          |> Enum.map(fn {m, i} -> {answers["memory_#{i}"], m} end)
+          |> Enum.map(fn {m, i} -> {noul(answers["memory_#{i}"]), m} end)
           |> Enum.filter(fn {p, _} -> is_number(p) and p >= 0.6 and p <= 1 end)
           |> Enum.sort_by(&elem(&1, 0), :desc)
           |> Enum.take(opts[:limit] || 5)
@@ -80,6 +80,15 @@ defmodule Seedling.Bots.Gate do
       end
     end
   end
+
+  defp noul(%{"type" => "noul", "noul" => p}), do: p
+  defp noul(_), do: nil
+
+  defp compact_message(message, limit \\ 3000),
+    do:
+      message
+      |> Map.take(~w(from name text))
+      |> Map.update("text", "", &String.slice(&1, 0, limit))
 
   defp lexical(memories, query, limit) do
     words = words(query)

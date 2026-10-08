@@ -131,4 +131,20 @@ defmodule SeedlingWeb.BotLiveTest do
     element(view, "#bot-settings") |> render_click()
     assert has_element?(view, "#settings-panel", "Provider credentials stay in operator settings")
   end
+
+  test "validated pictures render through immutable image component; mobile new-chat pane opens",
+       ctx do
+    {:ok, b} = Bots.create_bot("Vision")
+    {:ok, s} = Bots.create_session([b["id"]])
+    path = Path.join(ctx.root, "picture.png")
+    File.write!(path, Seedling.ImageFixture.png())
+    {:ok, a} = Bots.attach(path, "picture.png")
+    {:ok, _} = Bots.say(s["id"], "Look at this", attachments: [a["id"]])
+    {:ok, view, _} = live(ctx.conn, "/bots?session=" <> s["id"])
+    assert has_element?(view, "img[src='/api/images/#{a["image"]["id"]}']")
+    assert has_element?(view, "a.attachment", "picture.png")
+    element(view, "#new-chat") |> render_click()
+    assert_patch(view, "/bots?new=1")
+    assert has_element?(view, ".bots-app.open #recipient-query")
+  end
 end

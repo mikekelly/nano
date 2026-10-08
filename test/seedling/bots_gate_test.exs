@@ -6,7 +6,16 @@ defmodule Seedling.Bots.GateTest do
     def probability(_, _, _), do: {:ok, %{probability: 0.7, model: "jev", usage: %{}}}
 
     def evaluate(_, _, _),
-      do: {:ok, %{answers: %{"memory_0" => 0.9, "memory_1" => 0.3}, model: "jev", usage: %{}}}
+      do:
+        {:ok,
+         %{
+           answers: %{
+             "memory_0" => %{"type" => "noul", "noul" => 0.9},
+             "memory_1" => %{"type" => "noul", "noul" => 0.3}
+           },
+           model: "jev",
+           usage: %{}
+         }}
   end
 
   defmodule Unavailable do

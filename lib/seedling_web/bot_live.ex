@@ -18,6 +18,9 @@ defmodule SeedlingWeb.BotLive do
       |> assign(
         page_title: "Bots",
         sid: nil,
+        composing: false,
+        session_limit: 200,
+        more_chats: false,
         selected: [],
         query: "",
         search: "",
@@ -36,7 +39,10 @@ defmodule SeedlingWeb.BotLive do
   end
 
   def handle_params(params, _, socket) do
-    {:noreply, socket |> assign(sid: params["session"], earlier: nil) |> load()}
+    {:noreply,
+     socket
+     |> assign(sid: params["session"], composing: params["new"] == "1", earlier: nil)
+     |> load()}
   end
 
   def handle_info({:bots, event}, socket) do
@@ -59,6 +65,11 @@ defmodule SeedlingWeb.BotLive do
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
+
+  def handle_event("more-chats", _, socket),
+    do:
+      {:noreply,
+       socket |> assign(session_limit: min(socket.assigns.session_limit + 200, 1000)) |> load()}
 
   def handle_event("new", _, socket),
     do:
@@ -228,7 +239,28 @@ defmodule SeedlingWeb.BotLive do
   defp result(socket, {:error, e}), do: {:noreply, assign(socket, error: e)}
 
   defp load(socket) do
-    {:ok, snapshot} = Bots.snapshot()
+    case Bots.snapshot(session: socket.assigns.sid, limit: socket.assigns.session_limit) do
+      {:ok, snapshot} ->
+        load_snapshot(socket, snapshot)
+
+      {:error, error} ->
+        assign(socket,
+          bots: [],
+          sessions: [],
+          requests: [],
+          statuses: %{},
+          config: %{},
+          session: nil,
+          messages: [],
+          files: %{},
+          has_earlier: false,
+          more_chats: false,
+          error: error
+        )
+    end
+  end
+
+  defp load_snapshot(socket, snapshot) do
     session = Enum.find(snapshot.sessions, &(&1["id"] == socket.assigns.sid))
 
     page =
@@ -252,6 +284,7 @@ defmodule SeedlingWeb.BotLive do
     assign(socket,
       bots: Enum.sort_by(snapshot.bots, & &1["created_at"]),
       sessions: snapshot.sessions,
+      more_chats: snapshot.truncated,
       requests: snapshot.requests,
       statuses: snapshot.statuses,
       config: snapshot.config,
@@ -275,7 +308,10 @@ defmodule SeedlingWeb.BotLive do
   def render(assigns) do
     ~H"""
     <main
-      class={["bots-app", (@sid || @selected != [] || @create || @query != "") && "open"]}
+      class={[
+        "bots-app",
+        (@sid || @composing || @settings || @selected != [] || @create || @query != "") && "open"
+      ]}
       id="bots-app"
     >
       <aside class="bot-sidebar">
@@ -328,6 +364,7 @@ defmodule SeedlingWeb.BotLive do
             </div>
           </.link>
         </nav>
+        <button :if={@more_chats} phx-click="more-chats">Show more chats</button>
         <div class="sidebar-bottom">
           <span class="human-face">You</span><span>You</span><button
             id="bot-settings"
@@ -338,6 +375,9 @@ defmodule SeedlingWeb.BotLive do
       </aside>
       <section class="bot-pane">
         <div :if={@error} class="alert" role="alert">{@error}</div>
+        <div :if={!@config["model"] && !@settings} class="alert" id="model-setup">
+          Choose a connected model before chatting. <button phx-click="settings">Set up bots</button>
+        </div>
         <div :if={@settings} class="panel" id="settings-panel">
           <h2>Bot model settings</h2><p class="muted">
             Choose a connected model and set spending limits. Provider credentials stay in operator settings, never in chat.
@@ -469,6 +509,14 @@ defmodule SeedlingWeb.BotLive do
               <small>{m["name"]} · {stamp(m["at"])}</small><div class="bubble">
                 <div :if={m["request"]} class="request-label">A human answer is needed</div>
                 {markdown(m["text"])}
+                <Seedling.ImageComponents.images refs={
+                  Enum.flat_map(m["attachments"], fn id ->
+                    if ref = @files[id]["image"], do: [ref], else: []
+                  end)
+                } />
+                <p :for={id <- m["attachments"]} :if={@files[id]["image_notice"]} class="muted">
+                  {@files[id]["image_notice"]}
+                </p>
                 <a
                   :for={id <- m["attachments"]}
                   class="attachment"

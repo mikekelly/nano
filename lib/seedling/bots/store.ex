@@ -4,7 +4,11 @@ defmodule Seedling.Bots.Store do
   alias Seedling.Bots.{Runtime, Gate}
   @colors ["#8b7bd8", "#67a99b", "#e0a164", "#668eb8", "#ca7da1"]
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts),
+    do:
+      GenServer.start_link(__MODULE__, opts,
+        name: {:global, {__MODULE__, Path.expand(Keyword.fetch!(opts, :root))}}
+      )
 
   def init(opts) do
     root = Path.expand(Keyword.fetch!(opts, :root))
@@ -31,7 +35,12 @@ defmodule Seedling.Bots.Store do
   defp load(path) do
     case File.read(path) do
       {:ok, bytes} ->
-        with {:ok, %{"version" => 1} = data} <- Jason.decode(bytes), do: {:ok, data}
+        with {:ok, %{"version" => 1} = data} <- Jason.decode(bytes),
+             true <- Seedling.Bots.Schema.valid?(data) do
+          {:ok, data}
+        else
+          _ -> {:error, :invalid_store}
+        end
 
       {:error, :enoent} ->
         {:ok,
@@ -52,12 +61,13 @@ defmodule Seedling.Bots.Store do
 
   def handle_call(:topic, _, s), do: {:reply, {:ok, %{topic: s.topic}}, s}
 
-  def handle_call(:snapshot, _, s) do
+  def handle_call({:snapshot, opts}, _, s) do
     sessions =
       s.data["sessions"]
       |> Map.values()
       |> Enum.sort_by(& &1["updated_at"], :desc)
-      |> Enum.take(200)
+      |> Enum.take(opts[:limit] || 200)
+      |> include_session(s.data["sessions"][opts[:session]])
       |> Enum.map(fn session ->
         Map.drop(session, ["messages"])
         |> Map.put(
@@ -73,6 +83,7 @@ defmodule Seedling.Bots.Store do
     requests =
       expire(s.data["requests"])
       |> Map.values()
+      |> Enum.filter(fn r -> opts[:session] == nil or r["session"] == opts[:session] end)
       |> Enum.sort_by(& &1["created_at"], :desc)
       |> Enum.take(200)
       |> Enum.map(&Map.drop(&1, ["reply_to"]))
@@ -84,11 +95,25 @@ defmodule Seedling.Bots.Store do
         sessions: sessions,
         requests: requests,
         statuses: s.statuses,
-        config: s.data["config"]
+        config: s.data["config"],
+        truncated: map_size(s.data["sessions"]) > length(sessions),
+        notice:
+          if(map_size(s.data["sessions"]) > length(sessions),
+            do: "Recent chats limited; increase snapshot limit up to 1000.",
+            else: nil
+          ),
+        session_count: map_size(s.data["sessions"]),
+        requests_truncated: map_size(s.data["requests"]) > length(requests),
+        request_count: map_size(s.data["requests"]),
+        requests_notice:
+          if(map_size(s.data["requests"]) > length(requests),
+            do: "Requests limited to latest 200; answer via the request id or open its session.",
+            else: nil
+          )
       }}, s}
   end
 
-  def handle_call({:configure, config}, _, s) do
+  def handle_call({:configure, config}, _, s) when is_map(config) do
     keys = ~w(model reasoning max_context max_turns max_tokens exchange_ceiling)
     c = Map.new(config, fn {k, v} -> {to_string(k), v} end)
 
@@ -99,15 +124,16 @@ defmodule Seedling.Bots.Store do
     end
   end
 
+  def handle_call({:configure, _}, _, s), do: fail(s, "Configuration must be a map.")
+
   def handle_call({:create_bot, name, opts}, _, s) do
-    if text?(name, 80) and map_size(s.data["bots"]) < 100 do
+    if text?(name, 80) and optional_text?(opts[:description], 500) and
+         optional_text?(opts[:voice], 500) and map_size(s.data["bots"]) < 100 do
       bot = %{
         "id" => id(),
         "name" => String.trim(name),
-        "description" =>
-          String.slice(opts[:description] || "A friendly, thoughtful helper", 0, 500),
-        "voice" =>
-          String.slice(opts[:voice] || "Warm, clear and honest. Ask when uncertain.", 0, 500),
+        "description" => default_text(opts[:description], "A friendly, thoughtful helper"),
+        "voice" => default_text(opts[:voice], "Warm, clear and honest. Ask when uncertain."),
         "color" => Enum.at(@colors, rem(map_size(s.data["bots"]), length(@colors))),
         "shape" => rem(map_size(s.data["bots"]), 3),
         "created_at" => now()
@@ -197,7 +223,8 @@ defmodule Seedling.Bots.Store do
 
         true ->
           msg = message(bid, s.data["bots"][bid]["name"], text, attachments)
-          session = Map.update!(session, "exchanges", &(&1 + 1))
+          increment = if length(session["bots"]) > 1, do: 1, else: 0
+          session = Map.update!(session, "exchanges", &(&1 + increment))
           {data, msg} = append(s.data, session, msg)
           data = maybe_ceiling(data, sid, ceiling(s))
           statuses = Map.put(s.statuses, {sid, bid}, "quiet")
@@ -422,7 +449,7 @@ defmodule Seedling.Bots.Store do
       action == :ack and req["state"] != "answered" ->
         fail(s, "Only an answered request can be acknowledged.")
 
-      action == :ack and target_pid(req["reply_to"]) != caller ->
+      action == :ack and not Runtime.caller?(caller, target_pid(req["reply_to"])) ->
         fail(s, "Only the reply recipient can acknowledge.")
 
       action == :cancel and req["state"] != "pending" ->
@@ -457,6 +484,7 @@ defmodule Seedling.Bots.Store do
         }
 
         with :ok <- File.mkdir_p(dir), :ok <- File.write(Path.join(dir, aid), bytes) do
+          attachment = preview(attachment, bytes)
           commit(s, put_in(s.data, ["attachments", aid], attachment), attachment)
         else
           _ -> fail(s, "Cannot save attachment. Check storage permissions.")
@@ -592,6 +620,15 @@ defmodule Seedling.Bots.Store do
   defp public_event(%{"reply_to" => _} = r), do: Map.drop(r, ["reply_to"])
   defp public_event(r), do: r
   defp broadcast(s, event), do: Phoenix.PubSub.broadcast(Nano.PubSub, s.topic, {:bots, event})
+  defp include_session(sessions, nil), do: sessions
+
+  defp include_session(sessions, session),
+    do:
+      if(Enum.any?(sessions, &(&1["id"] == session["id"])),
+        do: sessions,
+        else: sessions ++ [session]
+      )
+
   defp fail(s, text), do: {:reply, {:error, text}, s}
   defp id, do: Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
   defp now, do: System.system_time(:millisecond)
@@ -600,6 +637,13 @@ defmodule Seedling.Bots.Store do
     do:
       is_binary(v) and String.valid?(v) and String.trim(v) != "" and String.length(v) <= max and
         byte_size(v) <= max * 4
+
+  defp optional_text?(nil, _), do: true
+  defp optional_text?("", _), do: true
+  defp optional_text?(value, limit), do: text?(value, limit)
+
+  defp default_text(value, default),
+    do: if(is_binary(value) and String.trim(value) != "", do: value, else: default)
 
   defp ceiling(s), do: s.data["config"]["exchange_ceiling"] || 8
 
@@ -799,6 +843,24 @@ defmodule Seedling.Bots.Store do
            else: r
          )}
       end)
+
+  defp preview(attachment, bytes) do
+    if attachment["type"] in ["image/png", "image/jpeg"] and Code.ensure_loaded?(Seedling.Images) do
+      case apply(Seedling.Images, :store, [bytes]) do
+        {:ok, ref} ->
+          Map.put(attachment, "image", ref)
+
+        {:error, _} ->
+          Map.put(
+            attachment,
+            "image_notice",
+            "Image cannot be previewed or sent to vision; use download."
+          )
+      end
+    else
+      attachment
+    end
+  end
 
   defp mime(<<137, 80, 78, 71, 13, 10, 26, 10, _::binary>>), do: "image/png"
   defp mime(<<255, 216, 255, _::binary>>), do: "image/jpeg"
