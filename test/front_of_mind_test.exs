@@ -2,7 +2,12 @@ defmodule FrontOfMindTest do
   use ExUnit.Case, async: true
 
   setup do
-    root = Path.join(System.tmp_dir!(), "deneb-fom-#{System.unique_integer([:positive])}")
+    root =
+      Path.join(
+        Application.fetch_env!(:nano, :test_dir),
+        "deneb-fom-#{System.unique_integer([:positive])}"
+      )
+
     on_exit(fn -> File.rm_rf!(root) end)
     parent = self()
     opts = [root: root, logger: fn _, type, fields -> send(parent, {type, fields}) end]
@@ -144,6 +149,22 @@ defmodule FrontOfMindTest do
 
       assert_receive {:front_of_mind_drift, %{error: _}}
     end
+  end
+
+  test "disabled drift ignores previous probability and rejects stale configuration results", %{
+    s: s,
+    opts: opts
+  } do
+    FrontOfMind.set("agent", "goal", opts)
+    FrontOfMind.configure("agent", [drift_enabled: true], opts)
+    s = FrontOfMind.before_call(s, opts)
+    {:ok, r} = FrontOfMind.get("agent", opts)
+    judgment = Keyword.put(opts, :judge, fn _, _ -> {:ok, 0.99} end)
+    assert {:ok, _} = FrontOfMind.check_drift(s, r, "", judgment)
+    FrontOfMind.configure("agent", [drift_enabled: false], opts)
+    assert FrontOfMind.before_call(s, opts).transcript == s.transcript
+    assert {:error, :stale_note} = FrontOfMind.check_drift(s, r, "", judgment)
+    assert_receive {:front_of_mind_drift, %{stored: false}}
   end
 
   test "missing notes leave state unchanged; reusable bobbing policy catches shrink", %{
