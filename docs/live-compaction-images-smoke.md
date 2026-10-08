@@ -64,3 +64,41 @@ Separate HTTP fake-provider tests cover exact OpenRouter `image_url` and Codex
 both timelines, explicit nonvisual warnings, decoder failures, JPEG/static GIF acceptance
 and animated GIF refusal. Live OpenRouter vision was not tested: no provider spend was
 needed to prove its wire format, and these results do not claim actual upstream coverage.
+
+## Real coordinator recovery: serialized history larger than a single summary input
+
+A later production run exposed an additional long-life failure not covered by the initial
+small-window smoke: coordinator `orion` reached provider context **256,133 / 272,000**,
+then halted at 14:35:36 because its serialized older prefix was **538,414 bytes**, above
+the conservative single-call guard of **513,904 bytes**. There were 601 older messages
+and 6 recent messages; the full JSON transcript was approximately 1.57 MB. This was a real
+failure, not a manufactured threshold. The original history stayed saved and the agent
+was idle with no task in flight.
+
+Fixes `df1f7af` and `3a5900f` add bounded chronological update passes, without weakening
+that input guard or silently dropping history. Prior checkpoints have reserved space in
+every later input. Oversized individual records use UTF-8-safe annotated continuations;
+there is a 64-pass ceiling and up to three transient attempts per pass. The actual parent
+prefix was independently replayed into two chunks: **459,953 and 78,460 bytes**. Fake HTTP
+regressions prove checkpoint carry, per-call bounds, summed usage/cost, oversized Unicode
+record preservation, and atomic retention of the original transcript on a later failure.
+
+Emergency recovery loaded **only the builder-owned new `Nano.Compaction` module** from its
+committed worktree, then called `Nano.Ops.unhalt("orion")`. No `NanoAgent`, seeded provider,
+or other owner's module was loaded, and no history/bindings/mailbox were manually replaced.
+The coordinator could not answer the permission request while halted; a read-only reviewer
+confirmed quiescence and reviewed the owned-module scope/source before activation.
+
+Actual checkpoint completion: **2026-10-08T15:17:03.304Z**, seq **1455**, full record
+`/data/logs/orion-b0dc85.jsonl`. Both real Codex calls completed, totaling **154,311 prompt
++ 13,315 completion tokens**. The final structured summary was **29,316 bytes**, and the
+recomputed conservative context estimate was **28,728**. The same pid `#PID<0.4487.0>`
+resumed normal model calls; restart count stayed **1** (there was no recovery restart).
+Subsequent provider context was around **20,593**, with one compaction and no halt.
+
+The large recovery took approximately seven minutes; its task remained alive waiting for
+SSL responses rather than silently stopped. Partial failed-pass costs are exposed in the
+new error metadata; `897cb88` adds harness charging of those known counters while preserving
+the original transcript and any budget halt. That separate seeded-harness change was
+committed/tested and handed to the recovered coordinator for approval, not hot-loaded by
+the builder during the emergency recovery.
