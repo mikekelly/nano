@@ -8,7 +8,7 @@ shell). [README.md](README.md) says what Nano Agent is and why.
 | | |
 | --- | --- |
 | [seeding-docs/](seeding-docs/README.md) | Specs for capabilities agents grow from the seed |
-| `priv/system_prompt.txt` | The prompt template, read at every agent start |
+| `prompts/seed.txt` | The prompt template, read at every agent start |
 | `lib/nano_agent.ex` | The harness: one agent, one GenServer |
 | `lib/nano/ops.ex` | Everything an operator can do; the dashboard and API are skins over it |
 | `data/logs/`, `data/state/` | Each agent's JSONL log and saved state; `data/logs/raw/`, its model calls' bytes and timing when the `raw_model_log` setting is on |
@@ -62,6 +62,6 @@ run in `RUNS.md` on the `runs` branch, and `bin/reset`.
 - `mix test`, `mix format --check-formatted` and `mix compile --warnings-as-errors` must pass.
   Tests use scripted fakes of the providers and never spend; the suite is safe to run in
   parallel.
-- The code and `priv/system_prompt.txt` are the source of truth; the module docs describe
+- The code and `prompts/seed.txt` are the source of truth; the module docs describe
   them, and `GET /api` the API. The prompt must stay true of the running system.
 - Prefer removing code to adding it.

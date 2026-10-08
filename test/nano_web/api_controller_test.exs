@@ -437,7 +437,7 @@ defmodule NanoWeb.ApiControllerTest do
       %{"endpoints" => endpoints} = build_conn() |> get("/api") |> json_response(200)
       start = Enum.find(endpoints, &(&1["method"] == "POST" and &1["path"] == "/api/agents"))
       assert start["description"] =~ "system_prompt_file"
-      assert start["description"] =~ "priv/system_prompt.txt"
+      assert start["description"] =~ "prompts/seed.txt"
     end
 
     test "the three limits are passed through; 0 means no limit, a negative is 422" do

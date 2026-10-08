@@ -36,7 +36,7 @@ defmodule NanoWeb.ApiController do
        "included). Optional: start_idle (default true); system_prompt (a template string) or " <>
        "system_prompt_file (a template file, relative to the app directory; system_prompt wins " <>
        "if both are given; default template: the system_prompt_file setting, " <>
-       "priv/system_prompt.txt unless changed). " <>
+       "prompts/seed.txt unless changed). " <>
        "A refusal (422) says what was missing or wrong."},
     {"GET", "/api/agents/:name",
      "One agent: status, system prompt, budget (turns, tokens and context: used and max, " <>

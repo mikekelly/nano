@@ -46,7 +46,7 @@ defmodule Nano.Settings do
        "bound in the running process only"},
     {:network_policy, "unrestricted outbound internet access", :text, :agent_start,
      "The network access agents are told they have; must be true of the container's network"},
-    {:system_prompt_file, "priv/system_prompt.txt", :file, :agent_start,
+    {:system_prompt_file, "prompts/seed.txt", :file, :agent_start,
      "The default system prompt template, relative to the app directory; read at each agent " <>
        "start and restart"},
     {:openrouter_base_url, "https://openrouter.ai/api/v1", :url, :live, "OpenRouter's API"},

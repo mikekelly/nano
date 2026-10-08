@@ -1624,8 +1624,8 @@ defmodule NanoAgentTest do
 
   test "agents render the default template file", ctx do
     start!(ctx)
-    spec = File.read!("priv/system_prompt.txt")
-    assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
+    spec = File.read!("prompts/seed.txt")
+    assert NanoAgent.info(ctx.name).prompt_source == "prompts/seed.txt"
     pattern = spec |> Regex.escape() |> String.replace(~r/\\\{\\\{\w+\\\}\\\}/, ".+?")
     assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
 
@@ -1900,7 +1900,7 @@ defmodule NanoAgentTest do
     prompt = NanoAgent.info(ctx.name).system_prompt
     assert prompt =~ "You are process #{inspect(new)}"
     assert prompt =~ "I am the GenServer you are running in"
-    assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
+    assert NanoAgent.info(ctx.name).prompt_source == "prompts/seed.txt"
   end
 
   ## Surviving node death
