@@ -7,7 +7,7 @@ defmodule NanoWeb.Endpoint do
   socket "/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]]
 
   # No asset pipeline: our one stylesheet, and the client JS straight from the deps.
-  plug Plug.Static, at: "/", from: :nano, only: ~w(app.css)
+  plug Plug.Static, at: "/", from: :nano, only: ~w(app.css bots.css bots.js)
 
   plug Plug.Static,
     at: "/assets/phoenix",
