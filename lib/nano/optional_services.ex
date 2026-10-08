@@ -189,7 +189,7 @@ defmodule Nano.OptionalServices.Slot do
   @impl true
   def handle_info({:attempt, ref}, %{supervisor: nil, attempt_ref: ref} = s) do
     s = %{s | attempts: s.attempts + 1, timer: nil, attempt_ref: nil}
-    report(s, :starting, nil, nil)
+    report(s, :starting, s.last_error, nil)
 
     result =
       try do
