@@ -10,7 +10,7 @@ defmodule Seedling.Images.Probe do
   def inspect(<<@png, rest::binary>>) do
     case png(rest, nil, []) do
       {:ok, {w, h, _, _, _}} -> metadata("image/png", w, h)
-      _ -> {:error, "invalid or truncated PNG"}
+      _ -> {:error, "invalid or truncated PNG (dimensions must be 1..2000 pixels per side)"}
     end
   end
 
@@ -24,25 +24,38 @@ defmodule Seedling.Images.Probe do
   def inspect(_), do: {:error, "unsupported image type: only PNG and JPEG bytes are accepted"}
   defp metadata(type, w, h), do: {:ok, %{"mime_type" => type, "width" => w, "height" => h}}
 
+  defp png(bytes, dimensions, idat), do: png(bytes, dimensions, idat, false, false)
+
   defp png(
          <<len::32, type::binary-size(4), data::binary-size(len), crc::32, rest::binary>>,
          dimensions,
-         idat
+         idat,
+         palette,
+         closed
        ) do
-    if :erlang.crc32(type <> data) == crc do
+    if type =~ ~r/\A[A-Za-z]{2}[A-Z][A-Za-z]\z/ and :erlang.crc32(type <> data) == crc do
       case {type, data, dimensions} do
         {"IHDR", <<w::32, h::32, depth, color, 0, 0, interlace>>, nil}
         when w in 1..2000 and h in 1..2000 and depth in [1, 2, 4, 8, 16] and
                color in [0, 2, 3, 4, 6] and interlace in [0, 1] ->
           if valid_depth?(color, depth),
-            do: png(rest, {w, h, depth, color, interlace}, idat),
+            do: png(rest, {w, h, depth, color, interlace}, idat, palette, closed),
             else: :error
 
         {"IHDR", _, _} ->
           :error
 
-        {"IDAT", _, {_, _, _, _, _}} ->
-          png(rest, dimensions, [data | idat])
+        {"PLTE", _, {_, _, depth, color, _}}
+        when not palette and idat == [] and color in [2, 3, 6] and len in 3..768 and
+               rem(len, 3) == 0 ->
+          if color != 3 or div(len, 3) <= Bitwise.bsl(1, depth),
+            do: png(rest, dimensions, idat, true, closed),
+            else: :error
+
+        {"IDAT", _, {_, _, _, color, _}} when not closed ->
+          if color != 3 or palette,
+            do: png(rest, dimensions, [data | idat], palette, false),
+            else: :error
 
         {"IEND", "", {_, _, _, _, _}} when idat != [] and rest == "" ->
           if valid_pixels?(Enum.reverse(idat), dimensions), do: {:ok, dimensions}, else: :error
@@ -50,8 +63,8 @@ defmodule Seedling.Images.Probe do
         {"acTL", _, _} ->
           :error
 
-        {_, _, {_, _, _, _, _}} ->
-          png(rest, dimensions, idat)
+        {<<first, _::binary>>, _, {_, _, _, _, _}} when first in ?a..?z ->
+          png(rest, dimensions, idat, palette, closed or idat != [])
 
         _ ->
           :error
@@ -61,7 +74,7 @@ defmodule Seedling.Images.Probe do
     end
   end
 
-  defp png(_, _, _), do: :error
+  defp png(_, _, _, _, _), do: :error
 
   defp valid_depth?(0, depth), do: depth in [1, 2, 4, 8, 16]
   defp valid_depth?(3, depth), do: depth in [1, 2, 4, 8]
@@ -141,6 +154,9 @@ defmodule Seedling.Images.Probe do
   defp jpeg(<<255, marker, len::16, data::binary-size(len - 2), rest::binary>>, dimensions)
        when len >= 2 do
     cond do
+      marker in [192, 193, 194] and dimensions != nil ->
+        :error
+
       marker in [192, 193, 194] ->
         case data do
           <<depth, h::16, w::16, channels, components::binary>>
@@ -152,9 +168,13 @@ defmodule Seedling.Images.Probe do
         end
 
       marker == 218 and dimensions != nil ->
-        if byte_size(rest) > 2 and binary_part(rest, byte_size(rest) - 2, 2) == <<255, 217>>,
-          do: {:ok, dimensions},
-          else: :error
+        case data do
+          <<channels, _::binary>> when channels in 1..4 and byte_size(data) == 2 * channels + 4 ->
+            entropy(rest, dimensions, false)
+
+          _ ->
+            :error
+        end
 
       marker in [216, 217, 0] ->
         :error
@@ -165,4 +185,37 @@ defmodule Seedling.Images.Probe do
   end
 
   defp jpeg(_, _), do: :error
+
+  # Entropy bytes allow stuffed FF and restart markers. Anything else must start a real
+  # segment (progressive JPEG has several scans); EOI must terminate the whole container.
+  defp entropy(bytes, dimensions, seen) do
+    case :binary.match(bytes, <<255>>) do
+      {at, 1} ->
+        <<_::binary-size(^at), 255, rest::binary>> = bytes
+        seen = seen or at > 0
+
+        case rest do
+          <<0, rest::binary>> ->
+            entropy(rest, dimensions, true)
+
+          <<marker, rest::binary>> when marker in 208..215 ->
+            entropy(rest, dimensions, seen)
+
+          <<255, rest::binary>> ->
+            entropy(<<255, rest::binary>>, dimensions, seen)
+
+          <<217>> when seen ->
+            {:ok, dimensions}
+
+          <<marker, _::binary>> when seen and marker in [196, 218, 221] ->
+            jpeg(<<255, rest::binary>>, dimensions)
+
+          _ ->
+            :error
+        end
+
+      :nomatch ->
+        :error
+    end
+  end
 end

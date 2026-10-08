@@ -174,6 +174,26 @@ defmodule Nano.OpenRouter do
     }
   end
 
+  defp mark(%{"content" => parts} = message) when is_list(parts) do
+    last_text =
+      parts
+      |> Enum.with_index()
+      |> Enum.reverse()
+      |> Enum.find(fn {part, _} -> part["type"] == "text" end)
+
+    case last_text do
+      {_, index} ->
+        Map.put(
+          message,
+          "content",
+          List.update_at(parts, index, &Map.put(&1, "cache_control", %{"type" => "ephemeral"}))
+        )
+
+      nil ->
+        message
+    end
+  end
+
   defp mark(message), do: message
 
   defp base_url, do: Nano.Settings.get(:openrouter_base_url)
