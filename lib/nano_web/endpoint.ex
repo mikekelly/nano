@@ -21,6 +21,7 @@ defmodule NanoWeb.Endpoint do
 
   # JSON bodies only. A form posted by some other web page is therefore never parsed into
   # params, which keeps a stray browser tab from driving the unauthenticated API.
+  plug NanoWeb.ImageUploadParser
   plug Plug.Parsers, parsers: [:json], pass: ["*/*"], json_decoder: Jason
   plug Plug.Head
   plug Plug.Session, @session_options
