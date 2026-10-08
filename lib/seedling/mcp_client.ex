@@ -13,6 +13,8 @@ defmodule Seedling.MCP.Client do
     s = %{
       server: Keyword.fetch!(opts, :server),
       name: name,
+      result_dir: Path.join(dir, "results"),
+      result_limit: Keyword.get(opts, :max_result_bytes, 12_000),
       file: file,
       subs: if(is_map(subs), do: Map.get(subs, "subscriptions", subs), else: %{}),
       watchers: if(is_map(subs), do: Map.get(subs, "watchers", []), else: []),
@@ -22,6 +24,9 @@ defmodule Seedling.MCP.Client do
       next: 1,
       pending: %{},
       ready: false,
+      era: :modern,
+      version: "2026-07-28",
+      listen: nil,
       info: nil,
       delay: Keyword.get(opts, :reconnect_ms, 1000)
     }
@@ -30,15 +35,31 @@ defmodule Seedling.MCP.Client do
     {:ok, s}
   end
 
-  def handle_call(:status, _, s), do: {:reply, Map.take(s, [:ready, :info, :name]), s}
+  def handle_call(:status, _, s),
+    do:
+      {:reply,
+       Map.take(s, [:ready, :info, :name, :era, :version]) |> Map.update!(:info, &bounded(s, &1)),
+       s}
 
-  def handle_call({:watch, agent}, _, s),
-    do: {:reply, :ok, save(%{s | watchers: Enum.uniq([agent | s.watchers])})}
+  def handle_call({:watch, agent}, _, s) do
+    s = save(%{s | watchers: Enum.uniq([agent | s.watchers])})
+    {:reply, :ok, if(s.ready and s.era == :modern, do: listen(s), else: s)}
+  end
 
   def handle_call({:request, method, params, timeout}, from, s) do
     if s.ready,
-      do: {:noreply, rpc(s, method, params, from, timeout)},
+      do: {:noreply, rpc(s, method, params, {:request, from, method}, timeout)},
       else: {:reply, {:error, :disconnected}, s}
+  end
+
+  def handle_call({:subscription, action, uri, agent}, from, %{era: :modern, ready: true} = s)
+      when is_binary(agent) do
+    agents = Map.get(s.subs, uri, [])
+    agents = if action == :add, do: Enum.uniq([agent | agents]), else: agents -- [agent]
+    subs = if agents == [], do: Map.delete(s.subs, uri), else: Map.put(s.subs, uri, agents)
+    s = save(%{s | subs: subs})
+    s = listen(s, from)
+    {:noreply, s}
   end
 
   def handle_call({:subscription, action, uri, agent}, from, s) when is_binary(agent) do
@@ -64,18 +85,7 @@ defmodule Seedling.MCP.Client do
     Process.monitor(transport)
     s = %{s | port: transport, buffer: ""}
 
-    {:noreply,
-     rpc(
-       s,
-       "initialize",
-       %{
-         "protocolVersion" => "2025-11-25",
-         "capabilities" => %{},
-         "clientInfo" => %{"name" => "seedling", "version" => "0.1.0"}
-       },
-       :initialize,
-       30_000
-     )}
+    {:noreply, probe(s)}
   end
 
   def handle_info(:connect, s) do
@@ -92,18 +102,7 @@ defmodule Seedling.MCP.Client do
       port = Port.open({:spawn_executable, executable}, opts)
       s = %{s | port: port, buffer: ""}
 
-      {:noreply,
-       rpc(
-         s,
-         "initialize",
-         %{
-           "protocolVersion" => "2025-11-25",
-           "capabilities" => %{},
-           "clientInfo" => %{"name" => "seedling", "version" => "0.1.0"}
-         },
-         :initialize,
-         30_000
-       )}
+      {:noreply, probe(s)}
     rescue
       e -> {:noreply, down(s, Exception.message(e))}
     end
@@ -130,6 +129,12 @@ defmodule Seedling.MCP.Client do
       else: {:noreply, s}
   end
 
+  def handle_info({port, {:stream_closed, id}}, %{port: port} = s) do
+    if s.listen && s.listen.id == id,
+      do: {:noreply, down(s, :subscription_stream_closed)},
+      else: {:noreply, s}
+  end
+
   def handle_info({port, {:exit_status, status}}, %{port: port} = s),
     do: {:noreply, down(s, {:exit, status})}
 
@@ -142,9 +147,12 @@ defmodule Seedling.MCP.Client do
         reply(target, {:error, :timeout})
         s = %{s | pending: pending}
 
-        if target == :initialize,
-          do: {:noreply, down(s, :initialize_timeout)},
-          else: {:noreply, s}
+        cond do
+          target == :probe -> {:noreply, legacy(s)}
+          target == :initialize -> {:noreply, down(s, :initialize_timeout)}
+          target == :listen -> {:noreply, down(s, :subscription_ack_timeout)}
+          true -> {:noreply, s}
+        end
     end
   end
 
@@ -156,7 +164,23 @@ defmodule Seedling.MCP.Client do
 
   defp rpc(s, method, params, target, timeout) do
     id = s.next
+
+    params =
+      if s.era == :modern do
+        meta =
+          Map.merge(params["_meta"] || %{}, %{
+            "io.modelcontextprotocol/protocolVersion" => s.version,
+            "io.modelcontextprotocol/clientCapabilities" => %{},
+            "io.modelcontextprotocol/clientInfo" => %{"name" => "seedling", "version" => "0.1.0"}
+          })
+
+        Map.put(params, "_meta", meta)
+      else
+        params
+      end
+
     wire(s, %{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params})
+
     timer = Process.send_after(self(), {:timeout, id}, timeout)
     %{s | next: id + 1, pending: Map.put(s.pending, id, {target, timer})}
   end
@@ -179,7 +203,7 @@ defmodule Seedling.MCP.Client do
   defp message(s, %{"id" => id} = msg) do
     case Map.pop(s.pending, id) do
       {nil, _} ->
-        s
+        if s.listen && s.listen.id == id, do: down(s, :subscription_closed), else: s
 
       {{target, timer}, pending} ->
         Process.cancel_timer(timer)
@@ -192,17 +216,101 @@ defmodule Seedling.MCP.Client do
     end
   end
 
+  defp message(%{era: :modern} = s, %{
+         "method" => "notifications/subscriptions/acknowledged",
+         "params" => params
+       }) do
+    id = get_in(params, ["_meta", "io.modelcontextprotocol/subscriptionId"])
+
+    if s.listen && s.listen.id == id do
+      {_entry, pending} = Map.pop(s.pending, id)
+      if s.listen.timer, do: Process.cancel_timer(s.listen.timer)
+      Enum.each(s.listen.froms, &GenServer.reply(&1, :ok))
+      requested = s.listen.filter
+      honored = params["notifications"] || %{}
+
+      if requested != honored,
+        do: emit(s, "subscription_filter_reduced", %{requested: requested, honored: honored})
+
+      emit(s, "subscription_restored", params)
+      %{s | pending: pending, listen: %{s.listen | timer: nil, froms: []}}
+    else
+      s
+    end
+  end
+
   defp message(s, %{"method" => method} = msg) do
-    emit(s, method, msg["params"] || %{})
+    params = msg["params"] || %{}
+    id = get_in(params, ["_meta", "io.modelcontextprotocol/subscriptionId"])
+
+    if s.era != :modern or is_nil(id) or (s.listen && s.listen.id == id && is_nil(s.listen.timer)),
+      do: emit(s, method, params)
+
     s
   end
 
   defp message(s, _), do: s
 
+  defp probe(s),
+    do:
+      rpc(
+        %{s | era: :modern, version: "2026-07-28", listen: nil},
+        "server/discover",
+        %{},
+        :probe,
+        2000
+      )
+
+  defp legacy(s),
+    do:
+      rpc(
+        %{s | era: :legacy, version: "2025-11-25"},
+        "initialize",
+        %{
+          "protocolVersion" => "2025-11-25",
+          "capabilities" => %{},
+          "clientInfo" => %{"name" => "seedling", "version" => "0.1.0"}
+        },
+        :initialize,
+        30_000
+      )
+
+  defp complete(s, :probe, {:ok, %{"supportedVersions" => versions} = info}) do
+    if "2026-07-28" in versions do
+      s = %{s | ready: true, info: info}
+      emit(s, "connected", info)
+
+      emit(s, "recovered", %{
+        era: "modern",
+        subscription_uris: Map.keys(s.subs),
+        watcher_names: s.watchers
+      })
+
+      if map_size(s.subs) > 0 or s.watchers != [], do: listen(s), else: s
+    else
+      down(s, {:unsupported_versions, versions})
+    end
+  end
+
+  defp complete(s, :probe, {:error, %{"code" => code} = error})
+       when code in [-32022, -32021, -32020],
+       do: down(s, error)
+
+  defp complete(s, :probe, _), do: legacy(s)
+  defp complete(s, :listen, error), do: down(s, {:subscription_failed, error})
+
   defp complete(s, :initialize, {:ok, info}) do
+    version = info["protocolVersion"] || "2025-11-25"
+    if is_pid(s.port), do: Seedling.MCP.HTTP.version(s.port, version)
     wire(s, %{"jsonrpc" => "2.0", "method" => "notifications/initialized"})
-    s = %{s | ready: true, info: info}
+    s = %{s | ready: true, info: info, version: version}
     emit(s, "connected", info)
+
+    emit(s, "recovered", %{
+      era: "legacy",
+      subscription_uris: Map.keys(s.subs),
+      watcher_names: s.watchers
+    })
 
     Enum.reduce(Map.keys(s.subs), s, fn uri, acc ->
       rpc(acc, "resources/subscribe", %{"uri" => uri}, :replay, 30_000)
@@ -227,14 +335,46 @@ defmodule Seedling.MCP.Client do
     s
   end
 
+  defp complete(
+         %{era: :modern, port: port} = s,
+         {:request, from, "tools/list"},
+         {:ok, %{"tools" => tools} = result}
+       )
+       when is_pid(port) do
+    valid =
+      Enum.filter(tools, fn tool ->
+        case Seedling.MCP.Headers.bindings(tool) do
+          {:ok, _} ->
+            true
+
+          {:error, reason} ->
+            emit(s, "invalid_tool_schema", %{tool: tool["name"], reason: reason})
+            false
+        end
+      end)
+
+    Seedling.MCP.HTTP.tools(port, valid)
+    GenServer.reply(from, {:ok, bounded(s, Map.put(result, "tools", valid))})
+    s
+  end
+
   defp complete(s, target, result),
     do:
       (
-        reply(target, result)
+        reply(
+          target,
+          case result do
+            {kind, value} -> {kind, bounded(s, value)}
+          end
+        )
+
         s
       )
 
+  defp reply({:request, from, _}, result), do: GenServer.reply(from, result)
   defp reply(:initialize, _), do: :ok
+  defp reply(:probe, _), do: :ok
+  defp reply(:listen, _), do: :ok
   defp reply(:replay, _), do: :ok
   defp reply({:subscription, from, _, _, _}, result), do: GenServer.reply(from, result)
   defp reply(from, result), do: GenServer.reply(from, result)
@@ -249,6 +389,8 @@ defmodule Seedling.MCP.Client do
           )
       )
 
+    params = bounded(s, params)
+
     Enum.each(agents, fn agent ->
       case s.resolver.(agent) do
         pid when is_pid(pid) -> send(pid, {:mcp, s.name, method, params})
@@ -257,8 +399,64 @@ defmodule Seedling.MCP.Client do
     end)
   end
 
+  defp listen(s, from \\ nil) do
+    froms = if s.listen, do: s.listen.froms, else: []
+
+    if s.listen do
+      if s.listen.timer, do: Process.cancel_timer(s.listen.timer)
+
+      if is_pid(s.port),
+        do: Seedling.MCP.HTTP.cancel(s.port, s.listen.id),
+        else:
+          wire(s, %{
+            "jsonrpc" => "2.0",
+            "method" => "notifications/cancelled",
+            "params" => %{"requestId" => s.listen.id}
+          })
+    end
+
+    pending = if s.listen, do: Map.delete(s.pending, s.listen.id), else: s.pending
+    filter = %{"resourceSubscriptions" => Map.keys(s.subs)}
+
+    filter =
+      if s.watchers != [],
+        do:
+          Map.merge(filter, %{
+            "toolsListChanged" => true,
+            "promptsListChanged" => true,
+            "resourcesListChanged" => true
+          }),
+        else: filter
+
+    id = s.next
+
+    s =
+      rpc(
+        %{s | pending: pending},
+        "subscriptions/listen",
+        %{"notifications" => filter},
+        :listen,
+        30_000
+      )
+
+    {_, timer} = s.pending[id]
+
+    %{
+      s
+      | listen: %{
+          id: id,
+          filter: filter,
+          timer: timer,
+          froms: if(from, do: froms ++ [from], else: froms)
+        }
+    }
+  end
+
   defp down(s, reason) do
     close(s.port)
+
+    if s.listen,
+      do: Enum.each(s.listen.froms, &GenServer.reply(&1, {:error, {:disconnected, reason}}))
 
     Enum.each(s.pending, fn {_, {target, timer}} ->
       Process.cancel_timer(timer)
@@ -267,7 +465,7 @@ defmodule Seedling.MCP.Client do
 
     emit(s, "disconnected", %{reason: reason})
     Process.send_after(self(), :connect, s.delay)
-    %{s | ready: false, port: nil, pending: %{}, buffer: ""}
+    %{s | ready: false, port: nil, pending: %{}, buffer: "", listen: nil}
   end
 
   defp close(nil), do: :ok
@@ -282,6 +480,42 @@ defmodule Seedling.MCP.Client do
       Port.close(port)
     rescue
       ArgumentError -> :ok
+    end
+  end
+
+  defp bounded(s, value) do
+    text =
+      case Jason.encode(value) do
+        {:ok, text} ->
+          text
+
+        {:error, _} ->
+          Jason.encode!(%{elixir: inspect(value, limit: :infinity, printable_limit: :infinity)})
+      end
+
+    if byte_size(text) <= s.result_limit do
+      value
+    else
+      File.mkdir_p!(s.result_dir)
+
+      path =
+        Path.join(
+          s.result_dir,
+          "#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}.json"
+        )
+
+      File.write!(path, text, [:exclusive])
+      File.chmod!(path, 0o600)
+
+      summary = %{
+        spilled: true,
+        path: path,
+        bytes: byte_size(text),
+        preview: String.slice(text, 0, 1000),
+        usage: "Seedling.MCP.result_page(path, offset: 0, limit: 8000)"
+      }
+
+      if is_map(value), do: Map.merge(summary, Map.take(value, ["nextCursor"])), else: summary
     end
   end
 

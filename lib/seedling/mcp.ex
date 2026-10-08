@@ -1,12 +1,12 @@
 defmodule Seedling.MCP do
   @moduledoc """
-  MCP client (2025-11-25 stable wire revision). No harness changes required.
+  Dual-era MCP client (2026-07-28 current; legacy initialize fallback). No harness changes required.
   `{:ok, c} = Seedling.MCP.connect("filesystem", config: "config/mcp.json")`
   `discover(c)`, `call_tool(c, "name", %{})`, `read_resource(c, "uri")`.
   `subscribe(c, "uri", "agent-name")` routes ordinary mailbox events and persists
   names, not pids. Start the client under your supervisor for client-process recovery.
-  StdIO connections reconnect and replay subscriptions after server exits. Raw results
-  are returned; use `page/2` before printing large results.
+  Connections reconnect and replay durable subscriptions after server exits.
+  Large results spill to disk automatically; use `result_page/2` to retrieve them.
   """
   alias Seedling.MCP.Client
 
@@ -23,7 +23,7 @@ defmodule Seedling.MCP do
 
   @doc "Return/start a configured supervised connection; requires the MCP supervisor to be running."
   def ensure_connection(name, opts \\ []) do
-    sup = Keyword.get(opts, :supervisor, Seedling.MCP.Supervisor)
+    sup = Keyword.get(opts, :supervisor, Seedling.MCP.Connections)
 
     try do
       case Seedling.MCP.Supervisor.connections(sup)[name] do
@@ -62,7 +62,8 @@ defmodule Seedling.MCP do
   def request(c, method, params \\ %{}, timeout \\ 30_000),
     do: GenServer.call(c, {:request, method, params, timeout}, timeout + 1000)
 
-  def discover(c) do
+  @doc "Discover one bounded page per category by default; all: true follows cursors (maximum 100 pages)."
+  def discover(c, opts \\ []) do
     for {key, method} <- [
           tools: "tools/list",
           resources: "resources/list",
@@ -70,14 +71,22 @@ defmodule Seedling.MCP do
           prompts: "prompts/list"
         ],
         into: %{} do
-      {key, list(c, method, %{}, [])}
+      {key,
+       if(Keyword.get(opts, :all, false),
+         do: list(c, method, %{}, []),
+         else:
+           case request(c, method) do
+             {:ok, page} -> {:ok, [page]}
+             error -> error
+           end
+       )}
     end
   end
 
   defp list(c, method, params, pages) do
     case request(c, method, params) do
       {:ok, %{"nextCursor" => cursor} = page} when is_binary(cursor) ->
-        if Enum.any?(pages, &(Map.get(&1, "nextCursor") == cursor)),
+        if length(pages) >= 99 or Enum.any?(pages, &(Map.get(&1, "nextCursor") == cursor)),
           do: {:error, :cursor_loop},
           else: list(c, method, %{"cursor" => cursor}, pages ++ [page])
 
@@ -105,7 +114,44 @@ defmodule Seedling.MCP do
   def watch(c, agent), do: GenServer.call(c, {:watch, agent})
   def status(c), do: GenServer.call(c, :status)
 
-  @doc "JSON text paged by Unicode character offset (default 8000, maximum 50000)."
+  @doc "Read a spilled result without loading the entire file. Offsets/limits are bytes; pages end at UTF-8 boundaries."
+  def result_page(path, opts \\ []) do
+    offset = max(Keyword.get(opts, :offset, 0), 0)
+    limit = Keyword.get(opts, :limit, 8000) |> max(4) |> min(50_000)
+
+    with {:ok, stat} <- File.stat(path), {:ok, io} <- File.open(path, [:read, :binary]) do
+      try do
+        :file.position(io, offset)
+
+        data =
+          case IO.binread(io, limit) do
+            :eof -> ""
+            text when is_binary(text) -> text
+          end
+
+        case :unicode.characters_to_binary(data, :utf8, :utf8) do
+          text when is_binary(text) ->
+            {:ok,
+             %{
+               text: text,
+               bytes: stat.size,
+               next_offset: if(offset + byte_size(text) < stat.size, do: offset + byte_size(text))
+             }}
+
+          {:incomplete, text, _} ->
+            {:ok, %{text: text, bytes: stat.size, next_offset: offset + byte_size(text)}}
+
+          {:error, _, _} ->
+            {:error, :offset_not_utf8_boundary}
+        end
+      after
+        File.close(io)
+      end
+    end
+  end
+
+  @doc "JSON text paged
+ by Unicode character offset (default 8000, maximum 50000)."
   def page(result, opts \\ []) do
     text = Jason.encode!(result)
     offset = max(Keyword.get(opts, :offset, 0), 0)

@@ -1,66 +1,116 @@
-# MCP
+# MCP: stdio and Streamable HTTP
 
-`Seedling.MCP` is the entry point; client and supervisor docs provide details.
+Entry: `Seedling.MCP`. Boot child (parent owns harness integration):
 
 ```elixir
-{:ok, sup} = Seedling.MCP.Supervisor.start_link(config: "config/mcp.json")
-clients = Seedling.MCP.Supervisor.connections(sup)
-c = clients["filesystem"]
-Seedling.MCP.status(c) # wait until ready before requests
-Seedling.MCP.discover(c) # paginated tools/resources/templates/prompts
-Seedling.MCP.call_tool(c, "read_file", %{"path" => "/tmp/example"})
-Seedling.MCP.read_resource(c, "test://one")
-Seedling.MCP.subscribe(c, "test://one", "lyra")
-Seedling.MCP.watch(c, "lyra") # all notifications, persisted
-Seedling.MCP.page(result, offset: 0, limit: 8000) # print this, not large raw results
+{Seedling.MCP.Supervisor, [name: Seedling.MCP.Connections,
+  config: "/app/config/mcp.json", state_dir: "/data/mcp"]}
 ```
 
-`connect("server", config: path)` also starts an individual linked client. For boot
-persistence add the MCP supervisor to application children (not automatically injected
-into the harness). Its child ids are configured server names. Get current pids via
-`connections/1` after child crashes. Config intentionally ships empty; commands are
-trusted local execution, not a security boundary.
+Start after `Nano.Names` and before agent restoration. Configured connections restore
+on boot; durable named subscriptions and watchers replay automatically. Each delivery
+resolves `NanoAgent.whereis(name)`, so agent PID replacement requires no MCP intervention.
+Boot notifications sent before an agent exists are not queued; future updates still route.
 
-Config format is standard `{"mcpServers":{"name":{"command":"python3",
-"args":["-m","mcp_server_fetch"],"env":{},"cwd":"/tmp"}}}`. HTTP instead uses
-`{"url":"https://host/mcp","headers":{"Authorization":"Bearer ..."}}`.
-Never commit secrets. Headers are static: no OAuth discovery/refresh implemented.
+```elixir
+{:ok, c} = Seedling.MCP.ensure_connection("fetch") # default sup: MCP.Connections
+Seedling.MCP.watch(c, "lyra") # durable, all eligible notifications
+Seedling.MCP.status(c) # async opening: ready, era, version, info
+Seedling.MCP.discover(c) # one bounded page each: tools/resources/templates/prompts
+Seedling.MCP.discover(c, all: true) # explicit cursor following, maximum 100 pages
+Seedling.MCP.call_tool(c, "fetch", %{"url" => "https://example.com", "raw" => true})
+Seedling.MCP.read_resource(c, "test://one")
+Seedling.MCP.get_prompt(c, "prompt", %{})
+Seedling.MCP.subscribe(c, "test://one", "lyra") # persists; modern waits for ack
+Seedling.MCP.unsubscribe(c, "test://one", "lyra")
+Seedling.MCP.result_page(spill.path, offset: 0, limit: 8000) # byte paging on disk
+```
 
-Mailbox events are `{:mcp, server_name, method, params}`. `watch` receives all;
-subscriptions receive updates for their URI and connection/list/log/progress events.
-`ensure_connection(name, supervisor: Seedling.MCP.Supervisor, config: path)` returns
-an existing supervised client or starts one from config (supervisor must be running).
-Both watch names and subscriptions persist and replay. Every delivery resolves agent name through `NanoAgent.whereis/1`, so agent PID changes
-are safe. Subscriptions persist at `/data/mcp/<base64-server-name>.json` (or `state_dir`)
-and replay after client or server restart. One client per server/state_dir; no multiwriter
-locking. A corrupt state file is currently treated as empty. Filesystem persistence
-failure crashes the client rather than falsely acknowledging durability.
+`ensure_connection(name, supervisor: registered_name_or_pid, config: path)` returns or
+starts a supervised configured client. `connect(name, config: path)` starts a standalone
+linked client instead. Use `Supervisor.connections(sup)` to get current pids after child
+restart. Parent/delegation should never unlink ad-hoc clients as a substitute for supervision.
 
-Wire version: 2025-11-25 stable. Discovery of the public specification/latest on
-2026-10-08 showed newer revision references in navigation; this implementation is
-explicitly pinned, not claiming support for future/draft versions. No sampling, roots,
-elicitation or experimental tasks capabilities advertised; server requests get -32601.
-Raw JSON-RPC errors preserved. Transport disconnects immediately fail pending calls and
-emit events; reconnect starts a fresh session and replays durable subscriptions.
+Mailbox events: `{:mcp, server_name, method, params}`. Includes server notifications,
+`connected`, `disconnected`, `recovered`, `subscription_restored`,
+`subscription_filter_reduced`, and errors. All calls before ready return disconnected.
+Legacy JSON-RPC errors preserved. In-flight calls fail immediately on disconnect.
+Reconnect creates a fresh transport, re-probes the protocol and restores subscriptions.
 
-StdIO uses newline-delimited UTF-8 JSON; stderr is not mixed into protocol stdout.
-HTTP implements JSON or SSE POST responses, session-id and protocol headers, GET SSE
-push streams, CRLF/multiline SSE decoding, and fresh initialization on HTTP failure.
-405 GET disables push stream. No legacy HTTP+SSE transport, Last-Event-ID replay,
-OAuth, or DELETE session cleanup. Restart can lose events in the disconnect window.
-HTTP request workers have 300-second receive timeout; SSE EOF retries after one second.
-Initial connection is asynchronous; calls before ready return `{:error,:disconnected}`.
-Initialization/request timeouts are bounded; do not poll in an agent loop when `watch`
-can notify readiness. Incoming incomplete frames capped at 16 MB; large complete StdIO
-frames and discovery aggregates are not hard-capped. Use paging before printing.
+## Reproducible official reference server
 
-Tests (isolated MIX_ENV=test):
-- `mix test test/mcp_test.exs test/mcp_http_test.exs`: real Python subprocess fixture
-  covers discovery, resource reads, JSON-RPC errors/timeouts, notifications, server death
-  reconnect, durable client restart and agent-name rerouting. HTTP fixture uses Bandit
-  port 0 and covers JSON, session propagation and POST SSE notification/response.
-- `MCP_FETCH_COMMAND=/tmp/lyra-mcp/venv/bin/mcp-server-fetch mix test test/mcp_reference_test.exs`:
-  actual official Python fetch reference server discovery + https://example.com fetch,
-  passed (Readability falls back to Python without Node). Optional test skips without env.
-  `mcp-server-fetch` installed in agent-private venv; not a project dependency.
-No MCP or Nano module was loaded into the live node during development.
+Default `config/mcp.json` is deliberately empty. `config/mcp-fetch.example.json` describes
+real fetch, executable `/data/seedling/mcp-fetch/bin/mcp-server-fetch`.
+
+Install: `apt-get install python3-venv` then `sh config/mcp-install-fetch.sh`.
+Installer pins `mcp-server-fetch==2026.8.18` in its own durable venv. Installed/tested here.
+Connect with `ensure_connection("fetch", config: "/app/config/mcp-fetch.example.json")`
+or add its server entry to the main config for automatic boot. Dynamic clients survive
+client crashes, but reboot restoration requires their entry in the main boot config.
+No Node required: server falls back to pure-Python readability if absent. During testing
+a sibling installed Node20, which breaks latest Readability.js dependencies requiring
+Node22+. Use fetch `raw: true` for reliable HTML retrieval here; default markdown
+conversion passed before Node install but now errors. This is upstream, not MCP framing.
+
+Config shape: `{"mcpServers":{"name":{"command":"python3","args":["-m",
+"mcp_server_fetch"],"env":{},"cwd":"/tmp"}}}`. HTTP uses `url` and optional static
+`headers`. Commands are trusted local execution. Do not commit secrets.
+
+## Version evidence and coverage
+
+Checked official `https://modelcontextprotocol.io/specification/versioning.md` and
+`/specification/latest.md` on 2026-10-08: CURRENT **2026-07-28**, not 2025-11-25.
+Latest specification references `schema/2026-07-28/schema.ts`. Read lifecycle,
+stdio/Streamable HTTP bindings, discovery, subscriptions, tools/resources/prompts,
+metadata, progress and ping revision-change notes. Prior initial pin was corrected.
+
+Client now probes `server/discover` with 2026-07-28 `_meta` protocolVersion,
+clientCapabilities and clientInfo. Modern requests carry these per-request fields;
+no initialize or legacy GET is sent. Durable subscriptions use long-lived
+`subscriptions/listen`, ack, subscriptionId correlation, cancellation and reconnect.
+Modern HTTP sends `Mcp-Method`, `Mcp-Name` and matching protocol header. After tools/list
+(discovery), it mirrors validated `x-mcp-header` primitive/nested parameters; malformed
+definitions are rejected from tools/list. Base64 sentinel format follows current spec.
+Raw `request` permits advanced methods; no automatic MRTR/input-required orchestration,
+cache freshness policy, roots, sampling, elicitation, tasks or OAuth advertised.
+
+Non-modern discovery errors/timeouts fall back to legacy initialize (2025-11-25 request,
+uses returned negotiated version). Legacy resource subscribe/unsubscribe, initialized,
+HTTP sessions and GET SSE supported. Best-effort HTTP DELETE cleanup on closing legacy
+session. Recognized modern -32020/-32021/-32022 probe errors do NOT silently fall back.
+Only 2026-07-28 modern version supported; unsupported modern versions are surfaced.
+Current protocol deliberately has NO sessions/GET/DELETE/Last-Event-ID. Legacy resumable
+Last-Event-ID and deprecated HTTP+SSE are not implemented. Disconnect windows lose events.
+
+## Bounded results and persistence
+
+Results/notifications/status info larger than `max_result_bytes` (default 12000) spill as
+JSON to `state_dir/results/` (mode 0600), returning path, bytes, 1000-character preview
+and paging instructions. `result_page` reads bounded bytes, preserves UTF-8 page boundaries,
+and returns next_offset; no full-file read required. Cursor retained on spilled list pages.
+`page` provides character-based paging for an already-small in-memory result.
+Spills survive client restart; no automatic expiration/retention (delete with File.rm).
+Incomplete transport frames capped at 16 MB. Large complete stdio frames still require
+transient decode memory but never flow uncapped to agent results/mailbox. Discovery is
+one page by default; all:true explicit aggregate can be large (print via page).
+
+Subscriptions/watchers stored atomically at `/data/mcp/<base64-server-name>.json` (or
+state_dir). Single writer per server/state_dir; no multiwriter lock. Corrupt state currently
+falls back to empty; filesystem write failures crash rather than falsely ack durability.
+Replayed modern ack includes honored filter and reports reductions. A requested but
+unsupported filter remains durable desired state so capability changes can restore it.
+HTTP request/stream workers have 300s receive timeout; stream EOF reconnects, legacy GET
+EOF retries at 1s, GET405 disables push. No OAuth refresh or auth discovery; headers static.
+
+## Tests and live use
+
+`MIX_ENV=test MCP_FETCH_COMMAND=/data/seedling/mcp-fetch/bin/mcp-server-fetch mix test
+ test/mcp_test.exs test/mcp_http_test.exs test/mcp_modern_test.exs
+ test/mcp_modern_http_test.exs test/mcp_reference_test.exs`
+
+Real subprocess fixtures cover legacy/current discovery, resource reads, errors/timeouts,
+server death, supervisor/client/agent restart, durable watchers/subscriptions, modern
+correlation/ack and >60KB disk/UTF-8 paging. Port-0 HTTP fixtures cover legacy JSON/session/
+POST SSE and modern real long-lived SSE push, mirrored headers, malformed tool filtering,
+server-close recovery. Official fetch reference test actually fetches example.com; skips
+unless MCP_FETCH_COMMAND set. No Nano module was loaded by this agent.

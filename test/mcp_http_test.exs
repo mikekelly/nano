@@ -9,7 +9,7 @@ defmodule Seedling.MCPHTTPFixture do
        get_req_header(conn, "mcp-protocol-version")}
     )
 
-    if conn.method == "GET" do
+    if conn.method in ["GET", "DELETE"] do
       conn |> send_resp(405, "")
     else
       {:ok, body, conn} = read_body(conn)
@@ -89,7 +89,7 @@ defmodule Seedling.MCPHTTPTest do
     end)
 
     assert Seedling.MCP.status(c).ready
-    assert_receive {:http_request, "POST", [], ["2025-11-25"]}
+    assert_receive {:http_request, "POST", [], ["2026-07-28"]}
     assert :ok = Seedling.MCP.subscribe(c, "test://one", "agent")
     assert_receive {:http_request, "POST", ["test-session"], ["2025-11-25"]}
     assert {:ok, %{"content" => [_]}} = Seedling.MCP.call_tool(c, "notify")

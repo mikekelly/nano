@@ -32,6 +32,7 @@ defmodule Seedling.MCPReferenceTest do
     assert {:ok, %{"content" => content} = result} =
              Seedling.MCP.call_tool(c, "fetch", %{
                "url" => "https://example.com",
+               "raw" => true,
                "max_length" => 1000
              })
 
