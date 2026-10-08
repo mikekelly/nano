@@ -27,6 +27,7 @@ or drop for its own situation.
 | [`goals.md`](goals.md) | Set, keep and review goals across turns, restarts and agents |
 | [`background-tasks.md`](background-tasks.md) | Run shell commands in the background and be told when they finish |
 | [`images.md`](images.md) | See images that arrive in messages and look at image files, on models that can |
+| [`safety-net.md`](safety-net.md) | Recover by itself from the worst: a locked-up or dead node, a node that cannot boot, lost credentials |
 | [`bots.md`](bots.md) | A consumer chat GUI over named bots with identity, per-session context, cross-session memory, autocompaction and cheap decision models |
 
 ### Experimental
