@@ -7,8 +7,9 @@ agent's conversation only grows, and when it nears the agent's context limit the
 stops calling the model: without compaction, an agent's working life ends there, mid-task,
 unable even to report what it found. When this is done, an agent's conversation is
 compacted automatically before a model call that would otherwise leave too little room:
-the older part is replaced by a structured summary and the most recent part is kept as it
-was, so the agent carries on mid-thought. It stays the same agent, with the same name, pid
+what the agent received (its brief, the messages people and other agents sent it) is kept
+in their own words, and everything it did is replaced by a structured summary placed
+last, at the tip, where it carries on from. It stays the same agent, with the same name, pid
 and mailbox, so the people, sub-agents and processes that reach it, and the ones it started
 that report to it, carry on as before. It is told plainly, in the conversation, that its
 history was compacted, by what, and where the full record is. This works for every agent on
@@ -83,10 +84,22 @@ Either way:
   and because the summary is capped at 80% of the reserve (about 13,000 tokens), a summary
   call fits within the window even if it has to read the older history uncut, or is written
   at the tip.
-- **What is kept.** Walking back from the newest message until about 20,000 tokens are
-  covered, pi cuts there: at a user or assistant message, never at a tool result, so every
-  kept tool call keeps its result. If the cut falls inside a turn, the start of that turn is
-  summarised separately, as a short checkpoint of the request and the progress so far.
+- **What is kept, and in what order.** Codex rebuilds a compacted conversation like this
+  (github.com/openai/codex, `codex-rs/core/src/compact.rs`, `build_compacted_history`, and
+  `compact_remote_v2.rs`): its instructions; then the user's own messages, verbatim,
+  chosen newest first within a token budget (64,000 tokens for its server-side compaction)
+  and put back in their original order, with no marker; and then the summary, last. Every
+  assistant message, tool call and tool result is dropped: the summary carries what the
+  agent did. The reasoning: the requests are what the work must keep answering to, so they
+  survive word for word, while the agent's own steps are what a summary is for; and the
+  summary, nearest the tip, is what the model attends to most as it carries on. For a nano
+  agent, what it received is its events: the planting brief, the operators' and its
+  parent's messages, people's requests. Reports from its own sub-agents are results, which
+  the summary can carry. The harness's own notes (budget lines, the compaction note) need
+  not be kept.
+- **The summary's preamble** says what it is, truthfully: that the conversation before it
+  was compacted, that this is the agent's own summary of it, and that the messages above
+  are the requests it received, kept in their own words.
 - **The summary's shape** is a fixed checkpoint, so the agent finds the same things in the
   same place every time: *Goal*; *Constraints & Preferences*; *Progress* (Done, In Progress,
   Blocked); *Key Decisions* with a brief rationale each; *Next Steps*; *Critical Context*,
