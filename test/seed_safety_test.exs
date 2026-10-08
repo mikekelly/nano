@@ -45,3 +45,41 @@ defmodule SeedSafetyTest do
              )
   end
 end
+
+defmodule SeedSafetyDirectoryTest do
+  # This test changes environment only in its isolated MIX_ENV=test VM, and must
+  # not overlap another ExUnit test that uses those variables in that same VM.
+  use ExUnit.Case, async: false
+
+  test "test run directory takes precedence over inherited watchdog environment" do
+    run = Application.fetch_env!(:nano, :test_dir)
+    inherited = Path.join(run, "inherited-watchdog")
+    expected = Path.join(run, "seed-safety")
+    old_dir = System.get_env("SEED_SAFETY_DIR")
+    old_boot = System.get_env("SEED_SAFETY_BOOT")
+    System.put_env("SEED_SAFETY_DIR", inherited)
+    System.put_env("SEED_SAFETY_BOOT", "synthetic-test-boot")
+
+    try do
+      assert :ok = SeedSafety.reject("/tmp/synthetic-default.json", "key", "synthetic-secret")
+      assert File.exists?(Path.join(expected, "rejected.json"))
+      refute File.exists?(Path.join(inherited, "rejected.json"))
+      assert :ok = SeedSafety.attest(provider: "chatgpt")
+
+      assert {:ok, attestation} =
+               Jason.decode(File.read!(Path.join(expected, "attestation.json")))
+
+      assert attestation["boot"] == "synthetic-test-boot"
+      assert attestation["providers"] == ["chatgpt"]
+      refute File.exists?(Path.join(inherited, "attestation.json"))
+    after
+      if old_dir,
+        do: System.put_env("SEED_SAFETY_DIR", old_dir),
+        else: System.delete_env("SEED_SAFETY_DIR")
+
+      if old_boot,
+        do: System.put_env("SEED_SAFETY_BOOT", old_boot),
+        else: System.delete_env("SEED_SAFETY_BOOT")
+    end
+  end
+end
