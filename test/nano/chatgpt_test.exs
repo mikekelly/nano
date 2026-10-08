@@ -522,6 +522,7 @@ defmodule Nano.ChatGPTTest do
     assert Nano.ChatGPT.models() == [
              %{
                id: "gpt-x",
+               input_modalities: [],
                name: "GPT-X",
                context_length: 1000,
                reasoning_levels: ~w(low medium high xhigh max),
@@ -529,6 +530,7 @@ defmodule Nano.ChatGPTTest do
              },
              %{
                id: "gpt-y",
+               input_modalities: [],
                name: "gpt-y",
                context_length: nil,
                reasoning_levels: ~w(off low medium),

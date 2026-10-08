@@ -94,6 +94,7 @@ defmodule NanoAgent do
         prompt_file: file,
         context_window: entry.context_length,
         max_output: entry[:max_output],
+        input_modalities: entry[:input_modalities] || [],
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
           with [pid | _] <- Process.get(:"$callers"),
@@ -213,6 +214,7 @@ defmodule NanoAgent do
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
+        input_modalities: Map.get(s, :input_modalities, []),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -370,6 +372,7 @@ defmodule NanoAgent do
         # The model's, as its provider listed them at start: the context window, which
         # max_context cannot exceed, and the most it generates in one response (or nil).
         context_window: opts[:context_window],
+        input_modalities: opts[:input_modalities] || [],
         max_output: opts[:max_output],
         # The size in bytes of the conversation context_used measured: what a request adds
         # is estimated from the growth since (estimate/1).
@@ -497,7 +500,7 @@ defmodule NanoAgent do
   # come from the model's list if it can be had, and the window then caps max_context (which
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
-  defp upgrade(%{context_window: _} = s), do: s
+  defp upgrade(%{context_window: _} = s), do: Map.put_new(s, :input_modalities, [])
 
   defp upgrade(s) do
     entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
@@ -508,6 +511,7 @@ defmodule NanoAgent do
     Map.merge(s, %{
       context_window: window,
       max_output: entry[:max_output],
+      input_modalities: entry[:input_modalities] || [],
       max_context: if(window && (max == 0 or max > window), do: window, else: max),
       context_used: Map.get(s, :context_used, 0),
       measured_bytes:
@@ -573,7 +577,7 @@ defmodule NanoAgent do
 
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
-    end)
+    end) <> "\n\n" <> SeedImages.orientation(Map.get(s, :input_modalities, []))
   end
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
@@ -693,7 +697,80 @@ defmodule NanoAgent do
   # A stale timer (its eval finished, or an event cancelled the wakeup).
   def handle_info({tag, _, _}, %{tag: tag} = s), do: noreply(s)
 
+  def handle_info({:seed_image, ref}, s),
+    do: noreply(image_event(s, "Local image attachment", [ref]))
+
+  def handle_info(%{message: text, images: refs} = term, s)
+      when is_binary(text) and is_list(refs),
+      do: noreply(image_event(s, inspect(Map.delete(term, :images), inspect_opts()), refs))
+
   def handle_info(msg, s), do: noreply(event(s, msg))
+
+  defp image_event(s, text, refs) do
+    # Validate again at entry: a malformed mailbox reference must never poison history.
+    {good, errors} =
+      Enum.reduce(refs, {[], []}, fn ref, {good, errors} ->
+        case SeedImages.load(ref) do
+          {:ok, _, _} -> {[ref | good], errors}
+          {:error, error} -> {good, [error | errors]}
+        end
+      end)
+
+    good = Enum.reverse(good)
+    text = text <> Enum.map_join(errors, "", &"\n[Image unavailable: #{&1}]")
+
+    text =
+      if good != [] and not SeedImages.supported?(Map.get(s, :input_modalities, [])),
+        do:
+          text <>
+            "\n[Image unavailable: your model does not support image input. Do not guess what it shows.]",
+        else: text
+
+    seq = s.event_seq + 1
+    at = timestamp(DateTime.utc_now())
+
+    {text, truncated, spill} =
+      truncate(text, stated(s, :result_max_bytes), {s.id, "event-#{seq}"})
+
+    parts = [
+      %{"type" => "text", "text" => ~s(<event seq="#{seq}" at="#{at}">#{text}</event>)}
+      | Enum.map(good, &SeedImages.part/1)
+    ]
+
+    s = %{s | event_seq: seq, wakeup: nil, pending: s.pending ++ parts}
+
+    log(
+      s,
+      :event_received,
+      spilled(spill, %{
+        event_seq: seq,
+        message: text,
+        images: good,
+        queue_length: length(s.pending),
+        truncated: truncated
+      })
+    )
+
+    maybe_start_turn(s)
+  end
+
+  defp event_pending?(text) when is_binary(text), do: String.starts_with?(text, "<event")
+
+  defp event_pending?(%{"type" => "text", "text" => text}),
+    do: String.starts_with?(text, "<event")
+
+  defp event_pending?(_), do: false
+
+  defp pending_content(pending, line) do
+    if Enum.any?(pending, &is_map/1) do
+      Enum.map(pending, fn
+        text when is_binary(text) -> %{"type" => "text", "text" => text}
+        part -> part
+      end) ++ [%{"type" => "text", "text" => line}]
+    else
+      Enum.join(pending ++ [line], "\n")
+    end
+  end
 
   defp event(s, term) do
     seq = s.event_seq + 1
@@ -715,7 +792,7 @@ defmodule NanoAgent do
     }
 
     # queue_length: events waiting for the next turn, this one included.
-    queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
+    queued = Enum.count(s.pending, &event_pending?/1)
 
     log(
       s,
@@ -758,6 +835,8 @@ defmodule NanoAgent do
   defp maybe_start_turn(s), do: s
 
   defp request(s, new_turn?) do
+    # Eval images arrive while tools run; their user message follows every tool result.
+    new_turn? = new_turn? or Enum.any?(s.pending, &is_map/1)
     # State from an older version of this module, still running after a reload.
     s = s |> upgrade() |> check_provider()
     node_used = Nano.StateStore.node_tokens_last_hour()
@@ -791,7 +870,7 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
+        user = %{"role" => "user", "content" => pending_content(s.pending, line)}
         next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
         estimate = estimate(next)
         room = b.max_context - estimate
@@ -839,7 +918,12 @@ defmodule NanoAgent do
   defp bytes(system_prompt, transcript),
     do:
       byte_size(
-        Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
+        Jason.encode!(
+          SeedImages.for_estimate([
+            @tools,
+            %{"role" => "system", "content" => system_prompt} | transcript
+          ])
+        )
       )
 
   defp context_halt(s, estimate) do
@@ -879,7 +963,9 @@ defmodule NanoAgent do
     if log(s, :model_request, fields) == :ok do
       s = save(%{s | status: :thinking, request_id: id, turns_used: s.turns_used + 1})
       # Map.get: state saved by an older version of this module has no :reasoning.
-      how = {s.model, Map.get(s, :reasoning, "off"), output, raw}
+      how =
+        {s.model, Map.get(s, :reasoning, "off"), output, raw, Map.get(s, :input_modalities, [])}
+
       args = [self(), s.tag, how, messages, id]
       task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :call_model, args)
       %{s | task: %{kind: :model, task: task}}
@@ -907,7 +993,7 @@ defmodule NanoAgent do
   def call_model(
         agent,
         tag,
-        {model, reasoning, max_output, raw} = how,
+        {model, reasoning, max_output, raw, modalities} = how,
         messages,
         request_id,
         attempt \\ 1
@@ -916,7 +1002,7 @@ defmodule NanoAgent do
 
     {result, files} =
       within_max(raw && "#{raw}-#{attempt}", fn ->
-        Nano.Model.chat(model, messages, @tools, reasoning, max_output)
+        Nano.Model.chat(model, messages, @tools, reasoning, max_output, modalities)
       end)
 
     case result do
@@ -1163,7 +1249,7 @@ defmodule NanoAgent do
     s = Map.merge(s, %{status: :waiting_retry, calls: [], idle_called: false, retry: retry})
 
     # Messages that arrived during the failed call do not wait.
-    if Enum.any?(s.pending, &String.starts_with?(&1, "<event")),
+    if Enum.any?(s.pending, &event_pending?/1),
       do: maybe_start_turn(s),
       else: s
   end

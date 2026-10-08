@@ -30,10 +30,24 @@ defmodule Nano.Model do
     * `:refused`: the request is invalid, and sending it again would not change that (a 4xx
       such as an unsupported parameter). The agent halts, `:model_refused`.
   """
-  def chat(@prefix <> model, messages, tools, reasoning, _max_output),
+  def chat(model, messages, tools, reasoning, max_output, modalities) do
+    {provider, _} = split(model)
+
+    with {:ok, messages} <- SeedImages.hydrate(messages, provider, modalities) do
+      provider_chat(model, messages, tools, reasoning, max_output)
+    else
+      {:error, text} -> {:error, %{status: nil, body: text, class: :refused}}
+    end
+  end
+
+  @doc "Chat with unknown image support; use chat/6 with persisted modalities to see images."
+  def chat(model, messages, tools, reasoning, max_output),
+    do: chat(model, messages, tools, reasoning, max_output, [])
+
+  defp provider_chat(@prefix <> model, messages, tools, reasoning, _max_output),
     do: Nano.ChatGPT.chat(model, messages, tools, reasoning)
 
-  def chat(model, messages, tools, reasoning, max_output),
+  defp provider_chat(model, messages, tools, reasoning, max_output),
     do: Nano.OpenRouter.chat(model, messages, tools, reasoning, max_output)
 
   @doc """

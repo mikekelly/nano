@@ -40,6 +40,7 @@ defmodule NanoWeb.Router do
     post "/agents/:name/restart", ApiController, :restart_agent
     post "/agents/:name/resume", ApiController, :resume
     post "/agents/:name/unhalt", ApiController, :unhalt
+    get "/agents/:name/images/:sha256", ApiController, :image
     get "/agents/:name/log", ApiController, :log
     get "/agents/:name/stream", ApiController, :stream
     get "/raw/*path", ApiController, :raw

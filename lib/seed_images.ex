@@ -3,8 +3,8 @@ defmodule SeedImages do
   Immutable, bounded image attachments for harness integration. `ingest(path)` or
   `ingest_bytes(bytes)` returns `{:ok, ref}`; refs contain metadata, never base64.
   `view(path)` sends `{:seed_image, ref}` to the calling agent after validation.
-  The harness must consume that event into a user message with `part(ref)`, and
-  call `hydrate(messages, provider, input_modalities)` only at request construction.
+  NanoAgent consumes that event into a user message after tool results; Nano.Model
+  calls `hydrate(messages, provider, input_modalities)` only at request construction.
   Providers are `:openrouter` and `:chatgpt`. Store refs in state/logs, not hydrated
   messages. Serve operator images with `load(ref)` (validated bytes and MIME).
 
@@ -13,14 +13,35 @@ defmodule SeedImages do
   `orientation(modalities)` states the actual capability. Images cost `tokens/1`,
   not their encoded byte length. A conservative 2,000-pixel limit on either side
   keeps attachments valid even when a transcript later contains over 20 images.
-  The default content-addressed store is `/data/seed-images`; custom `root:` is
+  The default content-addressed store is `<state_dir>/images`; custom `root:` is
   useful for tests. Do not modify files in it; hydration verifies their digest.
   """
   @max_bytes 3_750_000
   @max_side 2_000
   @token_cost 4_800
 
-  @doc "Whether persisted provider metadata explicitly includes image input."
+  @doc "Default attachment store, scoped to the node's persisted state directory."
+  def root, do: Path.join(Application.fetch_env!(:nano, :state_dir), "images")
+
+  @doc "Transform reference parts into conservative byte-equivalents for the harness estimator."
+  def for_estimate(%{"type" => "seed_image"}), do: String.duplicate("x", @token_cost * 2)
+  def for_estimate(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, for_estimate(v)} end)
+  def for_estimate(list) when is_list(list), do: Enum.map(list, &for_estimate/1)
+  def for_estimate(value), do: value
+
+  @doc "Remove embedded image data from raw HTTP debug records, not the actual request."
+  def redact(iodata) when is_list(iodata), do: redact(IO.iodata_to_binary(iodata))
+
+  def redact(binary) when is_binary(binary),
+    do:
+      Regex.replace(
+        ~r/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+\/=]+/,
+        binary,
+        "[image bytes omitted]"
+      )
+
+  @doc "Whether persisted
+ provider metadata explicitly includes image input."
   def supported?(modalities) when is_list(modalities), do: "image" in modalities
   def supported?(_), do: false
 
@@ -59,7 +80,7 @@ defmodule SeedImages do
          {:ok, mime, width, height} <- dimensions(bytes),
          :ok <- bounds(width, height),
          hash = digest(bytes),
-         root = Keyword.get(opts, :root, "/data/seed-images"),
+         root = Keyword.get(opts, :root, root()),
          :ok <- File.mkdir_p(root),
          path = Path.join(root, hash),
          :ok <- store(path, bytes) do

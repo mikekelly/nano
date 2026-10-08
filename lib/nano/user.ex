@@ -62,7 +62,22 @@ defmodule Nano.User do
   @doc "Sends `%{sender_pid: user_pid, message: text}` to `to`: a pid, agent name, user name, or registered name."
   def say(name, to, text), do: deliver(name, to, {:say, text})
 
-  @doc "Sends `term` to `to` exactly as given, with no sender added."
+  @doc "Send text with validated image refs. Import bytes with SeedImages.ingest_bytes/1 first."
+  def say_images(name, to, text, refs) when is_binary(text) and is_list(refs) do
+    with :ok <- validate_images(refs), do: deliver(name, to, {:say_images, text, refs})
+  end
+
+  defp validate_images(refs) do
+    Enum.reduce_while(refs, :ok, fn ref, :ok ->
+      case SeedImages.load(ref) do
+        {:ok, _, _} -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  @doc "Sends `term`
+ to `to` exactly as given, with no sender added."
   def send_raw(name, to, term), do: deliver(name, to, {:raw, term})
 
   @doc """
@@ -189,6 +204,9 @@ defmodule Nano.User do
   @impl true
   def handle_call({:send, target, {:say, text}}, _from, state) when is_pid(target),
     do: deliver_now(state, target, %{sender_pid: self(), message: text})
+
+  def handle_call({:send, target, {:say_images, text, refs}}, _from, state) when is_pid(target),
+    do: deliver_now(state, target, %{sender_pid: self(), message: text, images: refs})
 
   def handle_call({:send, target, {:raw, term}}, _from, state) when is_pid(target),
     do: deliver_now(state, target, term)

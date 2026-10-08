@@ -30,6 +30,11 @@ defmodule NanoWeb.AgentLive do
       |> stream_configure(:entries, dom_id: &"e-#{&1["seq"]}")
       |> stream(:entries, [])
       |> mount_shared()
+      |> allow_upload(:images,
+        accept: ~w(.png .jpg .jpeg .gif .webp),
+        max_entries: 4,
+        max_file_size: 3_750_000
+      )
       |> sync()
 
     {:ok, socket}
@@ -68,6 +73,39 @@ defmodule NanoWeb.AgentLive do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  def handle_event("validate-images", _params, socket), do: {:noreply, socket}
+
+  def handle_event("cancel-image", %{"ref" => ref}, socket),
+    do: {:noreply, cancel_upload(socket, :images, ref)}
+
+  def handle_event("send-images", %{"text" => text}, socket) do
+    results =
+      consume_uploaded_entries(socket, :images, fn %{path: path}, _entry ->
+        {:ok, SeedImages.ingest(path)}
+      end)
+
+    result =
+      case Enum.find(results, &match?({:error, _}, &1)) do
+        {:error, error} ->
+          {:error, error}
+
+        nil ->
+          refs = for {:ok, ref} <- results, do: ref
+
+          if refs == [],
+            do: {:error, "Select at least one image."},
+            else: Nano.User.say_images("dashboard", socket.assigns.name, text, refs)
+      end
+
+    notice =
+      case result do
+        :ok -> {:ok, "Image message sent"}
+        {:error, error} -> {:error, to_string(error)}
+      end
+
+    {:noreply, assign(socket, notice: notice)}
   end
 
   def handle_event("draft", params, socket),
@@ -257,6 +295,32 @@ defmodule NanoWeb.AgentLive do
           <span :if={@notice} class={["sent", elem(@notice, 0)]}>{elem(@notice, 1)}</span>
         </section>
 
+        <section :if={@agent} class="image-send">
+          <form id="send-images" phx-submit="send-images" phx-change="validate-images">
+            <label>Message with pictures
+            <input type="text" name="text" placeholder="What should the agent look at?" /></label>
+            <.live_file_input upload={@uploads.images} />
+            <p class="dim">
+              PNG, JPEG, GIF or WebP. Up to four, 3.75 MB each, at most 2,000 pixels per side.
+            </p>
+            <p :if={!SeedImages.supported?(Map.get(@agent, :input_modalities, []))} class="warn">
+              This model cannot see images; it will be told they are unavailable.
+            </p>
+            <div :for={entry <- @uploads.images.entries}>
+              {entry.client_name} ({entry.progress}%)
+              <button type="button" phx-click="cancel-image" phx-value-ref={entry.ref}>Remove</button>
+              <span :for={error <- upload_errors(@uploads.images, entry)} class="warn">{inspect(error)}</span>
+            </div>
+            <p :for={error <- upload_errors(@uploads.images)} class="warn">{inspect(error)}</p>
+            <button
+              type="submit"
+              disabled={
+                @uploads.images.entries == [] or Enum.any?(@uploads.images.entries, &(!&1.done?))
+              }
+            >Send pictures</button>
+          </form>
+        </section>
+
         <details :if={@agent} id="system-prompt" class="prompt" phx-mounted={keep_open()}>
           <summary>
             system prompt<span :if={Map.get(@agent, :prompt_source)}> · from {txt(
@@ -283,8 +347,8 @@ defmodule NanoWeb.AgentLive do
           data-view={@view}
         >
           <%= for {dom_id, e} <- @streams.entries do %>
-            <.entry :if={@view == "debug"} id={dom_id} e={e} />
-            <.read :if={@view != "debug"} id={dom_id} e={e} />
+            <.entry :if={@view == "debug"} id={dom_id} e={e} name={@name} />
+            <.read :if={@view != "debug"} id={dom_id} e={e} name={@name} />
           <% end %>
         </ol>
         <div id="follow" phx-update="ignore">
@@ -309,6 +373,8 @@ defmodule NanoWeb.AgentLive do
   attr :id, :string, required: true
   attr :e, :map, required: true
 
+  attr :name, :string, default: nil
+
   defp entry(%{e: %{"type" => "event_received"}} = assigns) do
     ~H"""
     <li id={@id} class="entry event">
@@ -316,6 +382,7 @@ defmodule NanoWeb.AgentLive do
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
       <pre>{printed(@e["message"])}</pre>
+      <.image_attachments images={@e["images"] || []} agent={@name} />
     </li>
     """
   end
@@ -502,11 +569,14 @@ defmodule NanoWeb.AgentLive do
   attr :id, :string, required: true
   attr :e, :map, required: true
 
+  attr :name, :string, default: nil
+
   defp read(%{e: %{"type" => "event_received"}} = assigns) do
     ~H"""
     <li id={@id} class="r event">
       <div class="r-label">received <time>{time(@e["at"])}</time></div>
       <pre>{printed(@e["message"])}</pre>
+      <.image_attachments images={@e["images"] || []} agent={@name} />
     </li>
     """
   end
