@@ -797,7 +797,12 @@ defmodule NanoAgent do
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
         user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+
+        next =
+          if new_turn?,
+            do: %{append(Compaction.remember_delivery(s, s.pending), user) | pending: []},
+            else: s
+
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -806,13 +811,32 @@ defmodule NanoAgent do
             s |> context_halt(estimate) |> end_turn("budget")
 
           Compaction.due?(next, estimate) ->
-            task =
-              Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
-                Compaction.generate(next)
-              end)
+            output = min(12_000, min(room - 2048, next.max_output || 12_000))
 
-            log(next, :compaction_started, %{estimate: estimate})
-            %{next | status: :thinking, task: %{kind: :compaction, task: task}}
+            next =
+              next
+              |> Map.put(:compaction_output, output)
+              |> Map.put(:request_id, next.request_id + 1)
+
+            if log(next, :compaction_started, %{
+                 estimate: estimate,
+                 request_id: next.request_id,
+                 max_output: output
+               }) == :ok do
+              task =
+                Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+                  Compaction.generate(next)
+                end)
+
+              save(%{
+                next
+                | status: :thinking,
+                  turns_used: next.turns_used + 1,
+                  task: %{kind: :compaction, task: task}
+              })
+            else
+              next |> halt(:log_failed, @log_failed) |> end_turn("error")
+            end
 
           true ->
             call(next, new_turn? && line, estimate, room)
@@ -1001,30 +1025,29 @@ defmodule NanoAgent do
 
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
 
-  defp task_done(%{task: %{kind: :compaction}} = s, {:ok, summary, response}) do
-    usage = (response.usage["prompt_tokens"] || 0) + (response.usage["completion_tokens"] || 0)
-    Nano.StateStore.add_node_tokens(usage)
-    log(s, :compaction_completed, %{summary: summary, tokens: usage})
+  defp task_done(%{task: %{kind: :compaction}} = s, {:ok, summary, stats}) do
+    s = charge_compaction(s, stats)
 
-    s =
-      Compaction.rebuild(
-        %{
-          s
-          | task: nil,
-            tokens_used: s.tokens_used + usage,
-            turns_used: s.turns_used + 1,
-            cost: s.cost + (response.cost || 0)
-        },
-        summary
-      )
+    if log(s, :compaction_completed, %{summary: summary}) == :ok do
+      s = Compaction.rebuild(s, summary) |> check_budget()
 
-    if estimate(s) >= s.max_context - @reply_room do
-      s
-      |> halt(:compaction_failed, "Checkpoint still exceeds available context")
-      |> end_turn("error")
+      if s.max_context > 0 and
+           (estimate(s) >= s.max_context - @reply_room or Compaction.due?(s, estimate(s))) do
+        s
+        |> halt(:compaction_failed, "Checkpoint still exceeds available context")
+        |> end_turn("error")
+      else
+        request(s, s.pending != [])
+      end
     else
-      request(s, s.pending != [])
+      s |> halt(:log_failed, @log_failed) |> end_turn("error")
     end
+  end
+
+  defp task_done(%{task: %{kind: :compaction}} = s, {:error, reason, stats}) do
+    charge_compaction(s, stats)
+    |> halt(:compaction_failed, "Automatic compaction failed: #{inspect(reason, limit: 5)}")
+    |> end_turn("error")
   end
 
   defp task_done(%{task: %{kind: :compaction}} = s, error) do
@@ -1037,6 +1060,62 @@ defmodule NanoAgent do
 
   defp task_done(%{task: %{kind: :eval} = t} = s, result),
     do: eval_done(%{s | task: nil}, t, result)
+
+  # Also accepts a checkpoint started by the old implementation before a hot reload.
+  defp charge_compaction(s, %{usage: usage} = response) do
+    charge_compaction(s, %{
+      attempts: 2,
+      responses: [response],
+      tokens: (usage["prompt_tokens"] || 0) + (usage["completion_tokens"] || 0),
+      cost: response[:cost] || 0
+    })
+  end
+
+  defp charge_compaction(s, stats) do
+    Nano.StateStore.add_node_tokens(stats.tokens)
+
+    Enum.each(stats.responses, fn response ->
+      log(s, :compaction_response, %{request_id: s.request_id, response: response})
+    end)
+
+    cache_hits =
+      Enum.count(stats.responses, fn r ->
+        (get_in(r, [:usage, "prompt_tokens_details", "cached_tokens"]) || 0) > 0
+      end)
+
+    %{
+      s
+      | task: nil,
+        tokens_used: s.tokens_used + stats.tokens,
+        turns_used: s.turns_used + stats.attempts - 1,
+        cost: s.cost + stats.cost,
+        responses: s.responses + length(stats.responses),
+        cache_hits: s.cache_hits + cache_hits
+    }
+  end
+
+  @doc false
+  def compaction_call(s, messages, output, attempt) do
+    raw = if Nano.RawLog.on?(s.name), do: "#{s.id}/#{s.request_id}-compaction-#{attempt}"
+    started = System.monotonic_time(:millisecond)
+
+    {result, files} =
+      within_max(raw, fn ->
+        Nano.Model.chat(s.model, messages, @tools, Map.get(s, :reasoning, "off"), output)
+      end)
+
+    case result do
+      {:ok, response} ->
+        {:ok,
+         Map.merge(response, %{
+           raw: files,
+           latency_ms: System.monotonic_time(:millisecond) - started
+         })}
+
+      error ->
+        error
+    end
+  end
 
   defp model_done(s, {:exit, reason}) do
     body = "model request task exited: " <> brief(reason)
@@ -1267,7 +1346,16 @@ defmodule NanoAgent do
 
         {summary, s} ->
           log(s, :compaction_completed, %{summary: summary, voluntary: true})
-          Compaction.rebuild(s, summary)
+          s = Compaction.rebuild(s, summary)
+
+          if s.halted == :context do
+            note(
+              %{s | halted: nil},
+              "Voluntary checkpoint reset context accounting; the normal pre-call guard still applies."
+            )
+          else
+            s
+          end
       end
 
     cond do
