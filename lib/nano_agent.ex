@@ -165,6 +165,30 @@ defmodule NanoAgent do
     with :undefined <- Nano.Names.whereis_name({:agent, name}), do: nil
   end
 
+  @doc """
+  Queues an operator-requested live prompt/capability refresh by agent name.
+  Returns `{:ok, :queued}` or `{:error, reason}`. Provider discovery happens in the
+  caller, not the agent callback. Missing discovery preserves existing capabilities.
+  The agent rereads only its own template file (or retains its inline template) and
+  applies at the next task/call-free boundary, never during automatic checkpoint
+  attempts. Idle agents are not woken. See `info/1`'s `context_refresh_pending` flag.
+  No process, binding, budget, mailbox or conversation is replaced.
+  """
+  def refresh_context(name) when is_binary(name) do
+    with %{model: model} = info <- info(name), pid when is_pid(pid) <- info.pid do
+      discovery =
+        case Nano.Model.lookup(model) do
+          {:ok, entry} -> %{modalities: entry[:input_modalities] || ["text"], error: nil}
+          {:error, reason} -> %{modalities: nil, error: inspect(reason)}
+        end
+
+      GenServer.cast(pid, {:refresh_context, info.id, discovery})
+      {:ok, :queued}
+    else
+      _ -> {:error, "agent is not running"}
+    end
+  end
+
   @doc "Casts a term to an agent (pid or name); it arrives as an event, like a plain `send/2`."
   def notify(agent, term), do: GenServer.cast(target(agent), {:notify, term})
 
@@ -217,6 +241,8 @@ defmodule NanoAgent do
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
         input_modalities: Map.get(s, :input_modalities, ["text"]),
+        input_modalities_source: Map.get(s, :input_modalities_source, :legacy_text_only),
+        context_refresh_pending: s[:context_refresh] != nil,
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -333,6 +359,8 @@ defmodule NanoAgent do
       # The agent whose eval started this one, or nil (an operator did).
       started_by: opts[:started_by],
       input_modalities: opts[:input_modalities] || ["text"],
+      input_modalities_source:
+        if(opts[:input_modalities], do: :provider_at_start, else: :legacy_text_only),
       system_prompt: nil,
       transcript: [],
       bindings: [],
@@ -589,6 +617,77 @@ defmodule NanoAgent do
     end) <> "\n" <> Seedling.Images.prompt(Map.get(s, :input_modalities, ["text"]))
   end
 
+  # An explicit operator migration, never a silent rewrite of a live system prompt.
+  defp maybe_refresh_context(
+         %{context_refresh: refresh, task: nil, calls: [], compaction: nil} = s
+       )
+       when is_map(refresh) do
+    file = prompt_file(s)
+    read = if file, do: File.read(file), else: {:ok, s.template}
+
+    template =
+      case read do
+        {:ok, text} -> text
+        _ -> s.template
+      end
+
+    modalities = refresh.modalities || s.input_modalities
+    source = if refresh.modalities, do: :provider_at_reload, else: s.input_modalities_source
+
+    next = %{
+      s
+      | template: template,
+        input_modalities: modalities,
+        input_modalities_source: source,
+        context_refresh: nil
+    }
+
+    next = %{next | system_prompt: render(next)}
+
+    text =
+      "An operator requested a live system-prompt refresh. Your own template " <>
+        "#{file || "(inline)"} was rendered again without restarting your process. " <>
+        "Input capabilities are #{inspect(modalities)} (#{source}). Your name, pid, " <>
+        "mailbox, bindings, budgets and history are unchanged." <>
+        if(refresh.error,
+          do: " Provider discovery failed: #{refresh.error}; existing capabilities retained.",
+          else: ""
+        ) <>
+        case read do
+          {:error, error} ->
+            " Template read failed: #{inspect(error)}; previous template retained."
+
+          _ ->
+            ""
+        end
+
+    next = append(next, %{"role" => "user", "content" => "<harness>#{text}</harness>"})
+    # Keep the provider-measured history baseline. Reestimate the changed system prompt
+    # conservatively instead of estimating the entire long history from scratch.
+    forgotten = byte_size(Jason.encode!(s.system_prompt))
+    next = %{next | measured_bytes: max(s.measured_bytes - forgotten, 0)}
+
+    fields = %{
+      system_prompt: next.system_prompt,
+      prompt_source: file || "inline",
+      input_modalities: modalities,
+      input_modalities_source: source,
+      provider_error: refresh.error,
+      template_error:
+        case read do
+          {:error, e} -> inspect(e)
+          _ -> nil
+        end
+    }
+
+    if log(next, :context_refreshed, fields) == :ok and
+         log(next, :harness_note, %{text: text}) == :ok,
+       do: next,
+       else: halt(next, :log_failed, @log_failed)
+  end
+
+  defp maybe_refresh_context(s), do: s
+
   # The template file an agent's prompt comes from, or nil for one given as a string. State
   # saved before this was recorded used the default file unless it had a string.
   defp prompt_file(s),
@@ -618,6 +717,11 @@ defmodule NanoAgent do
   end
 
   def handle_cast(:check_provider, s), do: noreply(check_provider(s))
+
+  def handle_cast({:refresh_context, id, discovery}, %{id: id} = s) do
+    s = %{Compaction.migrate(s) | context_refresh: discovery}
+    noreply(maybe_refresh_context(s))
+  end
 
   def handle_cast(:unhalt, %{halted: nil} = s), do: noreply(s)
 
@@ -815,7 +919,7 @@ defmodule NanoAgent do
 
   defp request(s, new_turn?) do
     # State from an older version of this module, still running after a reload.
-    s = s |> upgrade() |> Compaction.migrate() |> check_provider()
+    s = s |> upgrade() |> Compaction.migrate() |> maybe_refresh_context() |> check_provider()
     node_used = Nano.StateStore.node_tokens_last_hour()
     cap = Nano.Settings.get(:node_max_tokens_per_hour)
 
@@ -1568,7 +1672,10 @@ defmodule NanoAgent do
 
   defp end_turn(s, reason) do
     log(s, :turn_ended, %{reason: reason})
-    maybe_start_turn(%{s | status: :idle, calls: [], idle_called: false})
+
+    %{s | status: :idle, calls: [], idle_called: false}
+    |> maybe_refresh_context()
+    |> maybe_start_turn()
   end
 
   @doc """

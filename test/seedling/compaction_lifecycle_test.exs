@@ -508,4 +508,90 @@ defmodule Seedling.CompactionLifecycleTest do
     assert Enum.any?(recovered["messages"], &String.contains?(text(&1), note))
     assert Enum.count(Nano.Log.read(ctx.id), &(&1["type"] == "context_bob")) == 1
   end
+
+  @tag prompt: "Custom inline prompt for {{name}}."
+  test "explicit live refresh respects inline templates, persists current capabilities, and does not wake idle",
+       ctx do
+    original = NanoAgent.info(ctx.name).system_prompt
+    assert {:ok, :queued} = NanoAgent.refresh_context(ctx.name)
+    state = :sys.get_state(ctx.pid)
+    assert state.system_prompt == original
+    assert state.input_modalities_source == :provider_at_reload
+    assert state.context_refresh == nil
+    assert state.status == :idle
+    assert NanoAgent.whereis(ctx.name) == ctx.pid
+    assert NanoAgent.info(ctx.name).budget.turns_used == 0
+    assert String.starts_with?(state.system_prompt, "Custom inline prompt for #{ctx.name}.")
+    assert length(String.split(state.system_prompt, "Your model cannot see images")) == 2
+
+    assert List.last(state.transcript)["content"] =~
+             "operator requested a live system-prompt refresh"
+
+    refute_receive {:openrouter_request, _, _}, 100
+    assert {:error, _} = NanoAgent.refresh_context("not-running")
+  end
+
+  @tag images: true
+  test "live file refresh queues behind an in-flight request and eval without restarting or changing its prefix",
+       ctx do
+    file = Path.join(Application.fetch_env!(:nano, :test_dir), "prompt-#{ctx.id}.txt")
+    old = "Old custom prompt."
+    File.write!(file, old)
+
+    :sys.replace_state(ctx.pid, fn state ->
+      %{
+        state
+        | prompt_file: file,
+          template: old,
+          system_prompt: old,
+          input_modalities: ["text"],
+          input_modalities_source: :legacy_text_only
+      }
+    end)
+
+    send(ctx.pid, :refresh_brief)
+    first = request(ctx)
+    assert text(hd(first["messages"])) == old
+    File.write!(file, "Updated custom prompt for {{name}}.")
+    assert {:ok, :queued} = NanoAgent.refresh_context(ctx.name)
+    assert :sys.get_state(ctx.pid).system_prompt == old
+    assert NanoAgent.info(ctx.name).context_refresh_pending == true
+    Fake.push(ctx.model, calls: [eval: "x = 1"])
+    next = request(ctx)
+    assert text(hd(next["messages"])) =~ "Updated custom prompt for #{ctx.name}."
+    assert text(hd(next["messages"])) =~ "You can see attached images"
+
+    assert Enum.any?(
+             next["messages"],
+             &(text(&1) =~ "operator requested a live system-prompt refresh")
+           )
+
+    assert NanoAgent.info(ctx.name).input_modalities == ["text", "image"]
+    assert NanoAgent.info(ctx.name).input_modalities_source == :provider_at_reload
+    assert NanoAgent.info(ctx.name).context_refresh_pending == false
+    assert Keyword.fetch!(elem(Nano.StateStore.bindings(ctx.name), 0), :x) == 1
+    assert NanoAgent.whereis(ctx.name) == ctx.pid
+    Fake.push(ctx.model, text: "done")
+  end
+
+  test "an explicit refresh waits until automatic summary attempts finish so retries remain identical",
+       ctx do
+    {_, compact} = cross(ctx)
+    assert {:ok, :queued} = NanoAgent.refresh_context(ctx.name)
+    :sys.get_state(ctx.pid)
+    assert NanoAgent.info(ctx.name).context_refresh_pending == true
+    Fake.push(ctx.model, text: "invalid checkpoint")
+    assert request(ctx) == compact
+    Fake.push(ctx.model, calls: [eval: summary_code("Checkpoint before operator refresh.")])
+    resumed = request(ctx)
+
+    assert Enum.any?(
+             resumed["messages"],
+             &(text(&1) =~ "operator requested a live system-prompt refresh")
+           )
+
+    assert NanoAgent.info(ctx.name).context_refresh_pending == false
+    assert NanoAgent.info(ctx.name).input_modalities_source == :provider_at_reload
+    Fake.push(ctx.model, text: "done")
+  end
 end

@@ -111,7 +111,8 @@ checked once against the hard guard rather than repeatedly summarized forever.
 State is persisted in the agent's normal state file; no new global process or table is
 required. New fields are filled lazily for live older agents and at restoration:
 `compaction`, `compaction_summary`, `compaction_fresh`, `compaction_events`,
-`compaction_pending_events`, `front_of_mind_compacted`, and saved `input_modalities` (legacy defaults text-only).
+`compaction_pending_events`, `front_of_mind_compacted`, `context_refresh`, saved
+`input_modalities` (legacy defaults text-only), and `input_modalities_source`.
 Old rendered user events are recovered from line-anchored headers and the final wrapper
 terminator, excluding harness notes; literal `</event>` inside inspected received words
 is preserved rather than mistaken for the wrapper boundary.
@@ -133,10 +134,30 @@ checkpoint is in flight, it resumes that checkpoint; restart notes queue behind 
 A process/node restart changes the system pid prompt truthfully, so its request prefix
 will no longer be byte-identical to the pre-restart provider request.
 
-Prefer a controlled restart for deployment when practical. Existing rendered system
-prompts stay unchanged until a restart; editing a template does not rewrite a live
-agent's system prompt. Keep the default/agent prompt accurate about automatic compaction
-and point orientation at `Seedling.Compaction`, rather than repeating this document.
+Existing rendered prompts stay unchanged until an explicit refresh or restart; editing
+a template does not silently rewrite a live agent's system prompt. For parent-controlled
+live migration **without restarting builders**, load the verified supporting modules
+and harness, then call `NanoAgent.refresh_context(name)` for each target name. It returns
+`{:ok, :queued}` and discovers current provider modalities in the caller, outside the
+agent process. Missing provider discovery retains existing capabilities and reports the
+failure rather than guessing. Legacy text-only defaults are not silently upgraded.
+
+The queued refresh applies at a task/call-free boundary, after an in-flight model/eval
+completes, and never during automatic checkpoint retries. It rereads only the agent's
+own prompt file, or renders its saved inline custom template unchanged, so a default
+prompt refresh does not overwrite custom prompts. It appends an operator-origin note
+and logs `context_refreshed` with the updated prompt/capabilities. Idle agents are not
+woken or restarted. Inspect `NanoAgent.info(name).context_refresh_pending`; false means
+applied (or no request), and `input_modalities_source: :provider_at_reload` means current
+provider discovery supplied the persisted capability list. Missing source metadata is
+`:legacy_saved`/`:legacy_text_only`, not a fabricated historical discovery claim.
+
+The provider-measured history baseline remains; only the changed prompt gets a cautious
+extra allowance. Estimating an entire long history from scratch just because a lean
+prompt changed could falsely halt a builder. Bindings, counters, events, mailbox and
+pid stay intact. Keep the default/agent prompt accurate about automatic compaction and
+point orientation at `Seedling.Compaction`, rather than repeating this document.
+
 
 Tests use scripted HTTP providers and real supervised GenServers, without provider
 spend. A separate opt-in real-provider smoke lives at `scripts/compaction_smoke.exs`. It starts
