@@ -212,11 +212,12 @@ tr.send-row td { background: var(--panel); white-space: normal; }
 .sent.ok { color: var(--idle); }
 .sent.error { color: var(--halted); }
 
-/* Inbox */
-/* The dashboard user's inbox: an icon fixed at the top right, its messages dropping down. */
-.inbox-menu { position: fixed; top: 0.6rem; right: 1rem; z-index: 3; }
-.inbox-menu summary {
-  list-style: none;
+/* The messages link: an icon fixed at the top right, with the unread count. */
+.inbox-link {
+  position: fixed;
+  top: 0.6rem;
+  right: 1rem;
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 0.2rem;
@@ -226,36 +227,61 @@ tr.send-row td { background: var(--panel); white-space: normal; }
   border: 1px solid var(--line);
   border-radius: 6px;
 }
-.inbox-menu summary::-webkit-details-marker { display: none; }
-.inbox-menu .count { font-size: 0.8em; padding: 0 0.35rem; border-radius: 8px; background: var(--panel); }
-.inbox-menu .count.new { background: var(--suspended); color: #fff; }
-.inbox-menu .count.warn { background: var(--halted); color: #fff; }
-.inbox {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.3rem);
-  width: min(540px, calc(100vw - 2rem));
-  max-height: 70vh;
-  overflow: auto;
-  padding: 0.6rem 0.8rem;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-}
-.inbox ol { list-style: none; padding: 0; margin: 0; }
-.inbox li { border-top: 1px solid var(--line); padding: 0.4rem 0; }
-.inbox time { color: var(--dim); font-size: 0.9em; }
-.inbox .summary { display: block; background: none; overflow-wrap: anywhere; }
-.inbox .text { margin-top: 0.3rem; }
-.inbox .where { color: var(--dim); font-size: 0.85em; }
-.inbox .body {
+.inbox-link:hover { background: var(--panel); text-decoration: none; }
+.count { font-size: 0.8em; padding: 0 0.35rem; border-radius: 8px; background: var(--panel); }
+.count.new { background: var(--suspended); color: #fff; }
+
+/* A message term made readable (Components.message/1): a summary, then its texts. */
+.msg .summary { display: block; background: none; overflow-wrap: anywhere; white-space: pre-wrap; }
+.msg .text { margin-top: 0.3rem; }
+.msg .where { color: var(--dim); font-size: 0.85em; }
+.msg .body, .said {
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: var(--panel);
-  padding: 0.3rem 0.5rem;
+}
+.msg .body { background: var(--panel); padding: 0.3rem 0.5rem; border-radius: 4px; }
+
+/* Messages page: users' conversations on the left, the open one on the right. */
+.messages { display: grid; grid-template-columns: minmax(200px, 300px) minmax(0, 1fr); gap: 1.2rem; align-items: start; }
+.messages nav.threads h2 { margin: 0.8rem 0 0.3rem; }
+.messages nav.threads h2:first-child { margin-top: 0; }
+a.thread {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0 0.5rem;
+  align-items: baseline;
+  padding: 0.35rem 0.5rem;
+  color: var(--fg);
   border-radius: 4px;
+}
+a.thread:hover { background: var(--panel); text-decoration: none; }
+a.thread.current { background: #e6f3fa; }
+a.thread .with { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.thread time { color: var(--dim); font-size: 0.85em; }
+a.thread .last { grid-column: 1 / -1; color: var(--dim); font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation h2 { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
+.conversation .back { display: none; font-weight: normal; }
+.conversation ol { list-style: none; padding: 0; margin: 0 0 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.conversation li.m { display: flex; flex-direction: column; align-items: flex-start; max-width: min(82ch, 88%); min-width: 0; }
+.conversation li.m.sent { align-self: flex-end; align-items: flex-end; }
+.conversation .bubble {
+  max-width: 100%;
+  min-width: 0;
+  padding: 0.45rem 0.75rem;
+  background: #fff8ef;
+  border: 1px solid #f1d7b5;
+  border-radius: 12px;
+}
+.conversation li.m.sent .bubble { background: #e6f3fa; border-color: #b9dcef; }
+.conversation li.m time { color: var(--dim); font-size: 0.85em; margin: 0.1rem 0.4rem 0; }
+.messages .pick { padding: 0.8rem; border: 1px dashed var(--line); border-radius: 8px; }
+/* Phone width: the list, or the open conversation with a way back. */
+@media (max-width: 700px) {
+  .messages { grid-template-columns: minmax(0, 1fr); }
+  .messages.open nav.threads, .messages .pick { display: none; }
+  .conversation .back { display: inline; }
+  .conversation li.m { max-width: 94%; }
 }
 
 /* Agent header bar */
@@ -325,7 +351,7 @@ nav.views a { display: inline-flex; align-items: center; gap: 0.3rem; }
 nav.views a.current { color: var(--fg); font-weight: bold; }
 ol.timeline.reading .r { margin: 0.9rem 0; }
 .r .r-label, .r time { color: var(--dim); font-size: 0.9em; }
-.r.event pre { background: #e6f3fa; padding: 0.3rem 0.5rem; margin-top: 0.15rem; }
+.r.event pre { background: #e6f3fa; padding: 0.3rem 0.5rem; margin-top: 0.15rem; max-width: 100ch; }
 .r.note { color: var(--dim); font-size: 0.9em; white-space: pre-wrap; }
 .r.note.halt { color: var(--halted); }
 .r.state { color: var(--dim); border-top: 1px dashed var(--line); padding-top: 0.3rem; }

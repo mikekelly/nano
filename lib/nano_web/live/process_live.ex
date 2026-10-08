@@ -9,7 +9,7 @@ defmodule NanoWeb.ProcessLive do
 
   For the cards' "now" line the page keeps each agent's last three log entries: read once when
   the agent is first seen, then followed on its PubSub topic. Users' message counts are read
-  once and then counted from their topics.
+  from their table (`Nano.User.counts/0`) at each refresh.
   """
   use Phoenix.LiveView
 
@@ -26,7 +26,7 @@ defmodule NanoWeb.ProcessLive do
     socket =
       socket
       |> assign(page_title: "nano", prev: %{}, prev_at: nil, send_to: nil, view: view(params))
-      |> assign(recent: %{}, counts: %{}, setting_errors: %{}, saves: 0)
+      |> assign(recent: %{}, setting_errors: %{}, saves: 0)
       # The model lists are fetched (and cached) by the providers; only a live page asks for them.
       |> assign(
         start: if(openrouter_error, do: %{"provider" => "openrouter"}, else: %{}),
@@ -68,21 +68,9 @@ defmodule NanoWeb.ProcessLive do
     {:noreply, assign(socket, recent: recent)}
   end
 
-  def handle_info({:nano_user, %{dir: :received, to: to}}, socket) do
-    socket = if to == socket.assigns.inbox_pid, do: refresh_inbox(socket), else: socket
-    name = Enum.find_value(socket.assigns.users, fn {name, pid, _} -> pid == to && name end)
+  def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_unread(socket)}
 
-    {:noreply,
-     update(
-       socket,
-       :counts,
-       &if(&1[name], do: Map.update!(&1, name, fn n -> n + 1 end), else: &1)
-     )}
-  end
-
-  def handle_info({:nano_user, _}, socket), do: {:noreply, socket}
-
-  def handle_event(event, params, socket) when event in ~w(draft send clear_inbox),
+  def handle_event(event, params, socket) when event in ~w(draft send),
     do: {:noreply, handle_shared(event, params, socket)}
 
   def handle_event("open_send", %{"to" => to}, socket) do
@@ -214,10 +202,10 @@ defmodule NanoWeb.ProcessLive do
     |> follow()
   end
 
-  # First sight of an agent (by id) or user: subscribe and read what is there once; from then on
-  # their topics keep it current. Agents that are gone are dropped.
+  # First sight of an agent (by id): subscribe and read what is there once; from then on its
+  # topic keeps it current. Agents that are gone are dropped. Users are read from their table.
   defp follow(socket) do
-    %{agents: agents, recent: recent, counts: counts} = socket.assigns
+    %{agents: agents, recent: recent} = socket.assigns
     live? = connected?(socket)
 
     recent =
@@ -229,28 +217,7 @@ defmodule NanoWeb.ProcessLive do
         end
       end)
 
-    users = for name <- Enum.sort(Nano.User.list()), do: {name, Nano.User.pid(name)}
-
-    counts =
-      Map.new(users, fn {name, _} ->
-        case counts do
-          %{^name => n} -> {name, n}
-          _ when live? -> {name, first_count(name)}
-          _ -> {name, nil}
-        end
-      end)
-
-    users =
-      for {name, pid} <- users do
-        count =
-          if name == "dashboard" and socket.assigns.inbox,
-            do: length(socket.assigns.inbox),
-            else: counts[name]
-
-        {name, pid, count}
-      end
-
-    assign(socket, recent: recent, counts: counts, users: users)
+    assign(socket, recent: recent, users: Nano.User.counts())
   end
 
   defp models("openrouter"), do: Nano.OpenRouter.models()
@@ -259,15 +226,6 @@ defmodule NanoWeb.ProcessLive do
   defp tail(id) do
     Nano.Log.subscribe(id)
     Enum.take(Nano.Log.read(id), -3)
-  end
-
-  defp first_count(name) do
-    Phoenix.PubSub.subscribe(Nano.PubSub, "user:" <> name)
-
-    case Nano.User.inbox(name) do
-      messages when is_list(messages) -> length(messages)
-      {:error, _} -> nil
-    end
   end
 
   # Broadcast entries have atom keys; the log on disk, string keys. Cards read the latter.
@@ -289,7 +247,7 @@ defmodule NanoWeb.ProcessLive do
           @refreshed_at
         )} UTC
       </span>
-      <.inbox_menu inbox={@inbox} pid={@inbox_pid} />
+      <.inbox_link unread={@unread} />
     </header>
     <div class="layout">
       <main>

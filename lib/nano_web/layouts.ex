@@ -61,26 +61,6 @@ defmodule NanoWeb.Layouts do
             }
           }
 
-          // InboxSeen (on the inbox menu): counts messages newer than the newest one this viewer
-          // had when they last opened the menu; kept in localStorage, which may be unavailable.
-          const InboxSeen = {
-            mounted() {
-              this.seen = () => { try { return localStorage.getItem("nano:inbox-seen") || "" } catch { return "" } }
-              this.count = () => {
-                const ats = [...this.el.querySelectorAll("li[data-at]")].map(li => li.dataset.at)
-                if (this.el.open && ats.length) { try { localStorage.setItem("nano:inbox-seen", ats.sort().pop()) } catch {} }
-                const fresh = ats.filter(at => at > this.seen()).length
-                const badge = document.getElementById("inbox-new")
-                badge.hidden = fresh === 0
-                // Only on change: the badge is inside what the observer below watches.
-                if (badge.textContent !== `${fresh} new`) badge.textContent = `${fresh} new`
-              }
-              this.el.addEventListener("toggle", this.count)
-              new MutationObserver(this.count).observe(this.el, {childList: true, subtree: true})
-              this.count()
-            }
-          }
-
           // Dropdowns (<details class="dropdown">) close on a click outside them, on Escape, or
           // when the server says so (a message sent from one).
           window.addEventListener("phx:close", e => { const d = document.getElementById(e.detail.id); if (d) d.open = false })
@@ -95,7 +75,7 @@ defmodule NanoWeb.Layouts do
             // after a random 5-10 s, meant to spread out many clients; one operator needs only ~1 s.
             window.liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
               params: {_csrf_token: csrf},
-              hooks: {Follow, InboxSeen},
+              hooks: {Follow},
               reloadJitterMin: 500,
               reloadJitterMax: 1500
             })

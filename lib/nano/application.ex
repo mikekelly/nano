@@ -1,6 +1,7 @@
 defmodule Nano.Application do
   @moduledoc """
-  Starts the node's supervision tree, records the boot set, and starts the dashboard user.
+  Starts the node's supervision tree, records the boot set, and brings back the users and
+  agents saved before the node last stopped.
 
   Agents may kill anything here (the spec allows it); the tree is built so that each such kill
   is recovered from without ending the node: every child's restart is retried for a while
@@ -16,6 +17,7 @@ defmodule Nano.Application do
   def start(_type, _args) do
     # Owned by this process, which lives as long as the application, so names outlive Nano.Names.
     Nano.Names.create_table()
+    Nano.User.create_table()
 
     children =
       Enum.map(
@@ -43,9 +45,10 @@ defmodule Nano.Application do
 
     with {:ok, sup} <- Supervisor.start_link(children, opts) do
       :persistent_term.put(@boot_set, MapSet.new(Process.list()))
-      # After the snapshot, so the dashboard user is listed as a process of kind "user".
-      Nano.User.start("dashboard")
-      # Agents saved before the node last stopped come back, with their history.
+      # After the snapshot, so users are listed as processes of kind "user". Users come back
+      # with their messages, before the agents (with their history) who may send to them.
+      best_effort(&Nano.User.revive/0)
+
       best_effort(fn ->
         Nano.StateStore.load()
         NanoAgent.revive(Nano.AgentSupervisor)
@@ -96,15 +99,15 @@ defmodule Nano.Application do
   end
 
   @doc """
-  Starts `Nano.UserSupervisor`. If it was killed, its users died with it; the dashboard's
-  own user is started again. Other users are not.
+  Starts `Nano.UserSupervisor`. If it was killed, its users died with it; they are started
+  again with their messages (`Nano.User.revive/0`).
   """
   def start_users do
     with {:ok, sup} <-
            DynamicSupervisor.start_link(name: Nano.UserSupervisor, strategy: :one_for_one) do
       # The boot set exists only once the tree has come up the first time.
       if :persistent_term.get(@boot_set, nil),
-        do: best_effort(fn -> Nano.User.start("dashboard") end)
+        do: best_effort(&Nano.User.revive/0)
 
       {:ok, sup}
     end

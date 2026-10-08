@@ -1,7 +1,7 @@
 defmodule NanoWeb.Components do
   @moduledoc """
-  What both dashboard pages share: the send forms, the `dashboard` user's inbox, agent status
-  badges, and formatting. Presentation only; every send goes through `Nano.User` and every
+  What the dashboard pages share: the send forms, the messages link with its unread count,
+  agent status badges, and formatting. Presentation only; every send goes through `Nano.User` and every
   term through `Nano.Ops.term/1`, exactly as the HTTP API does.
   """
   use Phoenix.Component
@@ -13,45 +13,40 @@ defmodule NanoWeb.Components do
 
   ## State and events shared by both LiveViews
 
-  @doc "Assigns the send-form drafts and the dashboard user's inbox; subscribes to its traffic."
+  @doc "Assigns the send-form drafts and the unread count; subscribes to all users' traffic."
   def mount_shared(socket) do
-    if Phoenix.LiveView.connected?(socket),
-      do: Phoenix.PubSub.subscribe(Nano.PubSub, "user:" <> @user)
+    if Phoenix.LiveView.connected?(socket), do: Phoenix.PubSub.subscribe(Nano.PubSub, "users")
 
     socket
     |> assign(draft: %{"text" => "", "term" => ""}, sent: nil)
-    |> refresh_inbox()
+    |> refresh_unread()
   end
 
-  @doc "Re-reads the dashboard user's inbox (newest first; nil if the user is not running or not answering)."
-  def refresh_inbox(socket) do
-    inbox =
-      case Nano.User.inbox(@user) do
-        messages when is_list(messages) -> Enum.reverse(messages)
-        {:error, _} -> nil
-      end
-
-    assign(socket, inbox: inbox, inbox_pid: Nano.User.pid(@user))
-  end
+  @doc "Re-counts the messages users have received in conversations not read since."
+  def refresh_unread(socket),
+    do: assign(socket, unread: Nano.User.counts() |> Enum.map(& &1.unread) |> Enum.sum())
 
   @doc """
   Handles the shared events: `"draft"` (a send form changed), `"send"` (the text box goes
-  through `Nano.User.say/3`, the term box through `Nano.Ops.term/1` and `Nano.User.send_raw/3`),
-  and `"clear_inbox"`.
+  through `Nano.User.say/3`, the term box through `Nano.Ops.term/1` and `Nano.User.send_raw/3`,
+  from the form's user, `dashboard` unless it says otherwise).
   """
   def handle_shared("draft", params, socket),
     do: assign(socket, draft: Map.merge(socket.assigns.draft, Map.take(params, ~w(text term))))
 
-  def handle_shared("send", %{"to" => to, "text" => text}, socket) do
-    sent = result(Nano.User.say(@user, to, text), "said #{inspect(text)} to #{to}")
+  def handle_shared("send", %{"to" => to, "text" => text} = params, socket) do
+    user = params["from"] || @user
+    sent = result(Nano.User.say(user, to, text), "said #{inspect(text)} to #{to}", user)
     sent(socket, sent, "text")
   end
 
-  def handle_shared("send", %{"to" => to, "term" => code}, socket) do
+  def handle_shared("send", %{"to" => to, "term" => code} = params, socket) do
+    user = params["from"] || @user
+
     sent =
       case Nano.Ops.term(code) do
         {:ok, term} ->
-          result(Nano.User.send_raw(@user, to, term), "sent #{show(term)} to #{to}")
+          result(Nano.User.send_raw(user, to, term), "sent #{show(term)} to #{to}", user)
 
         {:error, message} ->
           {:error, message}
@@ -60,28 +55,26 @@ defmodule NanoWeb.Components do
     sent(socket, sent, "term")
   end
 
-  def handle_shared("clear_inbox", _params, socket) do
-    Nano.User.inbox(@user, clear: true)
-    refresh_inbox(socket)
-  end
-
   # A successful send empties its box; a failed one keeps it for fixing.
   defp sent(socket, {:ok, _} = sent, box),
     do: assign(socket, sent: sent, draft: Map.put(socket.assigns.draft, box, ""))
 
   defp sent(socket, sent, _box), do: assign(socket, sent: sent)
 
-  defp result(:ok, message), do: {:ok, message}
-  defp result({:error, :unknown_target}, _), do: {:error, "no such process (it may have exited)"}
-  defp result({:error, :unknown_user}, _), do: {:error, "the #{@user} user is not running"}
+  defp result(:ok, message, _), do: {:ok, message}
 
-  defp result({:error, :unresponsive}, _),
+  defp result({:error, :unknown_target}, _, _),
+    do: {:error, "no such process (it may have exited)"}
+
+  defp result({:error, :unknown_user}, _, user), do: {:error, "the #{user} user is not running"}
+
+  defp result({:error, :unresponsive}, _, user),
     do:
       {:error,
-       "the #{@user} user is not responding (suspended or flooded?); the message is queued " <>
+       "the #{user} user is not responding (suspended or flooded?); the message is queued " <>
          "in its mailbox and will go out if it resumes, so sending again would send it twice"}
 
-  defp result({:error, reason}, _), do: {:error, inspect(reason)}
+  defp result({:error, reason}, _, _), do: {:error, inspect(reason)}
 
   ## Components
 
@@ -137,6 +130,7 @@ defmodule NanoWeb.Components do
   attr :draft, :map, required: true
   attr :sent, :any, required: true
   attr :boxes, :list, default: ~w(text term), doc: "which boxes to show"
+  attr :from, :string, default: @user, doc: "the user who sends"
 
   @doc "The send form: a plain-text box (`say/3`) and an Elixir term box (`send_raw/3`)."
   def send_form(assigns) do
@@ -144,23 +138,25 @@ defmodule NanoWeb.Components do
     <div class="send" id={@id}>
       <form :if={"text" in @boxes} id={@id <> "-text"} phx-change="draft" phx-submit="send">
         <input type="hidden" name="to" value={@to} />
+        <input type="hidden" name="from" value={@from} />
         <input
           type="text"
           name="text"
           value={@draft["text"]}
-          placeholder="plain text, sent as %{sender_pid: dashboard, message: text}"
+          placeholder={"plain text, sent as %{sender_pid: #{@from}, message: text}"}
           autocomplete="off"
         />
         <button><.icon name="send" /> send</button>
       </form>
       <form :if={"term" in @boxes} id={@id <> "-term"} phx-change="draft" phx-submit="send">
         <input type="hidden" name="to" value={@to} />
+        <input type="hidden" name="from" value={@from} />
         <input
           type="text"
           name="term"
           value={@draft["term"]}
           placeholder={
-            ~s|Elixir term, sent as is: {:hello, Nano.User.pid("dashboard"), "are you there?"}|
+            ~s|Elixir term, sent as is: {:hello, Nano.User.pid("#{@from}"), "are you there?"}|
           }
           autocomplete="off"
           class="mono"
@@ -172,51 +168,15 @@ defmodule NanoWeb.Components do
     """
   end
 
-  attr :inbox, :any, required: true
-  attr :pid, :any, required: true
+  attr :unread, :integer, required: true
 
-  @doc """
-  The dashboard user's inbox, behind an icon fixed at the top right: replies to anything sent
-  from these forms, newest first. The count of messages new since this viewer last opened it
-  is kept in their browser (the InboxSeen hook).
-  """
-  def inbox_menu(assigns) do
+  @doc "The link to the messages page, fixed at the top right, with how many are unread."
+  def inbox_link(assigns) do
     ~H"""
-    <details
-      id="inbox-menu"
-      class="dropdown inbox-menu"
-      phx-mounted={keep_open()}
-      phx-hook="InboxSeen"
-    >
-      <summary title="inbox of user dashboard">
-        <.icon name="mail" size={20} />
-        <span :if={@inbox not in [nil, []]} class="count">{length(@inbox)}</span>
-        <span :if={@inbox == nil} class="count warn">!</span>
-        <span id="inbox-new" class="count new" phx-update="ignore" hidden></span>
-      </summary>
-      <section class="inbox">
-        <h2>
-          inbox of user "dashboard" <span class="dim">{@pid && inspect(@pid)}</span>
-          <button :if={@inbox not in [nil, []]} phx-click="clear_inbox" class="small">clear</button>
-        </h2>
-        <p :if={@inbox == nil} class="error">
-          {if @pid,
-            do:
-              "The dashboard user is not responding (suspended or flooded?), so its inbox cannot be read.",
-            else: "The dashboard user is not running."}
-        </p>
-        <p :if={@inbox == []} class="dim">
-          Nothing received yet. Messages sent with "say" carry this user's pid; in a term, use <code>Nano.User.pid("dashboard")</code>.
-        </p>
-        <ol :if={@inbox} id="inbox">
-          <li :for={m <- Enum.take(@inbox, 50)} data-at={DateTime.to_iso8601(m.at)}>
-            <time>{time(m.at)}</time>
-            <.message term={m.term} />
-          </li>
-        </ol>
-        <p :if={@inbox && length(@inbox) > 50} class="dim">{length(@inbox) - 50} older not shown.</p>
-      </section>
-    </details>
+    <.link navigate="/messages" id="inbox-link" class="inbox-link" title="messages">
+      <.icon name="mail" size={20} />
+      <span :if={@unread > 0} class="count new">{@unread}</span>
+    </.link>
     """
   end
 
@@ -231,10 +191,12 @@ defmodule NanoWeb.Components do
     assigns = assign(assigns, summary: summary(assigns.term), texts: texts(assigns.term))
 
     ~H"""
-    <code :if={@summary} class="summary">{@summary}</code>
-    <div :for={{where, text} <- @texts} class="text">
-      <span :if={where} class="where">{where}</span>
-      <div class="body">{text}</div>
+    <div class="msg">
+      <code :if={@summary} class="summary">{@summary}</code>
+      <div :for={{where, text} <- @texts} class="text">
+        <span :if={where} class="where">{where}</span>
+        <div class="body">{text}</div>
+      </div>
     </div>
     """
   end
@@ -399,6 +361,22 @@ defmodule NanoWeb.Components do
   end
 
   def time(_), do: ""
+
+  @doc """
+  Printed Elixir (an event's message, as `inspect/2` gave it) with each newline in its strings
+  shown as a line break: `inspect` writes one as `\\n`, which left a multi-line message on one
+  line with words joined by `\\n`. Only the display changes; the agent sees what was printed.
+  """
+  def printed(text) when is_binary(text) do
+    Regex.replace(~r/"(?:\\.|[^"\\])*"?/s, text, fn string ->
+      Regex.replace(~r/\\(.)/s, string, fn
+        "\\n", _ -> "\n"
+        escape, _ -> escape
+      end)
+    end)
+  end
+
+  def printed(value), do: txt(value)
 
   @doc "A term as Elixir source, bounded."
   def show(term), do: inspect(term, @inspect)

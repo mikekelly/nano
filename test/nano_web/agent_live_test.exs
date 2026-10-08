@@ -1,5 +1,5 @@
 defmodule NanoWeb.AgentLiveTest do
-  # Not async: the dashboard user's inbox is node-wide, and agents use the fake OpenRouter.
+  # Not async: the dashboard user is node-wide, and agents use the fake OpenRouter.
   use ExUnit.Case, async: false
 
   import Phoenix.ConnTest
@@ -14,7 +14,6 @@ defmodule NanoWeb.AgentLiveTest do
     saved = Application.get_env(:nano, :openrouter_backoff_ms)
     Application.put_env(:nano, :openrouter_backoff_ms, 1)
     on_exit(fn -> Application.put_env(:nano, :openrouter_backoff_ms, saved) end)
-    Nano.User.inbox("dashboard", clear: true)
     name = "a#{System.unique_integer([:positive])}"
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     %{model: Fake.model(), name: name, conn: build_conn()}
@@ -248,9 +247,14 @@ defmodule NanoWeb.AgentLiveTest do
     assert html =~ "MissingError" or html =~ "SyntaxError"
   end
 
-  test "replies that land in the dashboard user's inbox show on the page", ctx do
+  test "a reply to the dashboard user counts as unread, and is in its thread with the agent",
+       ctx do
     start!(ctx)
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
+
+    unread = fn ->
+      view |> element("#inbox-link") |> render() |> then(&Regex.run(~r/>(\d+)</, &1))
+    end
 
     Fake.push(ctx.model,
       calls: [eval: ~s|send(Nano.User.pid("dashboard"), {:reply, "yes, I am here"})|]
@@ -262,8 +266,24 @@ defmodule NanoWeb.AgentLiveTest do
     |> element(".send form", "send term")
     |> render_submit(%{term: ~s|{:hello, Nano.User.pid("dashboard"), "are you there?"}|})
 
-    eventually(fn -> has_element?(view, ".inbox li .summary", ~s|{:reply, "yes, I am here"}|) end)
+    # Sent from the agent's eval, which names no one: it is the agent with an eval running.
+    eventually(fn -> thread_has?(ctx.name, {:reply, "yes, I am here"}) end)
+    assert unread.() != nil
+
+    {:ok, messages, _} = live(ctx.conn, "/messages?user=dashboard&agent=#{ctx.name}")
+    assert has_element?(messages, "li.m.received .summary", ~s|{:reply, "yes, I am here"}|)
+    assert has_element?(messages, "li.m.sent .summary", "are you there?")
+    eventually(fn -> unread_in(ctx.name) == 0 end)
   end
+
+  defp thread(agent) do
+    Enum.find(Nano.User.threads("dashboard"), &(&1.agent == agent))
+  end
+
+  defp thread_has?(agent, term),
+    do: (t = thread(agent)) && Enum.any?(t.messages, &(&1.term == term))
+
+  defp unread_in(agent), do: thread(agent).unread
 
   test "a suspended agent is labelled suspended and offers Resume", ctx do
     {pid, _} = start!(ctx)
@@ -410,8 +430,8 @@ defmodule NanoWeb.AgentLiveTest do
     :sys.suspend(user)
     on_exit(fn -> :sys.resume(user) end)
 
-    {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
-    assert html =~ "The dashboard user is not responding"
+    {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
+    assert has_element?(view, "#inbox-link")
 
     assert view |> element("#send-text") |> render_submit(%{text: "hi"}) =~
              "will go out if it resumes"
@@ -515,6 +535,47 @@ defmodule NanoWeb.AgentLiveTest do
 
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert has_element?(view, "#timeline.debug")
+  end
+
+  # An event's message is printed Elixir, where a newline in a string is written \n: shown as
+  # it was, a multi-line message ran together on one line ("First line.\nSecond line").
+  test "a message's line breaks show as line breaks in both views, words never run together",
+       ctx do
+    start!(ctx)
+    Fake.push(ctx.model, calls: [idle: nil])
+    text = "First line.\nSecond line,\n\nafter a gap. An escaped one stays: " <> ~S(\n)
+    NanoAgent.notify(ctx.name, %{from: "bob", message: text})
+    await(:turn_ended)
+
+    for path <- ["/agents/#{ctx.name}", "/agents/#{ctx.name}?view=debug"] do
+      {:ok, view, _} = live(ctx.conn, path)
+
+      [shown] =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#timeline li.event pre")
+        |> Enum.map(&LazyHTML.text/1)
+
+      assert shown =~
+               "First line.\nSecond line,\n\nafter a gap. An escaped one stays: " <> ~S(\\n)
+
+      refute shown =~ ~S(First line.\n)
+    end
+  end
+
+  test "printed/1 shows newlines in printed strings as line breaks, and nothing else" do
+    printed = &NanoWeb.Components.printed/1
+
+    assert printed.(~S(%{message: "a\nb", pid: #PID<0.1.0>})) ==
+             "%{message: \"a\nb\", pid: #PID<0.1.0>}"
+
+    # An escaped backslash before an n is not a newline; an escaped quote does not end a string.
+    assert printed.(~S("C:\\new")) == ~S("C:\\new")
+    assert printed.(~S("say \"hi\"\nthen" <> :a\nb)) == "\"say \\\"hi\\\"\nthen\" <> :a\\nb"
+    # A string cut off by truncation still gets its line breaks.
+    assert printed.(~S({:x, "cut\nhere)) == "{:x, \"cut\nhere"
+    assert printed.(42) == "42"
   end
 
   test "a scripted turn reads as a story, from the backlog and live", ctx do

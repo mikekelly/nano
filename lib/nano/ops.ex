@@ -282,6 +282,7 @@ defmodule Nano.Ops do
     agents = Nano.StateStore.all()
 
     %{
+      agents: agents,
       boot: Nano.Application.boot_set(),
       endpoint: Process.whereis(NanoWeb.Endpoint),
       names: names,
@@ -298,6 +299,52 @@ defmodule Nano.Ops do
         )
     }
   end
+
+  @doc """
+  The name of the agent a pid is, or belongs to (its running eval, or a process its evals
+  started, as for `processes/0`), or nil.
+  """
+  def owner(pid), do: owner(pid, context())
+
+  defp owner(pid, ctx) when node(pid) == node(),
+    do: Enum.find_value([pid | chain(pid)], &ctx.owned[&1])
+
+  defp owner(_pid, _ctx), do: nil
+
+  @doc """
+  The name of the agent a message most likely came from, or nil. Erlang messages carry no
+  sender, so this is a guess: the agent that a pid in the message is or belongs to (see
+  `owner/1`); failing that, the agent running an eval, if exactly one is.
+  """
+  def sender(term) do
+    ctx = context()
+
+    Enum.find_value(pids(term), &owner(&1, ctx)) ||
+      case for(%{name: name, task: %{kind: :eval}} <- ctx.agents, do: name) do
+        [name] -> name
+        _ -> nil
+      end
+  end
+
+  # Pids in a term, depth first, looking at no more than 100 values.
+  defp pids(term), do: term |> pids({[], 100}) |> elem(0) |> Enum.reverse()
+
+  defp pids(_, {_, n} = acc) when n <= 0, do: acc
+  defp pids(pid, {found, n}) when is_pid(pid), do: {[pid | found], n - 1}
+  defp pids([h | t], {found, n}), do: pids(t, pids(h, {found, n - 1}))
+
+  defp pids(t, {found, n}) when is_tuple(t),
+    do: Enum.reduce(0..(min(tuple_size(t), n) - 1)//1, {found, n - 1}, &pids(elem(t, &1), &2))
+
+  defp pids(m, {found, n}) when is_map(m),
+    do: map_pids(:maps.next(:maps.iterator(m)), {found, n - 1})
+
+  defp pids(_, {found, n}), do: {found, n - 1}
+
+  defp map_pids({_key, value, next}, {_, n} = acc) when n > 0,
+    do: map_pids(:maps.next(next), pids(value, acc))
+
+  defp map_pids(_, acc), do: acc
 
   defp kind(pid, ctx) do
     case ctx.names[pid] do

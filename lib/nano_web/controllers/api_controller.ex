@@ -62,6 +62,11 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/agents/:name/stream?since=:seq",
      "Log entries with seq > since, then new ones live, as server-sent events (id: seq, data: entry JSON). " <>
        "Honours Last-Event-ID."},
+    {"GET", "/api/users",
+     "Running users: name, pid, messages (kept: the last 500 sent and received) and unread " <>
+       "(received in conversations not read on the dashboard since). Users and their messages " <>
+       "survive a node restart; their pids do not, so look a user up by name each time you " <>
+       "send to it (Nano.User.pid(name))."},
     {"POST", "/api/users", "Start a user, or find it if already started. Body: name."},
     {"POST", "/api/users/:name/say",
      "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text."},
@@ -69,6 +74,15 @@ defmodule NanoWeb.ApiController do
      "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
     {"GET", "/api/users/:name/inbox?clear=true",
      "Messages the user has received, oldest first: at, term."},
+    {"GET", "/api/users/:name/threads",
+     "The user's conversations, one per agent, most recently active first: agent (* for " <>
+       "messages that name no agent), messages, unread, last_at, last (the latest, inspected). " <>
+       "A message sent belongs to the agent it went to; one received, to the agent a pid in it " <>
+       "belongs to, else to the one agent running an eval when it arrived (Erlang messages " <>
+       "carry no sender)."},
+    {"GET", "/api/users/:name/threads/:agent",
+     "One conversation, both directions, oldest first: at, dir (sent or received), term " <>
+       "(inspected). :agent is an agent name, or * for messages that name no agent."},
     {"POST", "/api/eval",
      "Evaluate Elixir on the node, like bin/rpc. Body: code. Returns result (inspected) and output (printed IO)."},
     {"GET", "/api/chatgpt",
@@ -308,6 +322,49 @@ defmodule NanoWeb.ApiController do
 
       messages ->
         json(conn, for(m <- messages, do: %{at: DateTime.to_iso8601(m.at), term: show(m.term)}))
+    end
+  end
+
+  def users(conn, _params),
+    do: json(conn, for(u <- User.counts(), do: %{u | pid: inspect(u.pid)}))
+
+  def threads(conn, %{"name" => name}) do
+    case User.threads(name) do
+      {:error, :unknown_user} ->
+        error(conn, 404, "no such user: #{name}")
+
+      threads ->
+        json(
+          conn,
+          for %{messages: messages} = t <- threads do
+            last = List.last(messages)
+
+            %{
+              agent: t.agent || "*",
+              messages: length(messages),
+              unread: t.unread,
+              last_at: DateTime.to_iso8601(last.at),
+              last: show(last.term)
+            }
+          end
+        )
+    end
+  end
+
+  def thread(conn, %{"name" => name, "agent" => agent}) do
+    agent = if agent == "*", do: nil, else: agent
+
+    case User.threads(name) do
+      {:error, :unknown_user} ->
+        error(conn, 404, "no such user: #{name}")
+
+      threads ->
+        messages = Enum.find_value(threads, [], &(&1.agent == agent && &1.messages))
+
+        json(
+          conn,
+          for(m <- messages, do: %{at: DateTime.to_iso8601(m.at), dir: m.dir, term: show(m.term)})
+        )
     end
   end
 

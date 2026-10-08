@@ -1,7 +1,5 @@
 defmodule NanoWeb.Router do
-  @moduledoc """
-  Every route on the node: two dashboard LiveViews, OpenRouter's OAuth stops, and the JSON API.
-  """
+  @moduledoc "Every route on the node: the dashboard's LiveViews, OpenRouter's OAuth stops, and the JSON API."
   use Phoenix.Router
 
   import Plug.Conn
@@ -22,6 +20,7 @@ defmodule NanoWeb.Router do
 
     live "/", ProcessLive
     live "/agents/:name", AgentLive
+    live "/messages", MessagesLive
     get "/openrouter/connect", OpenRouterController, :connect
     get "/openrouter/callback", OpenRouterController, :callback
   end
@@ -44,10 +43,13 @@ defmodule NanoWeb.Router do
     get "/agents/:name/log", ApiController, :log
     get "/agents/:name/stream", ApiController, :stream
 
+    get "/users", ApiController, :users
     post "/users", ApiController, :start_user
     post "/users/:name/say", ApiController, :say
     post "/users/:name/send_raw", ApiController, :send_raw
     get "/users/:name/inbox", ApiController, :inbox
+    get "/users/:name/threads", ApiController, :threads
+    get "/users/:name/threads/:agent", ApiController, :thread
 
     post "/eval", ApiController, :eval
 

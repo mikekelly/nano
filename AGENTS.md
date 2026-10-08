@@ -37,11 +37,14 @@ curl -s -XPOST localhost:4000/api/users -H 'content-type: application/json' -d '
 curl -s -XPOST localhost:4000/api/users/me/say -H 'content-type: application/json' \
   -d '{"to": "alice", "text": "are you there?"}'
 curl -s localhost:4000/api/users/me/inbox                 # what alice sends back
+curl -s localhost:4000/api/users/me/threads/alice         # both directions, in order
 curl -s 'localhost:4000/api/agents/alice/log?since=0'     # everything alice does
 ```
 
 An agent sees a message as Elixir prints it, with no sender attached unless the message
-carries one; `say` includes yours.
+carries one; `say` includes yours. Users and their messages survive a node restart, their
+pids do not: ask an agent to find you by name (`Nano.User.pid("me")`). The dashboard's
+messages page shows every user's conversations, one per agent.
 
 ## Planting seeding docs
 

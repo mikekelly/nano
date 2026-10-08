@@ -38,10 +38,13 @@ defmodule Nano.SmokeTest do
       {"POST", "/api/agents/alice/unhalt", :unhalt},
       {"GET", "/api/agents/alice/log", :log},
       {"GET", "/api/agents/alice/stream", :stream},
+      {"GET", "/api/users", :users},
       {"POST", "/api/users", :start_user},
       {"POST", "/api/users/bob/say", :say},
       {"POST", "/api/users/bob/send_raw", :send_raw},
       {"GET", "/api/users/bob/inbox", :inbox},
+      {"GET", "/api/users/bob/threads", :threads},
+      {"GET", "/api/users/bob/threads/alice", :thread},
       {"POST", "/api/eval", :eval},
       {"GET", "/api/settings", :settings},
       {"PUT", "/api/settings/eval_timeout_ms", :put_setting},
@@ -66,5 +69,6 @@ defmodule Nano.SmokeTest do
   test "the dashboard pages render" do
     assert build_conn() |> get("/") |> html_response(200) =~ "phoenix_live_view.min.js"
     assert build_conn() |> get("/agents/alice") |> html_response(200) =~ "alice"
+    assert build_conn() |> get("/messages") |> html_response(200) =~ "messages"
   end
 end

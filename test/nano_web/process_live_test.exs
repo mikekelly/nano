@@ -1,5 +1,5 @@
 defmodule NanoWeb.ProcessLiveTest do
-  # Not async: the dashboard user's inbox is node-wide, and agents use the fake OpenRouter.
+  # Not async: the dashboard user is node-wide, and agents use the fake OpenRouter.
   use ExUnit.Case, async: false
 
   import Phoenix.ConnTest
@@ -11,7 +11,6 @@ defmodule NanoWeb.ProcessLiveTest do
 
   setup do
     Fake.start()
-    Nano.User.inbox("dashboard", clear: true)
     %{model: Fake.model(), conn: build_conn()}
   end
 
@@ -491,8 +490,9 @@ defmodule NanoWeb.ProcessLiveTest do
     :sys.suspend(user)
     on_exit(fn -> :sys.resume(user) end)
 
-    {:ok, view, html} = live(ctx.conn, "/?view=debug")
-    assert html =~ "The dashboard user is not responding"
+    # Its messages are read from the users' table, never from the user, so the page renders.
+    {:ok, view, _} = live(ctx.conn, "/?view=debug")
+    assert has_element?(view, "#inbox-link")
     view |> element("#{row(Nano.Ops.whereis(name))} button", "send") |> render_click()
 
     html =
@@ -543,97 +543,6 @@ defmodule NanoWeb.ProcessLiveTest do
     view |> element("#{row(target)} form", "send term") |> render_submit(%{term: ":ok"})
     assert_receive {:forwarded, :ok}
     assert has_element?(view, "#{row(target)} input[name=term][value='']")
-  end
-
-  test "replies to the dashboard user show in its inbox", ctx do
-    {:ok, view, html} = live(ctx.conn, "/?view=debug")
-    assert html =~ "Nothing received yet"
-    assert html =~ esc(Nano.User.pid("dashboard"))
-
-    send(Nano.User.pid("dashboard"), {:reply, "yes, I am here"})
-    eventually(fn -> render(view) =~ "{:reply, &quot;yes, I am here&quot;}" end)
-
-    view |> element(".inbox button", "clear") |> render_click()
-    assert render(view) =~ "Nothing received yet"
-    assert Nano.User.inbox("dashboard") == []
-    _ = ctx
-  end
-
-  defp inbox_count(view, selector, text \\ "") do
-    view
-    |> render()
-    |> LazyHTML.from_fragment()
-    |> LazyHTML.query("#inbox-menu " <> selector)
-    |> Enum.count(&(LazyHTML.text(&1) =~ text))
-  end
-
-  test "the inbox sits behind an icon with a count; messages are made readable", ctx do
-    user = Nano.User.pid("dashboard")
-    {:ok, view, _} = live(ctx.conn, "/?view=debug")
-    assert has_element?(view, "header.top #inbox-menu summary svg")
-    refute has_element?(view, "#inbox-menu summary .count:not(.new)")
-    refute has_element?(view, "aside")
-
-    long = String.duplicate("a long reply that keeps going ", 4)
-    send(user, "line one\nline two")
-    send(user, {:reply, "multi\nline"})
-    send(user, %{sender_pid: self(), message: long})
-    send(user, {:ping, 42})
-    # They arrive live, newest first, and the count follows.
-    eventually(fn -> inbox_count(view, "#inbox li") == 4 end)
-    assert inbox_count(view, "summary .count", "4") == 1
-
-    # A bare string is just text, with its line break.
-    assert inbox_count(view, "li .body", "line one\nline two") == 1
-    assert inbox_count(view, "li .summary", "line one") == 0
-    # A tuple: the one-line summary, then the readable string and where it sat.
-    assert inbox_count(view, "li .summary", ~s|{:reply, "multi\\nline"}|) == 1
-    assert inbox_count(view, "li .where", "elem 1") == 1
-    assert inbox_count(view, "li .body", "multi\nline") == 1
-    # A map: the key labels the text.
-    assert inbox_count(view, "li .where", "message:") == 1
-    assert inbox_count(view, "li .body", long) == 1
-    # Short and structural: the summary alone.
-    assert inbox_count(view, "li .summary", "{:ping, 42}") == 1
-
-    [first | _] =
-      view
-      |> render()
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query("#inbox li")
-      |> Enum.to_list()
-
-    assert LazyHTML.text(first) =~ "{:ping, 42}"
-
-    view |> element(".inbox button", "clear") |> render_click()
-    assert inbox_count(view, "#inbox li") == 0
-    refute has_element?(view, "#inbox-menu summary .count:not(.new)")
-    _ = ctx
-  end
-
-  test "hostile inbox terms render, bounded" do
-    user = Nano.User.pid("dashboard")
-    deep = Enum.reduce(1..10_000, "a deep string\nat the bottom", fn _, acc -> {acc} end)
-    many = for i <- 1..20, do: "string number #{i} is long enough to be shown as text, surely"
-    huge = List.duplicate(String.duplicate("z", 70), 100_000)
-
-    for term <- [
-          deep,
-          <<255, 0, 10, 65>>,
-          many,
-          huge,
-          fn -> :ok end,
-          [1, 2 | String.duplicate("t", 80)],
-          %{"key" => String.duplicate("v\n", 3000)}
-        ],
-        do: send(user, term)
-
-    {:ok, view, _} = live(build_conn(), "/")
-    eventually(fn -> inbox_count(view, "#inbox li") == 7 end)
-    assert inbox_count(view, "li .summary", "#Function<") == 1
-    assert inbox_count(view, "li .summary", "<<255, 0, 10, 65>>") == 1
-    assert inbox_count(view, "li .where", "tail") == 1
-    assert inbox_count(view, "li .where", ~s|"key" =>|) == 1
   end
 
   test "texts/1 finds long or multi-line strings with where they sat, within limits" do
@@ -695,7 +604,7 @@ defmodule NanoWeb.ProcessLiveTest do
     assert has_element?(view, "section.overview")
     refute has_element?(view, "table.processes")
     assert has_element?(view, "#start")
-    assert has_element?(view, "#inbox-menu")
+    assert has_element?(view, "header.top #inbox-link[href='/messages'] svg")
 
     view |> element("nav.views a", "debug") |> render_click()
     assert_patch(view, "/?view=debug")
@@ -780,8 +689,8 @@ defmodule NanoWeb.ProcessLiveTest do
 
     {:ok, view, _} = live(ctx.conn, "/")
     assert has_element?(view, ".user-card", name)
-    assert has_element?(view, ".user-card", "1 message")
-    # Counted live from the user's topic.
+    assert has_element?(view, ".user-card", "1 message · 1 unread")
+    assert has_element?(view, ".user-card a[href='/messages?user=#{name}']")
     send(pid, :two)
     eventually(fn -> has_element?(view, ".user-card", "2 messages") end)
     assert has_element?(view, "ul.others li", inspect(other))

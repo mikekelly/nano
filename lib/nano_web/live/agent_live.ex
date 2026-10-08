@@ -45,7 +45,7 @@ defmodule NanoWeb.AgentLive do
   defp view(_), do: "reading"
 
   def handle_info(:refresh, socket), do: {:noreply, sync(socket)}
-  def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_inbox(socket)}
+  def handle_info({:nano_user, _}, socket), do: {:noreply, refresh_unread(socket)}
 
   def handle_info({:nano_log, %{agent_id: id, seq: seq} = entry}, socket)
       when id == socket.assigns.id and seq > socket.assigns.last_seq do
@@ -69,8 +69,8 @@ defmodule NanoWeb.AgentLive do
     end
   end
 
-  def handle_event(event, params, socket) when event in ~w(draft send clear_inbox),
-    do: {:noreply, handle_shared(event, params, socket)}
+  def handle_event("draft", params, socket),
+    do: {:noreply, handle_shared("draft", params, socket)}
 
   def handle_event("stop", _, socket),
     do: lifecycle(socket, Nano.Ops.stop_agent(socket.assigns.name), "stopped")
@@ -176,7 +176,7 @@ defmodule NanoWeb.AgentLive do
     <header class="top">
       <h1><.link navigate="/">nano</.link> / {@name}</h1>
       <span :if={@agent} class="dim">{@agent.id} · {inspect(@agent.pid)}</span>
-      <.inbox_menu inbox={@inbox} pid={@inbox_pid} />
+      <.inbox_link unread={@unread} />
     </header>
     <div class="layout">
       <main>
@@ -314,7 +314,7 @@ defmodule NanoWeb.AgentLive do
       <.meta e={@e} label={"event #{txt(@e["event_seq"])}"}>
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
-      <pre>{txt(@e["message"])}</pre>
+      <pre>{printed(@e["message"])}</pre>
     </li>
     """
   end
@@ -504,7 +504,7 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class="r event">
       <div class="r-label">received <time>{time(@e["at"])}</time></div>
-      <pre>{txt(@e["message"])}</pre>
+      <pre>{printed(@e["message"])}</pre>
     </li>
     """
   end

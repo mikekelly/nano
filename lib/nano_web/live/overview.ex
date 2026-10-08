@@ -13,7 +13,7 @@ defmodule NanoWeb.Overview do
   attr :agents, :list, required: true
   attr :rows, :list, required: true, doc: "Nano.Ops.processes/0"
   attr :recent, :map, required: true, doc: "agent id => its last few log entries, oldest first"
-  attr :users, :list, required: true, doc: "[{name, pid, message count or nil}]"
+  attr :users, :list, required: true, doc: "[%{name, pid, messages, unread}]"
   attr :standard, :integer, required: true, doc: "how many processes are in the standard set"
 
   def overview(assigns) do
@@ -44,10 +44,14 @@ defmodule NanoWeb.Overview do
 
       <h2>users <span class="dim">{length(@users)}</span></h2>
       <div class="cards users">
-        <article :for={{name, pid, count} <- @users} class="card user-card">
-          <strong>{name}</strong>
-          <span class="dim">{pid && inspect(pid)}</span>
-          <span>{if count, do: "#{count} message#{if count != 1, do: "s"}", else: "inbox unreadable"}</span>
+        <article :for={user <- @users} class="card user-card">
+          <.link navigate={"/messages?user=#{URI.encode_www_form(user.name)}"} class="name">
+            {user.name}
+          </.link>
+          <span class="dim">{user.pid && inspect(user.pid)}</span>
+          <span>
+            {user.messages} message{if user.messages != 1, do: "s"}<span :if={user.unread > 0}> · {user.unread} unread</span>
+          </span>
         </article>
       </div>
 

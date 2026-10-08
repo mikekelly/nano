@@ -47,7 +47,7 @@ defmodule Nano.StateStore do
     # before this module wrote files).
     changed? = :ets.lookup(@table, name) != [{name, map}]
     :ets.insert(@table, {name, map})
-    if changed? or not File.exists?(file(name)), do: write(name, file(name), map)
+    if changed? or not File.exists?(file(name)), do: write_file(name, file(name), map)
     :ok
   rescue
     ArgumentError -> :ok
@@ -86,7 +86,7 @@ defmodule Nano.StateStore do
 
     if {kept, names} != {old_kept, old_names} do
       :ets.insert(@table, {{:bindings, name}, kept, names})
-      write(name, bindings_file(name), {kept, names})
+      write_file(name, bindings_file(name), {kept, names})
     end
 
     names
@@ -149,8 +149,11 @@ defmodule Nano.StateStore do
   defp bindings_file(name),
     do: Path.join(Application.fetch_env!(:nano, :state_dir), name <> ".bindings")
 
-  # Atomically: a node that dies mid-write leaves the previous file, not half of this one.
-  defp write(name, path, term) do
+  @doc """
+  Writes a term to a file atomically: a node that dies mid-write leaves the previous file, not
+  half of this one. A failure is logged under `name`, not raised. Used for users' files too.
+  """
+  def write_file(name, path, term) do
     tmp = path <> ".tmp"
 
     with :ok <- File.mkdir_p(Path.dirname(path)),

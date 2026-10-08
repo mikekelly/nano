@@ -198,6 +198,66 @@ defmodule NanoWeb.ApiControllerTest do
       assert [] = build_conn() |> get("/api/users/#{name}/inbox") |> json_response(200)
     end
 
+    test "GET /api/users, a user's threads and one thread: both directions, in order" do
+      {name, user} = start_user()
+      agent = unique("agent")
+      test = self()
+
+      agent_pid =
+        spawn_link(fn ->
+          Nano.Names.register_name({:agent, agent}, self())
+          send(test, :registered)
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive :registered
+      post_json("/api/users/#{name}/say", %{to: agent, text: "hi"}) |> json_response(200)
+      send(user, {:reply, agent_pid, "back"})
+      # A call to the user, so it has handled the reply.
+      assert [_] = build_conn() |> get("/api/users/#{name}/inbox") |> json_response(200)
+
+      users = build_conn() |> get("/api/users") |> json_response(200)
+
+      assert %{"pid" => pid, "messages" => 2, "unread" => 1} =
+               Enum.find(users, &(&1["name"] == name))
+
+      assert pid == inspect(user)
+
+      assert [
+               %{
+                 "agent" => ^agent,
+                 "messages" => 2,
+                 "unread" => 1,
+                 "last" => last,
+                 "last_at" => at
+               }
+             ] =
+               build_conn() |> get("/api/users/#{name}/threads") |> json_response(200)
+
+      assert last == inspect({:reply, agent_pid, "back"})
+      assert {:ok, _, 0} = DateTime.from_iso8601(at)
+
+      assert [
+               %{"dir" => "sent", "term" => sent},
+               %{"dir" => "received", "term" => received, "at" => _}
+             ] = build_conn() |> get("/api/users/#{name}/threads/#{agent}") |> json_response(200)
+
+      assert sent == inspect(%{sender_pid: user, message: "hi"}, pretty: true)
+      assert received == inspect({:reply, agent_pid, "back"})
+      assert [] = build_conn() |> get("/api/users/#{name}/threads/nobody") |> json_response(200)
+
+      for path <- ["threads", "threads/#{agent}"] do
+        assert %{"error" => "no such user: " <> _} =
+                 build_conn()
+                 |> get("/api/users/#{unique("nobody")}/#{path}")
+                 |> json_response(404)
+      end
+
+      index = build_conn() |> get("/api") |> json_response(200)
+      paths = for e <- index["endpoints"], do: e["path"]
+      assert "/api/users/:name/threads/:agent" in paths and "/api/users" in paths
+    end
+
     test "a user that does not answer is 503" do
       {name, pid} = start_user()
       :sys.suspend(pid)

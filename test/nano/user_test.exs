@@ -130,6 +130,97 @@ defmodule Nano.UserTest do
     assert_receive {:nano_user, %{dir: :received, to: ^user, term: :in, at: %DateTime{}}}
   end
 
+  test "threads: what the user sent each agent and what came back, in order, unread until read" do
+    {name, user} = start_user()
+    {alice, alice_pid} = fake_agent()
+    {bob, bob_pid} = fake_agent()
+
+    :ok = User.say(name, alice, "hi alice")
+    send(user, {:reply, alice_pid, "hi back"})
+    :ok = User.send_raw(name, bob, {:ping, 1})
+    # Named by a pid in the message, wherever it sits.
+    send(user, %{from: bob_pid, text: "pong"})
+    # A call, so the user has handled everything this process sent it before.
+    :ok = User.say(name, alice, "again")
+
+    assert [
+             %{agent: ^alice, unread: 1, messages: to_alice},
+             %{agent: ^bob, unread: 1, messages: to_bob}
+           ] = User.threads(name)
+
+    assert [
+             {:sent, %{sender_pid: ^user, message: "hi alice"}},
+             {:received, {:reply, ^alice_pid, "hi back"}},
+             {:sent, %{message: "again"}}
+           ] = Enum.map(to_alice, &{&1.dir, &1.term})
+
+    assert [{:sent, {:ping, 1}}, {:received, %{text: "pong"}}] =
+             Enum.map(to_bob, &{&1.dir, &1.term})
+
+    assert Enum.map(to_alice, & &1.at) == Enum.sort(Enum.map(to_alice, & &1.at), DateTime)
+
+    assert User.mark_read(name, alice) == :ok
+    assert [%{unread: 0}, %{unread: 1}] = User.threads(name)
+    # The inbox is the received messages, apart from the threads.
+    assert length(User.inbox(name, clear: true)) == 2
+    assert [%{messages: [_, _, _]}, %{messages: [_, _]}] = User.threads(name)
+  end
+
+  defp user_file(name) do
+    dir = Path.join(Application.fetch_env!(:nano, :state_dir), "users")
+    Path.join(dir, Base.encode16(name, case: :lower) <> ".term")
+  end
+
+  test "users survive a node restart with their messages; their name reaches the new process" do
+    {name, user} = start_user("odd/../name")
+    {agent, agent_pid} = fake_agent()
+    :ok = User.say(name, agent, "before the restart")
+    send(user, {:reply, agent_pid, "line one\nline two"})
+    assert [_] = User.inbox(name)
+    threads = User.threads(name)
+    assert File.exists?(user_file(name))
+
+    # What a node restart leaves: no process and no row in the table, only the file. Then
+    # what boot does.
+    DynamicSupervisor.terminate_child(Nano.UserSupervisor, user)
+    :ets.delete(Nano.User, name)
+    assert User.threads(name) == {:error, :unknown_user}
+    assert User.revive() == :ok
+
+    new = User.pid(name)
+    on_exit(fn -> DynamicSupervisor.terminate_child(Nano.UserSupervisor, new) end)
+    assert is_pid(new) and new != user
+    assert User.threads(name) == threads
+    assert [%{term: {:reply, _, "line one\nline two"}}] = User.inbox(name)
+
+    # An old pid names nothing; the name finds the new process.
+    refute Process.alive?(user)
+    send(User.pid(name), :by_pid)
+    GenServer.cast({:via, Nano.Names, {:user, name}}, :by_name)
+    assert :ok = User.say(name, name, "to myself, by name")
+
+    assert [
+             _,
+             %{term: :by_pid},
+             %{term: {:"$gen_cast", :by_name}},
+             %{term: %{message: "to" <> _}}
+           ] =
+             User.inbox(name)
+  end
+
+  test "a user's file that cannot be read is logged, and the user starts with no messages" do
+    name = unique("corrupt")
+    File.mkdir_p!(Path.dirname(user_file(name)))
+    File.write!(user_file(name), "not a term")
+
+    log = ExUnit.CaptureLog.capture_log(fn -> assert User.revive() == :ok end)
+    pid = User.pid(name)
+    on_exit(fn -> DynamicSupervisor.terminate_child(Nano.UserSupervisor, pid) end)
+    assert log =~ "Nano.User #{name}: starting with no messages"
+    assert User.inbox(name) == []
+    assert User.threads(name) == []
+  end
+
   test "a user that does not answer is an error for the caller, not a crash" do
     {name, pid} = start_user()
     :sys.suspend(pid)
@@ -137,6 +228,8 @@ defmodule Nano.UserTest do
 
     assert User.say(name, self(), "x") == {:error, :unresponsive}
     assert User.inbox(name) == {:error, :unresponsive}
+    # Its threads are read from the table, not asked of it.
+    assert User.threads(name) == []
     refute_received %{message: "x"}
 
     # The timed-out requests were queued, not dropped: resumed, the user carries them out.
