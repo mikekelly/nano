@@ -1,5 +1,5 @@
 # Opt-in live probe, never part of the ordinary test suite. Requires explicit env key.
-# MIX_ENV=test EXA_API_KEY=... mix run test/seed_web_live_smoke.exs
+# MIX_ENV=test EXA_API_KEY=... mix run bin/seed-web-smoke.exs
 opts = [
   api_key: System.get_env("EXA_API_KEY"),
   cache_dir: "/tmp/seed-web-live-#{System.unique_integer([:positive])}"
