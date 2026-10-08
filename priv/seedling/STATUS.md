@@ -5,8 +5,8 @@ Work is on `seedling/atlas-harness`, never main. Module docs are the API manuals
 ## Deployment boundary
 
 Only new `Seedling.*` libraries have been loaded into the running node. Shared seed
-harness/provider/Phoenix modules have **not** been hot-loaded: operator permission was
-requested and remains pending. The integrated source is tested in isolated `MIX_ENV=test`
+harness/provider/Phoenix modules have **not yet** been hot-loaded. Operators explicitly
+authorized parent-owned deployment decisions; a private prod build is being staged. The integrated source is tested in isolated `MIX_ENV=test`
 VMs. Real-provider acceptance runs also used isolated VMs and private access-only auth
 snapshots with disabled refresh, not shared-state edits. A new boot from this source
 includes the source integrations. Do not infer that `/bots`, image API/UI or automatic
