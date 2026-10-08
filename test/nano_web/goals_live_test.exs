@@ -2,6 +2,9 @@ defmodule NanoWeb.GoalsLiveTest do
   use ExUnit.Case, async: true
 
   import Phoenix.LiveViewTest
+  import Phoenix.ConnTest
+
+  @endpoint NanoWeb.Endpoint
   alias NanoWeb.AgentLive
 
   setup do
@@ -33,6 +36,25 @@ defmodule NanoWeb.GoalsLiveTest do
       )
 
     goal
+  end
+
+  test "mounted stopped-owner page refreshes from isolated default memory" do
+    assert String.starts_with?(Memory.default_root(), Application.fetch_env!(:nano, :test_dir))
+    owner = "goals-live-#{System.unique_integer([:positive])}"
+    {:ok, goal} = Goals.create(owner, %{title: "Continue after restart", why: "Durable intent"})
+    {:ok, view, html} = live(build_conn(), "/agents/#{owner}")
+    assert html =~ "No agent named"
+    assert has_element?(view, "#open-goals", "Continue after restart")
+    assert has_element?(view, "#open-goals", "Durable intent")
+
+    {:ok, _} = Goals.update(owner, goal["id"], %{status: :done})
+    send(view.pid, :refresh)
+    assert has_element?(view, "#open-goals", "No open goals.")
+    refute has_element?(view, "#open-goals", "Continue after restart")
+
+    {:ok, _} = Memory.put(owner, "__goals_v1__", %{"version" => 99})
+    send(view.pid, :refresh)
+    assert has_element?(view, "#open-goals", "Goals unavailable")
   end
 
   test "empty store is distinct from unavailable", ctx do
