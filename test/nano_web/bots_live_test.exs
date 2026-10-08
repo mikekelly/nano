@@ -361,4 +361,42 @@ defmodule NanoWeb.BotsLiveTest do
     refute render(view) =~ "🎙"
     refute render(view) =~ "＋"
   end
+
+  test "credential cards use only native password hook, never LiveView forms", ctx do
+    {:ok, bot} = Vega.Bots.create_bot("Muse", ctx.opts)
+    {:ok, chat} = Vega.Bots.create_session([bot["id"]], ctx.opts)
+
+    {:ok, request} =
+      Vega.Bots.request_setting(
+        bot["id"],
+        "OPENROUTER_API_KEY",
+        "Connect the provider",
+        ctx.opts ++ [session_id: chat["id"], requester: "credential-ui-test"]
+      )
+
+    {:ok, view, _} = open(ctx.conn)
+    view |> element("button[phx-click='open-session']") |> render_click()
+    card = "#request-#{request["id"]}"
+
+    assert has_element?(
+             view,
+             "#{card} [phx-hook='BotsSetting'][data-endpoint='/bots/requests/#{request["id"]}/setting']"
+           )
+
+    assert has_element?(view, "#{card} input[type='password'][name='password']")
+    assert has_element?(view, "#{card} button[type='button'][data-save-setting]")
+    refute has_element?(view, "#{card} form")
+    refute has_element?(view, "#{card} textarea")
+    refute has_element?(view, "#{card} [phx-submit]")
+    refute has_element?(view, "#{card} [phx-change]")
+    refute has_element?(view, "#{card} input[type='password'][value]")
+    refute has_element?(view, "form input[type='password']")
+    assert has_element?(view, card, "Don’t paste credentials into the general chat")
+    # Simulate only durable metadata acceptance, never a password or Settings mutation.
+    {:ok, _} =
+      GenServer.call(ctx.opts[:server], {:setting_answer, request["id"], "openrouter_api_key"})
+
+    assert render(view) =~ "Credential openrouter_api_key saved."
+    refute has_element?(view, "#{card} input[type='password']")
+  end
 end

@@ -119,6 +119,55 @@
       notification.onclick = () => { window.focus(); notification.close(); const id = event.session_id; if (id) this.pushEvent('open-session', {id}); };
     }
   };
+  // Secrets never traverse LiveView events/forms. Only this same-origin JSON POST
+  // reaches the dedicated credential controller, and the field is always cleared.
+  Hooks.BotsSetting = {
+    mounted() {
+      this.field = this.el.querySelector('input[type="password"]');
+      this.button = this.el.querySelector('[data-save-setting]');
+      this.status = this.el.querySelector('[data-setting-status]');
+      this.alive = true;
+      this.busy = false;
+      this.save = async () => {
+        if (this.busy || !this.field) return;
+        this.busy = true;
+        this.button.disabled = true;
+        this.status.textContent = 'Saving credential…';
+        this.controller = new AbortController();
+        try {
+          const endpoint = this.el.dataset.endpoint;
+          const csrf = document.querySelector('meta[name="csrf-token"]');
+          if (!/^\/bots\/requests\/[A-Za-z0-9_-]{1,128}\/setting$/.test(endpoint || '') || !csrf?.content || !this.field.value) throw new Error('unavailable');
+          const response = await fetch(endpoint, {
+            method: 'POST', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json', 'x-csrf-token': csrf.content},
+            body: JSON.stringify({password: this.field.value}), signal: this.controller.signal
+          });
+          // Never display a response body: providers/errors may contain credentials.
+          if (!response.ok) throw new Error('unavailable');
+          if (this.alive) this.status.textContent = 'Credential saved.';
+        } catch (_) {
+          if (this.alive) this.status.textContent = 'Credential was not saved. Please enter it again and retry.';
+        } finally {
+          if (this.field) this.field.value = '';
+          this.busy = false;
+          if (this.alive) this.button.disabled = false;
+          this.controller = null;
+        }
+      };
+      this.click = e => { if (e.target.closest('[data-save-setting]')) { e.preventDefault(); this.save(); } };
+      this.key = e => { if (e.key === 'Enter' && e.target === this.field) { e.preventDefault(); this.save(); } };
+      this.el.addEventListener('click', this.click);
+      this.el.addEventListener('keydown', this.key);
+    },
+    destroyed() {
+      this.alive = false;
+      if (this.field) this.field.value = '';
+      if (this.controller) this.controller.abort();
+      this.el.removeEventListener('click', this.click);
+      this.el.removeEventListener('keydown', this.key);
+    }
+  };
   window.BotsHooks = Hooks;
   const boot = () => {
     const LiveSocket = (window.LiveView && window.LiveView.LiveSocket) || window.LiveSocket;

@@ -83,3 +83,15 @@ in A, switches/sends in B (no images), then retries an imported A ref in A only.
 Faces use CSS eyes/smile curves and plus/microphone controls use fixed-size trusted
 inline SVG, avoiding missing-glyph boxes on Linux/browser fonts. Accessible labels
 remain on controls; model content still cannot supply SVG or arbitrary HTML.
+
+## Credential request cards
+
+A `kind: setting` human request uses a password control outside every form. The
+BotsSetting hook submits only to `/bots/requests/:id/setting` through a same-origin
+JSON POST with the document CSRF token. No password goes through LiveView changes,
+submits or pushEvent. The field has no initial value, is cleared on success, failure
+and hook destruction, and no returned response body/error text is displayed. The
+card says not to paste credentials into general chat. Answered setting metadata
+renders only the credential setting key and a saved acknowledgement, never its value.
+The dedicated controller/service stores credentials; the consumer UI does not save
+them in drafts, localStorage, notifications or session messages.
