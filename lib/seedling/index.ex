@@ -15,7 +15,7 @@ defmodule Seedling.Index do
         example:
           ~s|Seedling.Background.start("MIX_ENV=test mix test", owner: "orion", timeout: 120000)|,
         detail:
-          "Completion event %{background: id,status: code,reason: atom,output: path,bytes: n}. tail(path), cancel(pid), info(pid). Survives agent restart, not node restart."
+          "Completion event %{background: id,status: code,reason: atom,output: path,bytes: n}. tail(path), cancel(pid), info(pid). Survives agent restart, not node restart. tail(path) returns {:ok,page_map} with exact backward paging; result(owner,id) recovers durable status. See docs/background.md for containment and unacknowledged-send limits."
       },
       %{
         name: "Delegation",
