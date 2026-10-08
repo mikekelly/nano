@@ -143,6 +143,24 @@ defmodule Seedling.DelegationTest do
           mcp_config: config
         ]
 
+    failed = name <> "-bad-facts"
+
+    assert {:error, :enoent} =
+             D.subagent(failed, opts ++ [facts_file: Path.join(dir, "missing-facts")])
+
+    c = Seedling.MCP.Supervisor.connections(sup)["fixture"]
+    refute failed in :sys.get_state(c).watchers
+    assert NanoAgent.whereis(failed) == nil
+
+    blocked = name <> "-bad-monitor"
+    assert :ok = Seedling.Delegation.Supervisor.ensure_started()
+    File.mkdir_p!(Seedling.Delegation.Supervisor.file(blocked) <> ".tmp")
+    assert {:error, _} = D.subagent(blocked, opts)
+    assert NanoAgent.whereis(blocked) == nil
+    assert Nano.StateStore.get(blocked) == nil
+    refute blocked in :sys.get_state(c).watchers
+    assert Process.alive?(c)
+
     assert {:ok, handle} = D.subagent(name, opts)
 
     on_exit(fn ->
