@@ -1419,7 +1419,13 @@ defmodule NanoAgent do
           s.model,
           Map.get(s, :reasoning, "off"),
           older,
-          min(s.context_window || s.max_context, s.max_context)
+          min(s.context_window || s.max_context, s.max_context),
+          1,
+          if(s.max_tokens == 0,
+            do: 0,
+            else:
+              if(s.max_tokens > s.tokens_used, do: s.max_tokens - s.tokens_used, else: :exhausted)
+          )
         ])
 
       %{

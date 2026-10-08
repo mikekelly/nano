@@ -173,16 +173,36 @@ defmodule Nano.Compaction do
     ]
   end
 
-  def summarize(model, reasoning, older, window, attempt \\ 1) do
+  def summarize(model, reasoning, older, window, attempt \\ 1, remaining_tokens \\ 0) do
     with {:ok, chunks, output, limit} <- inputs(older, window) do
-      passes(model, reasoning, chunks, output, limit, nil, nil, attempt)
+      passes(model, reasoning, chunks, output, limit, nil, nil, attempt, remaining_tokens)
     end
   end
 
-  defp passes(_model, _reasoning, [], _output, _limit, summary, aggregate, _attempt),
-    do: {:ok, summary, aggregate}
+  defp passes(
+         _model,
+         _reasoning,
+         [],
+         _output,
+         _limit,
+         summary,
+         aggregate,
+         _attempt,
+         _remaining_tokens
+       ),
+       do: {:ok, summary, aggregate}
 
-  defp passes(model, reasoning, [chunk | rest], output, limit, prior, aggregate, attempt) do
+  defp passes(
+         model,
+         reasoning,
+         [chunk | rest],
+         output,
+         limit,
+         prior,
+         aggregate,
+         attempt,
+         remaining_tokens
+       ) do
     text =
       if prior do
         "Previous structured checkpoint (retain relevant facts and update it):\n" <>
@@ -192,19 +212,44 @@ defmodule Nano.Compaction do
         chunk
       end
 
-    if byte_size(text) > limit do
-      {:error, "checkpoint update input exceeded its reserved bound"}
-    else
-      case summary_call(model, reasoning, text, output, attempt) do
-        {:ok, summary, response} ->
-          aggregate = accumulate(aggregate, response)
-          passes(model, reasoning, rest, output, limit, summary, aggregate, 1)
+    cond do
+      not stage_budget_available?(remaining_tokens, aggregate) ->
+        failure(
+          %{
+            reason: "summary token budget exhausted before the next checkpoint pass",
+            known_prompt_tokens: 0,
+            known_completion_tokens: 0,
+            known_cost: 0,
+            successful_summary_passes: 0
+          },
+          aggregate
+        )
 
-        {:error, reason} ->
-          failure(reason, aggregate)
-      end
+      byte_size(text) > limit ->
+        failure("checkpoint update input exceeded its reserved bound", aggregate)
+
+      true ->
+        case summary_call(model, reasoning, text, output, attempt) do
+          {:ok, summary, response} ->
+            aggregate = accumulate(aggregate, response)
+            passes(model, reasoning, rest, output, limit, summary, aggregate, 1, remaining_tokens)
+
+          {:error, reason} ->
+            failure(reason, aggregate)
+        end
     end
   end
+
+  # Zero is unlimited, as in NanoAgent's start options. A finite already-exhausted
+  # budget uses a distinct marker so it can never accidentally become unlimited.
+  defp stage_budget_available?(0, _aggregate), do: true
+  defp stage_budget_available?(:exhausted, _aggregate), do: false
+  defp stage_budget_available?(remaining, nil), do: remaining > 0
+
+  defp stage_budget_available?(remaining, aggregate),
+    do:
+      (aggregate.usage["prompt_tokens"] || 0) + (aggregate.usage["completion_tokens"] || 0) <
+        remaining
 
   defp failure(reason, nil), do: {:error, reason}
 

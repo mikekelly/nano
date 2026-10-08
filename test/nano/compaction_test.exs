@@ -332,17 +332,36 @@ defmodule Nano.CompactionTest do
     original = for _ <- 1..8, do: %{"role" => "user", "content" => String.duplicate("x", 9000)}
     :sys.replace_state(c.pid, &%{&1 | transcript: original, context_used: 15_500, max_tokens: 50})
     Fake.push(c.model, text: "Goal: initial checkpoint", usage: {100, 10, 0})
-    Fake.push(c.model, status: 400, body: %{"error" => %{"message" => "later pass rejected"}})
     send(c.pid, :trigger)
     request(c.model)
-    request(c.model)
     wait(fn -> NanoAgent.info(c.name).halted == :budget end)
+    refute_receive {:openrouter_request, _, _}, 100
+
+    error =
+      Enum.find(Nano.Log.read(NanoAgent.info(c.name).id), &(&1["type"] == "compaction_failed"))[
+        "error"
+      ]
+
+    assert error =~ "summary token budget exhausted"
     assert NanoAgent.info(c.name).budget.tokens_used == 110
     assert :sys.get_state(c.pid).transcript == original
     assert NanoAgent.info(c.name).compactions == 0
   end
 
+  test "a finite already-exhausted checkpoint budget is not confused with unlimited zero", c do
+    older = [%{"role" => "user", "content" => "small history"}]
+
+    assert {:error, detail} =
+             Nano.Compaction.summarize(c.model, "off", older, 20_000, 1, :exhausted)
+
+    assert detail.known_prompt_tokens == 0
+    assert detail.known_completion_tokens == 0
+    assert detail.reason =~ "summary token budget exhausted"
+    refute_receive {:openrouter_request, _, _}, 50
+  end
+
   test "invalid later successful
+
  response reports all known usage without claiming checkpoint success",
        c do
     older = for _ <- 1..4, do: %{"role" => "user", "content" => String.duplicate("x", 9000)}

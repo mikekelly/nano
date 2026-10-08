@@ -9,7 +9,10 @@ exceeds the conservative input bound, chronological chunks update a bounded prio
 checkpoint across passes instead of discarding data or halting. Oversized individual
 records use UTF-8-safe annotated continuations. Successful pass usage/cost is aggregated
 for the harness accounting. Staging is limited to 64 passes and three transient retries
-per pass. On partial failure the original transcript stays intact and known usage/cost is
+per pass. Every additional stage checks known cumulative prompt+completion spend against
+the agent's remaining token budget (zero means unlimited); an already-exhausted finite
+budget uses a distinct marker. A first response can overshoot as normal, but no further
+paid stage starts after known budget exhaustion. On partial failure the original transcript stays intact and known usage/cost is
 reported in failure metadata and charged exactly once to agent/node counters by the
 harness, even when later stages fail. The original transcript is still retained and any
 agent budget halt is preserved, and are charged to agent/node token and cost totals, not agent
