@@ -1,0 +1,9 @@
+#!/bin/sh
+# Install outside /app along with watchdog. Outer supervisor supplies timeout.
+# A separate RPC client checks responsive supervision and settings processes.
+exec elixir --erl '+S 1:1 +A 1' --name "safety-probe-$$@127.0.0.1" --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" -e '
+target = String.to_atom(System.get_env("SEED_SAFETY_NODE", "nano@127.0.0.1"))
+result = :rpc.call(target, Supervisor, :which_children, [Nano.Supervisor], 3000)
+settings = :rpc.call(target, GenServer, :call, [Nano.Settings, :safety_probe, 1000], 2000)
+if is_list(result) and settings == {:error, :unknown_call}, do: System.halt(0), else: System.halt(1)
+'

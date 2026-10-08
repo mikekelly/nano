@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Independent supervisor: install under /opt/seed-safety, outside /app.
+Config JSON: app, state, command argv, probe argv, credentials [{path, keys}],
+interval=20, timeout=5, boot_grace=90, failures=3, max_attempts=3, backoff=10.
+Probe must test BEAM responsiveness. Model success calls SeedSafety.attest().
+Only attested launches become good. Configure credential keys actually validated
+by that call; unrelated providers need separate validation before backup.
+Recovery preserves displaced source/credentials. Missing/malformed values are
+restored; nonempty replacements require rejected.json exact SHA256 fingerprints.
+state/disabled prevents recovery; exhausted persists across supervisor restarts.
+Delete exhausted and budget.json to explicitly rearm. State is root-only.
+Events/status contain no credentials. Host/container/volume loss is not covered.
+"""
+import os, sys, json, time, shutil, signal, subprocess, tempfile, hashlib, fcntl
+from pathlib import Path
+EXCLUDE = {'.git', '_build', 'deps'}
+def atomic(path, value):
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, tmp = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream); stream.flush(); os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+def read(path, default=None):
+    try:
+        with open(path) as stream: return json.load(stream)
+    except (OSError, ValueError): return default
+def fingerprint(value):
+    return hashlib.sha256((value if isinstance(value,str) else json.dumps(value,sort_keys=True)).encode()).hexdigest()
+def valid(value): return isinstance(value, str) and bool(value.strip())
+def digest_tree(root):
+    digest = hashlib.sha256()
+    for directory, dirs, files in os.walk(root,followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d not in EXCLUDE)
+        for name in sorted(files + [d for d in dirs if (Path(directory)/d).is_symlink()]):
+            path = Path(directory)/name
+            digest.update(str(path.relative_to(root)).encode())
+            digest.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
+    return digest.digest()
+class Watchdog:
+    def __init__(self, config):
+        self.c = config; self.app = Path(config['app']).resolve(); self.state = Path(config['state']).resolve()
+        if self.state == self.app or self.app in self.state.parents: raise ValueError('state inside source')
+        self.state.mkdir(parents=True, exist_ok=True, mode=0o700); os.chmod(self.state, 0o700)
+        self.child = None; self.stopping = False; self.launch = None
+        self.attempts = read(self.state/'budget.json', {'attempts':0})['attempts']
+    def event(self, kind, **details):
+        record = dict(time=time.time(), event=kind, **details)
+        with open(self.state/'events.jsonl', 'a', opener=lambda p,f: os.open(p,f,0o600)) as out:
+            out.write(json.dumps(record)+'\n'); out.flush(); os.fsync(out.fileno())
+        atomic(self.state/'status.json', dict(record, attempts=self.attempts, protected=not (self.state/'disabled').exists()))
+        print(json.dumps(record), flush=True)
+    def snapshot(self, target):
+        shutil.copytree(self.app, target, symlinks=True, ignore=lambda directory,names: EXCLUDE.intersection(names))
+    def start(self):
+        self.launch = self.state/('launch-'+str(time.time_ns())); self.snapshot(self.launch)
+        self.token = str(time.time_ns())
+        env = dict(os.environ, SEED_SAFETY_DIR=str(self.state), SEED_SAFETY_BOOT=self.token)
+        self.child = subprocess.Popen(self.c['command'], cwd=self.app, env=env, start_new_session=True)
+        self.started = time.monotonic(); self.certified = False; self.event('started', pid=self.child.pid)
+    def stop(self):
+        if self.child:
+            try: os.killpg(self.child.pid, signal.SIGTERM)
+            except ProcessLookupError: pass
+            try: self.child.wait(timeout=self.c.get('stop_timeout',5))
+            except subprocess.TimeoutExpired:
+                try: os.killpg(self.child.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                self.child.wait()
+            self.child = None
+    def probe(self):
+        try:
+            return subprocess.run(self.c['probe'], cwd=self.app, timeout=self.c.get('timeout',5), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        except (OSError, subprocess.TimeoutExpired): return False
+    def certify(self):
+        att = read(self.state/'attestation.json', {})
+        if att.get('boot') != self.token or att == getattr(self,'last_attestation',None): return
+        self.last_attestation = att
+        old = self.state/'good'
+        if not self.certified and digest_tree(self.app) == digest_tree(self.launch):
+            link = self.state/('good-link-'+str(time.time_ns()))
+            link.symlink_to(self.launch.name); os.replace(link,old)
+            self.certified = True
+        backup = []
+        for spec in self.c.get('credentials', []):
+            data = read(spec['path'], {})
+            if not isinstance(data,dict): continue
+            backup.append(dict(path=spec['path'], values={k:data[k] for k in spec['keys'] if valid(data.get(k))}))
+        atomic(self.state/'credentials.json', backup); self.event('known_good' if self.certified else 'credentials_checkpoint', evidence=str(old) if self.certified else None)
+    def credentials(self):
+        rejected = read(self.state/'rejected.json', {}); changed = False
+        for spec in read(self.state/'credentials.json', []):
+            path = Path(spec['path']); current = read(path,{})
+            if not isinstance(current,dict): current = {}
+            restored = dict(current)
+            for key,value in spec['values'].items():
+                existing = current.get(key)
+                if not valid(existing) or rejected.get(str(path),{}).get(key) == fingerprint(existing): restored[key] = value
+            if restored != current:
+                evidence = self.state/('credentials-evidence-'+str(time.time_ns()))
+                if path.exists(): shutil.copyfile(path,evidence); os.chmod(evidence,0o600)
+                atomic(path,restored); changed = True; self.event('credentials_restored', evidence=str(evidence))
+        return changed
+    def rollback(self):
+        good = self.state/'good'
+        if not good.exists(): return False
+        evidence = self.state/('source-evidence-'+str(time.time_ns())); self.snapshot(evidence)
+        for item in self.app.iterdir():
+            if item.name in EXCLUDE: continue
+            if item.is_dir() and not item.is_symlink(): shutil.rmtree(item)
+            else: item.unlink()
+        for item in good.iterdir():
+            target = self.app/item.name
+            if item.is_symlink(): target.symlink_to(os.readlink(item))
+            elif item.is_dir(): shutil.copytree(item,target,symlinks=True)
+            else: shutil.copy2(item,target)
+        self.event('source_rollback', evidence=str(evidence)); return True
+    def recover(self, reason):
+        if (self.state/'disabled').exists(): self.event('disabled',reason=reason); return False
+        self.stop()
+        if self.attempts >= self.c.get('max_attempts',3):
+            atomic(self.state/'exhausted',{'time':time.time()}); self.event('exhausted',reason=reason); return False
+        self.attempts += 1; atomic(self.state/'budget.json',{'attempts':self.attempts}); self.event('recovering',reason=reason)
+        self.credentials()
+        if self.attempts > 1: self.rollback()
+        time.sleep(self.c.get('backoff',10))
+        if not self.stopping: self.start()
+        return True
+    def run(self):
+        lock = open(self.state/'lock','a'); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        def shutdown(*_): self.stopping = True
+        signal.signal(signal.SIGTERM,shutdown); signal.signal(signal.SIGINT,shutdown)
+        failures = 0
+        if not (self.state/'exhausted').exists(): self.start()
+        else: self.event('exhausted',reason='persisted budget')
+        try:
+            while not self.stopping:
+                if self.child:
+                    alive = self.child.poll() is None; responsive = alive and self.probe()
+                    if responsive:
+                        failures = 0; self.certify()
+                        if not (self.state/'disabled').exists() and self.credentials(): self.recover('credentials')
+                    elif not alive or time.monotonic()-self.started > self.c.get('boot_grace',90):
+                        failures += 1
+                        if not alive or failures >= self.c.get('failures',3):
+                            self.recover('exit' if not alive else 'unresponsive'); failures = 0
+                time.sleep(self.c.get('interval',20))
+        finally: self.stop(); lock.close()
+if __name__ == '__main__':
+    os.umask(0o077)
+    try: Watchdog(read(sys.argv[1])).run()
+    except Exception as error:
+        print('seed-watchdog failed: '+type(error).__name__,file=sys.stderr); sys.exit(1)
