@@ -282,6 +282,56 @@ defmodule Seedling.WebTest do
              HTTP.request(:get, "http://127.0.0.1:#{port}", [], nil, max_download_bytes: 10)
   end
 
+  test "whole fetch deadline includes extraction after a successful fast HTTP download", %{
+    opts: opts
+  } do
+    html =
+      "<html><body>" <>
+        String.duplicate(
+          "<p>Purposeful readable prose in a reasonably long paragraph. Data and reliable systems are useful in every application.</p>",
+          12000
+        ) <> "</body></html>"
+
+    parent = self()
+
+    transport = fn _, _, _, _, _ ->
+      send(parent, :download_finished)
+      {:ok, %{status: 200, body: html, headers: %{"content-type" => ["text/html"]}}}
+    end
+
+    start = System.monotonic_time(:millisecond)
+
+    assert {:error, %{reason: :timeout}} =
+             Web.fetch(
+               "https://example.test/extraction",
+               opts ++ [mode: :http, transport: transport, timeout: 25]
+             )
+
+    assert_receive :download_finished
+    assert System.monotonic_time(:millisecond) - start < 1000
+  end
+
+  test "browser spool is hard bounded while renderer writes, not merely refused afterwards", %{
+    opts: opts,
+    root: root
+  } do
+    renderer = Path.join(root, "renderer")
+    File.write!(renderer, "#!/bin/sh\nexec head -c 300000 /dev/zero\n")
+    File.chmod!(renderer, 0o700)
+    cap = 1024
+
+    assert {:error, %{reason: :download_limit}} =
+             Web.fetch(
+               "https://example.test/renderer",
+               opts ++ [mode: :browser, lightpanda: renderer, max_download_bytes: cap]
+             )
+
+    assert [spool] = Path.wildcard(Path.join(opts[:spool_dir], "*/output.log"))
+    # The child file writes stop at cap. setsid may append a short diagnostic
+    # through the port after a signal; it must not allow the full 300 KB dump.
+    assert File.stat!(spool).size <= cap + 512
+  end
+
   test "CDP port conflict is an error; helpers do not claim interactive automation" do
     {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, {_, port}} = :inet.sockname(listener)

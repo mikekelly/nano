@@ -396,8 +396,24 @@ defmodule Seedling.SearchTest do
         )
       )
 
-    assert {:error, %{job: %{id: "run-storage"}, message: message}} = result
+    assert {:error, %{job: %{id: "run-storage"} = job, message: message}} = result
     assert message =~ "created" and message =~ "cancel"
+    File.rm!(blocked)
+    File.mkdir_p!(blocked)
+    parent = self()
+
+    transport = fn method, _, _, _, _ ->
+      send(parent, {:recovery_method, method})
+      response(completed("run-storage"))
+    end
+
+    assert {:ok, %{id: "run-storage"}} =
+             Search.resume_research(job, opts ++ [transport: transport])
+
+    assert_receive {:seedling_research, "run-storage", %{status: "completed"}}, 1000
+    assert_receive {:recovery_method, :get}
+    refute_receive {:recovery_method, :post}, 20
+    Search.ack_research(job)
   end
 
   test "resuming persisted completed job delivers without any paid network request", %{opts: opts} do
