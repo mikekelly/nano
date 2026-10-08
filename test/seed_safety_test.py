@@ -37,7 +37,8 @@ class SafetyTest(unittest.TestCase):
         self.assertFalse(self.w.credentials())
         mod.atomic(self.w.state/'rejected.json',{str(self.settings):{'key':mod.fingerprint('new')}})
         self.assertTrue(self.w.credentials()); self.assertEqual(mod.read(self.settings)['other'],99)
-        self.settings.write_text('broken json'); self.assertTrue(self.w.credentials())
+        self.settings.write_text('broken json'); self.assertTrue(self.w.credentials(apply=False))
+        self.assertEqual(self.settings.read_text(),'broken json'); self.assertTrue(self.w.credentials())
         self.assertEqual(mod.read(self.settings)['key'],'secret')
         self.assertEqual(self.settings.stat().st_mode & 0o777,0o600)
         self.assertNotIn('secret',(self.w.state/'events.jsonl').read_text())
@@ -63,6 +64,47 @@ class SafetyTest(unittest.TestCase):
     def test_disabled_does_not_kill_child(self):
         self.w.start(); (self.w.state/'disabled').touch(); self.assertFalse(self.w.recover('test'))
         self.assertIsNone(self.w.child.poll()); self.assertEqual(self.w.attempts,0)
+    def chatgpt_setup(self):
+        self.w.c['credentials']=[dict(path=str(self.settings),provider='chatgpt',kind='chatgpt')]
+        self.tokens=dict(access_token='synthetic-access-1',refresh_token='synthetic-refresh-1',id_token='synthetic-id',account_id='synthetic-account',expires_at=2000000000,plan='plus',email='fixture@example.invalid')
+        mod.atomic(self.settings,self.tokens); self.w.start()
+        mod.atomic(self.w.state/'attestation.json',dict(boot=self.w.token,providers=['chatgpt']))
+        self.w.certify()
+    def test_chatgpt_complete_missing_malformed_partial_and_expiry(self):
+        self.chatgpt_setup()
+        self.assertEqual(mod.read(self.w.state/'credentials.json')[0]['values'],self.tokens)
+        for corrupt in (None,'{malformed',dict(access_token=self.tokens['access_token']),dict(self.tokens,expires_at='broken'),dict(self.tokens,expires_at=True)):
+            if corrupt is None: self.settings.unlink()
+            elif isinstance(corrupt,str): self.settings.write_text(corrupt)
+            else: mod.atomic(self.settings,corrupt)
+            self.assertTrue(self.w.credentials()); self.assertEqual(mod.read(self.settings),self.tokens)
+        self.assertEqual(self.settings.stat().st_mode & 0o777,0o600)
+        self.assertNotIn('synthetic-access',(self.w.state/'events.jsonl').read_text())
+    def test_chatgpt_rotation_exact_pair_rejection_and_backup_refresh(self):
+        self.chatgpt_setup()
+        rotated=dict(self.tokens,access_token='synthetic-access-2',refresh_token='synthetic-refresh-2',expires_at=2100000000)
+        mod.atomic(self.settings,rotated); self.assertFalse(self.w.credentials())
+        mod.atomic(self.w.state/'rejected.json',{str(self.settings):{'@chatgpt':mod.chatgpt_fingerprint(self.tokens)}})
+        self.assertFalse(self.w.credentials())
+        mod.atomic(self.w.state/'rejected.json',{str(self.settings):{'@chatgpt':mod.chatgpt_fingerprint(rotated)}})
+        self.assertTrue(self.w.credentials()); self.assertEqual(mod.read(self.settings),self.tokens)
+        mod.atomic(self.settings,rotated)
+        mod.atomic(self.w.state/'attestation.json',dict(boot=self.w.token,providers=['chatgpt'],time=2))
+        self.w.certify(); self.assertEqual(mod.read(self.w.state/'credentials.json')[0]['values'],rotated)
+        self.settings.unlink(); self.assertTrue(self.w.credentials()); self.assertEqual(mod.read(self.settings),rotated)
+    def test_chatgpt_partial_newer_generation_is_never_mixed(self):
+        self.chatgpt_setup()
+        partial={'refresh_token':'rotated-refresh-only','extra':'preserve'}
+        mod.atomic(self.settings,partial); self.assertFalse(self.w.credentials())
+        self.assertEqual(mod.read(self.settings),partial)
+        self.assertIn('manual_intervention',(self.w.state/'events.jsonl').read_text())
+    def test_chatgpt_invalid_schema_does_not_replace_verified_backup(self):
+        self.chatgpt_setup()
+        for index,invalid in enumerate((dict(self.tokens,expires_at=-1),dict(self.tokens,account_id=None),dict(self.tokens,refresh_token=42))):
+            mod.atomic(self.settings,invalid)
+            mod.atomic(self.w.state/'attestation.json',dict(boot=self.w.token,providers=['chatgpt'],time=index))
+            self.w.certify()
+            self.assertEqual(mod.read(self.w.state/'credentials.json')[0]['values'],self.tokens)
     def test_state_inside_source_refused(self):
         with self.assertRaises(ValueError): mod.Watchdog(dict(self.w.c,state=str(self.app/'state')))
 if __name__ == '__main__': unittest.main()

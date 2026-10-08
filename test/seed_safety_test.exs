@@ -24,4 +24,24 @@ defmodule SeedSafetyTest do
     assert Bitwise.band(File.stat!(Path.join(dir, "rejected.json")).mode, 0o777) == 0o600
     assert Bitwise.band(File.stat!(dir).mode, 0o777) == 0o700
   end
+
+  test "ChatGPT rejection fingerprints guard both tokens", %{dir: dir} do
+    assert :ok =
+             SeedSafety.reject_chatgpt(
+               "/tmp/auth.json",
+               "synthetic-access",
+               "synthetic-refresh",
+               dir
+             )
+
+    text = File.read!(Path.join(dir, "rejected.json"))
+    refute text =~ "synthetic-access"
+    assert {:ok, data} = Jason.decode(text)
+
+    assert get_in(data, ["/tmp/auth.json", "@chatgpt"]) ==
+             Base.encode16(
+               :crypto.hash(:sha256, "synthetic-access" <> <<0>> <> "synthetic-refresh"),
+               case: :lower
+             )
+  end
 end
