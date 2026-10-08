@@ -5,41 +5,57 @@ defmodule Seedling.Web.HTTP do
     timeout = Keyword.get(opts, :timeout, 20_000)
     cap = Keyword.get(opts, :max_download_bytes, 2_000_000)
 
-    if is_integer(timeout) and timeout > 0 and is_integer(cap) and cap > 0 do
-      caller = self()
-      ref = make_ref()
-
-      {pid, mon} =
-        spawn_monitor(fn ->
-          result = safe_request(method, url, headers, body, opts, cap, timeout)
-          send(caller, {ref, result})
-        end)
-
-      receive do
-        {^ref, result} ->
-          Process.demonitor(mon, [:flush])
-          result
-
-        {:DOWN, ^mon, :process, ^pid, _} ->
-          error(:transport, "HTTP worker failed; retry the request.")
-      after
-        timeout ->
-          Process.exit(pid, :kill)
-
-          receive do
-            {:DOWN, ^mon, :process, ^pid, _} -> :ok
-          end
-
-          receive do
-            {^ref, _} -> :ok
-          after
-            0 -> :ok
-          end
-
-          error(:timeout, "HTTP deadline exceeded; increase :timeout or retry.")
-      end
+    if is_integer(timeout) and timeout in 1..4_294_967_295 and is_integer(cap) and cap > 0 do
+      deadline(timeout, fn -> safe_request(method, url, headers, body, opts, cap, timeout) end)
     else
       error(:invalid_options, "timeout and max_download_bytes must be positive integers.")
+    end
+  end
+
+  def deadline(timeout, operation) do
+    started = System.monotonic_time(:millisecond)
+    caller = self()
+    ref = make_ref()
+
+    {pid, mon} =
+      spawn_monitor(fn ->
+        result =
+          try do
+            operation.()
+          rescue
+            _ -> error(:operation_failed, "Operation failed; check per-call options and retry.")
+          catch
+            _, _ -> error(:operation_failed, "Operation failed; retry.")
+          end
+
+        send(caller, {ref, result})
+      end)
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(mon, [:flush])
+
+        if System.monotonic_time(:millisecond) - started >= timeout,
+          do: error(:timeout, "Operation deadline exceeded; increase :timeout or retry."),
+          else: result
+
+      {:DOWN, ^mon, :process, ^pid, _} ->
+        error(:operation_failed, "Worker failed; retry the operation.")
+    after
+      timeout ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^mon, :process, ^pid, _} -> :ok
+        end
+
+        receive do
+          {^ref, _} -> :ok
+        after
+          0 -> :ok
+        end
+
+        error(:timeout, "Operation deadline exceeded; increase :timeout or retry.")
     end
   end
 

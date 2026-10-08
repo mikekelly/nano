@@ -11,7 +11,7 @@ defmodule Seedling.Web do
 
   Every call returns `{:ok, map}` or `{:error, %{reason: ..., message: ...}}`.
   `fetch/2` takes `mode: :auto | :http | :browser` (default `:auto`),
-  `timeout: 20_000` (one total deadline), `max_download_bytes: 2_000_000`,
+  `timeout: 20_000` (whole fetch deadline, including extraction/cache I/O), `max_download_bytes: 2_000_000`,
   `max_bytes: 12_000`, `offset: 0`. Pages use **byte offsets**, preserve UTF-8,
   and announce cuts with `next_offset`. Max page size is 40 KB.
 
@@ -29,6 +29,14 @@ defmodule Seedling.Web do
   an empty-shell success. Use `mode: :browser` to force rendering when needed.
   Markdown/plain text is preserved. PDF, video, archives and binary content are
   refused; use dedicated extraction tools. There is no cookie jar or login.
+
+  Fetch runs in a monitored worker and is killed on timeout. In-progress cache
+  writes may leave partial snapshots, which are treated as cache misses. Cache
+  writes/eviction are best-effort under concurrent processes, not transactional.
+  Browser output is limited at the OS file-write boundary using util-linux
+  `prlimit`; its stdout/stderr cannot grow without bound while rendering. The
+  Shell supervisor may append a short termination diagnostic beyond that byte
+  ceiling. This relies on Seedling.Shell's direct-to-file spool implementation.
 
   Lightpanda is expected at `/usr/local/bin/lightpanda` (override `:lightpanda`).
   `browser/1` wraps a loopback CDP server as a Shell background task; clients must
@@ -53,27 +61,33 @@ defmodule Seedling.Web do
     with :ok <- validate_url(url),
          :ok <- validate_options(mode, opts),
          :ok <- Store.options(opts) do
-      cached = if opts[:refresh], do: nil, else: Store.lookup(url, mode, opts)
+      HTTP.deadline(Keyword.get(opts, :timeout, 20_000), fn ->
+        fetch_validated(url, mode, opts)
+      end)
+    end
+  end
 
-      if cached do
-        with {:ok, page} <- read(cached, opts), do: {:ok, Map.put(page, :cached, true)}
-      else
-        started = System.monotonic_time(:millisecond)
+  defp fetch_validated(url, mode, opts) do
+    cached = if opts[:refresh], do: nil, else: Store.lookup(url, mode, opts)
 
-        with {:ok, content} <- fetch_content(url, mode, opts, started),
-             {:ok, meta} <-
-               Store.put(
-                 content.text,
-                 %{url: url, title: content.title, source: content.source, mode: to_string(mode)},
-                 opts
-               ),
-             {:ok, page} <- read(meta.id, opts) do
-          {:ok,
-           Map.merge(page, %{
-             cached: false,
-             duration_ms: System.monotonic_time(:millisecond) - started
-           })}
-        end
+    if cached do
+      with {:ok, page} <- read(cached, opts), do: {:ok, Map.put(page, :cached, true)}
+    else
+      started = System.monotonic_time(:millisecond)
+
+      with {:ok, content} <- fetch_content(url, mode, opts, started),
+           {:ok, meta} <-
+             Store.put(
+               content.text,
+               %{url: url, title: content.title, source: content.source, mode: to_string(mode)},
+               opts
+             ),
+           {:ok, page} <- read(meta.id, opts) do
+        {:ok,
+         Map.merge(page, %{
+           cached: false,
+           duration_ms: System.monotonic_time(:millisecond) - started
+         })}
       end
     end
   end
@@ -254,8 +268,14 @@ defmodule Seedling.Web do
   defp browser_fetch(url, opts) do
     runner = Keyword.get(opts, :shell, &Shell.sh/2)
 
+    cap = Keyword.get(opts, :max_download_bytes, 2_000_000)
+    limiter = System.find_executable("prlimit")
+
     command =
-      quote_arg(Keyword.get(opts, :lightpanda, "/usr/local/bin/lightpanda")) <>
+      "exec " <>
+        quote_arg(limiter || "prlimit") <>
+        " --core=0:0 --fsize=#{cap}:#{cap} -- " <>
+        quote_arg(Keyword.get(opts, :lightpanda, "/usr/local/bin/lightpanda")) <>
         " fetch --dump markdown " <> quote_arg(url)
 
     shell_opts = [
@@ -266,21 +286,30 @@ defmodule Seedling.Web do
     ]
 
     try do
-      with {:ok, result} <- runner.(command, shell_opts) do
+      with :ok <-
+             if(limiter,
+               do: :ok,
+               else:
+                 HTTP.error(
+                   :missing_dependency,
+                   "Install util-linux (prlimit) for bounded browser output."
+                 )
+             ),
+           {:ok, result} <- runner.(command, shell_opts) do
         cond do
           result.status == :timeout ->
             HTTP.error(:timeout, "Lightpanda timed out; increase :timeout.")
+
+          result.bytes > cap or (result.exit_code != 0 and result.bytes >= cap) ->
+            HTTP.error(
+              :download_limit,
+              "Rendered page reached max_download_bytes; increase it explicitly."
+            )
 
           result.exit_code != 0 ->
             HTTP.error(
               :browser_failed,
               "Lightpanda failed; inspect #{result.output_path} or try mode: :http."
-            )
-
-          result.bytes > Keyword.get(opts, :max_download_bytes, 2_000_000) ->
-            HTTP.error(
-              :download_limit,
-              "Rendered page exceeds max_download_bytes; increase it explicitly."
             )
 
           true ->
@@ -330,7 +359,7 @@ defmodule Seedling.Web do
     if is_binary(Keyword.get(opts, :lightpanda, "/usr/local/bin/lightpanda")) and
          is_binary(Keyword.get(opts, :spool_dir, "/tmp/seedling-web-browser")) and
          mode in [:auto, :http, :browser] and is_integer(Keyword.get(opts, :timeout, 20_000)) and
-         Keyword.get(opts, :timeout, 20_000) > 0 and
+         Keyword.get(opts, :timeout, 20_000) in 1..4_294_967_295 and
          is_integer(Keyword.get(opts, :cache_ttl, 3600)) and
          Keyword.get(opts, :cache_ttl, 3600) >= 0 and
          is_integer(Keyword.get(opts, :cache_entries, 100)) and

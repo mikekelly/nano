@@ -55,8 +55,12 @@ defmodule Seedling.Search.Research do
   end
 
   def resume(job, opts) do
-    with {:ok, stored} <- status(job, opts),
+    with {:ok, stored} <- load_or_restore(job, opts),
          {:ok, handle} <- handle(job, opts),
+         :ok <-
+           Search.validate_cap(
+             Keyword.put_new(opts, :cache_dir, stored["cache_dir"] || Store.root(opts))
+           ),
          :ok <- validate_options("low", recipient(stored, opts), opts) do
       opts = Keyword.put_new(opts, :cache_dir, stored["cache_dir"] || Store.root(opts))
 
@@ -75,6 +79,42 @@ defmodule Seedling.Search.Research do
       {:ok, merged}
     end
   end
+
+  defp load_or_restore(job, opts) do
+    case status(job, opts) do
+      {:error, %{reason: :missing_job}} ->
+        with {:ok, handle} <- handle(job, opts),
+             :ok <- Search.validate_cap(opts) do
+          cache_dir = Keyword.get(opts, :cache_dir, field(job, :cache_dir) || Store.root(opts))
+          notify_agent = field(job, :notify_agent)
+
+          stored =
+            Map.merge(handle, %{
+              cache_dir: cache_dir,
+              notify_agent: notify_agent,
+              status: "queued",
+              local_complete: false,
+              recovered: true
+            })
+
+          notify = recipient(stringify(stored), opts)
+
+          with :ok <- Search.validate_cap(Keyword.put(opts, :cache_dir, cache_dir)),
+               :ok <- validate_options("low", notify, opts),
+               :ok <- save(stored) do
+            {:ok, stringify(stored)}
+          end
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp field(job, key) when is_map(job),
+    do: Map.get(job, key) || Map.get(job, Atom.to_string(key))
+
+  defp field(_, _), do: nil
 
   def ack(job, opts) do
     with {:ok, handle} <- handle(job, opts),

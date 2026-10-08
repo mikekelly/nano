@@ -47,7 +47,10 @@ defmodule Seedling.Search do
   delivered at least once, retried every `notify_interval: 5000` until
   `ack_research/2`; duplicates are possible. A pid recipient is one-shot and
   cannot survive its death. Node/container restart needs `resume_research/2`
-  with the persisted handle; no keys/functions are serialized. Handles/events
+  with the persisted handle; no keys/functions are serialized. If initial job
+  persistence failed, pass the returned remote handle (or id plus jobs_dir) to
+  resume_research/2 after fixing storage: it recreates a local watch record and
+  only GETs the existing remote run, never POSTs another paid run. Handles/events
   carry cache_dir for result paging. Cache eviction can invalidate result ids;
   copy important outputs elsewhere. Exa snapshot timestamps record local retrieval,
   not necessarily the provider's page crawl time. Polling defaults
