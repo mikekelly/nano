@@ -271,7 +271,11 @@ no connect/subscribe calls. Tests spend no model calls and require only Python 3
 
 The complete foundation checkout suite also passed: **285 tests**, with two
 pre-existing unused-variable/default-argument warnings and an expected
-`:retry_start` agent log in a restart test. No MCP compilation warnings.
+`:retry_start` agent log in a restart test. No MCP compilation warnings. The first
+follow-up full run had 284/285 passing: the unowned Nano.StateStoreTest pid-exit
+assertion expected `:first` but observed `:noproc`. Repeating the complete suite
+with the same seed (982695) passed all 285; this timing-sensitive failure was
+reported, not hidden or modified by MCP.
 
 Follow-up regressions check multi-server deferred-event release, oversized
 resource routing plus spill-failure safety, and HTTP worker cleanup on a killed
