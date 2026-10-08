@@ -100,8 +100,13 @@ Tests use the seed's real local fake provider, not paid calls. They cover compos
 partials, exact hashed pre-reading and changed-file detection, cap/marker validation,
 explicit worktree revision and edit isolation, zero-turn idle starts, preserved ancestry
 from a real parent eval, reporting and manager-kill recovery, named-parent queued delivery,
-and budget/death/restart alerts. The implementation was also used live to start the MCP
+budget/death/restart alerts, and a stopped child whose DOWN was lost during watcher recovery. The implementation was also used live to start the MCP
 builder in a worktree at explicit shared-foundation commit `eee9dda`; ancestry was
 `started_by: "orion-delegation"` and its pre-read hashes were returned in the single-eval
 start result. This is not a claim of full node-restart testing; persistence and manager
 recovery are covered in-process, and startup integration belongs to the application.
+
+The live start's compact inspected result was 793 bytes (~397 tokens under the
+harness's conservative two-bytes-per-token estimate), versus 26,150 bytes in the
+child's composed prompt. This measures returned metadata, not the parent's eval source,
+API envelope or exact provider tokenizer; the child transcript is never returned.
