@@ -175,7 +175,9 @@ defmodule NanoAgent do
   end
 
   @doc "Delivers already imported image references (for API/dashboard uploads)."
-  def deliver_images(agent, refs, text \\ "") when is_list(refs) and is_binary(text) do
+  def deliver_images(agent, refs, text \\ "")
+
+  def deliver_images(agent, refs, text) when is_list(refs) and is_binary(text) do
     with true <- refs != [] and length(refs) <= 20,
          true <- Enum.all?(refs, &match?({:ok, _, _}, Nano.Images.read(&1))) do
       GenServer.cast(target(agent), {:images, refs, text})
@@ -184,6 +186,9 @@ defmodule NanoAgent do
       _ -> {:error, "invalid images: supply 1..20 valid imported references"}
     end
   end
+
+  def deliver_images(_, _, _),
+    do: {:error, "images must be a list of references and text must be a string"}
 
   @doc "Clears an agent's halt, whatever the reason; for `:start_failed` that retries the start."
   def unhalt(agent), do: GenServer.cast(target(agent), :unhalt)
@@ -199,7 +204,7 @@ defmodule NanoAgent do
 
   @doc """
   The agent's info map, or nil. Read from `Nano.StateStore`, never from the agent, so it works
-  while the agent is busy or suspended. `status` is `:idle`, `:thinking`, `:running_tool` or
+  while the agent is busy or suspended. `status` is `:idle`, `:thinking`, `:running_tool`, `:compacting` or
   `:waiting_retry` (a model call failed and the agent will call again at `retry_at`, an
   ISO 8601 time, else nil). `halted` is nil, `:budget`, `:context`, `:node_budget`,
   `:usage_limit`, `:provider_unavailable`, `:model_refused`, `:restart_brake`, `:start_failed`
@@ -566,6 +571,7 @@ defmodule NanoAgent do
   # Only what the last save can support: a save is made before each eval and after its result.
   defp doing(%{task: %{kind: :eval, n: n}}), do: "during or just after eval (tool call #{n})"
   defp doing(%{status: :thinking}), do: "while waiting for a model response"
+  defp doing(%{status: :compacting}), do: "while the harness was summarizing older history"
   defp doing(%{status: :waiting_retry}), do: "while waiting to call the model again"
   defp doing(%{status: :running_tool}), do: "while handling your tool calls"
   defp doing(_), do: "while idle"
@@ -834,11 +840,19 @@ defmodule NanoAgent do
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
         refs = if new_turn?, do: s.pending_images ++ s.tool_images, else: s.tool_images
+        tool_warning = Map.get(s, :tool_image_warning, false)
 
         text =
           if new_turn?,
             do: Enum.join(s.pending ++ [line], "\n"),
             else: "Images viewed by your eval."
+
+        text =
+          if tool_warning,
+            do:
+              text <>
+                "\nImage attachment produced by eval, but your model cannot see images. Do not guess its contents.",
+            else: text
 
         content = if refs == [], do: text, else: Nano.Images.parts(text, refs)
         user = %{"role" => "user", "content" => content}
@@ -846,11 +860,11 @@ defmodule NanoAgent do
         next =
           cond do
             new_turn? -> %{append(s, user) | pending: [], pending_images: [], tool_images: []}
-            refs != [] -> %{append(s, user) | tool_images: []}
+            refs != [] or tool_warning -> %{append(s, user) | tool_images: []}
             true -> s
           end
 
-        next = front_of_mind(next, :before_request)
+        next = next |> Map.delete(:tool_image_warning) |> front_of_mind(:before_request)
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -1356,7 +1370,8 @@ defmodule NanoAgent do
     s = %{s | status: :idle, calls: [], idle_called: false}
 
     if s.halted == nil and compaction_due?(s, estimate(s)) and compactable?(s),
-      do: compact(s, :idle),
+      do:
+        compact(s, if(Map.get(s, :compact_requested, false), do: {:request, false}, else: :idle)),
       else: maybe_start_turn(s)
   end
 
@@ -1374,32 +1389,37 @@ defmodule NanoAgent do
   defp compact(s, resume) do
     {:ok, older, recent} = Nano.Compaction.plan(s.transcript, s.max_context)
 
-    log(s, :compaction_started, %{
-      model: s.model,
-      removed_messages: length(older),
-      kept_messages: length(recent)
-    })
+    logged =
+      log(s, :compaction_started, %{
+        model: s.model,
+        removed_messages: length(older),
+        kept_messages: length(recent)
+      })
 
-    s = save(%{s | status: :compacting})
+    if logged == :ok do
+      s = save(%{s | status: :compacting})
 
-    task =
-      Task.Supervisor.async_nolink(Nano.EvalSupervisor, Nano.Compaction, :summarize, [
-        s.model,
-        s.reasoning,
-        older,
-        min(s.context_window || s.max_context, s.max_context)
-      ])
+      task =
+        Task.Supervisor.async_nolink(Nano.EvalSupervisor, Nano.Compaction, :summarize, [
+          s.model,
+          s.reasoning,
+          older,
+          min(s.context_window || s.max_context, s.max_context)
+        ])
 
-    %{
-      s
-      | task: %{
-          kind: :compaction,
-          task: task,
-          recent: recent,
-          resume: resume,
-          files: Nano.Compaction.files(older)
-        }
-    }
+      %{
+        s
+        | task: %{
+            kind: :compaction,
+            task: task,
+            recent: recent,
+            resume: resume,
+            files: Nano.Compaction.files(older)
+          }
+      }
+    else
+      s |> halt(:log_failed, @log_failed) |> end_turn("error")
+    end
   end
 
   defp compaction_done(s, t, {:ok, summary, r}) do
@@ -1519,7 +1539,7 @@ defmodule NanoAgent do
   end
 
   @doc false
-  # {:ok, inspected, bindings, warnings} | {:error, formatted}, with io as the group leader.
+  # {:ok, inspected, bindings, warnings, images} | {:error, formatted}, with io as the group leader.
   def eval(code, bindings, io) do
     Process.group_leader(self(), io)
 
@@ -1685,10 +1705,15 @@ defmodule NanoAgent do
     if "image" in Map.get(s, :input_modalities, []) do
       Map.update(s, key, refs, &(&1 ++ refs))
     else
-      note(
-        s,
+      text =
         "Image attachment received, but your model cannot see images. Do not infer its contents from its name or path."
-      )
+
+      if key == :tool_images do
+        log(s, :harness_note, %{text: text})
+        Map.put(s, :tool_image_warning, true)
+      else
+        note(s, text)
+      end
     end
   end
 

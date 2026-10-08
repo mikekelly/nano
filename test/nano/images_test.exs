@@ -84,7 +84,29 @@ defmodule Nano.ImagesTest do
     assert {:error, _} = Nano.Images.read(%{"id" => "../../settings"})
   end
 
-  test "vision agent receives image_url; log and saved state contain only references", c do
+  test "full decoder validates JPEG/static GIF and refuses animation and truncated pixels", c do
+    jpeg = c.path <> ".jpg"
+    gif = c.path <> ".gif"
+    animated = c.path <> ".animated.gif"
+    assert {_, 0} = System.cmd("convert", [c.path, jpeg], stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("convert", [c.path, gif], stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("convert", [c.path, c.path, animated], stderr_to_stdout: true)
+
+    assert {:ok, %{"mime" => "image/jpeg", "width" => 1, "height" => 1}} =
+             Nano.Images.import(jpeg)
+
+    assert {:ok, %{"mime" => "image/gif", "width" => 1, "height" => 1}} = Nano.Images.import(gif)
+    assert {:error, _} = Nano.Images.import(animated)
+    png = File.read!(c.path)
+    assert {:error, _} = Nano.Images.store(binary_part(png, 0, byte_size(png) - 40))
+    # JPEG dimensions plus an end marker without any actual entropy/pixel data.
+    assert {:error, _} =
+             Nano.Images.store(<<255, 216, 255, 192, 0, 8, 8, 1::16, 1::16, 1, 255, 217>>)
+  end
+
+  test "vision agent receives
+ image_url; log and saved state contain only references",
+       c do
     {name, _pid, model} = start_agent(true)
     Fake.push(model, text: "seen")
     assert :ok = Nano.Ops.send_image(name, c.path, "What is this?")
@@ -97,6 +119,11 @@ defmodule Nano.ImagesTest do
     refute inspect(Nano.StateStore.get(name)) =~ @png
     refute inspect(Nano.Log.read(NanoAgent.info(name).id)) =~ @png
     assert Enum.any?(Nano.Log.read(NanoAgent.info(name).id), &(&1["type"] == "images_received"))
+
+    request_log =
+      Enum.find(Nano.Log.read(NanoAgent.info(name).id), &(&1["type"] == "model_request"))
+
+    assert request_log["approx_input_tokens"] >= 4800
   end
 
   test "text-only agents are told explicitly rather than getting fake visual input", c do
@@ -109,7 +136,24 @@ defmodule Nano.ImagesTest do
     assert NanoAgent.info(name).system_prompt =~ "cannot see images"
   end
 
-  test "eval view arrives as a user image after the complete tool results", c do
+  test "text-only eval views warn in the immediately following request, not a later turn", c do
+    {_name, pid, model} = start_agent(false)
+    Fake.push(model, calls: [eval: "Nano.Images.view(#{inspect(c.path)})"])
+    Fake.push(model, text: "cannot see")
+    send(pid, :view)
+    request(model)
+    body = request(model)
+
+    assert [%{"role" => "tool"}, %{"role" => "user", "content" => content}] =
+             Enum.take(body["messages"], -2)
+
+    assert inspect(content) =~ "your model cannot see images"
+    refute inspect(body) =~ "data:image"
+  end
+
+  test "eval view arrives
+ as a user image after the complete tool results",
+       c do
     {_name, pid, model} = start_agent(true)
     Fake.push(model, calls: [eval: "Nano.Images.view(#{inspect(c.path)})", eval: "1+1"])
     Fake.push(model, text: "image seen")
