@@ -108,7 +108,10 @@ for an orientation (below) first: on this node some rungs may already exist.
 5. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
    and pre-reading, give it a task, get its result as a message. From here on, anything
    large is a sub-agent's job and your context stays at the level of the plan. Build it
-   early, while you have plenty of context left.
+   early, while you have plenty of context left. The seed tells no one when an agent halts
+   or dies except that agent, which by then cannot act: a sub-agent is watched only once
+   your delegation reports its halt or death to its parent, so a child started before that,
+   or by any other route, sits silent until you look.
 6. *The web*: fetching pages as readable text with paging ([web-access.md](web-access.md));
    search, when the operators have supplied a key for a search service such as Exa
    (exa.ai), as a node setting under its usual name (`EXA_API_KEY`; the node's settings,
