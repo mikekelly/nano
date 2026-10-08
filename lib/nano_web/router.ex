@@ -25,6 +25,16 @@ defmodule NanoWeb.Router do
     get "/openrouter/callback", OpenRouterController, :callback
   end
 
+  scope "/", SeedlingWeb do
+    pipe_through :browser
+
+    live_session :bots, root_layout: {SeedlingWeb.BotLayouts, :root} do
+      live "/bots", BotLive
+    end
+
+    get "/bots/files/:id", BotFileController, :download
+  end
+
   # No pipeline: the API always answers JSON (or an event stream), whatever the Accept header.
   # Path params arrive URL-decoded, so `/api/processes/%23PID%3C0.231.0%3E` gives "#PID<0.231.0>".
   scope "/api", NanoWeb do
