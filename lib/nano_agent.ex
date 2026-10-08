@@ -1148,7 +1148,13 @@ defmodule NanoAgent do
     task =
       Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
         attempts = if s.max_turns > 0, do: min(3, max(s.max_turns - s.turns_used, 1)), else: 3
-        opts = [max_attempts: attempts]
+        modalities = Map.get(s, :input_modalities, [])
+
+        chat = fn model, history, tools, reasoning, output ->
+          Nano.Model.chat(model, history, tools, reasoning, output, modalities)
+        end
+
+        opts = [max_attempts: attempts, chat: chat]
 
         opts =
           if s.max_tokens > 0,
