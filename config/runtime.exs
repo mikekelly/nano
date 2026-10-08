@@ -38,7 +38,9 @@ config :nano,
   spill_dir: env.("SPILL_DIR", Path.join(data, "spill")),
   # Each agent's state is written here on every save and revived from here at boot; also the
   # node's settings (settings.json) and the ChatGPT subscription's tokens.
-  state_dir: env.("STATE_DIR", Path.join(data, "state"))
+  state_dir: env.("STATE_DIR", Path.join(data, "state")),
+  # Immutable image references use the same environment-specific data root.
+  images_dir: env.("IMAGES_DIR", Path.join(data, "images"))
 
 if test?, do: config(:nano, test_dir: data)
 
