@@ -9,6 +9,7 @@ defmodule SeedMCP do
   input requests are returned to the caller unchanged, not automatically handled.
 
       {:ok, client} = SeedMCP.connect("filesystem", owner: "my-agent")
+      {:ok, _} = SeedMCP.await_ready(client)
       SeedMCP.tools(client)
       SeedMCP.call_tool(client, "read_file", %{"path" => "/tmp/example"})
       SeedMCP.subscribe(client, "file:///tmp/example")
@@ -26,10 +27,14 @@ defmodule SeedMCP do
 
   Subscriptions are saved under `state_dir` (default `/data/seed_mcp`) keyed by
   owner name and server. On reconnect/restart they are reissued. PID owners are
-  ephemeral: supply `subscription_key:` to persist them. Call `connect` again
-  after a client/node restart; integrate that into agent startup or supervise the
-  returned child spec. Clients automatically reconnect after transport failures.
+  ephemeral: supply `subscription_key:` to persist them. `connect` supervises
+  clients under SeedMCP.Supervisor; use `start_for` to save runtime config for
+  node restoration. Clients automatically reconnect after transport failures.
   Notifications when the owner is absent are not durably queued.
+
+  Delegation: `SeedMCP.start_for(child_name, specs)` returns stable handles only
+  after discovery/initialization; call `SeedMCP.handles(child_name)` in a child
+  and `SeedMCP.restore(child_name)` after node restart. See SeedMCP.Runtime.
 
   Calls return `{:ok, result}` or `{:error, bounded_detail}`. List functions accept
   a cursor and deliberately return one server page, not unbounded aggregation.
@@ -46,19 +51,38 @@ defmodule SeedMCP do
   Keep one client per owner/server persistence key to avoid concurrent updates.
   Spill files are retained for caller cleanup; no secrets are intentionally logged,
   but server results may contain sensitive data. Protect `state_dir` accordingly.
+
+  Interoperability smoke (2026-10-08): public https://mcp.deepwiki.com/mcp
+  successfully initialized at 2025-11-25, listed tools and ran read_wiki_structure
+  for modelcontextprotocol/python-sdk without credentials. Official Python SDK
+  mcp 2.3.0 over stdio successfully discovered 2026-07-28, listed/called a tool,
+  read a resource and acknowledged a resource subscription. These are smoke
+  checks, not exhaustive conformance certification; deterministic tests use fakes.
   """
-  def connect(name, opts \\ []) do
+  def connect(server, opts \\ [])
+  def connect(server, opts) when is_map(server), do: SeedMCP.Runtime.connect(server, opts)
+
+  def connect(name, opts) when is_binary(name) do
     config = Keyword.get(opts, :config, Path.join(__DIR__, "seed_mcp/servers.json"))
 
     with {:ok, bytes} <- File.read(config),
          {:ok, doc} <- Jason.decode(bytes),
          server when is_map(server) <- get_in(doc, ["mcpServers", name]) do
-      SeedMCP.Client.start_link(Keyword.merge(opts, server: server, server_name: name))
+      SeedMCP.Runtime.connect(Map.put(server, "name", name), opts)
     else
       nil -> {:error, "Unknown MCP server #{name}; add it to #{config}"}
       error -> {:error, inspect(error, limit: 5, printable_limit: 500)}
     end
   end
+
+  @doc "Starts and awaits configured clients for an agent, saving runtime specs for node restart. See SeedMCP.Runtime."
+  def start_for(owner, servers, opts \\ []), do: SeedMCP.Runtime.start_for(owner, servers, opts)
+  @doc "Restarts clients from this agent's saved runtime configuration."
+  def restore(owner, opts \\ []), do: SeedMCP.Runtime.restore(owner, opts)
+  @doc "Returns a map of server names to stable via handles for the named agent."
+  def handles(owner), do: SeedMCP.Runtime.handles(owner)
+  @doc "Waits inside code, not model turns, for discovery/initialization to complete."
+  def await_ready(client, timeout \\ 30_000), do: SeedMCP.Runtime.await_ready(client, timeout)
 
   def start_link(opts), do: SeedMCP.Client.start_link(opts)
 
@@ -104,7 +128,19 @@ defmodule SeedMCP do
   def cancel_subscription(c, id), do: GenServer.call(c, {:cancel_subscription, id})
   def status(c), do: GenServer.call(c, :status)
   def owner(c, owner), do: GenServer.call(c, {:owner, owner})
-  def stop(c), do: GenServer.stop(c)
+
+  def stop(c) do
+    pid = GenServer.whereis(c)
+
+    if Process.whereis(SeedMCP.Supervisor) && is_pid(pid) do
+      case DynamicSupervisor.terminate_child(SeedMCP.Supervisor, pid) do
+        :ok -> :ok
+        {:error, :not_found} -> GenServer.stop(c)
+      end
+    else
+      GenServer.stop(c)
+    end
+  end
 
   def page(path, opts \\ []) do
     offset = Keyword.get(opts, :offset, 0)
