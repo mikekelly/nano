@@ -121,7 +121,7 @@ defmodule Seedling.Bots.Smoke do
          {:ok, _} <-
            Bots.say(
              one["id"],
-             "Please remember in durable bot memory: I prefer quiet hotels. Acknowledge in one short sentence using Bots.post.",
+             "Please remember in durable bot memory: I prefer quiet hotels. Acknowledge in one short sentence using Seedling.Bots.post.",
              opts
            ),
          {:ok, first} <- wait(one["id"], 1, opts, timeout),
@@ -129,7 +129,7 @@ defmodule Seedling.Bots.Smoke do
          {:ok, _} <-
            Bots.say(
              two["id"],
-             "What hotel noise preference do I have? Answer in one sentence using Bots.post.",
+             "What hotel noise preference do I have? Answer in one sentence using Seedling.Bots.post.",
              opts
            ),
          {:ok, second} <- wait(two["id"], 1, opts, timeout),
@@ -137,7 +137,7 @@ defmodule Seedling.Bots.Smoke do
          {:ok, _} <-
            Bots.say(
              group["id"],
-             "Muse and Dots: each say hello in fewer than ten words using Bots.post. Do not answer each other's greeting.",
+             "Muse and Dots: each say hello in fewer than ten words using Seedling.Bots.post. Do not answer each other's greeting.",
              opts
            ),
          {:ok, both} <- wait(group["id"], 2, opts, timeout),
@@ -204,7 +204,14 @@ defmodule Seedling.Bots.Smoke do
     case Bots.snapshot(root: root) do
       {:ok, snapshot} ->
         Enum.map(snapshot.statuses, fn {{session, bot}, status} ->
-          %{session: session, bot: bot, status: status}
+          info = NanoAgent.info(Bots.Runtime.name(bot, session, root))
+
+          runtime =
+            if is_map(info),
+              do: Map.take(info, [:status, :halted, :budget, :context_window, :restart_count]),
+              else: nil
+
+          %{session: session, bot: bot, status: status, runtime: runtime}
         end)
         |> Enum.take(32)
 
