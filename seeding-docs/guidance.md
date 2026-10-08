@@ -168,6 +168,17 @@ same BEAM. Nothing stops agents colliding except each one taking care, so:
 Once you start sub-agents, the collisions are between your own agents, and each knows only
 what its prompt tells it.
 
+**Don't leave method to chance: encapsulate it.** What you learn about how to work well (how
+to bound output, how to delegate, when to compact, how to share the machine) only helps the
+agents that end up applying it, and an agent cannot apply what it never met. So put
+methodology where it cannot be missed. Build it into the tools, so that the right way is the
+easy or the only way: a start function that requires every limit, a delegation call that
+needs a starting revision, a shell helper that bounds its output. Put what is critical for an
+agent's job in that agent's system prompt, which is what a system prompt is for: it is the
+one thing an agent is certain to read. Leave the rest to progressively disclosed documents
+that the prompt points to, where the reasons live. Whatever an agent must do, it should not
+have to discover by luck.
+
 **Compose prompts from partials, fitted to each agent.** When you start an agent, you write
 its system prompt, and that is your chance to fit it to the kind of agent it is and the job
 it has. Build it from reusable parts rather than writing it whole: the node's facts (the
