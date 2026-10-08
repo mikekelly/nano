@@ -119,6 +119,61 @@ defmodule BotsTest do
         )
   end
 
+  test "storage failure during asynchronous routing shows an honest error instead of endless thinking" do
+    s = service(route_delay: 60, route_observer: true)
+    c = chat(s, [bot(s)])
+    Bots.say(c["id"], "first question", server: s.server)
+    assert_receive {:routing, "first question", _}, 1000
+    path = Path.join(s.root, "state.json")
+    backup = File.read!(path)
+    File.rm_rf!(s.root)
+    File.write!(s.root, "blocked")
+    eventually(fn -> Bots.session(c["id"], server: s.server)["status"] == "error" end)
+
+    assert List.last(Bots.session(c["id"], server: s.server)["messages"])["text"] =~
+             "could not be saved"
+
+    refute_receive {:dispatch, _, _, _}, 20
+    File.rm!(s.root)
+    File.mkdir_p!(s.root)
+    File.write!(path, backup)
+    assert {:ok, _} = Bots.say(c["id"], "retry", server: s.server)
+    assert_receive {:dispatch, _, _, ctx}, 1000
+    assert ctx.message["text"] == "retry"
+  end
+
+  test "slow memory judgment falls back before dispatch deadline so a human is still answered" do
+    parent = self()
+
+    s =
+      service(
+        decision: Decision,
+        memory_timeout: 25,
+        dispatch_timeout: 500,
+        decision_opts: [
+          api_key: "not-a-real-key",
+          transport: fn _ ->
+            send(parent, {:memory_transport, self()})
+            Process.sleep(:infinity)
+          end
+        ]
+      )
+
+    b = bot(s)
+    c = chat(s, [b])
+
+    assert {:ok, _} =
+             Bots.Memory.remember(b["id"], c["id"], "food", "likes vegetarian food", root: s.root)
+
+    Bots.say(c["id"], "What food do I like?", server: s.server)
+    assert_receive {:memory_transport, transport}, 1000
+    assert_receive {:dispatch, _, _, ctx}, 1000
+    assert [%{"key" => "food"}] = ctx.memories
+    eventually(fn -> not Process.alive?(transport) end)
+    assert {:ok, _} = Bots.post(ctx.token, "Vegetarian food", server: s.server)
+    eventually(fn -> Bots.session(c["id"], server: s.server)["status"] == "idle" end)
+  end
+
   test "restart preserves each still-owed group respondent without repeating completed bots" do
     s = service(routing: :all)
     a = bot(s, "A")
@@ -208,8 +263,7 @@ defmodule BotsTest do
     assert Process.alive?(s.server)
   end
 
-  test "owning agent alone can use a token
- or proactive posting, and human pending wins" do
+  test "owning agent alone can use a token or proactive posting, and human pending wins" do
     s = service(max_bot_exchanges: 1)
     b = bot(s)
     c = chat(s, [b])
