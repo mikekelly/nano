@@ -178,12 +178,18 @@ defmodule NanoAgent do
   def deliver_images(agent, refs, text \\ "")
 
   def deliver_images(agent, refs, text) when is_list(refs) and is_binary(text) do
-    with true <- refs != [] and length(refs) <= 20,
-         true <- Enum.all?(refs, &match?({:ok, _, _}, Nano.Images.read(&1))) do
+    state =
+      if is_binary(agent),
+        do: Nano.StateStore.get(agent),
+        else: Enum.find(Nano.StateStore.all(), &(&1.pid == agent))
+
+    with %{} = s <- state,
+         :ok <- image_admission(s, refs, text) do
       GenServer.cast(target(agent), {:images, refs, text})
       :ok
     else
-      _ -> {:error, "invalid images: supply 1..20 valid imported references"}
+      nil -> {:error, :not_found}
+      error -> error
     end
   end
 
@@ -645,8 +651,15 @@ defmodule NanoAgent do
   ## Mailbox
 
   @impl true
-  def handle_cast({:images, refs, text}, s),
-    do: noreply(maybe_start_turn(add_images(note(s, text), refs)))
+  def handle_cast({:images, refs, text}, s) do
+    case image_admission(s, refs, text) do
+      :ok ->
+        noreply(maybe_start_turn(add_images(note(s, text), refs)))
+
+      {:error, reason} ->
+        noreply(maybe_start_turn(note(s, "Image delivery rejected: #{inspect(reason)}")))
+    end
+  end
 
   def handle_cast({:notify, term}, s), do: noreply(event(s, term))
 
@@ -1699,6 +1712,37 @@ defmodule NanoAgent do
 
   defp tool_message(call, text),
     do: %{"role" => "tool", "tool_call_id" => call["id"], "content" => text}
+
+  # Shared admission boundary: API, dashboard, bots and eval callers cannot insert an
+  # unbounded caption, or an image bundle which cannot fit even with no older history.
+  # The GenServer checks again to cover stale state/direct casts without admitting bytes.
+  defp image_admission(s, refs, text) do
+    cond do
+      not is_binary(text) or byte_size(text) > 16_000 ->
+        {:error, "image caption must be a string of at most 16000 bytes"}
+
+      not is_list(refs) or refs == [] or length(refs) > 20 ->
+        {:error, "invalid images: supply 1..20 valid imported references"}
+
+      not Enum.all?(refs, &match?({:ok, _, _}, Nano.Images.read(&1))) ->
+        {:error, "invalid or missing immutable image reference"}
+
+      true ->
+        visible = "image" in Map.get(s, :input_modalities, [])
+        content = if visible, do: Nano.Images.parts(text, refs), else: text
+
+        estimate =
+          div(bytes(s.system_prompt, [%{"role" => "user", "content" => content}]) + 1025, 2)
+
+        window = Map.get(s, :max_context, 0)
+
+        if window > 0 and estimate + @reply_room > window,
+          do:
+            {:error,
+             "image attachments and caption cannot fit max_context with reply reserve; use fewer images, shorter text, or a larger max_context"},
+          else: :ok
+    end
+  end
 
   defp add_images(s, refs, key \\ :pending_images) do
     log(s, :images_received, %{
