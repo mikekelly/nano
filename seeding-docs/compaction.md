@@ -8,162 +8,131 @@ stops calling the model: without compaction, an agent's working life ends there,
 unable even to report what it found. When this is done, an agent's conversation is
 compacted automatically before a model call that would otherwise leave too little room:
 what the agent received (its brief, the messages people and other agents sent it) is kept
-in their own words, and everything it did is replaced by a structured summary placed
-last, at the tip, where it carries on from. It stays the same agent, with the same name, pid
-and mailbox, so the people, sub-agents and processes that reach it, and the ones it started
-that report to it, carry on as before. It is told plainly, in the conversation, that its
-history was compacted, by what, and where the full record is. This works for every agent on
-the node, including sub-agents, without any of them having to remember to do it — tested on
-a real agent whose context crosses the threshold, not only in unit tests.
+in their own words, and everything it did is replaced by a structured summary placed last,
+at the tip, where it carries on from. It stays the same agent, with the same name, pid and
+mailbox, so the people, sub-agents and processes that reach it, and the ones it started that
+report to it, carry on as before. It is told plainly, in the conversation, that its history
+was compacted, by what, and where the full record is. This works for every agent on the
+node, including sub-agents, without any of them having to remember to do it — tested on a
+real agent whose context crosses the threshold, not only in unit tests.
 
-## How: at the tip of the cached conversation
+## A proposal
 
-Compact at the tip: it reads the history from the provider's cache instead of paying to read
-it again, keeps everything at full fidelity, and makes a retry nearly free. On the Codex
-backend, an identical retry, and a request with the same history and a different tip, each
-read all but the final partial cache block from the cache. A separate summarising context
-is there for what the tip cannot do.
+This is one way to do it, with numbers to start from; change what does not hold up.
 
-The harness appends a note of its own at the end of the agent's conversation, as it delivers any note, and the model's reply carries
-the summary. The Codex backend's own compaction works this way, from a trigger item at the
-end of the conversation (github.com/openai/codex, `codex-rs/core/src/compact_remote_v2.rs`).
-The note says what is happening and what is needed, plainly enough that it is not
-mistaken for anything else: the context limit is near, automatic compaction is starting,
-do not ignore this; call a function such as `Compaction.provide_summary(text)` from `eval`
-with a summary of a stated shape (the checkpoint format below), and why: everything above
-will be replaced by it. The harness accepts the reply only if its code is exactly that one
-call with a string, and takes the summary from it without running anything else (an agent
-mid-compaction should not run other code). Anything else is not kept: the harness sends
-the same request again, unchanged, up to a set number of times, and then gives up and
-says so. A retry is cheap: providers cache by prefix, the harness holds the
-conversation, and the tools stay as they were (adding or removing one changes the cached
-prefix), so the whole history is read from the cache and only the note and the new reply
-cost anything. What this shape buys: nearly free reading; nothing re-serialised, so the
-input is exactly what the provider measured; and the summary written with everything in
-view, including the model's carried reasoning. What it needs: room at the tip for the note
-and the summary, which the reserve provides; and the same model, since a cache does not
-carry over to another.
+**Compact at the tip of the cached conversation.** The summary is written by the agent's own
+model, at the end of its own conversation, so the whole history is read from the provider's
+cache instead of being paid for again, nothing is re-serialised or cut, and the model has
+everything in view, including its carried reasoning. A retry costs almost nothing, because
+the history is still the cached prefix: on the Codex backend, an identical retry, and a
+request with the same history and a different tip, each read all but the final partial cache
+block from the cache.
 
-The same function is how an agent compacts **voluntarily**: it calls it from `eval` with
-its own summary whenever it judges the moment right (between tasks, say), and no note is
-needed.
+1. **When.** Before each model call, compact if the context the provider last measured,
+   plus a cautious estimate of what has been added since, would leave less than a reserve of
+   16,384 tokens. The reserve is room for the compaction note and the summary; on a window of
+   a few hundred thousand tokens it is late enough to use nearly all of the context and early
+   enough that compaction never meets the harness's own stop.
+2. **The note.** The harness appends a note of its own at the tip, as it delivers any note,
+   plain enough not to be mistaken for anything else, for example:
 
-**When the tip cannot be used: a separate summarising context.** Two cases need it: a
-conversation already past its window, which leaves no room at the tip, and a summary
-wanted from a different, cheaper or faster model, which cannot use this model's cache. The older history is written out as compact
-text and sent, in one user message, to a model given a different system prompt and no tools:
-its only job is to read a transcript and write a summary. pi works this way
-(github.com/badlogic/pi-mono, `packages/coding-agent/src/core/compaction/`); its
-summariser's system prompt is:
+   > The context limit is near: automatic compaction is starting. Do not ignore this. Call
+   > `Compaction.provide_summary(text)` from `eval` with a summary of this conversation in the
+   > format below. Everything above, except the messages you received, will be replaced by
+   > it, and the next reader is you, with no memory of anything here except this summary and
+   > those messages. If a summary from an earlier compaction is above, update it: keep what is
+   > there, move finished work to Done, add new decisions, drop what no longer matters.
 
-> You are a context summarization assistant. Your task is to read a conversation between a
-> user and an AI assistant, then produce a structured summary following the exact format
-> specified.
->
-> Do NOT continue the conversation. Do NOT respond to any questions in the conversation.
-> ONLY output the structured summary.
+   The note also states the summary's format and its length (below).
+3. **The reply.** Accept it only if its code is exactly one call,
+   `Compaction.provide_summary("…")` with a string, and take the summary from it without
+   running anything else: an agent mid-compaction should not run other code. A summary that
+   is empty or over its length does not count.
+4. **Retries.** Anything else is not kept: send the same request again, unchanged, up to three
+   times. If none of them gives a summary, fall back once to a separate summarising context
+   (below); if that fails too, halt the agent with a reason that says so, a note telling it
+   what happened, and its full history still in the log.
+5. **Voluntary compaction.** The same function, called by the agent itself from `eval` with
+   its own summary whenever it judges the moment right: between tasks, say, or before starting
+   something large once more than about half the context is used. No note is needed. It takes
+   effect once the eval's turn is answered, so no tool call is ever left without its result.
+6. **The summary.** Aim for 2,000 to 8,000 tokens; never more than 12,000. A fixed checkpoint,
+   so the agent finds the same things in the same place every time: *Goal*; *Constraints &
+   Preferences*; *Progress* (Done, In Progress, Blocked); *Key Decisions*, each with a brief
+   reason; *Next Steps*; *Critical Context*, keeping exact file paths, function names and
+   error messages. The harness can add the files the agent read and changed, taken from its
+   calls rather than from the model's memory.
+7. **What is carried over.** Of the agent's own turns, nothing: its messages, calls and
+   results are what the summary replaces. Of what it received, its events (the brief, the
+   operators' and its parent's messages, people's requests), as many as fit in about a fifth
+   of the window, chosen newest first, and always the first brief it was given, however old:
+   these are what the work must keep answering to, so they survive word for word. Reports
+   from its own sub-agents are results, which the summary carries. The harness's own notes
+   (budget lines, the compaction note) are not kept.
+8. **The order of the new context.** The system prompt, unchanged; then the carried-over
+   events, in their original order, with no marker; then the summary, last, with a
+   preamble that says truthfully what it is: "Your conversation before this point was
+   compacted. The messages above are ones you received, kept in their own words; this is your
+   summary of everything else." The summary is then what the model attends to most as it
+   carries on. Anything that arrived during the compaction is delivered after it.
 
-What it buys: a clean change of role (the summariser is not the agent, so it cannot answer
-the last message, call a tool or carry on the task); it works even when the conversation
-no longer fits its own window, since it reads a compressed copy; it works the same on any
-provider, and the summary can come from a different, cheaper or faster model. What it
-costs: the whole older history is read again, uncached and in full. pi keeps that small by
-cutting each tool result to 2,000 characters in what the summariser reads (the outcome
-matters more than the whole output), which also keeps the summariser's attention on what
-matters; the full text stays in the log. What is cut is what came back, never what the
-agent wrote: its calls, with the code and the comments explaining why, are kept whole. A
-file the agent read is cut too, so the summary should say where things are (pi lists the
-files read and modified) for the agent to read again; and the summariser never sees the
-model's own reasoning, which only compacting at the tip keeps in view.
-
-Either way:
-
-- **When.** pi compacts after a turn if the context the provider last measured is past the
-  model's window minus a reserve (16,384 tokens by default), and also on a context-overflow
-  error or a reply cut off for length. The reserve leaves room for the agent's next request;
-  and because the summary is capped at 80% of the reserve (about 13,000 tokens), a summary
-  call fits within the window even if it has to read the older history uncut, or is written
-  at the tip.
-- **What is kept, and in what order.** Codex rebuilds a compacted conversation like this
-  (github.com/openai/codex, `codex-rs/core/src/compact.rs`, `build_compacted_history`, and
-  `compact_remote_v2.rs`): its instructions; then the user's own messages, verbatim,
-  chosen newest first within a token budget (64,000 tokens for its server-side compaction)
-  and put back in their original order, with no marker; and then the summary, last. Every
-  assistant message, tool call and tool result is dropped: the summary carries what the
-  agent did. The reasoning: the requests are what the work must keep answering to, so they
-  survive word for word, while the agent's own steps are what a summary is for; and the
-  summary, nearest the tip, is what the model attends to most as it carries on. For a nano
-  agent, what it received is its events: the planting brief, the operators' and its
-  parent's messages, people's requests. Reports from its own sub-agents are results, which
-  the summary can carry. The harness's own notes (budget lines, the compaction note) need
-  not be kept.
-- **The summary's preamble** says what it is, truthfully: that the conversation before it
-  was compacted, that this is the agent's own summary of it, and that the messages above
-  are the requests it received, kept in their own words.
-- **The summary's shape** is a fixed checkpoint, so the agent finds the same things in the
-  same place every time: *Goal*; *Constraints & Preferences*; *Progress* (Done, In Progress,
-  Blocked); *Key Decisions* with a brief rationale each; *Next Steps*; *Critical Context*,
-  keeping exact file paths, function names and error messages. The files read and modified
-  are listed after it, taken from the tool calls rather than from the model's memory.
-- **Framing.** After a compaction, the reader of the summary is the agent itself, with no
-  memory beyond it. Asking for a handoff to that reader ("your conversation is about to be
-  replaced by what you write now; the next reader is you, with no memory of anything here
-  except this") is true, and it draws out a self-contained brief rather than notes that
-  assume the context they replace.
-- **The next compaction** sends only the messages since the last one, with the previous
-  summary, and asks for it to be updated: keep what is there, move finished work to Done,
-  add new decisions, drop what no longer matters. A long life is a series of updates, not a
-  re-reading of everything.
+**When the tip cannot be used: a separate summarising context.** For a conversation already
+past its window, which leaves no room at the tip, or a summary wanted from a different model,
+which cannot use this one's cache: write the older history out as compact text, in one user
+message, to a model with a summariser's system prompt and no tools. Its input is read again
+uncached, so cut each tool result to its first 2,000 characters (what was written in the
+agent's own calls, including code and its comments, stays whole), and say in the summary where
+things are, so the agent can read again what was cut. The same carry-over and order apply.
 
 ## Considerations
 
-- Automatic, not left to the model: the agent that most needs compacting is the one deep in
-  a task, least likely to stop and do housekeeping, and once the harness has halted it for
-  its context it can do nothing at all.
-- A summary fits by construction: compaction starts before the context reaches its limit,
-  the summariser reads the older part of that same context (as it is at the tip, or as a
-  copy that is usually smaller once tool output is cut), and the summary's own length fits
-  in the reserve. So there is nothing to measure first, and a size check that can refuse is
-  only a way to fail; if a provider ever does refuse, cut harder or summarise in parts
-  rather than halt. Cutting what the summariser reads is for cost and focus alone, and what
-  is worth cutting depends on the agent: a builder's context fills with tool output, an
-  orchestrator's with the reports it receives, and every agent's with the code it writes
-  into its calls.
-- On the ChatGPT subscription the backend accepts no limit on a reply's length, so a
-  summary call there is bounded only by what it is asked to write: say how long the summary
-  may be, and check its length when it comes back. OpenRouter takes a limit (`max_tokens`).
-- A summary call over a large context can still take a while; time limits must allow for
-  the real size, and a failed call (a dropped connection, a provider error) should be
-  retried before the agent is left halted.
+- Automatic, not left to the model: the agent that most needs compacting is the one deep in a
+  task, least likely to stop and do housekeeping, and once the harness has halted it for its
+  context it can do nothing at all.
+- A summary fits by construction: compaction starts before the context reaches its limit, the
+  summary is written at the tip of that same context (or, in a separate context, from a copy
+  that is usually smaller once tool output is cut), and its own length fits in the reserve.
+  There is nothing to measure first, and a size check that can refuse is only a way to fail.
+- On the ChatGPT subscription the backend accepts no limit on a reply's length, so a summary
+  there is bounded only by what it is asked to write: state the length in the note and check it
+  when the summary comes back. OpenRouter takes a limit (`max_tokens`).
+- A summary over a large context can take a while; time limits must allow for it, and a dropped
+  connection is a reason to retry, not to halt.
 - The conversation lives in the agent's state, and the harness acts on it every turn, so
   changing it must not race a model request or an eval in flight; and whatever the harness
   derives from it (the context used, which its pre-call check reads) has to be true again
   afterwards, or the agent stays halted.
-- The harness's pre-call check is the last line of defence against a request the model
-  cannot take; compaction should make it rarely needed, not loosen it.
-- Compaction resets the provider's cached prefix, so the next call is paid in full; that is
-  a reason not to compact sooner than needed.
-- What the agent keeps on disk (its goals, its orientation, its code) survives compaction untouched,
-  which is why keeping them current makes a compaction cheap and safe. The log under
-  `/data/logs` keeps the whole conversation, so nothing is lost to operators.
-- The summary and the turns kept verbatim set the voice of everything after them: the
-  agent imitates its own context. A summary written terse but intelligible helps an agent
-  that had slid into shorthand recover clarity, where one that copies the shorthand locks
-  it in.
-- The note telling the agent its history was compacted must be true about who did it and
-  why: an agent that believes a person intervened acts differently from one that knows the
-  harness did.
-- If summarising fails, the agent must not be left halted silently; it should be clear to
-  it, and to operators, what happened.
+- The harness's pre-call check is the last line of defence against a request the model cannot
+  take; compaction should make it rarely needed, not loosen it.
+- After a compaction the conversation is a new prefix, so the next call is paid in full; that
+  is a reason not to compact sooner than needed.
+- What the agent keeps on disk (its goals, its orientation, its code) survives compaction
+  untouched, which is why keeping them current makes a compaction cheap and safe. The log
+  under `/data/logs` keeps the whole conversation, so nothing is lost to operators.
+- The summary sets the voice of everything after it: the agent imitates its own context. A
+  summary written terse but intelligible helps an agent that had slid into shorthand recover
+  clarity, where one that copies the shorthand locks it in.
+- The note and the preamble must be true about who compacted and why: an agent that believes a
+  person intervened acts differently from one that knows the harness did, and one told that
+  someone else wrote its summary would be told something false about itself.
 
-## Inspiration
+## Inspiration, for the compaction prompt
 
-- pi's compaction code, above: `compaction.ts` (`shouldCompact`, `findCutPoint`, the
-  summary and update prompts) and `utils.ts` (`serializeConversation`, the summariser's
-  system prompt, the file lists).
-- The Codex backend's own compaction, which compacts server-side from a trigger at the end
-  of the conversation and returns an encrypted item (github.com/openai/codex,
-  `codex-rs/core/src/compact_remote_v2.rs`; OpenAI's compaction guide).
+- pi (github.com/badlogic/pi-mono, `packages/coding-agent/src/core/compaction/`): its summary
+  and update prompts in `compaction.ts`, the structured checkpoint they ask for, and, for a
+  separate summarising context, its summariser's system prompt in `utils.ts`:
+
+  > You are a context summarization assistant. Your task is to read a conversation between a
+  > user and an AI assistant, then produce a structured summary following the exact format
+  > specified.
+  >
+  > Do NOT continue the conversation. Do NOT respond to any questions in the conversation.
+  > ONLY output the structured summary.
+
+- The Codex CLI (github.com/openai/codex, `codex-rs/prompts/templates/compact/prompt.md`),
+  whose compaction prompt asks for current progress and key decisions; important context,
+  constraints and preferences; what remains to be done; and any critical data, examples or
+  references needed to continue.
 - [goals.md](goals.md): goals on disk are what a summary can point to instead of repeat.
 
 How you build it is yours to decide.
