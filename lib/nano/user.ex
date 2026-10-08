@@ -62,6 +62,13 @@ defmodule Nano.User do
   @doc "Sends `%{sender_pid: user_pid, message: text}` to `to`: a pid, agent name, user name, or registered name."
   def say(name, to, text), do: deliver(name, to, {:say, text})
 
+  @doc "Send text with validated immutable image references (ids or maps), never image bytes."
+  def say(name, to, text, images) when is_binary(text) do
+    with {:ok, refs} <- Seedling.Images.validate_refs(images) do
+      if refs == [], do: say(name, to, text), else: deliver(name, to, {:say_images, text, refs})
+    end
+  end
+
   @doc "Sends `term` to `to` exactly as given, with no sender added."
   def send_raw(name, to, term), do: deliver(name, to, {:raw, term})
 
@@ -189,6 +196,9 @@ defmodule Nano.User do
   @impl true
   def handle_call({:send, target, {:say, text}}, _from, state) when is_pid(target),
     do: deliver_now(state, target, %{sender_pid: self(), message: text})
+
+  def handle_call({:send, target, {:say_images, text, images}}, _from, state) when is_pid(target),
+    do: deliver_now(state, target, %{sender_pid: self(), message: text, images: images})
 
   def handle_call({:send, target, {:raw, term}}, _from, state) when is_pid(target),
     do: deliver_now(state, target, term)
