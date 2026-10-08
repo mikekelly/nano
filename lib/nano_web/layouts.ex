@@ -17,7 +17,8 @@ defmodule NanoWeb.Layouts do
         <.live_title>{assigns[:page_title] || "nano"}</.live_title>
         <link rel="stylesheet" href="/app.css" />
         <link rel="stylesheet" href="/bots.css" />
-        <script defer src="/bots.js"></script>
+        <script defer src="/bots.js">
+        </script>
         <script defer src="/assets/phoenix/phoenix.min.js">
         </script>
         <script defer src="/assets/phoenix_live_view/phoenix_live_view.min.js">
