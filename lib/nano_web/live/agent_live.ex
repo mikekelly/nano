@@ -101,7 +101,14 @@ defmodule NanoWeb.AgentLive do
     name = socket.assigns.name
     agent = Nano.Ops.agent(name)
     spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
-    socket = assign(socket, agent: agent, spawned: spawned)
+
+    goals =
+      case SeedGoals.review(name) do
+        {:ok, review} -> review
+        _ -> %{items: [], open: 0, total: 0, truncated: false}
+      end
+
+    socket = assign(socket, agent: agent, spawned: spawned, goals: goals)
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -181,6 +188,18 @@ defmodule NanoWeb.AgentLive do
     </header>
     <div class="layout">
       <main>
+        <section :if={@goals.total > 0} id="agent-goals" class="bar">
+          <h2>Goals · {@goals.open} open</h2>
+          <ul>
+            <li :for={goal <- @goals.items}>
+              <strong>{goal["title"]}</strong>
+              · {goal["status"]}
+              <p :if={goal["why"]}>Why: {goal["why"]}</p>
+              <p :if={goal["next"]}>Next: {goal["next"]}</p>
+            </li>
+          </ul>
+          <span :if={@goals.truncated} class="dim">Showing a bounded review; use SeedGoals.list/1 for all goals.</span>
+        </section>
         <section :if={@agent} class="bar">
           <dl>
             <div>

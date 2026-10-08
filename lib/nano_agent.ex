@@ -793,6 +793,7 @@ defmodule NanoAgent do
 
         user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
         next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        next = focus(next)
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -989,6 +990,21 @@ defmodule NanoAgent do
   end
 
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
+
+  defp focus(s) do
+    case SeedFocus.before_call(s.name, estimate(s), epoch: Map.get(s, :compaction_generation, 0)) do
+      {:ok, %{message: message, events: events}} ->
+        Enum.each(events, fn event -> log(s, event.type, Map.delete(event, :type)) end)
+
+        if message,
+          do: append(s, %{"role" => "user", "content" => "<harness>" <> message <> "</harness>"}),
+          else: s
+
+      {:error, reason} ->
+        log(s, :focus_error, %{reason: inspect(reason)})
+        s
+    end
+  end
 
   defp compact(s) do
     log(s, :compaction_started, %{estimate: estimate(s)})
