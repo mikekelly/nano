@@ -706,6 +706,73 @@ defmodule Bots.RuntimeFacadeTest do
     assert {:ok, %{pid: ^agent_pid}} = Runtime.status(c.bot, c.session, c.opts)
   end
 
+  test "automatic Nano compaction stays private and the next Bots turn can explicitly post", c do
+    server = pid_code(c.server)
+    test_pid = pid_code(self())
+
+    post = fn text ->
+      """
+      turn = File.read!(#{inspect(c.snapshot)}) |> Jason.decode!()
+      result = Bots.post(turn["token"], #{inspect(text)}, server: #{server})
+      send(#{test_pid}, {:compaction_post, result, me})
+      """
+    end
+
+    Fake.push(c.model,
+      calls: [eval: post.("I will remember the green tea commitment"), idle: nil]
+    )
+
+    assert {:ok, first_human} =
+             Bots.say(c.session["id"], "Please remember green tea", server: c.server)
+
+    assert_receive {:openrouter_request, model, _}, 2000
+    assert model == c.model
+    assert_receive {:compaction_post, {:ok, first_bot}, agent}, 2000
+    name = Runtime.agent_name(c.bot, c.session, c.opts)
+    await(fn -> NanoAgent.info(name).status == :idle and :sys.get_state(c.server).jobs == %{} end)
+    before = [first_human, first_bot]
+    assert Bots.session(c.session["id"], server: c.server)["messages"] == before
+
+    # Seed the measured provider-usage counter near the existing automatic threshold.
+    # This changes only our test agent, not Compaction code or node-wide settings.
+    :sys.replace_state(agent, fn state ->
+      %{state | context_used: state.max_context - 8000, measured_bytes: 1_000_000}
+    end)
+
+    assert {:ok, next_human} =
+             Bots.say(c.session["id"], "What was our tea commitment?", server: c.server)
+
+    assert_receive {:openrouter_request, ^model, compacting}, 2000
+    assert Jason.encode!(compacting["messages"]) =~ "Automatic compaction is starting"
+    assert Bots.session(c.session["id"], server: c.server)["messages"] == before ++ [next_human]
+
+    Fake.push(c.model,
+      calls: [
+        eval:
+          ~s|Compaction.provide_summary("Goal: assist the person. Preferences: green tea. Commitments: remember tea. Open questions: respond to current grant. PRIVATE COMPACTION CHECKPOINT.")|
+      ]
+    )
+
+    assert_receive {:openrouter_request, ^model, compacted}, 2000
+    compacted_text = Jason.encode!(compacted["messages"])
+    assert compacted_text =~ "Your conversation before this point was compacted"
+    assert compacted_text =~ "PRIVATE COMPACTION CHECKPOINT"
+    assert compacted_text =~ "What was our tea commitment?"
+    assert compacted_text =~ "Mira"
+    assert Bots.session(c.session["id"], server: c.server)["messages"] == before ++ [next_human]
+
+    Fake.push(c.model, calls: [eval: post.("Our commitment was green tea"), idle: nil])
+    assert_receive {:compaction_post, {:ok, next_bot}, ^agent}, 2000
+    await(fn -> NanoAgent.info(name).status == :idle and :sys.get_state(c.server).jobs == %{} end)
+
+    assert Bots.session(c.session["id"], server: c.server)["messages"] ==
+             before ++ [next_human, next_bot]
+
+    assert NanoAgent.whereis(name) == agent
+    assert NanoAgent.info(name).halted == nil
+    assert NanoAgent.info(name).budget.context_used < 20_000
+  end
+
   test "a real owning agent can announce a completion after its grant is consumed, never another session",
        c do
     server = pid_code(c.server)
