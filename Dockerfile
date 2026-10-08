@@ -17,7 +17,7 @@ ENV MIX_ENV=prod \
 WORKDIR /app
 
 # Seedling coding helpers: ignored-aware bounded content/file search.
-RUN apt-get update && apt-get install -y --no-install-recommends ripgrep fd-find util-linux && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep fd-find util-linux imagemagick && rm -rf /var/lib/apt/lists/*
 
 # Hex and rebar, a git identity, the node's default cookie, and git's blessing for a
 # checkout mounted over /app that another uid owns.
