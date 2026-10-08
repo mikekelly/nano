@@ -1,5 +1,5 @@
 defmodule NanoWeb.ApiControllerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   import Phoenix.ConnTest
   import Plug.Conn

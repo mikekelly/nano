@@ -57,6 +57,16 @@ under `lib` and boot-compiled. Tests use unique temporary directories and port 0
   crash between can skip a bob until threshold. Goal reviews read local JSON, so
   extremely large goal histories should get an asynchronous indexed cache.
 
+## Final integrated verification
+
+The integrated suite passed 393 tests (including rerun with seed 812791), formatting
+checks and production compilation with warnings treated as errors. Python safety
+checks passed 13 unit tests and 2 disposable real-BEAM recovery tests. An initial
+randomized run exposed a shared fake model-catalog cache race. API tests now run
+serially because they mutate that global cache; the exact-seed full rerun passed. Real delegation/MCP verification delivered the
+original task as the child's first event, then listed three DeepWiki tools.
+Bot selection supports arrow keys, Enter/Escape and Command–1 through Command–9.
+
 ## Reproduce tests
 
 ```sh
