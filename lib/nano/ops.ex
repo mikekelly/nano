@@ -301,6 +301,11 @@ defmodule Nano.Ops do
     %{
       agents: agents,
       boot: Nano.Application.boot_set(),
+      # Boot-time pids disappear on restart; only current direct core children belong here.
+      core:
+        MapSet.new(
+          for {_, pid, _, _} <- Supervisor.which_children(Nano.Supervisor), is_pid(pid), do: pid
+        ),
       endpoint: Process.whereis(NanoWeb.Endpoint),
       names: names,
       model_requests: for(%{task: %{kind: :model, task: %{pid: pid}}} <- agents, do: pid),
@@ -377,6 +382,7 @@ defmodule Nano.Ops do
     cond do
       MapSet.member?(ctx.boot, pid) or pid in ctx.model_requests -> :standard
       agent = Enum.find_value(chain, &ctx.owned[&1]) -> {:spawned_by, agent}
+      MapSet.member?(ctx.core, pid) -> :standard
       ctx.endpoint in chain -> :standard
       :application.get_application(pid) not in [:undefined, {:ok, :nano}] -> :standard
       true -> :other
