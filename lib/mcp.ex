@@ -275,6 +275,8 @@ defmodule MCP do
     manager = opts[:manager] || __MODULE__
 
     if manager == __MODULE__ and Process.whereis(__MODULE__) == nil do
+      if optional_service_configured?(), do: throw({:error, :service_unavailable})
+
       case GenServer.start(__MODULE__, [], name: __MODULE__) do
         {:ok, _} -> :ok
         {:error, {:already_started, _}} -> :ok
@@ -285,6 +287,15 @@ defmodule MCP do
     safe(fn -> GenServer.call(manager, message) end)
   catch
     error -> error
+  end
+
+  defp optional_service_configured? do
+    # If the application owns this service, only its supervisor may start it. A
+    # failed/disabled service must not silently escape supervision via lazy startup.
+    module = Nano.OptionalServices
+
+    Code.ensure_loaded?(module) and function_exported?(module, :configured?, 1) and
+      apply(module, :configured?, [__MODULE__])
   end
 
   defp safe(fun) do
