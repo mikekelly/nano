@@ -330,10 +330,12 @@ defmodule Nano.SettingsTest do
       %{url: "http://127.0.0.1:#{port}"}
     end
 
-    test "sets each KEY=value line, skipping what the host uses; prints names, never values",
+    test "sets every KEY=value line, the host's too, skipping only comments and empty values; prints names, never values",
          ctx do
       for key <- [:openrouter_api_key, :eval_timeout_ms, :network_policy, "SOME_TOKEN"],
           do: TestSettings.put(key, if(key == :eval_timeout_ms, do: 30_000, else: "x"))
+
+      for name <- ~w(NANO_CHECKOUT NODE_COOKIE PORT EMPTY), do: TestSettings.delete(name)
 
       env =
         Path.join(Application.fetch_env!(:nano, :test_dir), "push-#{System.unique_integer()}.env")
@@ -347,22 +349,26 @@ defmodule Nano.SettingsTest do
       SOME_TOKEN='tok #{@secret}'
       NANO_CHECKOUT=../elsewhere
       NODE_COOKIE=cookie
+      PORT=4001
       EMPTY=
       # NETWORK_POLICY=commented out
+        # PORT=indented comment
       """)
 
       {out, 0} = System.cmd("sh", ["bin/push-settings", ctx.url, env], stderr_to_stdout: true)
       refute out =~ @secret
 
       assert out ==
-               "settings set from #{env}: OPENROUTER_API_KEY EVAL_TIMEOUT_MS NETWORK_POLICY SOME_TOKEN\n"
+               "settings set from #{env}: OPENROUTER_API_KEY EVAL_TIMEOUT_MS NETWORK_POLICY " <>
+                 "SOME_TOKEN NANO_CHECKOUT NODE_COOKIE PORT\n"
 
       assert Nano.Settings.get(:openrouter_api_key) == @secret
       assert Nano.Settings.get(:eval_timeout_ms) == 45_000
       assert Nano.Settings.get(:network_policy) == ~s|only "quoted" \\ text|
       assert Nano.Settings.get("SOME_TOKEN") == "tok #{@secret}"
-      assert Nano.Settings.get("NANO_CHECKOUT") == nil
-      assert Nano.Settings.get("NODE_COOKIE") == nil
+      assert Nano.Settings.get("NANO_CHECKOUT") == "../elsewhere"
+      assert Nano.Settings.get("NODE_COOKIE") == "cookie"
+      assert Nano.Settings.get("PORT") == "4001"
       assert Nano.Settings.get("EMPTY") == nil
 
       # A refusal is reported by name, and the script fails.
