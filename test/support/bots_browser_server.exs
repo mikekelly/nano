@@ -18,7 +18,24 @@ defmodule Bots.BrowserSmoke.Router do
   end
 end
 
-{:ok, _} = Bots.start_link(runtime: Bots.BrowserSmoke.Runtime, router: Bots.BrowserSmoke.Router)
+case Bots.start_link(runtime: Bots.BrowserSmoke.Runtime, router: Bots.BrowserSmoke.Router) do
+  {:ok, _} ->
+    :ok
+
+  {:error, {:already_started, pid}} ->
+    # OptionalServices may have booted the empty default service before this fixture.
+    # This is a standalone MIX_ENV=test VM, never the running development node.
+    :sys.replace_state(pid, fn state ->
+      test_root = Application.fetch_env!(:nano, :test_dir) |> Path.expand()
+
+      unless String.starts_with?(state.root, test_root <> "/") and
+               state.data["bots"] == %{} do
+        raise "Refusing to replace runtime outside an empty disposable test store"
+      end
+
+      %{state | runtime: Bots.BrowserSmoke.Runtime, router: Bots.BrowserSmoke.Router}
+    end)
+end
 
 {:ok, server} =
   Bandit.start_link(plug: NanoWeb.Endpoint, ip: :loopback, port: 0, startup_log: false)
