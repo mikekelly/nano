@@ -13,7 +13,9 @@ defmodule MCP.HTTP do
         "method" => "initialize", "params" => %{"protocolVersion" => "2025-11-25"}})
 
   Config string keys: `url` (http/https), `headers` (string map), `timeout_ms`
-  (default 30_000), `max_message_bytes` (default 8 MiB). HTTP redirects are
+  (default 30_000), `max_message_bytes` (default 8 MiB), `protocol_version`
+  (default `2026-07-28`). Sending `initialize` selects legacy mode and the
+  subsequent result supplies the negotiated version. HTTP redirects are
   deliberately not followed, so authorization cannot leak across origins.
   Each HTTP request owns a separate socket; there is no global client pool or
   application configuration. TLS uses Mint's certificate verification defaults.
@@ -27,7 +29,12 @@ defmodule MCP.HTTP do
   caller; this transport does not discover tool schemas. Legacy HTTP+SSE with
   a separate `endpoint` event is not supported.
 
-  SSE comments, LF/CR/CRLF, multiline data and arbitrarily split chunks are
+  Modern `notifications/cancelled` messages are intercepted: the matching
+  request socket is closed rather than POSTing a notification. For legacy
+  sessions cancellation notifications are POSTed normally. At most 64 HTTP
+  requests may be in flight; exceeding this bound terminates the transport.
+
+  SSE comments, an initial UTF-8 BOM, LF/CR/CRLF, multiline data and split chunks are
   supported. JSON bodies and individual SSE frames are bounded. No automatic
   retry, replay, or Last-Event-ID resumption occurs: stream failure reports down
   so the RPC owner can reconnect, reinitialize and restore subscriptions. A
