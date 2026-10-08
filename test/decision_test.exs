@@ -292,6 +292,28 @@ defmodule DecisionTest do
     end
   end
 
+  test "killing the caller cancels its blocked transport rather than orphaning it" do
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        Decision.ask("state", questions(),
+          api_key: "fake-key",
+          timeout: 60_000,
+          transport: fn _ ->
+            send(parent, {:worker, self()})
+            Process.sleep(:infinity)
+          end
+        )
+      end)
+
+    assert_receive {:worker, worker}
+    monitor = Process.monitor(worker)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}, 1000
+    refute Process.alive?(worker)
+  end
+
   test "whole transport deadline kills worker and leaves no late result or monitor messages" do
     parent = self()
     start = System.monotonic_time(:millisecond)

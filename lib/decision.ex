@@ -30,7 +30,7 @@ defmodule Decision do
     * `:transport` — function receiving `%{url: ..., headers: ..., json: ...,
       timeout: ..., connect_timeout: ...}`, returning `{:ok, %{status: integer,
       body: decoded_json_or_string}}` or `{:error, reason}`. Runs in an isolated
-      process killed at the deadline. This function receives the credential and
+      process killed at the deadline or when its caller dies. This function receives the credential and
       must not log it. Tests should use an explicit dummy `:api_key`.
 
   No retries or redirects: errors are visible and predictable for latency-sensitive
@@ -220,6 +220,8 @@ defmodule Decision do
 
     {pid, monitor} =
       spawn_monitor(fn ->
+        watch_owner(parent, self())
+
         result =
           try do
             transport.(request)
@@ -255,6 +257,21 @@ defmodule Decision do
 
         {:error, :timeout}
     end
+  end
+
+  # The caller may itself be a routing worker with a shorter outer deadline.
+  # Start this from the transport worker so even a caller killed during spawn
+  # cannot strand a transport that is blocked inside third-party code.
+  defp watch_owner(owner, worker) do
+    spawn(fn ->
+      owner_ref = Process.monitor(owner)
+      worker_ref = Process.monitor(worker)
+
+      receive do
+        {:DOWN, ^owner_ref, :process, ^owner, _} -> Process.exit(worker, :kill)
+        {:DOWN, ^worker_ref, :process, ^worker, _} -> :ok
+      end
+    end)
   end
 
   defp transport_result({:ok, %{status: status, body: _} = r}) when is_integer(status),
