@@ -185,7 +185,11 @@ context runs out; you share this machine. They apply to any agent that may build
 or start others, which includes one that does real work for a person, and a child knows
 only what its prompt gives it, so each agent passes them on to the agents it starts that
 need them; a narrow, short-lived job (a single classification, one lookup) may need none
-of them. Keep every part lean: it is paid for on every call of every agent that
+of them. Once an agent can delegate, this principle is one it needs too: the prompt of any
+agent that may start others carries, with the operating principles, the guidance on
+composing its children's prompts (fit each to the agent, from parts, passing on what that
+child needs). Without it, the next generation composes prompts with nothing to go on, and
+what you fitted for your children is lost one level down. Keep every part lean: it is paid for on every call of every agent that
 carries it.
 
 **Use decision models where the LLM is too expensive and code is too brittle.** Some

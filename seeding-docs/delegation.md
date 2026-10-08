@@ -15,7 +15,8 @@ are expressed is yours):
   principles, a flavour such as builder, reviewer or bot, the job) rather than written whole
   each time. Composing it is how the delegator fits the prompt to the kind of agent it is
   starting: the parts that agent will need and none it will not, since each costs context on
-  every call and one that does not apply distracts. A child knows only what its prompt gives it, so what every
+  every call and one that does not apply distracts. A child that may itself delegate also
+  needs the guidance on composing prompts, so that it fits its own children's in turn; A child knows only what its prompt gives it, so what every
   sub-agent needs (its role and level, how and to whom it reports, the operating principles
   in [guidance.md](guidance.md)) is written once and stays aligned across every agent: a
   brief written whole drifts, drops what matters, and costs the parent output tokens on
