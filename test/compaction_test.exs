@@ -102,4 +102,12 @@ defmodule CompactionTest do
       refute Process.alive?(worker)
     end
   end
+
+  test "literal raw heredoc accepted and interpolating sigils refused" do
+    assert {:ok, "Goal\n"} =
+             Compaction.parse("Compaction.provide_summary(~S\"\"\"\nGoal\n\"\"\")")
+
+    assert {:error, _} = Compaction.parse("Compaction.provide_summary(~s|Goal|)")
+    assert {:error, _} = Compaction.parse("Compaction.provide_summary(~S|Goal|u)")
+  end
 end

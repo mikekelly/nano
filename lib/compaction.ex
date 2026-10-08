@@ -95,7 +95,18 @@ defmodule Compaction do
     responses =
       case result do
         {:ok, response} when is_map(response) ->
-          responses ++ [Map.take(response, [:usage, :cost, :provider, :finish_reason])]
+          responses ++
+            [
+              Map.take(response, [
+                :usage,
+                :cost,
+                :provider,
+                :finish_reason,
+                :message,
+                :raw,
+                :latency_ms
+              ])
+            ]
 
         _ ->
           responses
@@ -111,10 +122,25 @@ defmodule Compaction do
         correction =
           if match?({:ok, _}, result), do: "Previous attempt refused: #{error}", else: reason
 
-        retry(model, reasoning, messages, attempt + 1, correction, opts, responses)
+        if attempt < Keyword.get(opts, :max_attempts, 3) and within_token_budget?(responses, opts),
+          do: retry(model, reasoning, messages, attempt + 1, correction, opts, responses),
+          else: {:error, error, metrics}
 
       {:error, error} ->
         {:error, error, metrics}
+    end
+  end
+
+  defp within_token_budget?(responses, opts) do
+    case Keyword.get(opts, :token_budget) do
+      nil ->
+        true
+
+      limit ->
+        Enum.reduce(responses, 0, fn r, sum ->
+          u = r[:usage] || %{}
+          sum + (u["prompt_tokens"] || 0) + (u["completion_tokens"] || 0)
+        end) < limit
     end
   end
 
@@ -209,5 +235,7 @@ defmodule Compaction do
     |> Map.put(:context_used, 0)
     |> Map.put(:measured_bytes, 0)
     |> Map.put(:compaction_pending, nil)
+    |> Map.put(:compaction_just_applied, true)
+    |> Map.put(:compaction_generation, Map.get(s, :compaction_generation, 0) + 1)
   end
 end
