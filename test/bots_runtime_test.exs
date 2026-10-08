@@ -153,6 +153,15 @@ defmodule Bots.RuntimeTest do
     assert {:ok, %{pid: ^pid}} = Runtime.status(c.bot, c.session, c.opts)
   end
 
+  test "product defaults use the configured Codex vision-capable model and low reasoning", c do
+    assert {:ok, _} = Runtime.dispatch(c.bot, c.session, c.context, c.opts)
+    [start] = FakeNano.state().starts
+    assert start[:model] == Application.get_env(:nano, :bots_model, "openai-codex/gpt-6-astra")
+    assert start[:reasoning] == Application.get_env(:nano, :bots_reasoning, "low")
+    assert start[:max_turns] == 0
+    assert start[:max_tokens] == 0
+  end
+
   test "reuses owned process and hears skipped messages and memories in order", c do
     assert {:ok, pid} = Runtime.dispatch(c.bot, c.session, c.context, c.opts)
     other = %{"id" => "m2", "kind" => "bot", "bot_id" => "other", "text" => "Untrusted other bot"}
@@ -191,6 +200,7 @@ defmodule Bots.RuntimeTest do
     assert prompt =~ "Compaction"
     assert prompt =~ "Remember BEFORE posting"
     assert prompt =~ "Bots.post consumes the grant"
+    assert prompt =~ "Success is :ok or {:ok, value}"
     assert prompt =~ "Bots.remember(token, key, value, server: server)"
     assert prompt =~ "Code.ensure_loaded?(Memory)"
     assert prompt =~ "fresh bots_turn"
