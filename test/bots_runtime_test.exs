@@ -331,6 +331,84 @@ defmodule Bots.RuntimeTest do
     assert length(FakeNano.state().notifications) == 6
   end
 
+  test "current image refs use the optional Images envelope without replaying historical pixels",
+       c do
+    image = %{
+      "type" => "image_ref",
+      "id" => String.duplicate("a", 64),
+      "width" => 1,
+      "height" => 1
+    }
+
+    old_image = Map.put(image, "id", String.duplicate("b", 64))
+
+    old = %{
+      "id" => "old",
+      "kind" => "human",
+      "text" => "Previous photo",
+      "attachments" => [old_image]
+    }
+
+    message = Map.put(c.context.message, "attachments", [image, image])
+    context = %{c.context | message: message, conversation: [old, message]}
+    assert {:ok, _} = Runtime.dispatch(c.bot, c.session, context, c.opts)
+    [{_, %{text: text, images: [^image]}}] = FakeNano.state().notifications
+    assert text =~ ":bots_turn"
+    assert text =~ c.context.token
+    assert text =~ old_image["id"]
+    assert text =~ "Bots.post"
+    assert text =~ "Bots.announce"
+    [start] = FakeNano.state().starts
+    assert start[:system_prompt] =~ "Older/skipped refs stay in the conversation/snapshot"
+    assert start[:system_prompt] =~ "apply(Images, :resolve, [ref_or_id])"
+  end
+
+  test "snapshot-only turns still attach current image refs and preserve every older ref", c do
+    image = %{"type" => "image_ref", "id" => String.duplicate("a", 64)}
+    message = Map.put(c.context.message, "attachments", [image])
+
+    old = %{
+      "id" => "old",
+      "kind" => "human",
+      "text" => String.duplicate("large ", 5000),
+      "attachments" => [image]
+    }
+
+    context = %{c.context | message: message, conversation: [old, message]}
+    assert {:ok, _} = Runtime.dispatch(c.bot, c.session, context, c.opts)
+    [{_, %{text: text, images: [^image]}}] = FakeNano.state().notifications
+    assert text =~ "snapshot_only: true"
+    assert byte_size(text) < 4000
+
+    path =
+      Path.join([
+        c.opts[:root],
+        "runtime",
+        Runtime.agent_name(c.bot, c.session, c.opts),
+        "turn.json"
+      ])
+
+    assert Jason.decode!(File.read!(path))["conversation"] == [old, message]
+  end
+
+  test "an unavailable optional Images adapter leaves the full text/reference protocol intact",
+       c do
+    image = %{"type" => "image_ref", "id" => String.duplicate("a", 64)}
+    message = Map.put(c.context.message, "attachments", [image])
+    context = %{c.context | message: message, conversation: [message]}
+
+    assert {:ok, _} =
+             Runtime.dispatch(
+               c.bot,
+               c.session,
+               context,
+               c.opts ++ [images_api: Bots.RuntimeTest.UnavailableImages]
+             )
+
+    [{_, {:bots_turn, _, data}}] = FakeNano.state().notifications
+    assert data["message"] == message
+  end
+
   test "owner checks exact live identity and never claim other bots, sessions or processes", c do
     assert {:ok, pid} = Runtime.dispatch(c.bot, c.session, c.context, c.opts)
     assert Runtime.owner?(c.bot, c.session, pid, c.opts)

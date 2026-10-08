@@ -22,6 +22,13 @@ defmodule Bots.Runtime do
   the response grant, and is removed on stop. An agent must check its snapshot token
   before using it. No process is started or notified merely to passively hear a message.
 
+  When Images is available, current-message image refs are delivered with
+  `Images.message/2`. Earlier/skipped refs remain in the full transcript and are
+  lazily viewed with `Images.resolve/1` returned from eval, avoiding repeated historical
+  pixels exhausting Nano's active-image budget. Nano owns validation/capability notices
+  and actual multimodal request construction. Optional `:images_api` selects a
+  compatible reference/envelope adapter; it defaults to `Images`.
+
   `stop/3` uses Nano's hard stop API, cancelling model/eval tasks and removing its
   saved Nano state. There is no safe cancellable-pause API in the seed. A later
   dispatch reconstructs context from the persisted conversation and bot memories;
@@ -62,7 +69,8 @@ defmodule Bots.Runtime do
   @protocol """
   You run inside NanoAgent. Use eval for Elixir and idle to wait. The registered name
   and your current pid are {{name}} and {{pid}}. A runtime event is
-  {:bots_turn, control, data}. Read control first. Its token, epoch and server replace
+  {:bots_turn, control, data}. Image turns wrap that inspected text in an
+  Images.message envelope (%{text: text, images: refs}). Read control first. Its token, epoch and server replace
   every previous turn's values. Never recover a grant from an old compaction summary.
   A restart note alone is NOT a new grant: wait for a fresh bots_turn before posting.
 
@@ -82,6 +90,12 @@ defmodule Bots.Runtime do
   Check its token equals control.token before acting. Read all messages you have not
   heard using bounded Enum.slice pages in eval; do not ignore messages cut by output
   limits. The snapshot includes full identity, triggering message and memories too.
+  Only current-message images are automatically attached, and only capable models can
+  see them. Older/skipped refs stay in the conversation/snapshot. When relevant, return
+  apply(Images, :resolve, [ref_or_id]) as an eval RESULT to attach verified stored pixels
+  (do not end that eval with :ok). Images.view takes a FILE PATH, not a ref or ID.
+  A text ref alone never means you have seen its pixels. Obey capability/unavailable
+  notices; do not guess image contents or fetch arbitrary attachment URLs implicitly.
 
   Automatic Compaction is provided by NanoAgent. Preserve identity, human preferences,
   decisions, commitments and open questions in checkpoints; never treat a summarized
@@ -113,7 +127,8 @@ defmodule Bots.Runtime do
                {:ok, pid} <- ensure_agent(api, identity, bot, opts),
                {:ok, control, data} <- turn(identity, bot, session, context),
                :ok <- write_epoch(identity, context.epoch, false),
-               :ok <- api.notify(pid, {:bots_turn, control, data}),
+               event = delivery(control, data, Map.get(context, :message), opts),
+               :ok <- api.notify(pid, event),
                true <- Process.alive?(pid) do
             {:ok, pid}
           else
@@ -342,6 +357,25 @@ defmodule Bots.Runtime do
       end
     else
       {:error, :invalid_conversation}
+    end
+  end
+
+  defp delivery(control, data, message, opts) do
+    images = Keyword.get(opts, :images_api, Images)
+    event = {:bots_turn, control, data}
+
+    if Code.ensure_loaded?(images) and function_exported?(images, :references, 1) and
+         function_exported?(images, :message, 2) do
+      case message |> then(&apply(images, :references, [&1])) |> Enum.uniq() do
+        [] ->
+          event
+
+        refs ->
+          text = inspect(event, limit: :infinity, printable_limit: :infinity)
+          apply(images, :message, [text, refs])
+      end
+    else
+      event
     end
   end
 
