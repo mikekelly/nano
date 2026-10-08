@@ -1,7 +1,8 @@
 defmodule Nano.OpenRouter do
   @moduledoc """
   One attempt at OpenRouter's OpenAI-compatible chat completions endpoint, with `Req`.
-  Retries, backoff and `model_error` logging live in `NanoAgent`.
+  Retries, backoff and `model_error` logging live in `NanoAgent`; the bytes sent and received
+  are recorded when `Nano.RawLog` is recording.
 
   Prompt caching: the first (system) message and the last message are sent as text blocks
   with `cache_control: %{type: "ephemeral"}`; the transcript itself is append-only, so the
@@ -42,10 +43,9 @@ defmodule Nano.OpenRouter do
 
     opts = [json: body, auth: {:bearer, key}, retry: false, receive_timeout: 600_000]
 
-    case Req.post(
-           base_url() <> "/chat/completions",
-           opts
-         ) do
+    case Req.new([url: base_url() <> "/chat/completions"] ++ opts)
+         |> Nano.RawLog.attach()
+         |> Req.post() do
       {:ok, %{status: 200, body: %{"choices" => [choice | _]} = resp}} ->
         usage = resp["usage"] || %{}
 

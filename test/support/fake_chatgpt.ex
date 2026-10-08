@@ -23,7 +23,8 @@ defmodule Nano.FakeChatGPT do
   Response options: `text:`, `calls:` (as in `Nano.FakeOpenRouter`), `reasoning:` (a summary
   text; the item also carries encrypted content `"enc-<n>"`), `usage: {input, output,
   cached}` (default `{100, 10, 0}`), `incomplete:` (a reason), or `status:` with `body:` (and
-  `headers:`, a list of `{name, value}`) for an HTTP error, or `failed:` (an error map) for a stream that ends in `response.failed`.
+  `headers:`, a list of `{name, value}`) for an HTTP error, or `failed:` (an error map) for a stream that ends in `response.failed`,
+  or `chunks:`, a list of strings sent as they are, one HTTP chunk each, as a 200 event stream.
   """
   use GenServer
 
@@ -181,6 +182,9 @@ defmodule Nano.FakeChatGPT do
   # A Responses API event stream, as the Codex backend sends it.
   defp build(opts) do
     cond do
+      chunks = opts[:chunks] ->
+        {200, "text/event-stream", {:chunks, chunks}}
+
       status = opts[:status] ->
         body = opts[:body] || %{"error" => %{"message" => "fake error #{status}"}}
         {status, "application/json", Jason.encode!(body), opts[:headers] || []}
@@ -305,10 +309,19 @@ defmodule Nano.FakeChatGPT do
           reply -> reply
         end
 
-      headers
-      |> Enum.reduce(conn, fn {k, v}, conn -> Plug.Conn.put_resp_header(conn, k, v) end)
-      |> Plug.Conn.put_resp_content_type(type)
-      |> Plug.Conn.send_resp(status, out)
+      conn =
+        headers
+        |> Enum.reduce(conn, fn {k, v}, conn -> Plug.Conn.put_resp_header(conn, k, v) end)
+        |> Plug.Conn.put_resp_content_type(type)
+
+      case out do
+        {:chunks, chunks} ->
+          conn = Plug.Conn.send_chunked(conn, status)
+          Enum.reduce(chunks, conn, fn c, conn -> elem(Plug.Conn.chunk(conn, c), 1) end)
+
+        out ->
+          Plug.Conn.send_resp(conn, status, out)
+      end
     end
   end
 end

@@ -12,7 +12,8 @@ defmodule Nano.ChatGPT do
   so each response's reasoning items, with their encrypted content, are kept in the assistant
   message's `reasoning_details` and sent back in later requests. No bound on the response is
   sent: the backend refuses `max_output_tokens` with a 400, and neither client sends it. The
-  event stream is read whole and returned in the shape `Nano.OpenRouter.chat/5` returns.
+  event stream is read whole and returned in the shape `Nano.OpenRouter.chat/5` returns; the
+  bytes sent and received are recorded when `Nano.RawLog` is recording.
 
   Sources: openai/codex `codex-rs/core/src/client.rs`, `codex-rs/codex-api/src/sse/`, and
   badlogic/pi-mono `packages/ai/src/api/openai-codex-responses.ts`.
@@ -59,12 +60,15 @@ defmodule Nano.ChatGPT do
       prompt_cache_key: key
     }
 
-    case Req.post(url("/responses"),
+    case Req.new(
+           url: url("/responses"),
            json: body,
            headers: [{"session-id", key} | headers(creds)],
            retry: false,
            receive_timeout: 600_000
-         ) do
+         )
+         |> Nano.RawLog.attach()
+         |> Req.post() do
       {:ok, %{status: 200, body: stream}} when is_binary(stream) ->
         stream |> events() |> response()
 

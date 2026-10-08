@@ -862,12 +862,16 @@ defmodule NanoAgent do
     }
 
     fields = if line, do: Map.put(fields, :budget_note, line), else: fields
+    # Recorded byte for byte (Nano.RawLog): the first attempt's request file is named here.
+    raw = if Nano.RawLog.on?(s.name), do: "#{s.id}/#{id}"
+    fields = if raw, do: Map.put(fields, :raw, ["#{raw}-1.request.txt"]), else: fields
 
     # No model call whose record could not be written.
     if log(s, :model_request, fields) == :ok do
       s = save(%{s | status: :thinking, request_id: id, turns_used: s.turns_used + 1})
       # Map.get: state saved by an older version of this module has no :reasoning.
-      args = [self(), s.tag, {s.model, Map.get(s, :reasoning, "off"), output}, messages, id]
+      how = {s.model, Map.get(s, :reasoning, "off"), output, raw}
+      args = [self(), s.tag, how, messages, id]
       task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :call_model, args)
       %{s | task: %{kind: :model, task: task}}
     else
@@ -889,21 +893,30 @@ defmodule NanoAgent do
   @doc false
   # Runs in a task: one model call, with its attempts. Failed attempts are reported to the
   # agent, which logs them; the last failure is returned with the number of attempts made.
+  # With `raw` (Nano.RawLog), each attempt is recorded as "<raw>-<attempt>", and the response
+  # and each failure name their attempt's files (`raw:`).
   def call_model(
         agent,
         tag,
-        {model, reasoning, max_output} = how,
+        {model, reasoning, max_output, raw} = how,
         messages,
         request_id,
         attempt \\ 1
       ) do
     started = System.monotonic_time(:millisecond)
 
-    case Nano.Model.chat(model, messages, @tools, reasoning, max_output) do
+    {result, files} =
+      Nano.RawLog.recording(raw && "#{raw}-#{attempt}", fn ->
+        Nano.Model.chat(model, messages, @tools, reasoning, max_output)
+      end)
+
+    case result do
       {:ok, response} ->
+        response = if files != [], do: Map.put(response, :raw, files), else: response
         {:ok, Map.put(response, :latency_ms, System.monotonic_time(:millisecond) - started)}
 
       {:error, error} ->
+        error = if files != [], do: Map.put(error, :raw, files), else: error
         pause = if attempt < @attempts and error.class == :transient, do: pause(error, attempt)
 
         send(
@@ -979,6 +992,7 @@ defmodule NanoAgent do
     calls = msg["tool_calls"] || []
     Nano.StateStore.add_node_tokens(prompt + completion)
 
+    # raw: the files Nano.RawLog recorded the answering attempt in.
     log(s, :model_response, %{
       request_id: s.request_id,
       latency_ms: r.latency_ms,
@@ -990,7 +1004,8 @@ defmodule NanoAgent do
       prompt_tokens: prompt,
       completion_tokens: completion,
       cached_tokens: cached,
-      cost: r.cost
+      cost: r.cost,
+      raw: r[:raw]
     })
 
     # Null content is not valid in a later request; tool calls and reasoning details go back as sent.

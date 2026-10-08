@@ -1,8 +1,8 @@
 defmodule Nano.Settings do
   @moduledoc """
   The node's settings, owned by this one process. The seed's own (`specs/0`): its provider's
-  key and the providers' addresses, the node-wide limits, and what new agents' system prompts
-  state, each with a default. Besides those, operators may supply values of their own, under
+  key and the providers' addresses, the node-wide limits, what new agents' system prompts
+  state, and the recording of model requests (`Nano.RawLog`), each with a default. Besides those, operators may supply values of their own, under
   names of their choosing (`"SOME_SERVICE_KEY"`): opaque strings the seed never reads, kept and
   shown like a key. What is set is kept in `<STATE_DIR>/settings.json` (mode 0600, written
   atomically), loaded at boot, and changed while the node runs, through
@@ -51,7 +51,16 @@ defmodule Nano.Settings do
      "The OAuth server for the ChatGPT device-code login and token refresh"},
     {:chatgpt_client_version, "0.160.1", :version, :live,
      "The Codex CLI version reported when listing models: the backend lists only the models " <>
-       "released to clients at least this new, so keep it at Codex's latest release"}
+       "released to clients at least this new, so keep it at Codex's latest release"},
+    {:raw_model_log, "off", :agents, :live,
+     "For debugging: off, all, or agent names separated by commas. Each model request of " <>
+       "those agents, every attempt, is recorded byte for byte, as sent and as received " <>
+       "(credentials redacted from the headers), in files under <LOG_DIR>/raw/<agent id>/ " <>
+       "that their log entries link to. The files are large, and a request holds the " <>
+       "agent's whole conversation, with anything sensitive it has seen"},
+    {:raw_model_log_max_bytes, 1_000_000_000, {:integer, 1, nil}, :live,
+     "The most raw_model_log keeps, in bytes, over all agents: past it, the oldest files " <>
+       "are deleted as new ones are written"}
   ]
 
   @keys Enum.map(@specs, &elem(&1, 0))
@@ -240,6 +249,28 @@ defmodule Nano.Settings do
     if is_binary(value) and String.trim(value) =~ ~r/^\d+(\.\d+)+([-+][\w.-]+)?$/,
       do: {:ok, String.trim(value)},
       else: {:error, "#{key} must be a version number, such as 0.160.1"}
+  end
+
+  # "off", "all", or agent names (a list, or text separated by commas or spaces) as
+  # "alice, bob".
+  defp check(key, :agents, value) do
+    names =
+      case value do
+        text when is_binary(text) -> String.split(text, [",", " "], trim: true)
+        list when is_list(list) -> list
+        _ -> [nil]
+      end
+
+    cond do
+      names in [["off"], ["all"]] ->
+        {:ok, hd(names)}
+
+      names != [] and Enum.all?(names, &(is_binary(&1) and &1 =~ ~r/^[\w.-]+$/)) ->
+        {:ok, names |> Enum.uniq() |> Enum.join(", ")}
+
+      true ->
+        {:error, "#{key} must be off, all, or agent names separated by commas"}
+    end
   end
 
   # Only on a change: a file that has gone since is reported at the next start instead.

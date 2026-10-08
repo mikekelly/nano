@@ -1,0 +1,224 @@
+defmodule Nano.RawLog do
+  @moduledoc """
+  A debugging record of the exact bytes of model requests and responses, for the agents the
+  `raw_model_log` setting names (`on?/1`), from their next request. The harness log keeps
+  what the providers' answers were decoded to; this keeps what went over the wire, so a
+  question such as "did the model send these words run together, or did we join them?" can
+  be settled.
+
+  Each HTTP exchange of a model call is two files under `<LOG_DIR>/raw/<agent id>/`, named for
+  the request and the attempt (`NanoAgent` makes up to 3): `<request id>-<attempt>.request.txt`
+  and `.response.txt`. A second exchange in one attempt (the ChatGPT subscription refreshes a
+  refused token once and sends again) adds `.2` to the name. Each file is an HTTP message, a
+  first line (`POST <url>`, or `HTTP <status>`), the headers one per line, a blank line, then
+  the body's bytes exactly:
+
+      HTTP 200
+      content-type: text/event-stream
+      ...
+
+      event: response.created
+      data: {"type":"response.created",...}
+
+  The request is recorded as `Req` hands it to the HTTP client, after all its other request
+  steps: the JSON as encoded, and the headers that were sent. The response is recorded as the
+  client returned it, before any of `Req`'s response steps: before it decodes JSON, and before
+  `Nano.ChatGPT` parses the event stream. (`Req` asks for no compression; a body the provider
+  compressed anyway would be recorded compressed.) No response at all is recorded as
+  `no response:` and why. The two files of an exchange are written apart, the request before
+  it is sent, so a request that never gets an answer is still there; each is written whole (a
+  temp file, renamed).
+
+  Headers that carry credentials (authorization, chatgpt-account-id, cookies, anything named
+  like a key, token or secret) are written as `[redacted]`. The bodies are not: a request
+  holds the agent's whole conversation.
+
+  Recording never fails or holds up a model call: a file that cannot be written is skipped,
+  with one warning in the node's log (`Logger`) until the node restarts. After each attempt
+  that wrote files, the oldest files under `raw/` (by modification time, over all agents) are
+  deleted until they add up to at most the `raw_model_log_max_bytes` setting; the attempt's own
+  are kept.
+  """
+  require Logger
+
+  @key {__MODULE__, :recording}
+  @warned {__MODULE__, :warned}
+  @secret ~r/authorization|cookie|account|key|token|secret|password/i
+
+  @doc "Where the files are: `<LOG_DIR>/raw`."
+  def dir, do: Path.join(Application.fetch_env!(:nano, :log_dir), "raw")
+
+  @doc "Whether an agent's model requests are recorded now (setting `raw_model_log`), by its name."
+  def on?(agent) do
+    case Nano.Settings.get(:raw_model_log) do
+      "off" -> false
+      "all" -> true
+      names -> agent in String.split(names, ", ")
+    end
+  end
+
+  @doc """
+  Runs `fun`, one attempt of a model call, recording every exchange the model requests made in
+  it (`attach/1`) under `name`, `"<agent id>/<request id>-<attempt>"`; nil records nothing.
+  Returns `{fun's result, files}`, the files written, as paths relative to `dir/0`.
+  """
+  def recording(nil, fun), do: {fun.(), []}
+
+  def recording(name, fun) do
+    Process.put(@key, {name, 0, []})
+    result = fun.()
+    {_, _, files} = Process.delete(@key)
+    files = Enum.reverse(files)
+    if files != [], do: prune(files)
+    {result, files}
+  end
+
+  @doc "Adds the recording steps to a model request, when it is made in `recording/2`."
+  def attach(%Req.Request{} = req) do
+    if Process.get(@key) do
+      req
+      |> Req.Request.append_request_steps(raw_model_log: &request/1)
+      |> Req.Request.prepend_response_steps(raw_model_log: &response/1)
+      |> Req.Request.prepend_error_steps(raw_model_log: &no_response/1)
+    else
+      req
+    end
+  end
+
+  @doc """
+  The file at `path` (relative to `dir/0`, as log entries name it): `{:ok, absolute path}`,
+  or `:error` for anything but `<agent id>/<file>` naming a file that exists.
+  """
+  def file(path) do
+    parts = String.split(path, "/")
+
+    with true <- length(parts) == 2,
+         true <- Enum.all?(parts, &(&1 =~ ~r/^[\w-][\w.-]*$/)),
+         path = Path.join([dir() | parts]),
+         true <- File.regular?(path) do
+      {:ok, path}
+    else
+      _ -> :error
+    end
+  end
+
+  ## Steps
+
+  # The last request step: the body is encoded and every header is set.
+  defp request(req) do
+    case Process.get(@key) do
+      {base, n, files} ->
+        name = if n == 0, do: base, else: "#{base}.#{n + 1}"
+        Process.put(@key, {base, n + 1, files})
+
+        write(name <> ".request.txt", fn ->
+          method = req.method |> to_string() |> String.upcase()
+          [method, ?\s, URI.to_string(req.url), ?\n, headers(req.headers), ?\n, body(req.body)]
+        end)
+
+        Req.Request.put_private(req, :raw_model_log, name)
+
+      nil ->
+        req
+    end
+  end
+
+  # The first response step: the body as the HTTP client returned it.
+  defp response({req, resp}) do
+    if name = req.private[:raw_model_log] do
+      write(name <> ".response.txt", fn ->
+        ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, body(resp.body)]
+      end)
+    end
+
+    {req, resp}
+  end
+
+  defp no_response({req, exception}) do
+    if name = req.private[:raw_model_log] do
+      write(name <> ".response.txt", fn ->
+        ["no response: ", Exception.message(exception), ?\n]
+      end)
+    end
+
+    {req, exception}
+  end
+
+  defp headers(headers) do
+    for {name, values} <- Enum.sort(headers), value <- List.wrap(values) do
+      [name, ": ", if(name =~ @secret, do: "[redacted]", else: value), ?\n]
+    end
+  end
+
+  defp body(nil), do: ""
+  defp body(body) when is_binary(body) or is_list(body), do: body
+  defp body(other), do: inspect(other)
+
+  # Whole or not at all; never raises.
+  defp write(name, content) do
+    path = Path.join(dir(), name)
+    tmp = path <> ".tmp"
+
+    result =
+      try do
+        with :ok <- File.mkdir_p(Path.dirname(path)),
+             :ok <- File.write(tmp, content.()),
+             do: File.rename(tmp, path)
+      rescue
+        e -> {:error, Exception.message(e)}
+      end
+
+    case result do
+      :ok ->
+        {base, n, files} = Process.get(@key)
+        Process.put(@key, {base, n, [name | files]})
+
+      {:error, reason} ->
+        File.rm(tmp)
+        warn(path, reason)
+    end
+  end
+
+  defp warn(path, reason) do
+    if not :persistent_term.get(@warned, false) do
+      :persistent_term.put(@warned, true)
+
+      Logger.warning(
+        "raw_model_log: could not write #{path} (#{inspect(reason)}); model calls go on " <>
+          "without it, and further failures are not reported until the node restarts"
+      )
+    end
+  end
+
+  ## Retention
+
+  @doc """
+  Deletes the oldest files under `dir/0` until they add up to at most the
+  `raw_model_log_max_bytes` setting, except `keep` (paths relative to `dir/0`).
+  """
+  def prune(keep \\ []) do
+    keep = Enum.map(keep, &Path.join(dir(), &1))
+
+    files =
+      for path <- Path.wildcard(Path.join(dir(), "*/*")),
+          {:ok, %{type: :regular, size: size, mtime: mtime}} <- [File.stat(path, time: :posix)],
+          do: {mtime, path, size}
+
+    total = files |> Enum.map(&elem(&1, 2)) |> Enum.sum()
+
+    files
+    |> Enum.sort()
+    |> Enum.reject(fn {_, path, _} -> path in keep end)
+    |> Enum.reduce_while(total, fn {_, path, size}, total ->
+      cond do
+        total <= Nano.Settings.get(:raw_model_log_max_bytes) -> {:halt, total}
+        File.rm(path) == :ok -> {:cont, total - size}
+        true -> {:cont, total}
+      end
+    end)
+
+    :ok
+  rescue
+    e -> warn(dir(), Exception.message(e))
+  end
+end

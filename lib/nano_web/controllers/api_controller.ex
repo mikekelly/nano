@@ -62,6 +62,12 @@ defmodule NanoWeb.ApiController do
     {"GET", "/api/agents/:name/stream?since=:seq",
      "Log entries with seq > since, then new ones live, as server-sent events (id: seq, data: entry JSON). " <>
        "Honours Last-Event-ID."},
+    {"GET", "/api/raw/*path",
+     "One file of the raw_model_log setting's record, as plain text: the exact bytes of a " <>
+       "model request or response (a first line, the headers with credentials redacted, a " <>
+       "blank line, the body). path is as the raw field of an agent's model_request, " <>
+       "model_response and model_error log entries names it: <agent id>/<request id>-" <>
+       "<attempt>.request.txt or .response.txt."},
     {"GET", "/api/users",
      "Running users: name, pid, messages (kept: the last 500 sent and received) and unread " <>
        "(received in conversations not read on the dashboard since). Users and their messages " <>
@@ -400,6 +406,23 @@ defmodule NanoWeb.ApiController do
   def chatgpt_logout(conn, _params) do
     :ok = Ops.chatgpt_logout()
     json(conn, %{ok: true})
+  end
+
+  ## Raw model requests and responses
+
+  # As text that a browser shows and never runs: a response body may hold anything.
+  def raw(conn, %{"path" => parts}) do
+    case Nano.RawLog.file(Enum.join(parts, "/")) do
+      {:ok, path} ->
+        conn
+        |> put_resp_content_type("text/plain")
+        |> put_resp_header("x-content-type-options", "nosniff")
+        |> put_resp_header("content-security-policy", "sandbox")
+        |> send_file(200, path)
+
+      :error ->
+        error(conn, 404, "no such raw_model_log file: #{Enum.join(parts, "/")}")
+    end
   end
 
   ## Settings

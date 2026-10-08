@@ -11,8 +11,9 @@ defmodule NanoWeb.AgentLive do
 
   Two views of the same entries: the reading view (default) tells the story — events, the
   model's text, each tool call with its result, restarts, halts — and leaves out the plumbing;
-  `?view=debug` shows every entry with its details. Streamed items are not kept on the
-  server, so switching views re-reads the log.
+  `?view=debug` shows every entry with its details, and links the raw files of a model
+  request, response or error when the `raw_model_log` setting recorded them. Streamed items
+  are not kept on the server, so switching views re-reads the log.
   """
   use Phoenix.LiveView
 
@@ -347,6 +348,7 @@ defmodule NanoWeb.AgentLive do
     <li id={@id} class="entry request">
       <.meta e={@e} label={"model request #{txt(@e["request_id"])}"}>
         {txt(@e["model"])} · {txt(@e["message_count"])} messages · ~{int(@e["approx_input_tokens"])} tokens in
+        <.raw_links files={@e["raw"]} />
       </.meta>
     </li>
     """
@@ -362,7 +364,7 @@ defmodule NanoWeb.AgentLive do
           @e["completion_tokens"]
         )} out · {cost(@e["cost"])} · {txt(@e["latency_ms"])} ms · {txt(@e["provider"])} · {txt(
           @e["finish_reason"]
-        )}
+        )}<.raw_links files={@e["raw"]} />
       </.meta>
       <div :if={@e["reasoning"] not in [nil, ""]} class="reasoning">{txt(@e["reasoning"])}</div>
       <div :if={@e["text"] not in [nil, ""]} class="assistant">{txt(@e["text"])}</div>
@@ -442,7 +444,7 @@ defmodule NanoWeb.AgentLive do
       <.meta e={@e} label={"model error, request #{txt(@e["request_id"])}"}>
         status {txt(@e["status"] || "none")} · attempt {txt(@e["attempt"] || "–")} · {if @e["retry"],
           do: "retrying",
-          else: "not retried"}
+          else: "not retried"}<.raw_links files={@e["raw"]} />
       </.meta>
       <pre>{body(@e["body"])}</pre>
     </li>
@@ -610,6 +612,20 @@ defmodule NanoWeb.AgentLive do
       <strong>{@label}</strong>
       <span class="dim">{render_slot(@inner_block)}</span>
     </div>
+    """
+  end
+
+  attr :files, :any, required: true, doc: "an entry's raw field: paths under Nano.RawLog.dir/0"
+
+  # Links to the raw_model_log files an entry names, each in a tab of its own.
+  defp raw_links(assigns) do
+    ~H"""
+    <span :if={is_list(@files) and @files != []}>
+      · raw:
+      <a :for={f <- @files} :if={is_binary(f)} href={"/api/raw/" <> f} target="_blank">
+        {Path.basename(f)}
+      </a>
+    </span>
     """
   end
 
