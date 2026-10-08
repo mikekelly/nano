@@ -7,7 +7,7 @@ defmodule MCP do
   Lists are one protocol page; pass `cursor:` from `nextCursor`. Results over 12 KB spill
   as JSON; use `MCP.page(path, offset: 0, bytes: 4000)` to read bounded byte pages.
 
-  `MCP.subscribe("demo", "demo://clock")` durably records intent for the current named
+  `MCP.subscribe("demo", "demo://value")` durably records intent for the current named
   agent. It returns `:ok` for saved intent, not a server acknowledgment; acknowledgment
   or failure arrives as `{:mcp, server, method, params}` in the agent mailbox. All attached
   agents receive notifications, including progress, log and list changes. Use
@@ -52,6 +52,19 @@ defmodule MCP do
   end
 
   def status(server, opts \\ []) do
+    case raw_status(server, opts) do
+      %{info: info} = status ->
+        case bounded({:ok, info}, opts) do
+          {:ok, info} -> %{status | info: info}
+          error -> error
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp raw_status(server, opts) do
     with {:ok, pid} <- call_manager({:connection, server}, opts),
          do: safe(fn -> MCP.Connection.status(pid) end)
   end
@@ -81,7 +94,7 @@ defmodule MCP do
 
   @doc "One discovery page per offered category; inspect nextCursor and use list/3 to continue."
   def discover(server, opts \\ []) do
-    case status(server, opts) do
+    case raw_status(server, opts) do
       %{ready: true, info: info} ->
         caps = info["capabilities"] || %{}
 
@@ -192,8 +205,13 @@ defmodule MCP do
     # Encode inspected local errors as strings; protocol results remain lossless JSON.
     encoded =
       case Jason.encode(data) do
-        {:ok, text} -> text
-        _ -> Jason.encode!(inspect(data, limit: :infinity))
+        {:ok, text} ->
+          text
+
+        _ ->
+          Jason.encode!(
+            inspect(data, limit: :infinity, printable_limit: :infinity, width: :infinity)
+          )
       end
 
     cap = min(max(opts[:bytes] || 12_000, 256), 32_000)
@@ -215,7 +233,7 @@ defmodule MCP do
            truncated: true,
            bytes: byte_size(encoded),
            path: path,
-           preview: String.slice(encoded, 0, div(cap, 4)),
+           preview: byte_preview(encoded, div(cap, 4)),
            continue: "MCP.page(path, offset: 0, bytes: 4000)"
          }}
       end
@@ -223,6 +241,21 @@ defmodule MCP do
   end
 
   defp bounded(other, _), do: other
+
+  defp byte_preview(data, cap) do
+    prefix = binary_part(data, 0, min(cap, byte_size(data)))
+    utf8_prefix(prefix)
+  end
+
+  defp utf8_prefix(<<>>), do: ""
+
+  defp utf8_prefix(data) do
+    if String.valid?(data), do: data, else: utf8_prefix(binary_part(data, 0, byte_size(data) - 1))
+  end
+
+  @doc "Remove all durable attachments for a named agent (delegation startup rollback)."
+  def detach_agent(agent, opts \\ []) when is_binary(agent),
+    do: call_manager({:detach_agent, agent}, opts)
 
   defp agent(opts) do
     case opts[:agent] do
@@ -258,21 +291,11 @@ defmodule MCP do
     root = opts[:state_dir] || "/data/mcp"
     config_path = opts[:config_path] || "/app/config/mcp.json"
 
-    with {:ok, config} <- MCP.Config.load(config_path), :ok <- File.mkdir_p(root) do
-      path = Path.join(root, "subscriptions.json")
+    path = Path.join(root, "subscriptions.json")
 
-      saved =
-        case File.read(path) do
-          {:ok, json} ->
-            case Jason.decode(json) do
-              {:ok, %{} = data} -> data
-              _ -> %{}
-            end
-
-          _ ->
-            %{}
-        end
-
+    with {:ok, config} <- MCP.Config.load(config_path),
+         :ok <- File.mkdir_p(root),
+         {:ok, saved} <- load_records(path) do
       send(self(), :restore)
 
       {:ok,
@@ -343,6 +366,17 @@ defmodule MCP do
     end
   end
 
+  def handle_call({:detach_agent, agent}, from, s) do
+    names = for {name, agents} <- s.records, Map.has_key?(agents, agent), do: name
+
+    Enum.reduce_while(names, {:reply, :ok, s}, fn name, {:reply, :ok, s} ->
+      case handle_call({:detach, name, agent}, from, s) do
+        {:reply, :ok, next} -> {:cont, {:reply, :ok, next}}
+        other -> {:halt, other}
+      end
+    end)
+  end
+
   def handle_call({:detach, name, agent}, _, s) do
     agents = Map.delete(s.records[name] || %{}, agent)
 
@@ -385,7 +419,7 @@ defmodule MCP do
         {:noreply, s}
 
       {name, _} ->
-        send(self(), :restore)
+        Process.send_after(self(), :restore, 500)
         deliver(s, name, "client/connection_crashed", %{reason: inspect(reason, limit: 10)})
         {:noreply, %{s | connections: Map.delete(s.connections, name)}}
     end
@@ -415,13 +449,41 @@ defmodule MCP do
   defp all_uris(s, name),
     do: (s.records[name] || %{}) |> Map.values() |> List.flatten() |> Enum.uniq() |> Enum.sort()
 
+  defp load_records(path) do
+    case File.read(path) do
+      {:error, :enoent} ->
+        {:ok, %{}}
+
+      {:ok, json} ->
+        with {:ok, data} when is_map(data) <- Jason.decode(json),
+             true <-
+               Enum.all?(data, fn {name, agents} ->
+                 is_binary(name) and is_map(agents) and
+                   Enum.all?(agents, fn {agent, uris} ->
+                     is_binary(agent) and is_list(uris) and Enum.all?(uris, &is_binary/1)
+                   end)
+               end) do
+          {:ok, data}
+        else
+          _ -> {:error, {:invalid_subscription_file, path}}
+        end
+
+      {:error, reason} ->
+        {:error, {:subscription_file, reason}}
+    end
+  end
+
   defp persist(s) do
     temp = s.path <> ".tmp"
     with :ok <- File.write(temp, Jason.encode!(s.records)), do: File.rename(temp, s.path)
   end
 
   defp deliver(s, name, method, params) do
-    {:ok, bounded} = bounded({:ok, params}, spill_dir: Path.join(s.root, "spill"), bytes: 6000)
+    bounded =
+      case bounded({:ok, params}, spill_dir: Path.join(s.root, "spill"), bytes: 6000) do
+        {:ok, data} -> data
+        {:error, reason} -> %{event_output_error: inspect(reason, limit: 10)}
+      end
 
     for agent <- Map.keys(s.records[name] || %{}),
         do: s.deliver.(agent, {:mcp, name, method, bounded})

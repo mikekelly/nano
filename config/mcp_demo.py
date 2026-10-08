@@ -10,6 +10,8 @@ legacy_only = "--legacy" in sys.argv
 value = "initial"
 subscriptions = {}
 legacy_uris = set()
+fail_subscribe = False
+fail_unsubscribe = False
 
 
 def emit(message):
@@ -61,10 +63,24 @@ for line in sys.stdin:
             subscriptions[r["id"]] = p["notifications"]
             notify("notifications/subscriptions/acknowledged", dict(notifications=p["notifications"], _meta={"io.modelcontextprotocol/subscriptionId": r["id"]}))
         elif m == "resources/subscribe":
-            legacy_uris.add(p["uri"])
-            result(r, {})
+            if p["uri"].startswith("hang://"):
+                continue
+            if fail_subscribe:
+                fail_subscribe = False
+                error(r, -32602, "Demo transient rejection")
+            else:
+                legacy_uris.add(p["uri"])
+                result(r, {})
         elif m == "resources/unsubscribe":
-            legacy_uris.discard(p["uri"])
+            if fail_unsubscribe:
+                fail_unsubscribe = False
+                error(r, -32602, "Demo transient rejection")
+            else:
+                legacy_uris.discard(p["uri"])
+                result(r, {})
+        elif m == "test/fail_subscriptions":
+            fail_subscribe = True
+            fail_unsubscribe = True
             result(r, {})
         elif m == "tools/list":
             names = ["echo", "set_value", "large", "crash", "hang"] if "cursor" not in p else ["second_page"]
@@ -92,10 +108,16 @@ for line in sys.stdin:
                 updates()
             text = "x" * args.get("size", 50000) if name == "large" else args.get("text", value)
             result(r, dict(content=[dict(type="text", text=text)]))
+        elif m == "test/close_subscriptions":
+            for sub_id in list(subscriptions):
+                emit(dict(id=sub_id, result=dict(resultType="complete", _meta={"io.modelcontextprotocol/subscriptionId": sub_id})))
+            subscriptions.clear()
+            result(r, {})
         elif m == "test/metadata":
+
             result(r, dict(metadata=p.get("_meta")))
         elif m == "test/input":
-            emit(dict(id=r["id"], result=dict(resultType="input_required", inputRequests=[])))
+            emit(dict(id=r["id"], result=dict(resultType="input_required", inputRequests=[], text=p.get("text", ""))))
         elif m == "test/notifications":
             notify("notifications/progress", dict(progressToken="test", progress=1, total=2))
             notify("notifications/message", dict(level="info", data="demo log"))

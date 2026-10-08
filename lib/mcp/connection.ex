@@ -24,6 +24,8 @@ defmodule MCP.Connection do
        name: name,
        uris: uris,
        subscribed: [],
+       failed_subs: [],
+       failed_unsubs: [],
        transport: nil,
        monitor: nil,
        module: if(config["transport"] == "http", do: MCP.HTTP, else: MCP.Stdio),
@@ -45,7 +47,7 @@ defmodule MCP.Connection do
     do: {:reply, {:error, :not_ready}, s}
 
   def handle_call({:request, method, params, timeout}, from, s) do
-    if map_size(s.pending) >= 128 do
+    if map_size(s.pending) >= 48 do
       {:reply, {:error, :too_many_pending_requests}, s}
     else
       {:noreply, issue(s, method, params, {:caller, from}, timeout)}
@@ -53,9 +55,16 @@ defmodule MCP.Connection do
   end
 
   def handle_cast({:subscriptions, uris}, s) do
-    s = %{s | uris: uris}
+    s = %{s | uris: uris, failed_subs: [], failed_unsubs: []}
     {:noreply, if(s.ready, do: subscribe(s), else: s)}
   end
+
+  def handle_info(:reconcile, s) do
+    {:noreply, if(s.ready and not modern?(s), do: subscribe(s), else: s)}
+  end
+
+  def handle_info(:reopen_stream, %{ready: true, stream: nil} = s), do: {:noreply, subscribe(s)}
+  def handle_info(:reopen_stream, s), do: {:noreply, s}
 
   def handle_info(:connect, s) do
     s = %{s | reconnect_timer: nil}
@@ -166,7 +175,15 @@ defmodule MCP.Connection do
         {p, rest} = Map.pop(s.pending, sub_id)
         if p, do: Process.cancel_timer(p.timer)
         event(s, method, params)
-        %{s | pending: rest}
+        accepted = get_in(params, ["notifications", "resourceSubscriptions"]) || []
+
+        for uri <- s.uris -- accepted,
+            do: event(s, "client/subscription", %{uri: uri, result: {:error, :not_supported}})
+
+        %{s | pending: rest, retry: 250}
+
+      method == "notifications/subscriptions/acknowledged" ->
+        s
 
       modern?(s) and String.starts_with?(method, "notifications/resources/") and
           sub_id != s.stream ->
@@ -184,7 +201,7 @@ defmodule MCP.Connection do
   defp incoming(%{"id" => id} = message, s) do
     case Map.pop(s.pending, id) do
       {nil, _} ->
-        if id == s.stream, do: disconnect(s, :subscription_stream_closed), else: s
+        if id == s.stream, do: reopen_stream(s, :subscription_stream_closed), else: s
 
       {p, rest} ->
         Process.cancel_timer(p.timer)
@@ -213,6 +230,7 @@ defmodule MCP.Connection do
 
   defp finish({:caller, from}, result, s) do
     GenServer.reply(from, result)
+    send(self(), :reconcile)
     s
   end
 
@@ -247,14 +265,35 @@ defmodule MCP.Connection do
   end
 
   defp finish(:initialize, error, s), do: disconnect(s, error)
-  defp finish(:stream, result, s), do: disconnect(s, {:subscription_failed, result})
+  defp finish(:stream, result, s), do: reopen_stream(s, {:subscription_failed, result})
 
   defp finish({:subscribe, uri}, result, s) do
+    send(self(), :reconcile)
     event(s, "client/subscription", %{uri: uri, result: result})
-    s
+
+    case result do
+      {:ok, _} ->
+        s = %{s | subscribed: Enum.uniq([uri | s.subscribed])}
+        if uri in s.uris, do: s, else: subscribe(s)
+
+      _ ->
+        %{s | failed_subs: Enum.uniq([uri | s.failed_subs])}
+    end
   end
 
-  defp finish(:unsubscribe, _, s), do: s
+  defp finish({:unsubscribe, uri}, result, s) do
+    send(self(), :reconcile)
+    event(s, "client/unsubscription", %{uri: uri, result: result})
+
+    case result do
+      {:ok, _} ->
+        s = %{s | subscribed: List.delete(s.subscribed, uri)}
+        if uri in s.uris, do: subscribe(s), else: s
+
+      _ ->
+        %{s | failed_unsubs: Enum.uniq([uri | s.failed_unsubs])}
+    end
+  end
 
   defp ready(s, info) do
     event(s, "client/connected", %{
@@ -281,23 +320,56 @@ defmodule MCP.Connection do
     else
       supported = get_in(s.info, ["capabilities", "resources", "subscribe"]) == true
 
-      s =
-        Enum.reduce(s.subscribed -- s.uris, s, fn uri, s ->
-          issue(s, "resources/unsubscribe", %{"uri" => uri}, :unsubscribe, timeout(s))
-        end)
+      pending_subs = for {_, %{kind: {:subscribe, uri}}} <- s.pending, do: uri
+      pending_unsubs = for {_, %{kind: {:unsubscribe, uri}}} <- s.pending, do: uri
 
       s =
-        Enum.reduce(s.uris -- s.subscribed, s, fn uri, s ->
-          if supported do
-            issue(s, "resources/subscribe", %{"uri" => uri}, {:subscribe, uri}, timeout(s))
-          else
-            event(s, "client/subscription", %{uri: uri, result: {:error, :not_supported}})
-            s
+        Enum.reduce(
+          (s.subscribed -- s.uris) -- (pending_unsubs ++ pending_subs ++ s.failed_unsubs),
+          s,
+          fn uri, s ->
+            if map_size(s.pending) < 32,
+              do:
+                issue(
+                  s,
+                  "resources/unsubscribe",
+                  %{"uri" => uri},
+                  {:unsubscribe, uri},
+                  timeout(s)
+                ),
+              else: s
           end
-        end)
+        )
 
-      %{s | subscribed: s.uris}
+      s =
+        Enum.reduce(
+          (s.uris -- s.subscribed) -- (pending_subs ++ pending_unsubs ++ s.failed_subs),
+          s,
+          fn uri, s ->
+            if supported do
+              if map_size(s.pending) < 32,
+                do:
+                  issue(s, "resources/subscribe", %{"uri" => uri}, {:subscribe, uri}, timeout(s)),
+                else: s
+            else
+              event(s, "client/subscription", %{uri: uri, result: {:error, :not_supported}})
+              %{s | failed_subs: Enum.uniq([uri | s.failed_subs])}
+            end
+          end
+        )
+
+      s
     end
+  end
+
+  defp reopen_stream(s, reason) do
+    event(s, "client/subscription_stream_closed", %{
+      reason: inspect(reason, limit: 20),
+      retry_ms: s.retry
+    })
+
+    Process.send_after(self(), :reopen_stream, s.retry)
+    %{s | stream: nil, retry: min(30_000, s.retry * 2)}
   end
 
   defp cancel_stream(%{stream: nil} = s), do: s
@@ -337,6 +409,8 @@ defmodule MCP.Connection do
         monitor: nil,
         stream: nil,
         subscribed: [],
+        failed_subs: [],
+        failed_unsubs: [],
         reconnect_timer: timer,
         retry: min(s.retry * 2, 30_000)
     }

@@ -151,6 +151,134 @@ defmodule MCPTest do
     assert {:error, :not_connected} = MCP.status("legacy", opts)
   end
 
+  test "large tuple errors and pathological Unicode previews cannot bypass byte caps", %{
+    opts: opts
+  } do
+    assert {:ok, _} = MCP.connect("modern", opts)
+    text = String.duplicate("x", 100_000)
+
+    assert {:error, %{truncated: true, path: path}} =
+             MCP.request("modern", "test/input", %{"text" => text}, opts)
+
+    assert byte_size(File.read!(path)) > 100_000
+    assert String.contains?(File.read!(path), text)
+    unicode = "a" <> String.duplicate("́", 50_000)
+
+    assert {:ok, %{truncated: true, preview: preview}} =
+             MCP.call_tool("modern", "echo", %{"text" => unicode}, Keyword.put(opts, :bytes, 256))
+
+    assert byte_size(preview) <= 64
+    assert String.valid?(preview)
+    {:ok, conn} = GenServer.call(opts[:manager], {:connection, "modern"})
+    :sys.replace_state(conn, fn s -> %{s | info: Map.put(s.info, "instructions", text)} end)
+    assert %{info: %{truncated: true}} = MCP.status("modern", opts)
+    assert {:ok, %{truncated: true, path: all}} = MCP.discover("modern", opts)
+    assert String.contains?(File.read!(all), text)
+  end
+
+  test "legacy rejected subscriptions and unsubscriptions are observable and retryable", %{
+    opts: opts
+  } do
+    assert {:ok, _} = MCP.connect("legacy", opts)
+    assert {:ok, _} = MCP.request("legacy", "test/fail_subscriptions", %{}, opts)
+    assert :ok = MCP.subscribe("legacy", "demo://value", opts)
+
+    assert_receive {"test-agent",
+                    {:mcp, "legacy", "client/subscription", %{result: {:error, _}}}},
+                   1000
+
+    assert :ok = MCP.subscribe("legacy", "demo://value", opts)
+
+    assert_receive {"test-agent", {:mcp, "legacy", "client/subscription", %{result: {:ok, _}}}},
+                   1000
+
+    assert :ok = MCP.unsubscribe("legacy", "demo://value", opts)
+
+    assert_receive {"test-agent",
+                    {:mcp, "legacy", "client/unsubscription", %{result: {:error, _}}}},
+                   1000
+
+    assert :ok = MCP.unsubscribe("legacy", "demo://value", opts)
+
+    assert_receive {"test-agent", {:mcp, "legacy", "client/unsubscription", %{result: {:ok, _}}}},
+                   1000
+  end
+
+  test "detach_agent preserves other agents and their shared subscriptions", %{opts: opts} do
+    assert :ok = MCP.attach("other", ["modern"], opts)
+    assert {:ok, _} = MCP.connect("modern", opts)
+    assert :ok = MCP.subscribe("modern", "demo://value", Keyword.put(opts, :agent, "other"))
+    assert :ok = MCP.detach_agent("test-agent", opts)
+
+    assert {:ok, _} =
+             MCP.call_tool("modern", "set_value", %{"value" => "other's subscription"}, opts)
+
+    assert_receive {"other", {:mcp, "modern", "notifications/resources/updated", _}}, 1000
+    refute_receive {"test-agent", {:mcp, "modern", "notifications/resources/updated", _}}, 50
+    assert :ok = MCP.detach_agent("other", opts)
+    assert {:error, :not_connected} = MCP.status("modern", opts)
+  end
+
+  test "large event spill errors preserve manager and emit bounded failure", %{
+    opts: opts,
+    root: root
+  } do
+    assert {:ok, _} = MCP.connect("modern", opts)
+    File.write!(Path.join(root, "spill"), "not a directory")
+
+    send(
+      opts[:manager],
+      {:mcp_event, "modern", "notifications/message", %{"data" => String.duplicate("x", 20_000)}}
+    )
+
+    assert_receive {"test-agent",
+                    {:mcp, "modern", "notifications/message", %{event_output_error: _}}},
+                   1000
+
+    assert Process.alive?(opts[:manager])
+    assert {:ok, _} = MCP.call_tool("modern", "echo", %{}, opts)
+  end
+
+  test "legacy internal subscriptions have a budget and leave room for tool calls", %{opts: opts} do
+    assert {:ok, _} = MCP.connect("legacy", opts)
+    {:ok, conn} = GenServer.call(opts[:manager], {:connection, "legacy"})
+    MCP.Connection.subscriptions(conn, Enum.map(1..200, &"hang://#{&1}"))
+    state = :sys.get_state(conn)
+    assert map_size(state.pending) == 32
+    assert length(state.uris) == 200
+    assert {:ok, _} = MCP.call_tool("legacy", "echo", %{"text" => "not starved"}, opts)
+    assert map_size(:sys.get_state(conn).pending) <= 32
+  end
+
+  test "graceful subscription closure preserves unrelated calls and transport", %{opts: opts} do
+    assert {:ok, _} = MCP.connect("modern", opts)
+
+    assert_receive {"test-agent",
+                    {:mcp, "modern", "notifications/subscriptions/acknowledged", _}},
+                   1000
+
+    {:ok, conn} = GenServer.call(opts[:manager], {:connection, "modern"})
+    transport = :sys.get_state(conn).transport
+    assert {:ok, _} = MCP.request("modern", "test/close_subscriptions", %{}, opts)
+    assert_receive {"test-agent", {:mcp, "modern", "client/subscription_stream_closed", _}}, 1000
+
+    assert_receive {"test-agent",
+                    {:mcp, "modern", "notifications/subscriptions/acknowledged", _}},
+                   1000
+
+    assert :sys.get_state(conn).transport == transport
+  end
+
+  test "corrupt saved subscriptions are not silently discarded",
+       %{
+         root: root,
+         start_opts: start_opts
+       } do
+    File.write!(Path.join(root, "subscriptions.json"), "{broken")
+    assert {:error, {:error, {:invalid_subscription_file, _}}} = GenServer.start(MCP, start_opts)
+    assert File.read!(Path.join(root, "subscriptions.json")) == "{broken"
+  end
+
   test "bad config and unknown server fail clearly", %{opts: opts, root: root} do
     assert {:error, :unknown_server} = MCP.connect("missing", opts)
     assert {:error, :not_connected} = MCP.list("modern", :tools, opts)
