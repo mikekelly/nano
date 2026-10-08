@@ -514,7 +514,7 @@ defmodule NanoWeb.AgentLiveTest do
 
   ## Reading view
 
-  defp reading?(view, selector, text \\ nil),
+  defp reading?(view, selector, text),
     do: has_element?(view, "#timeline.reading " <> selector, text)
 
   test "the reading view is the default; the toggle switches views and is kept in the URL", ctx do
