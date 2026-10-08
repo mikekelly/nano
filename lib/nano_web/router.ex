@@ -15,10 +15,20 @@ defmodule NanoWeb.Router do
     plug :put_secure_browser_headers
   end
 
+  pipeline :bots_layout do
+    plug :put_root_layout, html: {NanoWeb.BotsLayouts, :root}
+  end
+
   scope "/", NanoWeb do
     pipe_through :browser
 
     live "/", ProcessLive
+
+    scope "/bots" do
+      pipe_through :bots_layout
+      live "/", BotsLive
+    end
+
     live "/agents/:name", AgentLive
     live "/messages", MessagesLive
     get "/openrouter/connect", OpenRouterController, :connect
