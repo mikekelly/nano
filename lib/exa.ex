@@ -221,7 +221,10 @@ defmodule Exa do
     if size <= budget do
       {value, budget - size, false}
     else
-      prefix = String.slice(value, 0, max(div(budget - 8, 6), 0))
+      # Graphemes can contain arbitrarily many combining marks. Bound raw bytes,
+      # then repair a split UTF-8 codepoint; six accounts for JSON escaping.
+      size = min(byte_size(value), max(div(budget - 8, 6), 0))
+      prefix = valid_utf8_prefix(binary_part(value, 0, size))
       {prefix, max(budget - byte_size(Jason.encode!(prefix)), 0), true}
     end
   end
@@ -262,6 +265,12 @@ defmodule Exa do
   defp trim(value, budget) do
     size = byte_size(Jason.encode!(value))
     if size <= budget, do: {value, budget - size, false}, else: {nil, max(budget - 4, 0), true}
+  end
+
+  defp valid_utf8_prefix(prefix) do
+    if String.valid?(prefix),
+      do: prefix,
+      else: valid_utf8_prefix(binary_part(prefix, 0, byte_size(prefix) - 1))
   end
 
   defp params(opts) do

@@ -126,7 +126,19 @@ defmodule ExaTest do
              24000
   end
 
+  test "one unbounded grapheme cannot exceed byte limits" do
+    inputs = ["a" <> String.duplicate("\u0301", 50000), String.duplicate("👩‍", 20000) <> "👩"]
+
+    for input <- inputs, cap <- [256, 1000, 24000] do
+      result = Exa.bound(input, max_bytes: cap)
+      assert result.truncated
+      assert String.valid?(result.data)
+      assert byte_size(Jason.encode!(result)) <= cap
+    end
+  end
+
   test "bounds preserve URLs
+
  intact rather than returning corrupted citation links" do
     data = %{"url" => "https://example.com", "text" => String.duplicate("x", 2000)}
 
