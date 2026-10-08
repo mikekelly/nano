@@ -317,9 +317,33 @@ defmodule Nano.CompactionTest do
     assert error =~ "known_completion_tokens: 10"
     assert error =~ "known_cost: 0.01"
     assert error =~ "later pass rejected"
+    assert NanoAgent.info(c.name).budget.tokens_used == 110
+    assert_in_delta NanoAgent.info(c.name).cost, 0.01, 0.00001
+
+    usage_log =
+      Enum.find(Nano.Log.read(NanoAgent.info(c.name).id), &(&1["type"] == "compaction_usage"))
+
+    assert usage_log["prompt_tokens"] == 100
+    assert usage_log["completion_tokens"] == 10
   end
 
-  test "invalid later successful response reports all known usage without claiming checkpoint success",
+  test "known failed-summary spend preserves an agent budget halt rather than overwriting it with context",
+       c do
+    original = for _ <- 1..8, do: %{"role" => "user", "content" => String.duplicate("x", 9000)}
+    :sys.replace_state(c.pid, &%{&1 | transcript: original, context_used: 15_500, max_tokens: 50})
+    Fake.push(c.model, text: "Goal: initial checkpoint", usage: {100, 10, 0})
+    Fake.push(c.model, status: 400, body: %{"error" => %{"message" => "later pass rejected"}})
+    send(c.pid, :trigger)
+    request(c.model)
+    request(c.model)
+    wait(fn -> NanoAgent.info(c.name).halted == :budget end)
+    assert NanoAgent.info(c.name).budget.tokens_used == 110
+    assert :sys.get_state(c.pid).transcript == original
+    assert NanoAgent.info(c.name).compactions == 0
+  end
+
+  test "invalid later successful
+ response reports all known usage without claiming checkpoint success",
        c do
     older = for _ <- 1..4, do: %{"role" => "user", "content" => String.duplicate("x", 9000)}
     Fake.push(c.model, text: "Goal: initial valid checkpoint", usage: {100, 10, 0}, cost: 0.01)

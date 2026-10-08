@@ -10,8 +10,9 @@ checkpoint across passes instead of discarding data or halting. Oversized indivi
 records use UTF-8-safe annotated continuations. Successful pass usage/cost is aggregated
 for the harness accounting. Staging is limited to 64 passes and three transient retries
 per pass. On partial failure the original transcript stays intact and known usage/cost is
-reported in failure metadata; the current harness does not yet automatically reconcile
-partial failed-checkpoint usage into counters (operators can reconcile from that record), and are charged to agent/node token and cost totals, not agent
+reported in failure metadata and charged exactly once to agent/node counters by the
+harness, even when later stages fail. The original transcript is still retained and any
+agent budget halt is preserved, and are charged to agent/node token and cost totals, not agent
 turns. Recent turns are retained verbatim, cutting only at user/assistant boundaries so every
 kept tool result retains its call. Long single turns checkpoint their earlier request/progress. Existing checkpoints are updated.
 
