@@ -220,4 +220,4 @@ did not work and why. The next agent starts from there.
 ## Related
 
 - The seeding docs these principles apply to: [README.md](README.md) lists them. Each links back here.
-- The seed's own rules: [AGENTS.md](../AGENTS.md) (main stays minimal; seedlings never merge), [SPEC.md](../bootstrap/SPEC.md) (the thesis; simplicity).
+- The seed's own rules: [AGENTS.md](../AGENTS.md) (main stays minimal; seedlings never merge) and [README.md](../README.md) (the thesis; simplicity).

@@ -6,7 +6,6 @@ rest of its harness itself, while it runs.
 
 One Docker container runs one BEAM node, and each agent is a GenServer on it. A dashboard
 and a JSON API on port 4000 show everything every agent does.
-[bootstrap/SPEC.md](bootstrap/SPEC.md) is the full design.
 
 ![The dashboard: a start form, then a card per agent with its model, who started it, turns, tokens and context used, and what it is doing now](docs/dashboard.png)
 
@@ -86,7 +85,7 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
 
 | | |
 | --- | --- |
-| [bootstrap/SPEC.md](bootstrap/SPEC.md) | The design in full: the agent, its prompt, limits and halts, settings, the API |
+| [lib/nano_agent.ex](lib/nano_agent.ex) | The harness: one agent, its tools, limits and halts |
 | [AGENTS.md](AGENTS.md) | For AI agents working on this repository |
 | [seeding-docs/](seeding-docs/README.md) | Specs for capabilities agents can grow from the seed |
 | [priv/system_prompt.txt](priv/system_prompt.txt) | The system prompt template |

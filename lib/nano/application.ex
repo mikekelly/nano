@@ -76,7 +76,7 @@ defmodule Nano.Application do
 
   @doc """
   Starts `Nano.AgentSupervisor`, with generous limits: the per-agent restart brake is the
-  real limit (bootstrap/PLAN.md decision 11). If it was killed, its agents died with it; they are
+  real limit. If it was killed, its agents died with it; they are
   brought back from `Nano.StateStore`, history and all.
   """
   def start_agents do
