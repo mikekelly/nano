@@ -1,0 +1,9 @@
+# Bots implementation contract
+
+Public `Bots` facade, default named service lazily starts (supervision integration by parent), test instances `Bots.start_link(root: unique_dir, name: nil, runtime: module)`; every facade function accepts final keyword opts `server: pid` for isolation.
+
+All returned entities are maps with **string keys** (disk JSON shapes). IDs opaque strings. `{:ok, entity}` mutations or `{:error, reason}`. Read `Bots.snapshot(opts \ [])` => `%{"bots" => [bot], "sessions" => [session], "preferences" => prefs}`. `Bots.session(id, opts \ [])` => session or nil, includes `"messages"` list oldest first. Bot: id,name,description,color,shape. Session: id,title,bot_ids,updated_at,messages,status (idle/thinking/stopped/error); messages: id,kind (human/bot/system/request),bot_id (nullable),text,created_at,request_id (nullable),attachments (list). Session status updates must publish.
+
+`Bots.create_bot(attrs, opts \ [])`; `Bots.create_session(bot_ids, opts \ [])`; `Bots.say(session_id,text,opts \ [])` (opts may include attachments); `Bots.stop(session_id,opts \ [])`; `Bots.reply(request_id,text,opts \ [])`; `Bots.preferences(attrs,opts \ [])`. Preferences notifications (boolean), cooldown_seconds (>=60), max_per_hour (0..60). Defaults off, 300, 6. `Bots.subscribe(opts \ [])` uses Phoenix PubSub service topic; subscriber receives `{:bots_changed, session_id_or_nil}` and optional `{:bots_notification, %{title: string, body: string, session_id: string, id: string}}`, limits enforced by backend. Read functions return raw maps for UI.
+
+Backend is responsible for persistence, runtime agent integration, speaker routing, requests, memory adapter. UI only uses facade and owns LiveView, CSS/JS files unique to Bots. No seed module reload. UI uses escaped rendering; dedicated safe Markdown module may be created by UI owner. Root parent owns router and integration docs/tests.
