@@ -34,7 +34,8 @@ defmodule Nano.Application do
           Nano.OpenRouter.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           Delegation.Watcher,
-          {MCP, []},
+          {Nano.OptionalServices,
+           specs: Application.get_env(:nano, :optional_services, [{MCP, []}, {Bots, []}])},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           NanoWeb.Endpoint
         ],

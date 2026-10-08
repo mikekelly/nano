@@ -42,7 +42,8 @@ config :nano,
   # Immutable image references use the same environment-specific data root.
   images_dir: env.("IMAGES_DIR", Path.join(data, "images"))
 
-if test?, do: config(:nano, test_dir: data)
+# Optional integrations are explicitly started by isolated tests and browser fixtures.
+if test?, do: config(:nano, test_dir: data, optional_services: [])
 
 # NODE_COOKIE is not read here: it is consumed by `elixir --cookie` before the app starts.
 
