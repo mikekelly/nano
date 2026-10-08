@@ -55,7 +55,7 @@ defmodule Bots.Server do
   end
 
   @impl true
-  def handle_call(:topic, _, s), do: {:reply, s.topic, s}
+  def handle_call(:subscription, _, s), do: {:reply, {s.pubsub, s.topic}, s}
 
   def handle_call(:snapshot, _, s) do
     snapshot = %{
@@ -482,6 +482,9 @@ defmodule Bots.Server do
       message["kind"] == "bot" and session["bot_exchanges"] >= max_exchanges(s) ->
         {:noreply, ceiling(s, session)}
 
+      message["kind"] == "bot" and session["bot_ids"] == [message["bot_id"]] ->
+        {:noreply, s}
+
       true ->
         bots = Enum.map(session["bot_ids"], &s.data["bots"][&1])
         job = %{type: :route, sid: sid, epoch: epoch, message: message}
@@ -498,7 +501,7 @@ defmodule Bots.Server do
              )}
 
           {:error, _} ->
-            {:noreply, s}
+            {:noreply, storage_error(s, sid)}
         end
     end
   end
@@ -637,7 +640,7 @@ defmodule Bots.Server do
           Enum.reduce(ids, next, fn bid, acc -> dispatch(acc, session, job.message, bid) end)
 
         {:error, _} ->
-          s
+          storage_error(s, job.sid)
       end
     end
   end
@@ -957,8 +960,27 @@ defmodule Bots.Server do
   defp persist_or_original(s, data, sid) do
     case save(s, data, sid) do
       {:ok, next} -> next
-      {:error, _} -> s
+      {:error, _} -> storage_error(s, sid)
     end
+  end
+
+  # Health must remain visible even when the very failure is inability to persist it.
+  # Never pretend an uncommitted user/bot mutation succeeded; only this system notice
+  # is added in memory. Durable pending work remains recoverable when disk returns.
+  defp storage_error(s, sid) do
+    session = s.data["sessions"][sid]
+
+    text =
+      "Storage is unavailable; this status could not be saved. Retry when storage is restored."
+
+    session =
+      if List.last(session["messages"])["text"] == text,
+        do: session,
+        else: append(session, message("system", text, nil))
+
+    session = Map.put(session, "status", "error")
+    Phoenix.PubSub.broadcast(s.pubsub, s.topic, {:bots_changed, sid})
+    %{s | data: put_session(s.data, session)}
   end
 
   defp fetch_session(s, sid) do
