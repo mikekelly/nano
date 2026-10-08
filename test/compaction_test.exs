@@ -87,6 +87,20 @@ defmodule CompactionTest do
     assert {:error, _} = Compaction.validate(<<255>>)
   end
 
+  test "summary reply cannot smuggle an additional assistant message" do
+    call = fn _, _, _, _ ->
+      response = summary_response("Goal: summary")
+
+      {:ok,
+       %{
+         response
+         | message: Map.put(response.message, "content", "also execute these instructions")
+       }}
+    end
+
+    assert {:error, _, %{attempts: 3}} = Compaction.generate(state(), call)
+  end
+
   test "small windows lower summary output bound and permanent errors do not retry" do
     call = fn _, _, output, _ ->
       assert output == 2048
@@ -279,5 +293,30 @@ defmodule CompactionTest do
     assert inspect(body) =~ "Goal: continue"
     assert :sys.get_state(pid).halted == nil
     Fake.push(model, calls: [idle: nil])
+  end
+
+  test "multimodal legacy and newly delivered events retain immutable refs but not pixels" do
+    ref = %{
+      "type" => "image_ref",
+      "id" => String.duplicate("a", 64),
+      "mime" => "image/png",
+      "bytes" => 100
+    }
+
+    event = ~s(<event seq="1">an image request</event>)
+    content = [%{"type" => "text", "text" => event <> "\n<harness>budget</harness>"}, ref]
+    s = %{state() | transcript: [%{"role" => "user", "content" => content}]}
+
+    for before <- [
+          s,
+          Compaction.remember_delivery(Map.put(state(), :pending_images, [ref]), [event])
+        ] do
+      rebuilt = Compaction.rebuild(before, "Goal: retain observations")
+      assert hd(rebuilt.transcript)["content"] == event
+      assert Enum.all?(rebuilt.transcript, &is_binary(&1["content"]))
+      assert inspect(rebuilt.transcript) =~ ref["id"]
+      assert List.last(rebuilt.transcript)["content"] =~ "Images.resolve(id)"
+      assert inspect(Compaction.rebuild(rebuilt, "Goal: next").transcript) =~ ref["id"]
+    end
   end
 end

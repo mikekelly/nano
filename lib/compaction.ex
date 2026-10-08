@@ -9,7 +9,9 @@ defmodule Compaction do
   A summary is bounded to 24,000 UTF-8 bytes, conservatively estimated at 12,000 tokens;
   this is not a provider tokenizer guarantee. Small windows use a smaller summary budget.
   Events delivered since this version was loaded are preserved from exact message records;
-  legacy transcripts use wrapper extraction. Child reports are summarized, not retained.
+  legacy transcripts use wrapper extraction (including multimodal text blocks). Child reports
+  are summarized, not retained. Pixel attachments are dropped: received immutable IDs/refs
+  survive as text, with an explicit re-view reminder. Tool-viewed images are summary material.
   The first brief is never dropped; an oversized brief/checkpoint can still halt safely.
   """
   def provide_summary(text) do
@@ -112,8 +114,10 @@ defmodule Compaction do
       else: {:error, refusal || "compaction attempts or budget exhausted", stats}
   end
 
-  defp parse_response(%{message: %{"tool_calls" => [call]}}, max_bytes) when is_map(call) do
-    with %{"name" => "eval", "arguments" => args} <- call["function"],
+  defp parse_response(%{message: %{"tool_calls" => [call]} = message}, max_bytes)
+       when is_map(call) do
+    with true <- message["content"] in [nil, ""],
+         %{"name" => "eval", "arguments" => args} <- call["function"],
          {:ok, %{"code" => code}} <-
            if(is_binary(args), do: Jason.decode(args), else: {:ok, args}),
          {:ok, text} <- parse(code),
@@ -128,9 +132,11 @@ defmodule Compaction do
 
   @doc false
   def remember_delivery(s, pending) do
+    delivered =
+      Enum.filter(pending, &(String.starts_with?(&1, "<event") and not child_report?(&1)))
+
     events =
-      events(s) ++
-        Enum.filter(pending, &(String.starts_with?(&1, "<event") and not child_report?(&1)))
+      events(s) ++ delivered ++ attachment_metadata(delivered, Map.get(s, :pending_images, []))
 
     Map.put(s, :compaction_events, select_events(events, s.max_context))
   end
@@ -139,13 +145,58 @@ defmodule Compaction do
 
   defp events(s) do
     Map.get_lazy(s, :compaction_events, fn ->
-      for %{"role" => "user", "content" => text} <- s.transcript,
-          is_binary(text),
-          [event] <-
-            Regex.scan(~r/^<event\b[^>]*>.*?<\/event>(?=\n(?:<event|<harness)|\z)/ms, text),
-          not child_report?(event),
-          do: event
+      Enum.flat_map(s.transcript, fn
+        %{"role" => "user", "content" => content} ->
+          text = text_content(content)
+
+          events =
+            for [event] <-
+                  Regex.scan(~r/^<event\b[^>]*>.*?<\/event>(?=\n(?:<event|<harness)|\z)/ms, text),
+                not child_report?(event),
+                do: event
+
+          refs =
+            if is_list(content),
+              do: Enum.filter(content, &match?(%{"type" => "image_ref"}, &1)),
+              else: []
+
+          events ++ attachment_metadata(events, refs)
+
+        _ ->
+          []
+      end)
     end)
+  end
+
+  defp text_content(text) when is_binary(text), do: text
+
+  defp text_content(parts) when is_list(parts) do
+    Enum.map_join(parts, "\n", fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
+      _ -> ""
+    end)
+    |> String.trim_trailing("\n")
+  end
+
+  defp text_content(_), do: ""
+
+  # Normally an inspected event already contains its immutable reference metadata.
+  # Legacy/transformed multimodal messages may have references only in content blocks.
+  defp attachment_metadata([], _), do: []
+
+  defp attachment_metadata(events, refs) do
+    text = Enum.join(events, "\n")
+
+    refs =
+      Enum.filter(refs, fn ref ->
+        is_map(ref) and is_binary(ref["id"]) and not String.contains?(text, ref["id"])
+      end)
+
+    if refs == [],
+      do: [],
+      else: [
+        "<harness>Received attachment references (pixels omitted): #{Jason.encode!(refs)}</harness>"
+      ]
   end
 
   defp select_events(events, window) do
@@ -176,7 +227,7 @@ defmodule Compaction do
           %{
             "role" => "user",
             "content" =>
-              "<harness>Your conversation before this point was compacted by the harness using your own summary. The messages above are received events kept in their own words. Full record: #{s.id} in the node log directory. Some events may have been omitted to fit.\n\n#{summary}</harness>"
+              "<harness>Your conversation before this point was compacted by the harness using your own summary. The messages above are received events kept in their own words, plus retained attachment metadata if any. Full record: #{s.id} in the node log directory. Some events may have been omitted to fit. Prior pixel attachments are not retained; use Images.resolve(id) as an eval result to re-view an immutable attachment when needed.\n\n#{summary}</harness>"
           }
         ]
 

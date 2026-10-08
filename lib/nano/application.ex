@@ -33,6 +33,7 @@ defmodule Nano.Application do
           # OpenRouter logins under way (its OAuth PKCE flow).
           Nano.OpenRouter.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
+          Delegation.Watcher,
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           NanoWeb.Endpoint
         ],
