@@ -84,12 +84,21 @@ defmodule FrontOfMindTest do
           [threshold_tokens: 1.1],
           [drift_every_calls: 0],
           [drift_threshold: 1.01],
-          [unexpected: true]
+          [unexpected: true],
+          nil,
+          [1],
+          [{{:invalid}, true}],
+          %{"enabled" => false, enabled: true}
         ] do
       assert {:error, :invalid_configuration} = FrontOfMind.configure("agent", config, opts)
     end
 
     assert {:ok, _} = FrontOfMind.configure("agent", [enabled: false], opts)
+
+    for owner <- [nil, "", 1] do
+      assert {:error, :invalid_name} = FrontOfMind.set(owner, "note", opts)
+      assert {:error, :invalid_name} = FrontOfMind.get(owner, opts)
+    end
   end
 
   test "drift judgment is logged, triggers one bob, never rewrites note", %{s: s, opts: opts} do
