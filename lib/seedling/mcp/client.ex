@@ -1,7 +1,7 @@
 defmodule Seedling.MCP.Client do
   @moduledoc false
   use GenServer
-  alias Seedling.MCP.{Config, HTTP, Schema}
+  alias Seedling.MCP.{Config, HTTP, Schema, OSProcess}
   @modern "2026-07-28"
   @legacy ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
   @max_wire 8_388_608
@@ -260,7 +260,16 @@ defmodule Seedling.MCP.Client do
           port_opts =
             if s.config["cwd"], do: [{:cd, s.config["cwd"]} | port_opts], else: port_opts
 
-          %{s | port: Port.open({:spawn_executable, s.config["command"]}, port_opts)}
+          port = Port.open({:spawn_executable, s.config["command"]}, port_opts)
+
+          case OSProcess.watch(port, self()) do
+            {:ok, _watchdog} ->
+              %{s | port: port}
+
+            {:error, reason} ->
+              Port.close(port)
+              raise "Cannot supervise stdio OS identity: #{inspect(reason)}"
+          end
         else
           s
         end

@@ -449,4 +449,58 @@ defmodule Seedling.MCPTest do
     assert eventually(fn -> Enum.all?(workers, &(not Process.alive?(&1))) end)
     assert_receive %{method: "notifications/resources/updated"}, 3000
   end
+
+  for action <- [:disconnect, :kill] do
+    test "noncooperative stdio OS child is identity-checked TERM/KILL cleaned on #{action}" do
+      ctx = setup_instance("stdio", "modern")
+      marker = Path.join(ctx.dir, "term")
+      fixture = Path.expand("mcp_stubborn.py", __DIR__)
+
+      File.write!(
+        Path.join(ctx.dir, "config.json"),
+        Jason.encode!(%{
+          servers: %{
+            fixture: %{
+              transport: "stdio",
+              command: "python3",
+              args: ["-u", fixture, marker]
+            }
+          }
+        })
+      )
+
+      assert {:ok, _} = MCP.connect("fixture", ctx.opts)
+      {:ok, client} = GenServer.call(MCP.manager(ctx.opts), {:client, "fixture"})
+      {:os_pid, pid} = Port.info(:sys.get_state(client).port, :os_pid)
+      identity = Seedling.MCP.OSProcess.identity(pid)
+      assert Seedling.MCP.OSProcess.alive?(identity)
+      # A reused or mismatched PID must never be signalled/treated as the old child.
+      refute Seedling.MCP.OSProcess.alive?(%{identity | start: "not-the-owned-starttime"})
+
+      if unquote(action) == :disconnect do
+        assert :ok = MCP.disconnect("fixture", ctx.opts)
+      else
+        Process.exit(client, :kill)
+      end
+
+      assert eventually(fn -> not Seedling.MCP.OSProcess.alive?(identity) end)
+      # SIGTERM was attempted, SIGKILL required.
+      assert File.read!(marker) == "ignored-term"
+
+      if unquote(action) == :kill do
+        assert eventually(fn ->
+                 case MCP.status("fixture", ctx.opts) do
+                   {:ok, %{status: :ready}} -> true
+                   _ -> false
+                 end
+               end)
+
+        {:ok, replacement} = GenServer.call(MCP.manager(ctx.opts), {:client, "fixture"})
+        {:os_pid, replacement_pid} = Port.info(:sys.get_state(replacement).port, :os_pid)
+        replacement_identity = Seedling.MCP.OSProcess.identity(replacement_pid)
+        assert :ok = MCP.disconnect("fixture", ctx.opts)
+        assert eventually(fn -> not Seedling.MCP.OSProcess.alive?(replacement_identity) end)
+      end
+    end
+  end
 end
