@@ -127,6 +127,8 @@ defmodule Seedling.WebTest do
     parent = self()
 
     shell = fn command, shell_opts ->
+      assert File.dir?(shell_opts[:cwd])
+      assert String.starts_with?(shell_opts[:cwd], opts[:spool_dir])
       send(parent, {:browser, command, shell_opts})
       {:ok, %{status: :exited, exit_code: 0, bytes: byte_size(text), output_path: spool}}
     end
