@@ -1,0 +1,92 @@
+defmodule SeedSafety do
+  @moduledoc """
+  Entry point for the external safety net. `status/0` reads its last secret-free
+  event; `attest/0` certifies the current supervised boot after a successful model
+  response. Call it only after the configured credential keys have been validated.
+  `reject/3` marks the exact credential that received a definitive authentication
+  rejection, never a timeout/rate limit. A newer replacement will not be reverted.
+
+  Installation (integration owner): install Python 3; copy bin/seed-watchdog to
+  /opt/seed-safety/watchdog (0755); run it as container entrypoint under init with
+  a root-only config outside /app. Keep original bin/start as its child command.
+  Configure probe as an independent bounded RPC (not a heartbeat inside BEAM),
+  e.g. an installed copy of bin/rpc calling `Process.alive?(Process.whereis(Nano.Supervisor))`
+  and exiting nonzero on false. Do not trust RPC exit zero without checking result.
+  State defaults to /data/seed-safety and must be outside /app. Configure explicit
+  JSON credential files/keys (settings.json openrouter_api_key, operator keys;
+  OAuth requires validating its actual file schema separately).
+
+  Recovery journals live at state/events.jsonl and status.json, with displaced
+  work in source-evidence-* and secrets in credentials-evidence-* (root only).
+  Rollback excludes .git, deps, _build; git status then shows restored working
+  tree against current HEAD. Evidence preserves untracked/uncommitted sources.
+  No protection against host loss, deleted volumes, or malicious root processes.
+  This module does not start anything or alter the shared node on load.
+  """
+  def status(dir \\ directory()) do
+    case File.read(Path.join(dir, "status.json")) do
+      {:ok, json} -> Jason.decode(json)
+      {:error, :enoent} -> {:ok, %{"protected" => false, "event" => "not_installed"}}
+      error -> error
+    end
+  end
+
+  @doc "Certify only after a successful model response; no credentials enter this file."
+  def attest(dir \\ directory()) do
+    case System.get_env("SEED_SAFETY_BOOT") do
+      nil -> {:error, :not_supervised}
+      boot -> write(dir, "attestation.json", %{boot: boot, time: System.system_time(:nanosecond)})
+    end
+  end
+
+  @doc "Mark a definitively rejected string credential; callers must not log its value."
+  def reject(path, key, value, dir \\ directory()) when is_binary(value) do
+    file = Path.join(dir, "rejected.json")
+
+    current =
+      case File.read(file) do
+        {:ok, json} ->
+          case Jason.decode(json) do
+            {:ok, %{} = map} -> map
+            _ -> %{}
+          end
+
+        _ ->
+          %{}
+      end
+
+    hash = :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+
+    updated =
+      Map.update(
+        current,
+        Path.expand(path),
+        %{to_string(key) => hash},
+        &Map.put(&1, to_string(key), hash)
+      )
+
+    write(dir, "rejected.json", updated)
+  end
+
+  defp directory, do: System.get_env("SEED_SAFETY_DIR", "/data/seed-safety")
+
+  defp write(dir, name, data) do
+    path = Path.join(dir, name)
+    tmp = path <> "." <> Integer.to_string(:erlang.unique_integer([:positive]))
+
+    with :ok <- File.mkdir_p(dir),
+         :ok <- File.chmod(dir, 0o700),
+         {:ok, io} <- File.open(tmp, [:write, :exclusive]) do
+      result =
+        with :ok <- File.chmod(tmp, 0o600),
+             :ok <- IO.binwrite(io, Jason.encode!(data)),
+             :ok <- :file.sync(io),
+             do: :ok
+
+      File.close(io)
+      result = if result == :ok, do: File.rename(tmp, path), else: result
+      File.rm(tmp)
+      result
+    end
+  end
+end
