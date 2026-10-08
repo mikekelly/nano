@@ -4,6 +4,10 @@ defmodule Delegation do
   `subagent("scout", task: "Inspect", revision: "HEAD", model: "openai-codex/gpt-6.1-sol", reasoning: "low", max_context: 272000, max_turns: 100, max_tokens: 0)`.
   `worktree: true` creates /tmp/<name>/checkout on seedling/rigel-<name>.
   `pre: [paths]` supplies bounded file contents and SHA256 hashes.
+  `mcp: [names/maps]` optionally adds ready, supervised MCP clients. Options:
+  `mcp_config:`, `mcp_state_dir:`, `mcp_timeout:` (overall milliseconds).
+  Children discover stable handles with `SeedMCP.handles(child_name)`.
+  Bootstrap failure leaves the child idle and emits `:mcp_failed` to its parent.
   Parent receives `{:delegation, name, :result, text}`, `:halted` with reason,
   `:down` with exit reason, and `{:delegation, name, :restarted, new_pid}`.
   Relationships and pending lifecycle notices are persisted under /data/delegation.
@@ -60,16 +64,25 @@ defmodule Delegation do
     end
   end
 
-  def subagent(name, opts) do
+  def subagent(name, opts) when is_binary(name) and is_list(opts) do
+    if Keyword.keyword?(opts),
+      do: do_subagent(name, opts),
+      else: {:error, "options must be a keyword list"}
+  end
+
+  def subagent(_, _), do: {:error, "name must be a string and options a keyword list"}
+
+  defp do_subagent(name, opts) do
     parent = Keyword.get(opts, :parent) || caller_name()
     cwd = if opts[:worktree], do: "/tmp/#{name}/checkout", else: "/app"
 
     with :ok <- validate(name, opts, parent),
+         :ok <- mcp_available(opts),
          {:ok, pre} <- preread(Keyword.get(opts, :pre, [])),
          {:ok, prompt} <-
            compose(
              Keyword.get(opts, :parts, ["operating", "orientation"]),
-             "Your parent is #{parent}. Work in #{cwd}, revision #{opts[:revision]}. Own only your task files. Report with Delegation.report(#{inspect(parent)}, text). Task: #{opts[:task]}"
+             "Your parent is #{parent}. Work in #{cwd}, revision #{opts[:revision]}. Own only your task files. Report with Delegation.report(#{inspect(parent)}, text). Task: #{opts[:task]}#{mcp_hint(name, opts)}"
            ),
          {:ok, cwd} <- checkout(name, opts),
          {:ok, pid} <-
@@ -77,14 +90,15 @@ defmodule Delegation do
              Keyword.take(opts, [:model, :reasoning, :max_turns, :max_tokens, :max_context]) ++
                [name: name, system_prompt: prompt <> "\nPre-reading:\n" <> pre, start_idle: true]
            ) do
-      monitoring = monitor(name, parent)
+      task =
+        unless opts[:start_idle],
+          do: %{"message" => "Task: #{opts[:task]}", "parent_name" => parent}
 
-      unless opts[:start_idle],
-        do: send(pid, %{message: "Task: #{opts[:task]}\n" <> pre, parent_name: parent})
-
-      case monitoring do
-        :ok -> {:ok, %{name: name, pid: pid, cwd: cwd}}
-        error -> {:error, %{monitoring: error, child: %{name: name, pid: pid, cwd: cwd}}}
+      with :ok <- monitor(name, parent),
+           {:ok, clients} <- setup_mcp(name, parent, opts, task) do
+        {:ok, %{name: name, pid: pid, cwd: cwd, mcp: clients}}
+      else
+        error -> {:error, %{setup: error, child: %{name: name, pid: pid, cwd: cwd}}}
       end
     else
       false -> {:error, "revision is required, even for read-only jobs"}
@@ -127,10 +141,14 @@ defmodule Delegation do
   end
 
   @doc "Validate options without creating a worktree or starting a child."
-  def validate(name, opts, parent) do
+  def validate(name, opts, parent) when is_list(opts) do
     cond do
-      Keyword.get(opts, :mcp, []) not in [nil, []] ->
-        {:error, "Delegation MCP startup is not configured; refusing to ignore mcp servers"}
+      not Keyword.keyword?(opts) ->
+        {:error, "options must be a keyword list"}
+
+      not valid_mcp_options?(opts) ->
+        {:error,
+         "mcp requires at most 8 server names/maps and mcp_timeout 1..120000 milliseconds"}
 
       not is_binary(name) or not Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}\z/, name) ->
         {:error, "name must be 1..101 safe letters, digits, underscores or hyphens"}
@@ -162,6 +180,8 @@ defmodule Delegation do
     end
   end
 
+  def validate(_, _, _), do: {:error, "options must be a keyword list"}
+
   @doc "Bounded pre-reading: at most 16 regular files, 24000 bytes each, 96000 bytes total."
   def preread(paths) when is_list(paths) and length(paths) <= 16 do
     Enum.reduce_while(paths, {:ok, ""}, fn path, {:ok, acc} ->
@@ -186,16 +206,206 @@ defmodule Delegation do
 
   def preread(_), do: {:error, "pre-reading requires at most 16 file paths"}
 
+  defp mcp_hint(name, opts) do
+    specs = Keyword.get(opts, :mcp, []) || []
+
+    if specs == [],
+      do: "",
+      else:
+        "\nMCP is configured. Use SeedMCP.handles(#{inspect(name)}) to discover your ready clients; see SeedMCP module docs."
+  end
+
+  defp valid_mcp_options?(opts) do
+    specs = Keyword.get(opts, :mcp, []) || []
+    timeout = Keyword.get(opts, :mcp_timeout, 30000)
+
+    is_list(specs) and length(specs) <= 8 and
+      Enum.all?(specs, &(is_binary(&1) or is_map(&1))) and is_integer(timeout) and
+      timeout in 1..120_000
+  end
+
+  defp mcp_available(opts) do
+    if Keyword.get(opts, :mcp, []) in [nil, []] or
+         (Code.ensure_loaded?(SeedMCP) and function_exported?(SeedMCP, :start_for, 3)),
+       do: :ok,
+       else: {:error, "SeedMCP.start_for/3 is required for configured MCP servers"}
+  end
+
+  @doc """
+  Thin durable startup gate for SeedMCP.start_for/3. Options: mcp: [names/maps],
+  mcp_config:, mcp_state_dir:, mcp_timeout: (overall bootstrap milliseconds, default30000).
+  The task is delivered only after all clients are ready. Bootstrap events use
+  a temporary event owner and never activate the child before its original task.
+  Failed bootstrap leaves the named child idle and reports :mcp_failed to parent.
+  """
+  def setup_mcp(name, parent, opts, task \\ nil) do
+    with true <- valid_mcp_options?(opts), :ok <- mcp_available(opts) do
+      specs = Keyword.get(opts, :mcp, []) || []
+
+      if specs == [] do
+        with :ok <- deliver_task(name, task), do: {:ok, %{}}
+      else
+        options = %{
+          "config" => Keyword.get(opts, :mcp_config, "/app/lib/seed_mcp/servers.json"),
+          "state_dir" => Keyword.get(opts, :mcp_state_dir, Path.join(monitor_dir(), "mcp")),
+          "timeout" => Keyword.get(opts, :mcp_timeout, 30000)
+        }
+
+        intent = %{
+          "name" => name,
+          "parent" => parent,
+          "mcp_options" => options,
+          "mcp_bootstrap_task" => task
+        }
+
+        with :ok <- save_intent(intent) do
+          result =
+            bounded_mcp(name, options["timeout"], fn ->
+              SeedMCP.start_for(name, specs, runtime_options(options))
+            end)
+
+          finish_mcp(intent, result)
+        end
+      end
+    else
+      false -> {:error, "invalid MCP options"}
+      error -> error
+    end
+  end
+
+  @doc "Resolve stable MCP via handles from the sibling runtime."
+  def mcp_clients(name), do: SeedMCP.handles(name)
+
+  defp runtime_options(options) do
+    [
+      config: options["config"],
+      state_dir: options["state_dir"],
+      timeout: options["timeout"],
+      event_owner: self()
+    ]
+  end
+
+  defp bounded_mcp(name, timeout, fun) do
+    initial = SeedMCP.handles(name)
+    caller = self()
+    tag = make_ref()
+    {pid, ref} = spawn_monitor(fn -> send(caller, {tag, fun.()}) end)
+
+    receive do
+      {^tag, result} ->
+        Process.demonitor(ref, [:flush])
+        result
+
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        cleanup_new_mcp(name, initial)
+        {:error, {:mcp_start_exit, reason}}
+    after
+      timeout ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        end
+
+        receive do
+          {^tag, _} -> :ok
+        after
+          0 -> :ok
+        end
+
+        cleanup_new_mcp(name, initial)
+        {:error, :mcp_ready_timeout}
+    end
+  end
+
+  defp cleanup_new_mcp(name, initial) do
+    Enum.each(SeedMCP.handles(name), fn {server, handle} ->
+      unless Map.has_key?(initial, server), do: SeedMCP.stop(handle)
+    end)
+  end
+
+  defp deliver_task(_, nil), do: :ok
+
+  defp deliver_task(name, task) do
+    case NanoAgent.whereis(name) do
+      nil ->
+        {:error, "child is not running; task remains pending"}
+
+      pid ->
+        send(pid, task)
+        :ok
+    end
+  end
+
+  defp finish_mcp(intent, {:ok, handles}) do
+    result = deliver_task(intent["name"], intent["mcp_bootstrap_task"])
+    # Send the original task before allowing any new notifications to reach the child.
+    Enum.each(handles, fn {_, handle} -> SeedMCP.owner(handle, intent["name"]) end)
+
+    with :ok <- result,
+         :ok <- save_intent(Map.put(intent, "mcp_bootstrap_task", nil)),
+         do: {:ok, handles}
+  end
+
+  defp finish_mcp(intent, error) do
+    if parent = NanoAgent.whereis(intent["parent"]),
+      do: send(parent, {:delegation, intent["name"], :mcp_failed, error})
+
+    error
+  end
+
+  defp save_intent(intent) do
+    path = Path.join(monitor_dir(), safe_key(intent["name"]) <> ".json")
+    temp = path <> ".#{System.unique_integer([:positive, :monotonic])}.tmp"
+
+    try do
+      with :ok <- File.mkdir_p(monitor_dir()),
+           :ok <- File.write(temp, Jason.encode!(intent)),
+           :ok <- File.chmod(temp, 0o600),
+           do: File.rename(temp, path)
+    after
+      File.rm(temp)
+    end
+  end
+
+  @doc """
+  Restore MCP clients before reviving agents. Call after Nano.Names/StateStore
+  start, but before NanoAgent.revive. Returns per-owner results; a failed owner
+  should not be revived active until its clients can be restored. restore/0 later
+  restores monitors and delivers any original tasks that were pending at a crash.
+  """
+  def restore_mcp do
+    intents()
+    |> Enum.filter(& &1["mcp_options"])
+    |> Enum.map(fn intent ->
+      result =
+        bounded_mcp(intent["name"], intent["mcp_options"]["timeout"], fn ->
+          SeedMCP.restore(intent["name"], runtime_options(intent["mcp_options"]))
+        end)
+
+      case result do
+        {:ok, handles} -> Enum.each(handles, fn {_, h} -> SeedMCP.owner(h, intent["name"]) end)
+        _ -> :ok
+      end
+
+      {intent["name"], result}
+    end)
+  end
+
+  defp intents do
+    Path.wildcard(Path.join(monitor_dir(), "*.json"))
+    |> Enum.flat_map(fn path ->
+      with {:ok, text} <- File.read(path),
+           {:ok, %{"name" => name, "parent" => parent} = intent} <- Jason.decode(text),
+           true <- is_binary(name) and is_binary(parent),
+           do: [intent],
+           else: (_ -> [])
+    end)
+  end
+
   @doc "Persist a child-parent relationship and watch name-based restarts. Call restore/0 at boot."
   def monitor(name, parent) do
-    dir = monitor_dir()
-
-    with :ok <- File.mkdir_p(dir),
-         :ok <-
-           File.write(
-             Path.join(dir, safe_key(name) <> ".json"),
-             Jason.encode!(%{name: name, parent: parent})
-           ) do
+    with :ok <- save_intent(%{"name" => name, "parent" => parent}) do
       start_watch(name, parent)
       :ok
     end
@@ -203,15 +413,18 @@ defmodule Delegation do
 
   @doc "Restore persisted monitors after a node restart; idempotent in this node."
   def restore do
-    Path.wildcard(Path.join(monitor_dir(), "*.json"))
-    |> Enum.map(fn path ->
-      with {:ok, text} <- File.read(path),
-           {:ok, %{"name" => name, "parent" => parent}} <- Jason.decode(text),
-           true <- is_binary(name) and is_binary(parent) do
-        start_watch(name, parent)
-        :ok
+    Enum.map(intents(), fn intent ->
+      start_watch(intent["name"], intent["parent"])
+
+      if options = intent["mcp_options"] do
+        finish_mcp(
+          intent,
+          bounded_mcp(intent["name"], options["timeout"], fn ->
+            SeedMCP.restore(intent["name"], runtime_options(options))
+          end)
+        )
       else
-        _ -> {:error, path}
+        :ok
       end
     end)
   end
