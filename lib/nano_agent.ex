@@ -92,6 +92,7 @@ defmodule NanoAgent do
         id: new_id(name),
         template: template,
         prompt_file: file,
+        input_modalities: Map.get(entry, :input_modalities, ["text"]),
         context_window: entry.context_length,
         max_output: entry[:max_output],
         # Called from an agent's eval: the eval task's first caller is that agent.
@@ -212,6 +213,7 @@ defmodule NanoAgent do
         restart_count: s.restart_count,
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
+        input_modalities: Map.get(s, :input_modalities, ["text"]),
         context_window: Map.get(s, :context_window),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
@@ -333,6 +335,8 @@ defmodule NanoAgent do
       bindings: [],
       status: :idle,
       pending: [],
+      pending_images: [],
+      input_modalities: opts[:input_modalities] || ["text"],
       halted: nil,
       max_turns: opts[:max_turns],
       max_tokens: opts[:max_tokens],
@@ -573,7 +577,7 @@ defmodule NanoAgent do
 
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
-    end)
+    end) <> "\n\n" <> Images.prompt(Map.get(s, :input_modalities, ["text"]))
   end
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
@@ -702,10 +706,11 @@ defmodule NanoAgent do
 
   defp event(s, term) do
     seq = s.event_seq + 1
+    {images, notices} = admit_images(s, Images.references(term))
 
     {text, truncated, spill} =
       truncate(
-        inspect(term, inspect_opts()),
+        Enum.join([inspect(term, inspect_opts()) | notices], "\n"),
         stated(s, :result_max_bytes),
         {s.id, "event-#{seq}"}
       )
@@ -719,6 +724,8 @@ defmodule NanoAgent do
         pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
     }
 
+    s = Map.put(s, :pending_images, Map.get(s, :pending_images, []) ++ images)
+
     # queue_length: events waiting for the next turn, this one included.
     queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
 
@@ -727,6 +734,7 @@ defmodule NanoAgent do
       :event_received,
       spilled(spill, %{
         event_seq: seq,
+        images: images,
         message: text,
         queue_length: queued,
         truncated: truncated
@@ -796,8 +804,20 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        content =
+          Images.content(
+            Enum.join(s.pending ++ [line], "\n"),
+            Map.get(s, :pending_images, []),
+            Map.get(s, :input_modalities, ["text"])
+          )
+
+        user = %{"role" => "user", "content" => content}
+
+        next =
+          if new_turn?,
+            do: append(s, user) |> Map.merge(%{pending: [], pending_images: []}),
+            else: s
+
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -849,9 +869,10 @@ defmodule NanoAgent do
   # The size, as JSON, of the tools and messages of a request: what the estimate scales.
   defp bytes(system_prompt, transcript),
     do:
-      byte_size(
-        Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
-      )
+      Images.estimated_bytes([
+        @tools,
+        %{"role" => "system", "content" => system_prompt} | transcript
+      ])
 
   defp context_halt(s, estimate) do
     b = budget(s)
@@ -1407,13 +1428,17 @@ defmodule NanoAgent do
   # {:ok, inspected, bindings, warnings} | {:error, formatted}, with io as the group leader.
   def eval(code, bindings, io) do
     Process.group_leader(self(), io)
+    Images.take_viewed()
 
     # Compiler errors and warnings would go to stderr, out of the model's sight; collect them.
     {result, diagnostics} =
       Code.with_diagnostics(fn ->
         try do
           {value, bindings} = Code.eval_string(code, bindings)
-          {:ok, inspect(value, [pretty: true] ++ inspect_opts()), bindings}
+          refs = Enum.uniq(Images.take_viewed() ++ Images.references(value))
+          text = inspect(value, [pretty: true] ++ inspect_opts())
+          value = if refs == [], do: text, else: {:images, text, refs}
+          {:ok, value, bindings}
         catch
           kind, reason -> {:error, kind, reason, __STACKTRACE__}
         end
@@ -1529,7 +1554,16 @@ defmodule NanoAgent do
   # The model sees the result followed by any captured IO, truncated as a whole; the log
   # keeps result and IO apart for the dashboard.
   defp tool_result(s, call, started, ok, result, io \\ "") do
+    {result, refs} =
+      case result do
+        {:images, text, refs} -> {text, refs}
+        text -> {text, []}
+      end
+
+    {images, notices} = admit_images(s, refs)
+    result = Enum.join([result | notices], "\n")
     whole = if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io
+
     max = stated(s, :result_max_bytes)
     {text, truncated, spill} = truncate(whole, max, {s.id, "call-#{s.call_seq}"})
 
@@ -1541,17 +1575,24 @@ defmodule NanoAgent do
         name: call["function"]["name"],
         duration_ms: System.monotonic_time(:millisecond) - started,
         ok: ok,
+        images: images,
         result: elem(truncate(result, max), 0),
         io: elem(truncate(io, max), 0),
         truncated: truncated
       })
     )
 
-    append(s, tool_message(call, text))
+    content = Images.content(text, images, Map.get(s, :input_modalities, ["text"]))
+    append(s, tool_message(call, content))
   end
 
   defp tool_message(call, text),
     do: %{"role" => "tool", "tool_call_id" => call["id"], "content" => text}
+
+  defp admit_images(s, refs) do
+    used = length(Images.references(s.transcript)) + length(Map.get(s, :pending_images, []))
+    Images.admit(refs, max(Images.max_images() - used, 0))
+  end
 
   ## Helpers
 

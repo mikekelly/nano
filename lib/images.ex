@@ -104,7 +104,8 @@ defmodule Images do
   @doc "Image references within a term (including tuples returned by eval). Does not parse inspected text."
   def references(%{"type" => "image_ref"} = ref), do: [ref]
   def references(term) when is_map(term), do: term |> Map.values() |> Enum.flat_map(&references/1)
-  def references(term) when is_list(term), do: Enum.flat_map(term, &references/1)
+  def references([head | tail]), do: references(head) ++ references(tail)
+  def references([]), do: []
   def references(term) when is_tuple(term), do: term |> Tuple.to_list() |> references()
   def references(_), do: []
 
