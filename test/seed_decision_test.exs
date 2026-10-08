@@ -231,6 +231,7 @@ defmodule SeedDecisionTest do
           [threshold: -0.1],
           [threshold: 1.1],
           [timeout: 0],
+          [timeout: 5_001],
           [max_memories: -1],
           [max_memories: 65],
           [http: nil],
