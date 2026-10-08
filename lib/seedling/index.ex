@@ -16,6 +16,38 @@ defmodule Seedling.Index do
           ~s|Seedling.Background.start("MIX_ENV=test mix test", owner: "orion", timeout: 120000)|,
         detail:
           "Completion event %{background: id,status: code,reason: atom,output: path,bytes: n}. tail(path), cancel(pid), info(pid). Survives agent restart, not node restart."
+      },
+      %{
+        name: "Goals",
+        module: Seedling.Goals,
+        example:
+          ~s|Seedling.Goals.create(me, "Deliver capability", "Why it matters"); Seedling.Goals.review(me)|,
+        detail:
+          "Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard integration pending."
+      },
+      %{
+        name: "Memory",
+        module: Seedling.Memory,
+        example:
+          ~s|Seedling.Memory.remember("my-bot", "preference", "Prefers quiet hotels"); Seedling.Memory.recall("my-bot", "hotel")|,
+        detail:
+          "Durable per-bot graph with links/provenance, bounded retrieval, Jev reranking; labelled lexical fallback if decision service unavailable."
+      },
+      %{
+        name: "Front of mind (experimental)",
+        module: Seedling.FrontOfMind,
+        example:
+          ~s|Seedling.FrontOfMind.set(me, "Keep the constraint in view"); Seedling.FrontOfMind.configure(me, threshold: 8000, drift: true)|,
+        detail:
+          "At most 1000 characters, durable set/replace/clear. Automatic bobbing hooks pending integration. Do not infer efficacy from implementation; controlled comparison required."
+      },
+      %{
+        name: "Typed decisions",
+        module: Seedling.Decision,
+        example:
+          ~s|Seedling.Decision.evaluate("Recent activity", %{"drift" => Seedling.Decision.noul("Has activity drifted from the goal?")})|,
+        detail:
+          "Typesafe Jev typed noul/choice/score judgments; returns probabilities/errors as values. Supplied TYPESAFE_API_KEY live validated against jev-1.13.0; never print credentials."
       }
     ]
   end
