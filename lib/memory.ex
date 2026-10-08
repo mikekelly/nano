@@ -65,13 +65,20 @@ defmodule Memory do
     end
   end
 
+  @doc "Default memory directory alongside the node state directory (isolated in tests)."
+  def default_root(),
+    do:
+      Application.get_env(:nano, :state_dir, "/data/state")
+      |> Path.dirname()
+      |> Path.join("memory")
+
   defp name(value) when is_binary(value) and byte_size(value) in 1..512, do: :ok
   defp name(_), do: {:error, :invalid_name}
 
   defp path(owner, opts) do
     with :ok <- name(owner) do
       hash = Base.encode16(:crypto.hash(:sha256, owner), case: :lower)
-      {:ok, Path.expand(Path.join(Keyword.get(opts, :root, "/data/memory"), hash <> ".json"))}
+      {:ok, Path.expand(Path.join(Keyword.get(opts, :root, default_root()), hash <> ".json"))}
     end
   end
 
