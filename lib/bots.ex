@@ -109,6 +109,10 @@ defmodule Bots do
     server = Keyword.get(opts, :server, Bots.Server)
 
     if server == Bots.Server and Process.whereis(Bots.Server) == nil do
+      if Process.whereis(Nano.OptionalServices) do
+        raise "Bots service unavailable: waiting for supervised recovery"
+      end
+
       case GenServer.start(Bots.Server, [], name: Bots.Server) do
         {:ok, _} -> :ok
         {:error, {:already_started, _}} -> :ok
