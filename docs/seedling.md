@@ -64,3 +64,27 @@ normal environment is production and shares the live node's beam directory.
 Browser acceptance additionally has an isolated HTTP fixture and CDP script under
 `test/`; never run destructive recovery checks against this live node. Real-provider
 probes supplement deterministic tests but are not part of the default suite.
+
+## Deployment state and recovery
+
+`Nano.OptionalServices.status()` reports independent MCP/Bots startup failures and
+retry deadlines without making those optional services prerequisites for endpoint
+boot. Repair corrupt configuration/state deliberately; the manager never discards it.
+`retry(Module)` requests another start after repair. A running service supervisor is
+not proof that a remote MCP server is connected.
+
+SafetyNet is installed for this deployment, and Settings/Auth saves are transactional
+with private write-ahead credential backups. **The current node was not launched by
+that supervisor: lockup recovery is inactive until the next ordinary supervised boot.**
+`SafetyNet.status()` states this explicitly. Read `docs/safety-net.md` before restarting;
+Docker restart policy and persistent mounts must be configured externally. The first
+supervised boot must serve a genuine model response before qualifying a known-good
+snapshot. No manually forged attestation or destructive live recovery test was used.
+
+Validation at the integrated deployment checkpoint: 624 ExUnit tests, 8 JavaScript
+hook tests, production-source compilation with warnings-as-errors, formatting, and
+22 isolated external recovery tests passed. Additional followup tests may increase
+these counts. Real provider probes exercised checkpoints, both vision entry paths,
+Decision, Exa, and Bots chat/group/cross-session memory. Provider behavior is not made
+infallible by a transport test; one initial Bots colour-identification answer was wrong
+and was explicitly investigated rather than recorded as a passing vision result.
