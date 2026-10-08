@@ -992,7 +992,22 @@ defmodule NanoAgent do
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
 
   defp focus(s) do
-    case SeedFocus.before_call(s.name, estimate(s), epoch: Map.get(s, :compaction_generation, 0)) do
+    recent =
+      s.transcript
+      |> Enum.take(-6)
+      |> Enum.map_join("\n", fn message ->
+        case message["content"] do
+          text when is_binary(text) -> String.slice(text, -500, 500)
+          _ -> ""
+        end
+      end)
+      |> String.slice(-2000, 2000)
+
+    case SeedFocus.before_call(s.name, estimate(s),
+           epoch: Map.get(s, :compaction_generation, 0),
+           drift: &SeedDecision.drift/2,
+           recent: recent
+         ) do
       {:ok, %{message: message, events: events}} ->
         Enum.each(events, fn event -> log(s, event.type, Map.delete(event, :type)) end)
 
