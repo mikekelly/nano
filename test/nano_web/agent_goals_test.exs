@@ -39,7 +39,13 @@ defmodule NanoWeb.AgentGoalsTest do
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     agent = Nano.Ops.agent(name)
     ref = %{"id" => String.duplicate("a", 64), "width" => 1, "height" => 1}
-    Nano.Log.write(agent, :event_received, %{message: "image", event_seq: 1, images: [ref]})
+
+    Nano.Log.write(agent, :event_received, %{
+      message: "image",
+      event_seq: 1,
+      images: [ref],
+      image_notice: "Event image omitted from model"
+    })
 
     Nano.Log.write(agent, :tool_call, %{
       call_id: "paired",
@@ -52,14 +58,16 @@ defmodule NanoWeb.AgentGoalsTest do
       call_id: "paired",
       ok: true,
       result: "image result",
-      images: [ref]
+      images: [ref],
+      image_notice: "Paired image omitted from model"
     })
 
     Nano.Log.write(agent, :tool_result, %{
       call_id: "orphan",
       ok: true,
       result: "orphan image",
-      images: [ref]
+      images: [ref],
+      image_notice: "Orphan image omitted from model"
     })
 
     for suffix <- ["", "?view=debug"] do
@@ -67,6 +75,13 @@ defmodule NanoWeb.AgentGoalsTest do
       assert has_element?(view, "#timeline img[src='/api/images/#{ref["id"]}']")
       html = view |> element("#timeline") |> render()
       assert length(String.split(html, "alt=\"Attached image\"")) - 1 == 3
+
+      for notice <- [
+            "Event image omitted from model",
+            "Paired image omitted from model",
+            "Orphan image omitted from model"
+          ],
+          do: assert(has_element?(view, "#timeline", notice))
     end
   end
 
