@@ -2,7 +2,7 @@ defmodule Seedling.Bobbing do
   @moduledoc """
   Reusable append-only context bobbing for notes and goals. Called before *each* model
   request. Tracks the transcript index of the last appearance, estimating distance
-  as ceil(JSON bytes / 2), the same conservative byte/token ratio as the harness.
+  as ceil(JSON bytes / 2) plus 4,800 tokens per immutable image, the same conservative byte/token ratio as the harness.
   No turns-based approximation. Provider tokenization is not claimed to be exact.
   `reset/1` forces every source to reappear after compaction. Tracking lives in the
   agent's saved map and therefore survives restarts; no process or timer is needed.
@@ -13,15 +13,16 @@ defmodule Seedling.Bobbing do
     tracking = Map.get(s, :seedling_bobs, %{})
     previous = tracking[key]
 
+    recent = if previous, do: Enum.drop(s.transcript, previous.index), else: []
+
+    images =
+      Enum.sum(
+        for m <- recent,
+            do: Enum.count(List.wrap(m["content"]), &match?(%{"type" => "nano_image"}, &1))
+      )
+
     distance =
-      if previous,
-        do:
-          s.transcript
-          |> Enum.drop(previous.index)
-          |> Jason.encode!()
-          |> byte_size()
-          |> then(&div(&1 + 1, 2)),
-        else: 0
+      if previous, do: div(byte_size(Jason.encode!(recent)) + 1, 2) + images * 4800, else: 0
 
     changed =
       is_nil(previous) or previous.revision != revision or previous.index > length(s.transcript)
@@ -39,7 +40,7 @@ defmodule Seedling.Bobbing do
             distance_tokens: distance,
             threshold_tokens: threshold,
             reason: if(changed, do: "new_or_compacted", else: "distance"),
-            distance_method: "json_bytes_div_2"
+            distance_method: "json_bytes_div_2_plus_images"
           })
         )
 

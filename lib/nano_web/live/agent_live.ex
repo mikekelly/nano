@@ -17,6 +17,7 @@ defmodule NanoWeb.AgentLive do
   use Phoenix.LiveView
 
   import NanoWeb.Components
+  import NanoWeb.GoalsPanel, only: [goals: 1, bob: 1]
 
   @refresh_ms 1_000
   def mount(%{"name" => name} = params, _session, socket) do
@@ -186,7 +187,7 @@ defmodule NanoWeb.AgentLive do
   defp shown?(_, %{"type" => type} = e) do
     case type do
       t
-      when t in ~w(event_received harness_note agent_started tool_call tool_result images_received compaction_completed compaction_failed) ->
+      when t in ~w(event_received harness_note agent_started tool_call tool_result images_received compaction_completed compaction_failed context_bob drift_judgement front_of_mind_updated) ->
         true
 
       "model_response" ->
@@ -315,6 +316,8 @@ defmodule NanoWeb.AgentLive do
           <pre>{@agent.system_prompt}</pre>
         </details>
 
+        <.goals name={@name} />
+
         <nav class="views">
           <.link
             :for={{v, icon} <- [{"reading", "book"}, {"debug", "list"}]}
@@ -357,6 +360,9 @@ defmodule NanoWeb.AgentLive do
 
   attr :id, :string, required: true
   attr :e, :map, required: true
+
+  defp entry(%{e: %{"type" => type}} = assigns)
+       when type in ~w(context_bob drift_judgement front_of_mind_updated), do: bob(assigns)
 
   defp entry(%{e: %{"type" => "event_received"}} = assigns) do
     ~H"""
@@ -590,7 +596,8 @@ defmodule NanoWeb.AgentLive do
   end
 
   defp read(%{e: %{"type" => type}} = assigns)
-       when type in ~w(images_received compaction_completed compaction_failed), do: entry(assigns)
+       when type in ~w(images_received compaction_completed compaction_failed context_bob drift_judgement front_of_mind_updated),
+       do: entry(assigns)
 
   defp read(%{e: %{"type" => "harness_note"}} = assigns) do
     ~H"""
