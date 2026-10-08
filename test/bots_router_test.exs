@@ -231,6 +231,23 @@ defmodule Bots.RouterTest do
     refute Process.alive?(other_worker)
   end
 
+  test "killing the routing caller also cancels the blocked Decision worker", ctx do
+    owner = self()
+
+    caller =
+      spawn(fn ->
+        Router.select(ctx.bots, ctx.session, human("Help"),
+          decision: FakeDecision,
+          decision_opts: [owner: owner, action: :sleep]
+        )
+      end)
+
+    assert_receive {:decision, worker, _, _, _}
+    ref = Process.monitor(worker)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^worker, :killed}, 1_000
+  end
+
   test "IDs are unique session members and may come from an ID-keyed bot map", ctx do
     bots = Map.new(ctx.bots, &{&1["id"], &1}) |> Map.put("invalid", %{"id" => 123})
     session = %{ctx.session | "bot_ids" => ["b", "a", "b", "unknown", 123]}

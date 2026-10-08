@@ -192,6 +192,8 @@ defmodule Bots.Router do
 
     {pid, monitor} =
       spawn_monitor(fn ->
+        watch_owner(caller)
+
         result =
           try do
             fun.()
@@ -227,6 +229,22 @@ defmodule Bots.Router do
 
         {:error, :decision_timeout}
     end
+  end
+
+  # Stopping a session may kill the outer routing caller before its timeout fires.
+  # Monitor from a separate process so a blocked Decision call is still cancelled.
+  defp watch_owner(owner) do
+    worker = self()
+
+    spawn(fn ->
+      owner_ref = Process.monitor(owner)
+      worker_ref = Process.monitor(worker)
+
+      receive do
+        {:DOWN, ^owner_ref, :process, ^owner, _} -> Process.exit(worker, :kill)
+        {:DOWN, ^worker_ref, :process, ^worker, _} -> :ok
+      end
+    end)
   end
 
   defp selected_ids(candidates, {:ok, scores}, threshold) when is_map(scores) do
