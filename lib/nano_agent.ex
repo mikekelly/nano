@@ -172,20 +172,42 @@ defmodule NanoAgent do
   The agent rereads only its own template file (or retains its inline template) and
   applies at the next task/call-free boundary, never during automatic checkpoint
   attempts. Idle agents are not woken. See `info/1`'s `context_refresh_pending` flag.
-  No process, binding, budget, mailbox or conversation is replaced.
+  Optional `system_prompt: template` is an explicit caller-chosen inline replacement.
+  The harness never implicitly rewrites job content or substitutes seed prefixes.
+  No process, binding, budget, mailbox or transcript is replaced.
   """
-  def refresh_context(name) when is_binary(name) do
-    with %{model: model} = info <- info(name), pid when is_pid(pid) <- info.pid do
+  def refresh_context(name, opts \\ []) when is_binary(name) do
+    with :ok <- refresh_options(opts),
+         %{model: model} = info <- info(name),
+         pid when is_pid(pid) <- info.pid do
       discovery =
         case Nano.Model.lookup(model) do
           {:ok, entry} -> %{modalities: entry[:input_modalities] || ["text"], error: nil}
           {:error, reason} -> %{modalities: nil, error: inspect(reason)}
         end
 
+      discovery = Map.put(discovery, :template, opts[:system_prompt])
       GenServer.cast(pid, {:refresh_context, info.id, discovery})
       {:ok, :queued}
     else
+      {:error, _} = error -> error
       _ -> {:error, "agent is not running"}
+    end
+  end
+
+  defp refresh_options(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, "refresh options must be a keyword list"}
+
+      Keyword.keys(opts) -- [:system_prompt] != [] ->
+        {:error, "only system_prompt: is supported"}
+
+      Keyword.has_key?(opts, :system_prompt) and not is_binary(opts[:system_prompt]) ->
+        {:error, "system_prompt must be a template string"}
+
+      true ->
+        :ok
     end
   end
 
@@ -622,8 +644,15 @@ defmodule NanoAgent do
          %{context_refresh: refresh, task: nil, calls: [], compaction: nil} = s
        )
        when is_map(refresh) do
-    file = prompt_file(s)
-    read = if file, do: File.read(file), else: {:ok, s.template}
+    override = refresh[:template]
+    file = if is_binary(override), do: nil, else: prompt_file(s)
+
+    read =
+      cond do
+        is_binary(override) -> {:ok, override}
+        file -> File.read(file)
+        true -> {:ok, s.template}
+      end
 
     template =
       case read do
@@ -637,6 +666,7 @@ defmodule NanoAgent do
     next = %{
       s
       | template: template,
+        prompt_file: file,
         input_modalities: modalities,
         input_modalities_source: source,
         context_refresh: nil
@@ -1004,17 +1034,21 @@ defmodule NanoAgent do
            recent_activity: activity
          ) do
       {:ok, %{messages: messages, events: events}} ->
-        logged = Enum.map(events, fn event -> log(s, event.type, Map.delete(event, :type)) end)
-
-        if Enum.any?(logged, &(&1 == :error)) do
-          halt(s, :log_failed, @log_failed)
-        else
+        # The hook has already advanced durable cursors. Retain ALL returned text
+        # before logging anything, including when a later event/note write fails.
+        prepared =
           Enum.reduce(messages, %{s | front_of_mind_compacted: false}, fn text, state ->
-            if log(state, :harness_note, %{text: text}) == :ok,
-              do: append(state, %{"role" => "user", "content" => "<harness>#{text}</harness>"}),
-              else: halt(state, :log_failed, @log_failed)
+            append(state, %{"role" => "user", "content" => "<harness>#{text}</harness>"})
           end)
-        end
+
+        events_logged =
+          Enum.map(events, fn event -> log(prepared, event.type, Map.delete(event, :type)) end)
+
+        notes_logged = Enum.map(messages, &log(prepared, :harness_note, %{text: &1}))
+
+        if Enum.any?(events_logged ++ notes_logged, &(&1 == :error)),
+          do: halt(prepared, :log_failed, @log_failed),
+          else: prepared
 
       {:error, reason} ->
         log(s, :bobbing_error, %{reason: inspect(reason)})
