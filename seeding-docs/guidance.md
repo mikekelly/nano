@@ -25,7 +25,7 @@ the agent's situation and name where to find more, not contain more. Put detail 
 
 **A ladder that compounds.** The order below is not a rule, but each rung is built out of
 the ones before it, and each makes the next one cheaper, so it is a good default. Check
-`/app/NOTES.md` first: on this node some rungs may already exist.
+for an orientation (below) first: on this node some rungs may already exist.
 
 1. *Files*: `read(path, opts)` with paging and a size cap, `write(path, content)`,
    `edit(path, old, new)` as an exact-text replacement, `ls`, `find(glob)`, `grep(pattern)`.
@@ -93,9 +93,12 @@ the ones before it, and each makes the next one cheaper, so it is a good default
    same agent and keep working. Without it every agent's working life ends at its context
    limit, mid-task and unable to report; every rung after this assumes an agent can run as
    long as its job takes, and it has to be working before it is needed.
-4. *Notes and an index*: a module that says what exists and how to call it, and writes
-   `/app/NOTES.md` from that table, so the next agent (or you after a restart) starts from
-   the index instead of from the source.
+4. *Orientation*: a short partial, `orientation.md`, that goes into the system prompt of every
+   agent you compose, and whose only job is to give the entry points: what capabilities
+   exist, which module to start from for each, where the deeper documentation is (module
+   docs, the seeding docs, the guidance). Each entry point leads further in, like a wiki,
+   so the next agent (or you after a restart or a compaction) starts from the map instead of
+   from the source, and the map costs a few lines, not a manual.
 5. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
    and pre-reading, give it a task, get its result as a message. From here on, anything
    large is a sub-agent's job and your context stays at the level of the plan. Build it
@@ -220,14 +223,14 @@ deciding when a conversation needs compacting. Reach for one of these before eit
 hand-writing rules or calling the big model in a loop.
 
 **Leave breadcrumbs.** Everything you build must be discoverable by an agent that knows
-nothing about it: a fresh agent, a sub-agent, yourself after a restart or a compaction. A short
-index at a known place (`/app/NOTES.md` or a module's `@moduledoc`) that says what exists
-and where, with one example each, is worth more than any amount of documentation that
-nobody is pointed at.
+nothing about it: a fresh agent, a sub-agent, yourself after a restart or a compaction. The
+orientation in an agent's prompt, pointing into module docs that say what exists and how to
+call it, with one example each, is worth more than any amount of documentation that nobody
+is pointed at.
 
 **Progressive disclosure.** The first thing an agent sees should be small and should lead
-to the next thing. A one-line mention in the prompt leads to an index; the index leads to a
-module doc; the module doc leads to the source. Nothing should require reading everything,
+to the next thing. The orientation in the prompt leads to a module doc or a seeding doc;
+that leads to the source or to the next doc. Nothing should require reading everything,
 because every step read is context spent, and most readers need only the first one or two.
 
 **Libraries, not tools.** With `eval`, a capability is a module an agent can call. Prefer a

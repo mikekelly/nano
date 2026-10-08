@@ -78,7 +78,7 @@ coding agent whose compaction is a good reference. In outline:
   cannot take; compaction should make it rarely needed, not loosen it.
 - Compaction resets the provider's cached prefix, so the next call is paid in full; that is
   a reason not to compact sooner than needed.
-- What the agent keeps on disk (its goals, its index, its code) survives compaction untouched,
+- What the agent keeps on disk (its goals, its orientation, its code) survives compaction untouched,
   which is why keeping them current makes a compaction cheap and safe. The log under
   `/data/logs` keeps the whole conversation, so nothing is lost to operators.
 - The summary and the turns kept verbatim set the voice of everything after them: the
