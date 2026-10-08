@@ -82,7 +82,10 @@ forces a re-show once on the next model call, independently of the durable token
 During automatic summary attempts this hook is frozen along with the request: re-running
 it could change the cached prefix, lose a bob, or violate unchanged retries. Provider
 transport attempts already resend the exact request inside their model task. Hook errors
-are logged as `bobbing_error`, never represented as a successful intervention.
+are logged as `bobbing_error`, never represented as a successful intervention. If the
+hard guard refuses a prepared request, the inserted notes remain in the saved transcript
+so their eager durable cursors and placement logs agree with the context. A placement
+event does not assert the provider actually read a request that was refused locally.
 
 ## Operator recovery and diagnostics
 
