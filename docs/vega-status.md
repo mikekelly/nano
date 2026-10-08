@@ -1,3 +1,25 @@
+# Integration update — 2026-10-08 (source versus live)
+
+This section supersedes the older intermediate snapshot below. Garden is at `c0fb5d3`; main remains untouched. Work is **not finished** and a final operator report has not been sent.
+
+- Chromium CSS screenshots, trusted browser input and mobile QA are implemented and tested; Lightpanda remains the default and its screenshots remain explicitly text-layout. Packaged Node22 fallback is integrated (`c63d444`).
+- Actual three-stage same-model compaction evidence is recorded in `docs/vega-compaction.md`. Native-image retention now prices images conservatively and keeps recent complete exchanges whole only when the actual safe window permits (`c2c7e54`).
+- Strict Pillow image admission, immutable-ref viewing, corrupt/animated rejection and unavailable-image provider fallback are integrated (`3aa2360`, `f2c6b8b`).
+- Modern MCP opt-in, credential-safe restart arguments/crash reports (`defd147`), and bounded private image/audio/blob media references (`c0fb5d3`) are integrated. Explicit media viewing composes strict Images admission, never sends bare encoded payloads into model results. Successful server data and trusted-root introspection remain outside credential-redaction guarantees.
+- Bots peer context/session workspaces, detached history, malformed-snapshot read-only recovery, raw-upload isolation and font-independent icons are integrated. A password-only credential-request conduit is under child development; it is not yet integrated or live. Actual random-token peer-to-peer model demo still awaits safe restart and authorization.
+- Completed task guardians retire before delivery (`066a4fe`), preventing repeated cleanup of reused process groups. Initial PGID race and escaped process groups remain disclosed limits.
+- Dockerfile now installs Chromium, Debian Node/npm, Python/Pillow, checksum-pinned Node22 and a locked official filesystem MCP runtime under `/opt/vega-mcp-tools` (`ab63b1b`). The lockfile install succeeded in this container. **A complete Docker image build has not been executed.** See `vega-runtime-dependencies.md`.
+
+## Latest verification and remaining work
+
+Parent focused native-image compaction + MCP media tests: **11 passed**, no skips; compile warnings-as-errors and format checks passed. Evidence: `/data/vega-tasks/BuEE5ldaaKPde7Ri/output.log` (exit0).
+
+Parent full integrated run `/data/vega-tasks/fd8e28f9CxzqEsTj/output.log` exited2: two BotsLive image upload tests fail after strict decoder integration, apparently obsolete non-decodable PNG fixtures. Child notified to use genuine image fixtures, not weaken admission. Full suite must be rerun after that fix and credential-flow integration. This supersedes prior all-green suite counts; it is not a claim that the current full tree passes.
+
+**Live modules are still older versions.** No new Browser, Tasks, Images, Bots or MCP modules were loaded during these followups. Stop/restart Bots before incompatible state changes, preserving existing Muse/Dot sessions. Stop the entire old MCP subtree before loading credential/media changes: old supervisor child specs cannot be hot-redacted. Then reconnect official filesystem at `/opt`, run real peer-context demo and browser QA, refresh this record and mark goals accurately. No full live reboot has been claimed.
+
+---
+
 # Vega integrated seedling status
 
 Branch `seedling/vega-garden` integrates focused `seedling/vega-*`; main remains untouched. Code and docs are committed, services live on this node, capability index is `/app/NOTES.md` (`Vega.Index.write/0`). This is still an intermediate record while modern MCP, full-CSS browser QA and group-context refinements proceed.
