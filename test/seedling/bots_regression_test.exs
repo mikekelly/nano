@@ -65,11 +65,11 @@ defmodule Seedling.BotsRegressionTest do
     forward(owner)
   end
 
-  defp bot_and_session(c) do
+  defp bot_and_session(c, max_context \\ 64000) do
     {:ok, bot} =
       Bots.create(
         "Regression companion",
-        c.opts ++ [model: "fake/model", reasoning: "off", max_context: 20000]
+        c.opts ++ [model: "fake/model", reasoning: "off", max_context: max_context]
       )
 
     {:ok, chat} = Bots.session([bot["id"]], c.opts)
@@ -286,6 +286,54 @@ defmodule Seedling.BotsRegressionTest do
     )
 
     eventually(fn -> status(c, chat, bot) == "idle" end)
+  end
+
+  test "rehydrated live watcher follows model, tool and agent restart statuses without publishing their text",
+       c do
+    {bot, chat} = bot_and_session(c)
+    id = CapabilityStore.id()
+    GenServer.cast(c.server, {:delivery, chat["id"], bot["id"], "thinking", id})
+    _ = Bots.snapshot(c.server)
+    c = restart(c)
+    eventually(fn -> status(c, chat, bot) == "idle" end)
+
+    for {type, fields, expected} <- [
+          {:model_request, %{text: "private model request"}, "thinking"},
+          {:turn_ended, %{}, "idle"},
+          {:tool_call, %{text: "private eval"}, "thinking"},
+          {:agent_started, %{halted: :context}, "paused; operator attention needed"},
+          {:agent_started, %{halted: nil}, "idle"}
+        ] do
+      Phoenix.PubSub.broadcast(
+        Nano.PubSub,
+        "agent:" <> id,
+        {:nano_log, Map.merge(fields, %{type: type, agent_id: id})}
+      )
+
+      eventually(fn -> status(c, chat, bot) == expected end)
+    end
+
+    assert Bots.snapshot(c.server)["sessions"][chat["id"]]["messages"] == []
+  end
+
+  test "image admission rejection is visible and leaves the complete human message pageable", c do
+    {bot, chat} = bot_and_session(c, 20000)
+    path = Path.join(c.root, "too-small-window.png")
+    File.write!(path, Base.decode64!(@png))
+    assert {:ok, file} = BotFiles.add(path, "pixel.png", root: c.root)
+    text = "CURRENT REQUEST " <> String.duplicate("界", 4000)
+    assert {:ok, latest} = Bots.say(chat["id"], text, c.opts ++ [files: [file]])
+
+    eventually(fn ->
+      value = status(c, chat, bot)
+      is_binary(value) and value =~ "cannot fit the bot's context"
+    end)
+
+    refute_receive {:agent_event, _, {:"$gen_cast", {:images, _, _}}}, 50
+    refute_receive {:agent_event, _, %{type: :bot_chat}}, 50
+    assert {:ok, page} = Bots.message(chat["id"], latest["id"], c.opts ++ [limit: 6000])
+    assert page["text"] == text
+    assert page["files"] == [file]
   end
 
   test "24 long multibyte messages and image delivery stay bounded while originals remain pageable",
