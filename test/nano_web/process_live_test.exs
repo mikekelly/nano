@@ -95,7 +95,13 @@ defmodule NanoWeb.ProcessLiveTest do
 
     # The standard set is excluded. (Under LiveViewTest the view is not under the endpoint,
     # so it is listed here, unlike in a browser.)
-    refute html =~ esc(Process.whereis(Nano.StateStore))
+    # A prior recovery test may have restarted StateStore. The documented standard set
+    # is a boot-time PID snapshot, not a permanent whitelist of registered service names.
+    refute has_element?(view, row(Process.whereis(:code_server)))
+    store = Process.whereis(Nano.StateStore)
+
+    assert has_element?(view, row(store)) ==
+             not MapSet.member?(Nano.Application.boot_set(), store)
   end
 
   test "processes spawned by an agent's eval are tagged with the agent", ctx do
