@@ -9,5 +9,5 @@ as `/app`, and run history in an agent's context steers what it does.
 - [`tasks/`](tasks/) and [`utilities-and-delegation.md`](utilities-and-delegation.md): the
   older, advice-style seeding docs and tasks that early runs were planted with.
 
-The seeding docs themselves are on `main` under `seeding doc-docs/`; each run's work is on its
-`seedling/<agent>-<what>` branch. Links in these files are relative to `seeding doc-docs/` on `main`; the spec is at `bootstrap/SPEC.md`.
+The seeding docs themselves are on `main` under `seeding-docs/`; each run's work is on its
+`seedling/<agent>-<what>` branch. Links in these files are relative to `seeding-docs/` on `main`; the spec is at `bootstrap/SPEC.md`.
