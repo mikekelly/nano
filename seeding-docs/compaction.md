@@ -49,9 +49,9 @@ block from the cache.
    running anything else: an agent mid-compaction should not run other code. A summary that
    is empty or over its length does not count.
 4. **Retries.** Anything else is not kept: send the same request again, unchanged, up to three
-   times. If none of them gives a summary, fall back once to a separate summarising context
-   (below); if that fails too, halt the agent with a reason that says so, a note telling it
-   what happened, and its full history still in the log.
+   times. If none of them gives a summary, halt the agent with a reason that says so and a
+   note telling it what happened; its full history is still in the log, and an operator can
+   un-halt it to try again.
 5. **Voluntary compaction.** The same function, called by the agent itself from `eval` with
    its own summary whenever it judges the moment right: between tasks, say, or before starting
    something large once more than about half the context is used. No note is needed. It takes
@@ -76,22 +76,14 @@ block from the cache.
    summary of everything else." The summary is then what the model attends to most as it
    carries on. Anything that arrived during the compaction is delivered after it.
 
-**When the tip cannot be used: a separate summarising context.** For a conversation already
-past its window, which leaves no room at the tip, or a summary wanted from a different model,
-which cannot use this one's cache: write the older history out as compact text, in one user
-message, to a model with a summariser's system prompt and no tools. Its input is read again
-uncached, so cut each tool result to its first 2,000 characters (what was written in the
-agent's own calls, including code and its comments, stays whole), and say in the summary where
-things are, so the agent can read again what was cut. The same carry-over and order apply.
-
 ## Considerations
 
 - Automatic, not left to the model: the agent that most needs compacting is the one deep in a
   task, least likely to stop and do housekeeping, and once the harness has halted it for its
   context it can do nothing at all.
 - A summary fits by construction: compaction starts before the context reaches its limit, the
-  summary is written at the tip of that same context (or, in a separate context, from a copy
-  that is usually smaller once tool output is cut), and its own length fits in the reserve.
+  summary is written at the tip of that same context, and its own length fits in the
+  reserve.
   There is nothing to measure first, and a size check that can refuse is only a way to fail.
 - On the ChatGPT subscription the backend accepts no limit on a reply's length, so a summary
   there is bounded only by what it is asked to write: state the length in the note and check it
@@ -119,15 +111,7 @@ things are, so the agent can read again what was cut. The same carry-over and or
 ## Inspiration, for the compaction prompt
 
 - pi (github.com/badlogic/pi-mono, `packages/coding-agent/src/core/compaction/`): its summary
-  and update prompts in `compaction.ts`, the structured checkpoint they ask for, and, for a
-  separate summarising context, its summariser's system prompt in `utils.ts`:
-
-  > You are a context summarization assistant. Your task is to read a conversation between a
-  > user and an AI assistant, then produce a structured summary following the exact format
-  > specified.
-  >
-  > Do NOT continue the conversation. Do NOT respond to any questions in the conversation.
-  > ONLY output the structured summary.
+  and update prompts in `compaction.ts`, and the structured checkpoint they ask for.
 
 - The Codex CLI (github.com/openai/codex, `codex-rs/prompts/templates/compact/prompt.md`),
   whose compaction prompt asks for current progress and key decisions; important context,
