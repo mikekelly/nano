@@ -76,6 +76,35 @@ defmodule Seedling.ShellTest do
     Nano.Names.unregister_name({:agent, name})
   end
 
+  test "operator brutal kill cleans up descendants and sends interrupted event", %{dir: dir} do
+    marker = Path.join(dir, "escaped")
+
+    {:ok, task} =
+      Background.start("(sleep 0.6; touch '#{marker}') & wait", owner: self(), dir: dir)
+
+    Process.sleep(100)
+    Process.exit(task.pid, :kill)
+    assert_receive {:seedling_background, %{status: :interrupted} = record}, 2000
+    assert record.interruption == {:worker_exit, ":killed"}
+    Process.sleep(650)
+    refute File.exists?(marker)
+    assert {:ok, %{status: :interrupted}} = Background.status(task)
+  end
+
+  test "boot scanner marks stale running record interrupted, never reruns command", %{dir: dir} do
+    {:ok, task} = Background.start("true", owner: self(), dir: dir)
+    assert_receive {:seedling_background, record}, 2000
+    fake = %{record | status: :running}
+    :ok = Background.persist(fake)
+    {:ok, recovery} = Seedling.Background.Recovery.start_link(dir: dir)
+
+    assert_receive {:seedling_background, %{status: :interrupted, interruption: :node_restart}},
+                   2000
+
+    GenServer.stop(recovery)
+    assert {:ok, %{status: :interrupted}} = Background.receipt(task.receipt_path)
+  end
+
   test "unlinked worker survives initiating eval-like process", %{dir: dir} do
     parent = self()
 

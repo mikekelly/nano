@@ -8,7 +8,8 @@ defmodule Seedling.Background do
 
   Completion is `{:seedling_background, receipt}` (metadata only). Named owners are
   resolved again on completion and retried while absent. Receipt and full merged output
-  are stored on disk. This survives agent/eval restarts, not BEAM/host restarts.
+  are stored on disk. This survives agent/eval restarts. See Seedling.Background.Recovery for boot
+  interruption records; OS execution is not resumed after BEAM/host restarts.
   `owner:` may also be a pid (not restart safe); defaults to the calling named agent.
   `dir:` defaults to /data/seedling/background; `timeout:` defaults to :infinity.
   Requires POSIX bash, setsid and kill. Commands are trusted shell code.
@@ -72,6 +73,7 @@ defmodule Seedling.Background do
   @impl true
   def init({command, opts, owner, callers, id, dir}) do
     Process.put(:"$callers", if(pid = resolve(owner), do: [pid], else: callers))
+    Process.put(:seedling_background_id, id)
     output = Path.join(dir, id <> ".log")
     receipt = Path.join(dir, id <> ".term")
     timeout = Keyword.get(opts, :timeout, :infinity)
@@ -126,6 +128,8 @@ defmodule Seedling.Background do
       group_path: Path.join(dir, id <> ".pgid")
     }
 
+    :ok = persist(s)
+    Seedling.Background.Guardian.watch(self(), s)
     {:ok, %{public: s, port: port, file: file, reason: nil}}
   end
 
@@ -153,8 +157,7 @@ defmodule Seedling.Background do
         finished_at: System.system_time(:millisecond)
       })
 
-    :ok = File.write(public.receipt_path <> ".tmp", :erlang.term_to_binary(public))
-    :ok = File.rename(public.receipt_path <> ".tmp", public.receipt_path)
+    :ok = persist(public)
     send(self(), :deliver)
     {:noreply, %{s | public: public, file: nil}}
   end
@@ -198,6 +201,13 @@ defmodule Seedling.Background do
   end
 
   defp resolve(_), do: nil
+
+  @doc false
+  def persist(public) do
+    with :ok <- File.write(public.receipt_path <> ".tmp", :erlang.term_to_binary(public)),
+         :ok <- File.rename(public.receipt_path <> ".tmp", public.receipt_path),
+         do: :ok
+  end
 
   defp stop_command(s, reason) do
     case File.read(s.public.group_path) do
