@@ -100,7 +100,78 @@ defmodule Seedling.BotsTest do
         )
   end
 
+  test "named human requester reattaches after broker restart", %{path: path, pid: pid} do
+    {:ok, b} = Bots.create_bot("Durable")
+    {:ok, s} = Bots.create_session([b.id])
+    name = "requester-" <> b.id
+    {:ok, r} = Bots.request_human(b.id, "Choose", session: s.id, reply_to: name)
+    GenServer.stop(pid)
+    {:ok, new} = Bots.start_link(path: path)
+    assert :ok = Bots.answer(r, "A")
+    assert Bots.snapshot().requests[r].reply_to == name
+    assert Bots.snapshot().requests[r].delivered == false
+    assert :yes = Nano.Names.register_name({:agent, name}, self())
+    send(new, :deliver_answers)
+    assert_receive {:human_answer, ^r, "A"}
+    assert Bots.snapshot().requests[r].delivered
+    Nano.Names.unregister_name({:agent, name})
+    GenServer.stop(new)
+  end
+
+  test "concurrent first human turns are queued once in durable transcript order" do
+    Nano.FakeOpenRouter.start()
+    model = Nano.FakeOpenRouter.model()
+    {:ok, b} = Bots.create_bot("Ordered", "Precise", model: model)
+    {:ok, s} = Bots.create_session([b.id])
+    name = "bot-" <> b.id <> "-" <> s.id
+    on_exit(fn -> Nano.Ops.stop_agent(name) end)
+    Nano.FakeOpenRouter.push(model, calls: [idle: nil])
+    parent = self()
+
+    tasks =
+      for text <- ["first concurrent human", "second concurrent human"] do
+        Task.async(fn ->
+          send(parent, {:ready, self()})
+
+          receive do
+            :go -> Bots.say(s.id, text)
+          end
+        end)
+      end
+
+    assert_receive {:ready, p1}
+    assert_receive {:ready, p2}
+    send(p1, :go)
+    send(p2, :go)
+    for task <- tasks, do: assert(match?({:ok, _}, Task.await(task)))
+
+    await(fn ->
+      Enum.all?(Bots.snapshot().sessions[s.id].messages, &(Map.get(&1, :pending, []) == []))
+    end)
+
+    expected = Enum.map(Bots.snapshot().sessions[s.id].messages, & &1.text)
+    agent = Nano.Ops.agent(name)
+    await(fn -> Enum.count(Nano.Log.read(agent.id), &(&1["type"] == "event_received")) >= 2 end)
+
+    events =
+      Nano.Log.read(agent.id)
+      |> Enum.filter(&(&1["type"] == "event_received"))
+      |> Enum.map(&Jason.encode!/1)
+
+    assert Enum.zip(events, expected)
+           |> Enum.all?(fn {event, text} -> String.contains?(event, text) end)
+
+    assert length(Nano.Names.all() |> Enum.filter(fn {key, _} -> key == {:agent, name} end)) == 1
+
+    refute Enum.any?(
+             Bots.snapshot().sessions[s.id].messages,
+             &String.contains?(&1.text, "couldn't connect")
+           )
+  end
+
   test "invalid writes
+
+
  leave state intact and content is untrusted text" do
     assert {:error, :invalid_identity} = Bots.create_bot("")
     {:ok, b} = Bots.create_bot("Safe")
