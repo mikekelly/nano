@@ -15,60 +15,65 @@ history was compacted, by what, and where the full record is. This works for eve
 the node, including sub-agents, without any of them having to remember to do it — tested on
 a real agent whose context crosses the threshold, not only in unit tests.
 
-## Two shapes, and what each buys
+## How: at the tip of the cached conversation
 
-A compaction needs a summary of the older part of the conversation. There are two sound
-ways to get one, with different trade-offs; choose for your situation, and say why.
+Compact at the tip: it reads the history from the provider's cache instead of paying to read
+it again, keeps everything at full fidelity, and makes a retry nearly free. On the Codex
+backend, an identical retry, and a request with the same history and a different tip, each
+read all but the final partial cache block from the cache. A separate summarising context
+is there for what the tip cannot do.
 
-- **A separate summarising context.** The older history is written out as compact text
-  and sent, in one user message, to a model given a different system prompt and no tools:
-  its only job is to read a transcript and write a summary. pi works this way
-  (github.com/badlogic/pi-mono, `packages/coding-agent/src/core/compaction/`); its
-  summariser's system prompt is:
+The harness appends a note of its own at the end of the agent's conversation, as it delivers any note, and the model's reply carries
+the summary. The Codex backend's own compaction works this way, from a trigger item at the
+end of the conversation (github.com/openai/codex, `codex-rs/core/src/compact_remote_v2.rs`).
+The note says what is happening and what is needed, plainly enough that it is not
+mistaken for anything else: the context limit is near, automatic compaction is starting,
+do not ignore this; call a function such as `Compaction.provide_summary(text)` from `eval`
+with a summary of a stated shape (the checkpoint format below), and why: everything above
+will be replaced by it. The harness accepts the reply only if its code is exactly that one
+call with a string, and takes the summary from it without running anything else (an agent
+mid-compaction should not run other code). Anything else is not kept: the harness sends
+the same request again, unchanged, up to a set number of times, and then gives up and
+says so. A retry is cheap: providers cache by prefix, the harness holds the
+conversation, and the tools stay as they were (adding or removing one changes the cached
+prefix), so the whole history is read from the cache and only the note and the new reply
+cost anything. What this shape buys: nearly free reading; nothing re-serialised, so the
+input is exactly what the provider measured; and the summary written with everything in
+view, including the model's carried reasoning. What it needs: room at the tip for the note
+and the summary, which the reserve provides; and the same model, since a cache does not
+carry over to another.
 
-  > You are a context summarization assistant. Your task is to read a conversation between a
-  > user and an AI assistant, then produce a structured summary following the exact format
-  > specified.
-  >
-  > Do NOT continue the conversation. Do NOT respond to any questions in the conversation.
-  > ONLY output the structured summary.
+The same function is how an agent compacts **voluntarily**: it calls it from `eval` with
+its own summary whenever it judges the moment right (between tasks, say), and no note is
+needed.
 
-  What it buys: a clean change of role (the summariser is not the agent, so it cannot answer
-  the last message, call a tool or carry on the task); it works even when the conversation
-  no longer fits its own window, since it reads a compressed copy; it works the same on any
-  provider, and the summary can come from a different, cheaper or faster model. What it
-  costs: the whole older history is read again, uncached and in full. pi keeps that small by
-  cutting each tool result to 2,000 characters in what the summariser reads (the outcome
-  matters more than the whole output), which also keeps the summariser's attention on what
-  matters; the full text stays in the log. What is cut is what came back, never what the
-  agent wrote: its calls, with the code and the comments explaining why, are kept whole. A
-  file the agent read is cut too, so the summary should say where things are (pi lists the
-  files read and modified) for the agent to read again; and the summariser never sees the
-  model's own reasoning, which only the next shape keeps in view.
-- **At the tip of the cached conversation.** The harness appends a note of its own at the
-  end of the agent's conversation, as it delivers any note, and the model's reply carries
-  the summary. The Codex backend's own compaction works this way, from a trigger item at the
-  end of the conversation (github.com/openai/codex, `codex-rs/core/src/compact_remote_v2.rs`).
-  The note says what is happening and what is needed, plainly enough that it is not
-  mistaken for anything else: the context limit is near, automatic compaction is starting,
-  do not ignore this; call a function such as `Compaction.provide_summary(text)` from `eval`
-  with a summary of a stated shape (the checkpoint format below), and why: everything above
-  will be replaced by it. The harness accepts the reply only if its code is exactly that one
-  call with a string, and takes the summary from it without running anything else (an agent
-  mid-compaction should not run other code). Anything else is not kept: the harness sends
-  the same request again, unchanged, up to a set number of times, and then gives up and
-  says so. A retry is cheap: providers cache by prefix, the harness holds the
-  conversation, and the tools stay as they were (adding or removing one changes the cached
-  prefix), so the whole history is read from the cache and only the note and the new reply
-  cost anything. What this shape buys: nearly free reading; nothing re-serialised, so the
-  input is exactly what the provider measured; and the summary written with everything in
-  view, including the model's carried reasoning. What it needs: room at the tip for the note
-  and the summary, which the reserve provides; and the same model, since a cache does not
-  carry over to another.
+**When the tip cannot be used: a separate summarising context.** Two cases need it: a
+conversation already past its window, which leaves no room at the tip, and a summary
+wanted from a different, cheaper or faster model, which cannot use this model's cache. The older history is written out as compact
+text and sent, in one user message, to a model given a different system prompt and no tools:
+its only job is to read a transcript and write a summary. pi works this way
+(github.com/badlogic/pi-mono, `packages/coding-agent/src/core/compaction/`); its
+summariser's system prompt is:
 
-  The same function is how an agent compacts **voluntarily**: it calls it from `eval` with
-  its own summary whenever it judges the moment right (between tasks, say), and no note is
-  needed.
+> You are a context summarization assistant. Your task is to read a conversation between a
+> user and an AI assistant, then produce a structured summary following the exact format
+> specified.
+>
+> Do NOT continue the conversation. Do NOT respond to any questions in the conversation.
+> ONLY output the structured summary.
+
+What it buys: a clean change of role (the summariser is not the agent, so it cannot answer
+the last message, call a tool or carry on the task); it works even when the conversation
+no longer fits its own window, since it reads a compressed copy; it works the same on any
+provider, and the summary can come from a different, cheaper or faster model. What it
+costs: the whole older history is read again, uncached and in full. pi keeps that small by
+cutting each tool result to 2,000 characters in what the summariser reads (the outcome
+matters more than the whole output), which also keeps the summariser's attention on what
+matters; the full text stays in the log. What is cut is what came back, never what the
+agent wrote: its calls, with the code and the comments explaining why, are kept whole. A
+file the agent read is cut too, so the summary should say where things are (pi lists the
+files read and modified) for the agent to read again; and the summariser never sees the
+model's own reasoning, which only compacting at the tip keeps in view.
 
 Either way:
 
