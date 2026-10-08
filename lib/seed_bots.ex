@@ -13,8 +13,36 @@ defmodule SeedBots do
   """
   use GenServer
 
-  def start_link(opts),
-    do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+  @doc """
+  Options: `:directory` required; agent configuration `:model`, `:reasoning`,
+  `:max_context`, `:max_turns`, `:max_tokens` is validated before starting and passed
+  unchanged to NanoAgent, which validates provider/model context support. Defaults
+  are Codex gpt-6.1-sol, low reasoning, 272000 context, unlimited turns/tokens.
+  Use explicit finite budgets for consumer deployments. Limits apply to new session
+  agents; existing/restored agents retain their saved limits. `:agents`/`:routing`
+  false and injectable `:decision` are intended for isolated tests.
+  """
+  def start_link(opts) do
+    with :ok <- validate_agent_options(opts) do
+      GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    end
+  end
+
+  defp validate_agent_options(opts) do
+    context = Keyword.get(opts, :max_context, 272_000)
+    turns = Keyword.get(opts, :max_turns, 0)
+    tokens = Keyword.get(opts, :max_tokens, 0)
+    reasoning = Keyword.get(opts, :reasoning, "low")
+    model = Keyword.get(opts, :model, "openai-codex/gpt-6.1-sol")
+
+    if is_integer(context) and context > 0 and is_integer(turns) and turns >= 0 and
+         is_integer(tokens) and tokens >= 0 and reasoning in NanoAgent.reasoning_levels() and
+         is_binary(model) and String.trim(model) != "" do
+      :ok
+    else
+      {:error, :invalid_agent_options}
+    end
+  end
 
   def bots, do: call(:bots)
   def sessions, do: call(:sessions)
@@ -387,10 +415,10 @@ defmodule SeedBots do
       NanoAgent.start(
         name: name,
         model: Keyword.get(s.opts, :model, "openai-codex/gpt-6.1-sol"),
-        reasoning: "low",
-        max_context: 272_000,
-        max_turns: 0,
-        max_tokens: 0,
+        reasoning: Keyword.get(s.opts, :reasoning, "low"),
+        max_context: Keyword.get(s.opts, :max_context, 272_000),
+        max_turns: Keyword.get(s.opts, :max_turns, 0),
+        max_tokens: Keyword.get(s.opts, :max_tokens, 0),
         start_idle: true,
         system_prompt: prompt
       )

@@ -59,6 +59,41 @@ defmodule SeedBotsTest do
     assert [^tea] = SeedBots.memories(muse.id, "tea")
   end
 
+  test "agent limits reject invalid values before starting", %{dir: dir} do
+    for options <- [
+          [max_context: 0],
+          [max_context: "1000"],
+          [max_turns: -1],
+          [max_tokens: -1],
+          [reasoning: "secret"],
+          [model: nil]
+        ] do
+      assert {:error, :invalid_agent_options} = SeedBots.start_link([directory: dir] ++ options)
+    end
+  end
+
+  test "another process cannot impersonate a session bot", %{dir: dir} do
+    {:ok, bot} = SeedBots.create_bot(%{name: "Muse"})
+    {:ok, chat} = SeedBots.create_session([bot.id])
+    stop_supervised!(SeedBots)
+
+    start_supervised!(
+      {SeedBots,
+       directory: dir,
+       agents: true,
+       routing: false,
+       max_context: 20000,
+       max_turns: 20,
+       max_tokens: 100_000,
+       reasoning: "low"}
+    )
+
+    assert {:error, :wrong_agent} = SeedBots.speak(chat.id, bot.id, "impersonation")
+    assert SeedBots.get_session(chat.id).messages == []
+    assert :ok = SeedBots.stop(chat.id)
+    assert {:error, :wrong_agent} = SeedBots.speak(chat.id, bot.id, "after stop")
+  end
+
   test "human request is answerable once and sends correlated response" do
     {:ok, bot} = SeedBots.create_bot(%{name: "Bot"})
     {:ok, chat} = SeedBots.create_session([bot.id])
