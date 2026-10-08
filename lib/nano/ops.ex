@@ -17,6 +17,21 @@ defmodule Nano.Ops do
 
   @inspect [pretty: true, limit: :infinity, printable_limit: :infinity]
 
+  # The boot pid snapshot alone cannot recognize a supervisor-restarted service.
+  # Resolve infrastructure names live, without calling potentially busy supervisors.
+  @standard_services [
+    Nano.Supervisor,
+    Nano.Names,
+    Nano.Settings,
+    Nano.StateStore,
+    Nano.EvalSupervisor,
+    Nano.ChatGPT.Auth,
+    Nano.OpenRouter.Auth,
+    Nano.AgentSupervisor,
+    Nano.UserSupervisor,
+    NanoWeb.Endpoint
+  ]
+
   ## Agents
 
   @doc "Info maps for all agents."
@@ -283,7 +298,13 @@ defmodule Nano.Ops do
 
     %{
       agents: agents,
-      boot: Nano.Application.boot_set(),
+      boot:
+        Enum.reduce(@standard_services, Nano.Application.boot_set(), fn name, set ->
+          case Process.whereis(name) do
+            pid when is_pid(pid) -> MapSet.put(set, pid)
+            nil -> set
+          end
+        end),
       endpoint: Process.whereis(NanoWeb.Endpoint),
       names: names,
       model_requests: for(%{task: %{kind: :model, task: %{pid: pid}}} <- agents, do: pid),

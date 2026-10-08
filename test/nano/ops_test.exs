@@ -248,6 +248,18 @@ defmodule Nano.OpsTest do
   end
 
   describe "process/1" do
+    test "restarted infrastructure stays standard rather than becoming an operator process" do
+      old = Process.whereis(Nano.StateStore)
+      ref = Process.monitor(old)
+      Process.exit(old, :kill)
+      assert_receive {:DOWN, ^ref, _, _, _}
+      wait_for(fn -> Process.whereis(Nano.StateStore) not in [nil, old] end)
+      current = Process.whereis(Nano.StateStore)
+      refute current in Nano.Application.boot_set()
+      assert %{kind: :standard} = Ops.process(current)
+      refute Map.has_key?(kinds(), current)
+    end
+
     test "Process.info detail with pid and kind" do
       {user, user_pid} = start_user()
 
