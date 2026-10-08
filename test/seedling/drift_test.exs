@@ -14,7 +14,7 @@ defmodule Seedling.FrontOfMind.DriftTest do
     transport = fn request ->
       assert request[:headers] == [{"authorization", "Bearer fake"}]
       assert request[:retry] == false
-      assert request[:json].questions.drift.type == "noul"
+      assert request[:json].questions["judgement"]["type"] == "noul"
       assert String.length(request[:json].state) < 3_100
 
       {:ok,
@@ -22,7 +22,7 @@ defmodule Seedling.FrontOfMind.DriftTest do
          status: 200,
          body: %{
            "model" => "jev-fake",
-           "answers" => %{"drift" => %{"noul" => 0.75}},
+           "answers" => %{"judgement" => %{"type" => "noul", "noul" => 0.75}},
            "usage" => %{"input_tokens" => 10}
          }
        }}
@@ -36,7 +36,7 @@ defmodule Seedling.FrontOfMind.DriftTest do
   end
 
   test "bad responses and http errors do not masquerade as drift" do
-    for body <- [%{}, %{"answers" => %{"drift" => %{"noul" => 1.1}}}] do
+    for body <- [%{}, %{"answers" => %{"judgement" => %{"type" => "noul", "noul" => 1.1}}}] do
       assert {:error, :invalid_response} =
                Drift.judge("n", "a",
                  api_key: "fake",
