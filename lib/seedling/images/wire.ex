@@ -65,7 +65,7 @@ defmodule Seedling.Images.Wire do
   @doc "Remove inline image bytes from raw model logs, while retaining all non-image payload text."
   def redact(body) when is_binary(body) do
     Regex.replace(
-      ~r/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+\/=]+/,
+      ~r{data:image(?:/|\\/)[a-zA-Z0-9.+-]+;base64,(?:[A-Za-z0-9+/=]|\\/)+},
       body,
       "[image data omitted]"
     )
