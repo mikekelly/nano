@@ -103,7 +103,31 @@ defmodule ExaTest do
              Exa.answer("x", api_key: "TEST", request_fun: fn _ -> {:error, :timeout} end)
   end
 
-  test "bounds preserve URLs intact rather than returning corrupted citation links" do
+  test "HTTP wall-clock deadline kills a stuck request and caps output below harness limit" do
+    parent = self()
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, %{kind: :transport, retryable: true}} =
+             Exa.answer("x",
+               api_key: "TEST",
+               timeout: 20,
+               request_fun: fn _ ->
+                 send(parent, {:http_worker, self()})
+                 Process.sleep(:infinity)
+               end
+             )
+
+    assert System.monotonic_time(:millisecond) - started < 1000
+    assert_receive {:http_worker, pid}
+    refute Process.alive?(pid)
+    assert {:error, %{kind: :invalid_input}} = Exa.answer("x", max_bytes: 24001)
+
+    assert byte_size(Jason.encode!(Exa.bound(String.duplicate("x", 50000), max_bytes: 24000))) <=
+             24000
+  end
+
+  test "bounds preserve URLs
+ intact rather than returning corrupted citation links" do
     data = %{"url" => "https://example.com", "text" => String.duplicate("x", 2000)}
 
     assert %{data: %{"url" => "https://example.com"}, truncated: true} =
