@@ -125,8 +125,10 @@ defmodule Nano.ChatGPT.Auth do
   end
 
   def handle_call(:logout, _from, s) do
-    File.rm(path())
-    {:reply, :ok, publish(schedule(%{s | tokens: nil, login: nil, error: nil}))}
+    case SafetyNet.forget_credential(path()) do
+      :ok -> {:reply, :ok, publish(schedule(%{s | tokens: nil, login: nil, error: nil}))}
+      {:error, _} -> {:reply, {:error, "could not durably remove ChatGPT credentials"}, s}
+    end
   end
 
   def handle_call(:token, _from, %{tokens: nil} = s),
@@ -235,7 +237,12 @@ defmodule Nano.ChatGPT.Auth do
       # The refresh token is expired, revoked or already used: only a new login helps.
       :permanent ->
         Logger.warning("Nano.ChatGPT.Auth: refresh refused (#{why(result)}); signing out")
-        File.rm(path())
+
+        if SafetyNet.forget_credential(path()) != :ok do
+          Logger.error(
+            "Nano.ChatGPT.Auth: could not invalidate credential backup; manual cleanup required"
+          )
+        end
 
         publish(
           schedule(%{
@@ -288,25 +295,22 @@ defmodule Nano.ChatGPT.Auth do
       {:error, reason} ->
         # Not saved, so not used: a rotated refresh token that only lived in memory would be
         # lost at the next restart.
+        # Do not refresh stale in-memory tokens after an ambiguous transaction failure:
+        # the new generation may already be durable and must not be invalidated by R1.
+        cancel(s.timer)
+
         publish(%{
           s
-          | error: "could not save the ChatGPT tokens to #{path()}: #{inspect(reason)}"
+          | tokens: nil,
+            timer: nil,
+            error: "could not save the ChatGPT tokens to #{path()}: #{inspect(reason)}"
         })
     end
   end
 
   # Readable by its owner only, and never half-written: the content goes into a 0600 temp file
   # that then replaces the old one.
-  defp write(tokens) do
-    tmp = path() <> ".tmp"
-
-    with :ok <- File.mkdir_p(Path.dirname(tmp)),
-         :ok <- File.write(tmp, ""),
-         :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.write(tmp, Jason.encode!(tokens)) do
-      File.rename(tmp, path())
-    end
-  end
+  defp write(tokens), do: SafetyNet.write_credential(path(), Jason.encode!(tokens))
 
   defp credentials(%{tokens: %{"access_token" => token, "account_id" => account}} = s) do
     if expires_in(s.tokens) > 0,

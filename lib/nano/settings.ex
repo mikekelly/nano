@@ -384,16 +384,8 @@ defmodule Nano.Settings do
 
   # Readable by its owner only, and never half-written: the content goes into a 0600 temp file
   # that then replaces the old one.
-  defp write(values) do
-    tmp = path() <> ".tmp"
-
-    with :ok <- File.mkdir_p(Path.dirname(tmp)),
-         :ok <- File.write(tmp, ""),
-         :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.write(tmp, Jason.encode!(values, pretty: true)) do
-      File.rename(tmp, path())
-    end
-  end
+  defp write(values),
+    do: SafetyNet.write_credential(path(), Jason.encode!(values, pretty: true))
 
   defp publish(values) do
     if :persistent_term.get(@values, nil) != values, do: :persistent_term.put(@values, values)
