@@ -5,7 +5,8 @@ or latest measured context reaches its window minus a reserve (16,384 tokens, sc
 for small windows). The original pid, name, mailbox, eval bindings and working files stay
 untouched. Summaries use a separate tool-free call to the same model, with up to three
 transient-error attempts, and are charged to agent/node token and cost totals, not agent
-turns. Recent complete turns are retained verbatim. Existing checkpoints are updated.
+turns. Recent turns are retained verbatim, cutting only at user/assistant boundaries so every
+kept tool result retains its call. Long single turns checkpoint their earlier request/progress. Existing checkpoints are updated.
 
 Nano.Compaction documents the serializer and split. Tool results are capped at 2,000
 characters in the summary input. Operators can follow `compaction_started`,
@@ -33,8 +34,11 @@ Nano.Ops.send_image("alice", "/tmp/photo.jpg", "Describe this")
 
 PNG, JPEG and GIF are sniffed from bytes. Limits are 3,750,000 raw bytes (5 MB base64),
 1–2,000 pixels per side: the stricter dimension cap deliberately also covers histories
-containing over 20 images. Unsupported/malformed headers, oversized uploads and invalid
-references are refused before delivery. WebP is not yet supported. There is no image
+containing over 20 images. Unsupported/malformed data, oversized uploads and invalid
+references are refused before delivery. ImageMagick fully decodes every frame under
+resource/time limits (64 MiB memory/map, no disk cache, 10 s decoder/12 s OS deadline),
+with warnings treated as failures and forced allowlisted coders. Animated GIFs are refused;
+only one nonanimated frame is supported. Missing ImageMagick is a fail-closed error. WebP is not yet supported. There is no image
 transcoding and no automatic deletion policy.
 
 Images are snapshotted by SHA-256 under `<state_dir>/images` (`:image_dir` app env can
@@ -49,7 +53,9 @@ explicit warning on every attachment and a truthful system prompt, while operato
 receive the image reference in the timeline. OpenRouter user content uses `image_url`;
 Codex translates it to `input_image`. Eval views are user messages after tool results,
 portable across both providers. `images_received` log entries expose the same immutable
-references for authenticated API/dashboard display. Route/UI glue is integrated separately.
+references for same-origin API/dashboard display. The agent dashboard provides an upload form and renders the same attachments in both
+reading/debug timelines. API: POST /api/agents/:name/images ({base64,text}),
+GET /api/images/:id (immutable original bytes). The seed has no HTTP authentication layer.
 
 ## Tests
 

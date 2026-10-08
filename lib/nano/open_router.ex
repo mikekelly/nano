@@ -109,7 +109,7 @@ defmodule Nano.OpenRouter do
       false ->
         []
 
-      {^config, until, models} when until > now ->
+      {^config, until, [%{input_modalities: _} | _] = models} when until > now ->
         models
 
       _ ->

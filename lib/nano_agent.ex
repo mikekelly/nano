@@ -660,8 +660,6 @@ defmodule NanoAgent do
   end
 
   def handle_cast(:unhalt, s) do
-    b = budget(s)
-
     {s, more} =
       case s.halted do
         :budget ->
@@ -670,9 +668,9 @@ defmodule NanoAgent do
 
         :context ->
           {s,
-           " This conversation does not shrink: its context is still " <>
-             "#{used(b.context_used, b.max_context, "tokens")}, so unless your limit has been " <>
-             "raised I will halt you again before my next call to the model, without making it."}
+           " I will retry automatic compaction if a safe older prefix can be summarized. " <>
+             "The final context-fit check remains enforced; an irreducible conversation " <>
+             "will halt again rather than send a request that cannot fit."}
 
         _ ->
           {s, ""}
@@ -857,8 +855,13 @@ defmodule NanoAgent do
         room = b.max_context - estimate
 
         cond do
-          Nano.Compaction.due?(b.max_context, estimate) and compactable?(s) ->
+          compaction_due?(s, estimate) and compactable?(s) ->
             compact(s, {:request, new_turn?})
+
+          compaction_due?(next, estimate) and compactable?(next) ->
+            # A newly delivered second turn can provide the first useful cut boundary.
+            # It is already appended and must not be delivered twice after the checkpoint.
+            compact(next, {:request, false})
 
           b.max_context > 0 and room < @reply_room ->
             s |> context_halt(estimate) |> end_turn("budget")
@@ -1098,6 +1101,7 @@ defmodule NanoAgent do
       # Calls no longer fail in a row.
       |> Map.put(:retry, nil)
       |> Map.put(:context_retry_compacted, false)
+      |> Map.put(:compact_requested, r.finish_reason in ["length", "max_output_tokens"])
       |> append(message)
 
     s =
@@ -1351,10 +1355,13 @@ defmodule NanoAgent do
     log(s, :turn_ended, %{reason: reason})
     s = %{s | status: :idle, calls: [], idle_called: false}
 
-    if s.halted == nil and Nano.Compaction.due?(s.max_context, estimate(s)) and compactable?(s),
+    if s.halted == nil and compaction_due?(s, estimate(s)) and compactable?(s),
       do: compact(s, :idle),
       else: maybe_start_turn(s)
   end
+
+  defp compaction_due?(s, estimate),
+    do: Map.get(s, :compact_requested, false) or Nano.Compaction.due?(s.max_context, estimate)
 
   defp front_of_mind(s, hook) do
     if function_exported?(Seedling.FrontOfMind, hook, 1),
@@ -1419,7 +1426,7 @@ defmodule NanoAgent do
 
     transcript = [checkpoint | t.recent]
     original = s
-    s = Map.put(s, :compaction_files, files)
+    s = s |> Map.put(:compaction_files, files) |> Map.put(:compact_requested, false)
 
     s = %{
       s
@@ -1439,6 +1446,10 @@ defmodule NanoAgent do
         {:error, "checkpoint and recent history still exceed the safe context size"}
       )
     else
+      # The provider measurement belongs to the pre-checkpoint history. Replace it
+      # with a conservative estimate and its matching byte baseline until the next reply.
+      s = %{s | context_used: estimate(s), measured_bytes: bytes(s.system_prompt, s.transcript)}
+
       log(s, :compaction_completed, %{
         model: s.model,
         summary: summary,

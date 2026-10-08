@@ -45,6 +45,7 @@ defmodule Nano.Images do
   def store(bytes) when is_binary(bytes) and byte_size(bytes) <= @max do
     with {:ok, mime, width, height} <- dimensions(bytes),
          true <- width in 1..2000 and height in 1..2000,
+         :ok <- validate_decode(bytes, mime, width, height),
          :ok <- File.mkdir_p(dir()) do
       id = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
       path = Path.join(dir(), id)
@@ -143,6 +144,77 @@ defmodule Nano.Images do
         m
       end
     end)
+  end
+
+  # Sniffing dimensions is not validation: a forged header or damaged compressed data
+  # otherwise poisons every later provider call. Decode once before publishing bytes.
+  # ImageMagick is a runtime dependency; absence is an explicit refusal, never a bypass.
+  defp validate_decode(bytes, mime, width, height) do
+    with executable when is_binary(executable) <- System.find_executable("convert"),
+         timeout when is_binary(timeout) <- System.find_executable("timeout") do
+      folder =
+        Path.join(
+          System.tmp_dir!(),
+          "nano-image-" <> Base.encode16(:crypto.strong_rand_bytes(12))
+        )
+
+      File.mkdir!(folder)
+      File.chmod!(folder, 0o700)
+      path = Path.join(folder, "image")
+
+      format =
+        case mime do
+          "image/png" -> "PNG"
+          "image/jpeg" -> "JPEG"
+          "image/gif" -> "GIF"
+        end
+
+      try do
+        File.write!(path, bytes)
+
+        args = [
+          "--kill-after=1s",
+          "12s",
+          executable,
+          "-limit",
+          "memory",
+          "64MiB",
+          "-limit",
+          "map",
+          "64MiB",
+          "-limit",
+          "disk",
+          "0",
+          "-limit",
+          "time",
+          "10",
+          "-regard-warnings",
+          format <> ":" <> path,
+          "-format",
+          "%m %w %h %n",
+          "-write",
+          "info:",
+          "null:"
+        ]
+
+        case System.cmd(timeout, args, stderr_to_stdout: true) do
+          {text, 0} ->
+            if String.trim(text) == "#{format} #{width} #{height} 1",
+              do: :ok,
+              else:
+                {:error, "image must decode as one nonanimated frame with its stated dimensions"}
+
+          {_text, _status} ->
+            {:error, "image data is corrupt, incomplete, or exceeds decoder resource limits"}
+        end
+      after
+        File.rm_rf(folder)
+      end
+    else
+      _ -> {:error, "image validation requires ImageMagick convert and coreutils timeout"}
+    end
+  rescue
+    error -> {:error, "image validation failed: " <> Exception.message(error)}
   end
 
   defp dimensions(<<137, 80, 78, 71, 13, 10, 26, 10, 13::32, "IHDR", w::32, h::32, _::binary>>),
