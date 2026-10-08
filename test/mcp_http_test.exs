@@ -269,6 +269,68 @@ defmodule MCP.HTTPTest do
     refute_receive {:http_request, _, _}, 100
   end
 
+  test "modern subscription is idle without timing out and cancellation closes only its stream",
+       %{url: url} do
+    transport = start_transport(url, %{"timeout_ms" => 100, "protocol_version" => "2026-07-28"})
+
+    listen = %{
+      "jsonrpc" => "2.0",
+      "id" => 71,
+      "method" => "subscriptions/listen",
+      "params" => %{"_meta" => %{"io.modelcontextprotocol/protocolVersion" => "2026-07-28"}}
+    }
+
+    HTTP.send_message(transport, listen)
+    {stream, _} = request("POST")
+    Server.sse(stream)
+    notification = %{"jsonrpc" => "2.0", "method" => "notifications/tools/list_changed"}
+    Server.chunk(stream, "data: " <> Jason.encode!(notification) <> "\n\n")
+    assert_receive {:mcp_transport, ^transport, {:message, ^notification}}, 2000
+    refute_receive {:mcp_transport, ^transport, {:down, _}}, 250
+    refute_receive {:http_closed, ^stream}, 10
+
+    assert :ok =
+             HTTP.send_message(transport, %{
+               "jsonrpc" => "2.0",
+               "method" => "notifications/cancelled",
+               "params" => %{"requestId" => 71}
+             })
+
+    assert_receive {:http_closed, ^stream}, 2000
+    refute_receive {:http_request, _, _}, 100
+    refute_receive {:mcp_transport, ^transport, {:down, _}}, 10
+    assert Process.alive?(transport)
+
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 72, "method" => "ping"})
+    {post, _} = request("POST")
+    response = %{"jsonrpc" => "2.0", "id" => 72, "result" => %{}}
+    Server.reply(post, 200, [{"content-type", "application/json"}], Jason.encode!(response))
+    assert_receive {:mcp_transport, ^transport, {:message, ^response}}, 2000
+  end
+
+  test "SSE ignores an initial UTF-8 BOM split across chunks", %{url: url} do
+    transport = start_transport(url)
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 8, "method" => "ping"})
+    {post, _} = request("POST")
+    Server.sse(post)
+    response = %{"jsonrpc" => "2.0", "id" => 8, "result" => %{}}
+    Server.chunk(post, <<0xEF>>)
+    Server.chunk(post, <<0xBB>>)
+    Server.chunk(post, <<0xBF>> <> "data: " <> Jason.encode!(response) <> "\n\n")
+    assert_receive {:mcp_transport, ^transport, {:message, ^response}}, 2000
+    refute_receive {:mcp_transport, ^transport, {:down, _}}, 50
+  end
+
+  test "abrupt transport death closes its outstanding request socket", %{url: url} do
+    transport = start_transport(url)
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+    {post, _} = request("POST")
+    ref = Process.monitor(transport)
+    Process.exit(transport, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^transport, :killed}, 2000
+    assert_receive {:http_closed, ^post}, 2000
+  end
+
   test "a request that never receives headers times out", %{url: url} do
     transport = start_transport(url, %{"timeout_ms" => 100})
     HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
