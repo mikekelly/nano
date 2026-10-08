@@ -14,7 +14,7 @@ defmodule Bots.RouterTest do
         :exit -> exit(:provider_failed)
         :kill -> Process.exit(self(), :kill)
         :throw -> throw(:provider_failed)
-        :sleep -> Process.sleep(5_000)
+        :sleep -> Process.sleep(Keyword.get(opts, :delay, 5_000))
         _ -> :ok
       end
 
@@ -229,6 +229,18 @@ defmodule Bots.RouterTest do
     assert {:ok, []} = Router.select(ctx.bots, ctx.session, bot("Reply?"), options)
     assert_receive {:decision, other_worker, _, _, _}
     refute Process.alive?(other_worker)
+  end
+
+  test "default deadline permits Decision latency beyond the old three-second budget", ctx do
+    assert {:ok, ["b"]} =
+             Router.select(ctx.bots, ctx.session, bot("A useful proposal"),
+               decision: FakeDecision,
+               decision_opts: [
+                 action: :sleep,
+                 delay: 3_100,
+                 result: {:ok, %{"b" => %{value: 0.9}}}
+               ]
+             )
   end
 
   test "killing the routing caller also cancels the blocked Decision worker", ctx do

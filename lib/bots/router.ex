@@ -6,7 +6,7 @@ defmodule Bots.Router do
   an ID-keyed map; only unique, nonempty string IDs in the session's `"bot_ids"` are
   eligible. Results contain IDs, never model-generated names or unknown participants.
 
-      Bots.Router.select(bots, session, message, routing_timeout: 3_000)
+      Bots.Router.select(bots, session, message, routing_timeout: 12_000)
       #=> {:ok, ["bot-id"]}
 
   The model sees the most recent 24 messages, including roles, candidate identities
@@ -21,13 +21,13 @@ defmodule Bots.Router do
 
   Options: `:decision` injects a module implementing `noul/2` and `ask/3` (default
   `Decision`); `:decision_opts` are forwarded unchanged to `ask/3`; `:routing_timeout`
-  bounds the entire Decision call (default 3,000 milliseconds). No direct provider or
+  bounds the entire Decision call (default 12,000 milliseconds). No direct provider or
   large-model calls are made here. Decision is loaded dynamically, so it is optional
   at compile time. Normal provider errors are absorbed by the fallback policy.
   """
 
   @recent_messages 24
-  @routing_timeout 3_000
+  @routing_timeout 12_000
 
   @doc "Returns eligible speaker IDs in session order, or an input error."
   @spec select([map()] | map(), map(), map(), keyword()) ::
