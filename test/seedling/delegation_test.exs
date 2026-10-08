@@ -207,4 +207,68 @@ defmodule Seedling.DelegationTest do
     assert NanoAgent.whereis(c.child) == nil
     assert File.ls!(c.dir) == []
   end
+
+  test "optional MCP server is ready before first turn and callable from child's eval", c do
+    server = "delegation-stdio"
+    config_path = Path.join(c.dir, "mcp.json")
+    connection_options = [config_path: config_path, state_dir: c.dir <> "/mcp", timeout: 2000]
+
+    File.write!(
+      config_path,
+      Jason.encode!(%{
+        "servers" => %{
+          server => %{
+            "transport" => "stdio",
+            "command" => System.find_executable("python3"),
+            "args" => [Path.expand("test/fixtures/seedling/mcp_stdio.py"), "modern"]
+          }
+        }
+      })
+    )
+
+    code = """
+    {:ok, connection} = Seedling.MCP.connect(#{inspect(server)}, #{inspect(connection_options)})
+    {:ok, %{status: :ready}} = Seedling.MCP.status(connection)
+    {:ok, %{data: %{"tools" => tools}}} = Seedling.MCP.tools(connection)
+    Seedling.Delegation.report(#{inspect(c.child)}, "MCP ready on first eval; \#{length(tools)} tools")
+    """
+
+    Fake.push(c.opts[:model], calls: [eval: code, idle: nil])
+
+    assert {:ok, h} =
+             D.subagent(
+               c.child,
+               c.opts ++ [mcp: [{server, connection_options}], first_message: "Use prepared MCP"]
+             )
+
+    assert {:ok, connection} = Seedling.MCP.connect(server, connection_options)
+    on_exit(fn -> Seedling.MCP.disconnect(connection) end)
+    assert {:ok, %{status: :ready}} = Seedling.MCP.status(connection)
+    assert [%{server: ^server, options: ^connection_options}] = h.mcp
+    assert NanoAgent.info(c.child).system_prompt =~ "MCP servers connected before your start"
+    assert_receive {:openrouter_request, _, _}, 1000
+
+    assert_receive {:seedling_delegation, id, seq,
+                    %{kind: :result, summary: "MCP ready on first eval; 5 tools"}},
+                   2000
+
+    assert id == h.id
+    assert :ok = D.ack(h, seq)
+  end
+
+  test "MCP connection failure never starts the child", c do
+    assert {:error, %{reason: :mcp_failed}} =
+             D.subagent(
+               c.child,
+               c.opts ++
+                 [
+                   mcp: [
+                     {"unknown",
+                      [config_path: c.dir <> "/missing.json", state_dir: c.dir <> "/mcp"]}
+                   ]
+                 ]
+             )
+
+    assert NanoAgent.whereis(c.child) == nil
+  end
 end
