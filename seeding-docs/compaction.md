@@ -40,7 +40,11 @@ ways to get one, with different trade-offs; choose for your situation, and say w
   costs: the whole older history is read again, uncached and in full. pi keeps that small by
   cutting each tool result to 2,000 characters in what the summariser reads (the outcome
   matters more than the whole output), which also keeps the summariser's attention on what
-  matters; the full text stays in the log.
+  matters; the full text stays in the log. What is cut is what came back, never what the
+  agent wrote: its calls, with the code and the comments explaining why, are kept whole. A
+  file the agent read is cut too, so the summary should say where things are (pi lists the
+  files read and modified) for the agent to read again; and the summariser never sees the
+  model's own reasoning, which only the next shape keeps in view.
 - **At the tip of the cached conversation.** A compaction instruction is appended to the
   agent's conversation as it is, and the model's reply is the summary. The Codex backend's
   own compaction works this way, from a trigger item at the end of the conversation
@@ -51,9 +55,15 @@ ways to get one, with different trade-offs; choose for your situation, and say w
   including the model's carried reasoning. What it needs: room at the tip for the
   instruction and the summary, which the reserve provides; the same model, since a cache
   does not carry over to another; and keeping the model to summarising, since it is still
-  the agent, with its own system prompt and tools: allow no tool use for that call (adding or
-  removing tools changes the cached prefix; turning tool use off does not), and reject a
-  reply that is not a summary.
+  the agent, with its own system prompt and tools. The summary can come back through the
+  tool the agent already has: ask it to call a function such as
+  `Compaction.provide_summary(text)` from `eval`, and accept the reply only if its code is
+  exactly that one call with a string, taking the summary from it without running anything
+  else (an agent mid-compaction should not get to run other code). The tools stay as they
+  were, so the cached prefix holds (adding or removing a tool changes it). Providers cache by
+  prefix, and the harness holds the conversation, so a reply that is not a summary is simply
+  not kept: send the same request again, perhaps more firmly, and the whole history is read
+  from the cache again; only the instruction and the new reply cost anything.
 
 Either way:
 
