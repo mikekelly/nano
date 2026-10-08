@@ -36,7 +36,7 @@ when asked to, so that it can be measured, and record what it showed.
 
 | File | Hypothesis |
 | --- | --- |
-| [`experimental/context-bobbing.md`](experimental/context-bobbing.md) | Re-asserting what an agent must not lose sight of (a front-of-mind note, its current goal) at the tip of its context whenever it sinks too deep, with an optional drift check by a decision model, keeps it on course |
+| [`experimental/front-of-mind.md`](experimental/front-of-mind.md) | A short note of what an agent must not lose sight of, kept near the tip of its context by *context bobbing* (re-asserted whenever it sinks too deep), with an optional drift check by a decision model, keeps it on course |
 
 Some seeding docs need something only the operators can supply, and say so at the top: an API
 key, which the operators supply as a node setting under its usual name (`EXA_API_KEY`). The

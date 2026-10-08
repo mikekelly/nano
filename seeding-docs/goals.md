@@ -21,10 +21,10 @@ see what it is pursuing without reading its log.
 - Reviewing goals costs context every time; the agent decides when (at each wakeup,
   every so many turns, before an `idle`), and the review should be a small summary, not
   the whole tree.
-- A goal stated once sinks as the conversation grows past it. The current goal and its next
-  step can be kept near the tip by context bobbing
-  ([experimental/context-bobbing.md](experimental/context-bobbing.md)), which is
-  complementary: goals are the durable record, bobbing keeps the live end in view.
+- A goal stated once sinks as the conversation grows past it. Context bobbing, the
+  technique behind front of mind ([experimental/front-of-mind.md](experimental/front-of-mind.md)),
+  re-asserts information at the tip of the context whenever it sinks too deep; goals could
+  use it too, keeping the current goal and its next step in view without repeating the tree.
 - The dashboard reads plain functions; showing goals means exposing them where the agent
   page can read them cheaply, since it renders live, in the same node as the agents, and
   a slow or blocking read slows the page or hangs it.
