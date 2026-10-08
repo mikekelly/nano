@@ -67,6 +67,21 @@ reconnection continues; `status/2` reports state. Calls while disconnected retur
 `timeout: milliseconds` to request functions. Unknown servers, anonymous pids,
 JSON-RPC errors and transport failures are returned, not silently swallowed.
 
+For delegated multi-server setup, prevent lifecycle events waking the child before
+all servers are ready:
+
+```elixir
+MCP.connect("first", agent: "child", defer_events: true)
+MCP.connect("second", agent: "child", defer_events: true)
+MCP.release_events("child") # => :ok; release after ALL connects succeed
+```
+
+The hold applies per stable agent to all lifecycle/action/notification events,
+including the periodic offline-queue flush; RPC readiness is not held. Release
+drains the bounded queue and restores normal delivery. Last disconnect clears
+hold/queued events. A setup owner must release or disconnect on failure; holds
+are transient and are **not** persisted across manager/node restarts.
+
 `request(server, method, params, opts)` is the composable escape hatch. Public
 results are `{:ok, value}` / `{:error, reason}`; JSON-RPC error maps retain code,
 message and data. Application-level `isError` or modern `resultType` fields remain
@@ -242,7 +257,7 @@ MIX_ENV=test MIX_BUILD_ROOT=/tmp/orion-mcp/.seedling-build mix test test/seedlin
 The foundation's mix.exs clears MIX_BUILD_ROOT in test, so actual builds land in
 this worktree's private `_build/test`, not `/app`'s build.
 
-**13 tests passed** on 2026-10-08. The fixture is a real local Python OS process:
+**16 tests passed** on 2026-10-08. The fixture is a real local Python OS process:
 stdio and loopback HTTP servers (port **0**), unique temp directories per test.
 It asserts current metadata/HTTP headers and legacy initialization/session order;
 SSE data lines and chunk boundaries are split. Tests cover all four transport/era
@@ -254,9 +269,16 @@ HTTP annotated headers, invalid schema rejection, encoded Unicode headers, UTF-8
 paging, and a **second independent BEAM VM** restoring saved subscriptions with
 no connect/subscribe calls. Tests spend no model calls and require only Python 3.
 
-The complete foundation checkout suite also passed: **282 tests**, with two
+The complete foundation checkout suite also passed: **285 tests**, with two
 pre-existing unused-variable/default-argument warnings and an expected
 `:retry_start` agent log in a restart test. No MCP compilation warnings.
+
+Follow-up regressions check multi-server deferred-event release, oversized
+resource routing plus spill-failure safety, and HTTP worker cleanup on a killed
+client. HTTP fixture teardown explicitly sends identity-checked OS TERM and
+waits for exit: Port.close alone does not terminate a Python HTTP listen loop.
+The initial suites passed assertions but left 27 orphan HTTP fixtures, which
+were identity/PPID-checked and terminated; subsequent teardown assertions pass.
 
 An initial legacy HTTP readiness test failed because readiness preceded the
 initialized notification completion; fixed and retested. A subsequent strict

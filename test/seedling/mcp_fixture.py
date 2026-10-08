@@ -91,7 +91,9 @@ if transport == 'stdio':
             if req['method'] == 'tools/call':
                 stdio_send(notification('notifications/progress', {'progressToken': 'test', 'progress': 1}))
                 stdio_send(notification('notifications/message', {'level': 'info', 'data': 'fixture'}))
-                if era == 'legacy': stdio_send({'jsonrpc': '2.0', 'id': 'server-request', 'method': 'sampling/createMessage', 'params': {}})
+                if era == 'legacy':
+                    stdio_send({'jsonrpc': '2.0', 'id': 'server-ping', 'method': 'ping'})
+                    stdio_send({'jsonrpc': '2.0', 'id': 'server-request', 'method': 'sampling/createMessage', 'params': {}})
             stdio_send(response(req, result, error))
 else:
     class Handler(BaseHTTPRequestHandler):

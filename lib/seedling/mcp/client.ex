@@ -452,6 +452,10 @@ defmodule Seedling.MCP.Client do
     end
   end
 
+  defp dispatch(%{era: :legacy} = s, %{"method" => "ping", "id" => id}) do
+    transmit(s, make_ref(), %{"jsonrpc" => "2.0", "id" => id, "result" => %{}})
+  end
+
   defp dispatch(s, %{"method" => method, "id" => id}) do
     # We advertise no sampling/roots/elicitation capabilities. Legacy requests fail explicitly.
     if s.era == :legacy do

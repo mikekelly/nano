@@ -53,5 +53,9 @@ defmodule Seedling.MCPSchemaTest do
     assert String.valid?(text)
     assert {:ok, %{text: next}} = Result.page(path, offset: offset, limit: 17)
     assert String.valid?(next)
+    emoji = Path.join(dir, "emoji.json")
+    File.write!(emoji, Jason.encode!("😀"))
+    assert {:error, :unaligned_utf8_offset} = Result.page(emoji, offset: 2, limit: 8)
+    assert {:ok, %{text: "😀", next_offset: 5}} = Result.page(emoji, offset: 1, limit: 1)
   end
 end

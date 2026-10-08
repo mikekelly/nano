@@ -22,13 +22,20 @@ defmodule Seedling.MCP do
 
   def connect(name, opts) when is_binary(name) do
     with agent when is_binary(agent) and byte_size(agent) > 0 <- opts[:agent],
-         {:ok, pid} <- safe(fn -> GenServer.call(manager(opts), {:connect, name, agent}) end) do
+         {:ok, pid} <-
+           safe(fn ->
+             GenServer.call(manager(opts), {:connect, name, agent, opts[:defer_events] == true})
+           end) do
       bound_reply(safe(fn -> GenServer.call(pid, :await, timeout(opts) + 1000) end), opts)
     else
       {:error, _} = error -> error
       _ -> {:error, :stable_agent_required}
     end
   end
+
+  @doc "Release this stable agent's queued events after multi-server setup completes."
+  def release_events(agent, opts \\ []) when is_binary(agent),
+    do: safe(fn -> GenServer.call(manager(opts), {:release_events, agent}) end)
 
   def status(name, opts \\ []),
     do: bound_reply(with_client(name, opts, &GenServer.call(&1, :status)), opts)
