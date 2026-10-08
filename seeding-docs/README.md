@@ -14,6 +14,13 @@ it needs, following `guidance.md`, which goes with every seeding doc.
 Each seeding doc says why each of its parts matters, so an agent can decide what to keep, adapt
 or drop for its own situation.
 
+## This seedling
+
+This checkout grows all listed capabilities on `seedling/rigel-harness`. Start from
+[`priv/partials/orientation.md`](../priv/partials/orientation.md), then module docs.
+[`docs/seedling-rigel.md`](../docs/seedling-rigel.md) records verified behaviour and
+remaining limits (notably passive-only safety on the current node).
+
 ## The seeding docs
 
 | File | Capability |
