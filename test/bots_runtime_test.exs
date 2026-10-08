@@ -171,7 +171,11 @@ defmodule Bots.RuntimeTest do
     assert control.message_count == 3
     assert Jason.decode!(File.read!(control.snapshot)) == data
     assert Bitwise.band(File.stat!(control.snapshot).mode, 0o777) == 0o600
-    assert Path.dirname(control.snapshot) |> File.ls!() == ["turn.json"]
+
+    assert Path.dirname(control.snapshot) |> File.ls!() |> Enum.sort() == [
+             "epoch.json",
+             "turn.json"
+           ]
   end
 
   test "fitted prompt includes identity, revocation, explicit post-only output and dynamic APIs",
@@ -325,6 +329,52 @@ defmodule Bots.RuntimeTest do
     assert Process.alive?(pid)
     assert length(FakeNano.state().starts) == 1
     assert length(FakeNano.state().notifications) == 6
+  end
+
+  test "delayed stop cannot terminate a newer dispatched epoch", c do
+    assert {:ok, pid} = Runtime.dispatch(c.bot, c.session, %{c.context | epoch: 5}, c.opts)
+    stale_stop = Map.put(c.session, "epoch", 4)
+    assert :ok = Runtime.stop(c.bot, stale_stop, c.opts)
+    assert Process.alive?(pid)
+    assert FakeNano.state().stops == []
+    assert {:ok, %{pid: ^pid}} = Runtime.status(c.bot, c.session, c.opts)
+    [{_, {:bots_turn, control, _}}] = FakeNano.state().notifications
+    assert File.exists?(control.snapshot)
+  end
+
+  test "stopped epoch fences delayed dispatches even after the actor and snapshot disappear", c do
+    assert {:ok, pid} = Runtime.dispatch(c.bot, c.session, c.context, c.opts)
+    assert :ok = Runtime.stop(c.bot, Map.put(c.session, "epoch", 2), c.opts)
+    refute Process.alive?(pid)
+    assert {:error, :stale_dispatch} = Runtime.dispatch(c.bot, c.session, c.context, c.opts)
+
+    assert {:error, :stale_dispatch} =
+             Runtime.dispatch(c.bot, c.session, %{c.context | epoch: 2}, c.opts)
+
+    assert length(FakeNano.state().starts) == 1
+    assert {:ok, new_pid} = Runtime.dispatch(c.bot, c.session, %{c.context | epoch: 3}, c.opts)
+    assert new_pid != pid
+    assert :ok = Runtime.stop(c.bot, Map.put(c.session, "epoch", 2), c.opts)
+    assert Process.alive?(new_pid)
+  end
+
+  test "newer dispatch fences older dispatches but permits bot replies within the same epoch",
+       c do
+    assert {:ok, pid} = Runtime.dispatch(c.bot, c.session, %{c.context | epoch: 5}, c.opts)
+
+    assert {:error, :stale_dispatch} =
+             Runtime.dispatch(c.bot, c.session, %{c.context | epoch: 4}, c.opts)
+
+    assert {:ok, ^pid} =
+             Runtime.dispatch(
+               c.bot,
+               c.session,
+               %{c.context | epoch: 5, token: "next-bot-grant"},
+               c.opts
+             )
+
+    assert length(FakeNano.state().starts) == 1
+    assert length(FakeNano.state().notifications) == 2
   end
 end
 
