@@ -34,7 +34,10 @@ defmodule Seedling.Web do
   writes may leave partial snapshots, which are treated as cache misses. Cache
   writes/eviction are best-effort under concurrent processes, not transactional.
   Browser output is limited at the OS file-write boundary using util-linux
-  `prlimit`; its stdout/stderr cannot grow without bound while rendering. The
+  `prlimit`; core dumps are disabled and each browser gets a private working
+  directory under its task spool. Fetch working directories are removed on
+  normal completion; interrupted fetches and CDP handles retain them for caller
+  cleanup (`browser.cwd`). Its stdout/stderr cannot grow without bound while rendering. The
   Shell supervisor may append a short termination diagnostic beyond that byte
   ceiling. This relies on Seedling.Shell's direct-to-file spool implementation.
 
@@ -46,7 +49,7 @@ defmodule Seedling.Web do
   Call outputs include bytes and source so an eval timeline shows reading cost.
   """
   alias Seedling.Web.{HTTP, Store, Readability}
-  alias Seedling.Shell
+  alias Seedling.{Files, Shell}
 
   @doc "Fetch, extract, cache and return the first bounded page."
   def fetch(url, opts \\ []) do
@@ -174,17 +177,34 @@ defmodule Seedling.Web do
         {:ok, socket} ->
           :gen_tcp.close(socket)
 
+          limiter = System.find_executable("prlimit")
+
           command =
-            quote_arg(Keyword.get(opts, :lightpanda, "/usr/local/bin/lightpanda")) <>
+            "exec " <>
+              quote_arg(limiter || "prlimit") <>
+              " --core=0:0 -- " <>
+              quote_arg(Keyword.get(opts, :lightpanda, "/usr/local/bin/lightpanda")) <>
               " serve --host 127.0.0.1 --port #{port}"
 
-          with {:ok, task} <-
+          with :ok <-
+                 if(limiter,
+                   do: :ok,
+                   else:
+                     HTTP.error(
+                       :missing_dependency,
+                       "Install util-linux (prlimit) for browser isolation."
+                     )
+                 ),
+               {:ok, cwd} <-
+                 browser_cwd(Keyword.put_new(opts, :spool_dir, "/tmp/seedling-web-browser")),
+               {:ok, task} <-
                  Shell.background(command,
+                   cwd: cwd,
                    timeout: :infinity,
                    notify: nil,
                    spool_dir: Keyword.get(opts, :spool_dir, "/tmp/seedling-web-browser")
                  ) do
-            {:ok, %{task: task, endpoint: "http://127.0.0.1:#{port}", port: port}}
+            {:ok, %{task: task, cwd: cwd, endpoint: "http://127.0.0.1:#{port}", port: port}}
           end
 
         {:error, _} ->
@@ -266,7 +286,27 @@ defmodule Seedling.Web do
     do: HTTP.error(:timeout, "Total fetch deadline exceeded; increase :timeout.")
 
   defp browser_fetch(url, opts) do
-    runner = Keyword.get(opts, :shell, &Shell.sh/2)
+    with {:ok, cwd} <- browser_cwd(opts) do
+      try do
+        browser_fetch_in_cwd(url, opts, cwd)
+      after
+        File.rm_rf(cwd)
+      end
+    end
+  end
+
+  defp browser_cwd(opts) do
+    base = Keyword.get(opts, :spool_dir, Path.join(Store.root(opts), "browser-spool"))
+    cwd = Path.join(base, "cwd-" <> Base.encode16(:crypto.strong_rand_bytes(12), case: :lower))
+
+    with {:ok, _} <-
+           Files.write(Path.join(cwd, ".seedling-browser"), "private browser working directory\n"),
+         do: {:ok, cwd}
+  end
+
+  defp browser_fetch_in_cwd(url, opts, cwd) do
+    runner =
+      Keyword.get(opts, :shell, &Shell.sh/2)
 
     cap = Keyword.get(opts, :max_download_bytes, 2_000_000)
     limiter = System.find_executable("prlimit")
@@ -279,6 +319,7 @@ defmodule Seedling.Web do
         " fetch --dump markdown " <> quote_arg(url)
 
     shell_opts = [
+      cwd: cwd,
       timeout: Keyword.get(opts, :timeout, 20_000),
       max_bytes: 4000,
       max_lines: 100,
