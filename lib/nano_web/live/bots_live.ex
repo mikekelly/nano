@@ -52,6 +52,35 @@ defmodule NanoWeb.BotsLive do
        |> assign(selected: nil, recipients: [], query: "", creating: false, error: nil)
        |> push_patch(to: "/bots")}
 
+  def handle_event("search", _, socket) do
+    {:noreply,
+     socket
+     |> assign(selected: nil, recipients: [], query: "", creating: false)
+     |> push_patch(to: "/bots")
+     |> push_event("bot-focus", %{id: "bot-to"})}
+  end
+
+  def handle_event("main", _, socket) do
+    case main_bot(socket.assigns.doc) do
+      nil ->
+        {:noreply, socket}
+
+      bot ->
+        existing = Enum.find(chats(socket.assigns.doc), &(&1["bots"] == [bot["id"]]))
+
+        case if(existing, do: {:ok, existing}, else: safe(fn -> Bots.session([bot["id"]]) end)) do
+          {:ok, chat} ->
+            {:noreply,
+             socket
+             |> assign(selected: chat["id"], doc: Bots.snapshot())
+             |> push_patch(to: "/bots?" <> URI.encode_query(session: chat["id"]))}
+
+          {:error, error} ->
+            {:noreply, assign(socket, error: friendly(error))}
+        end
+    end
+  end
+
   def handle_event("query", %{"query" => query}, socket),
     do: {:noreply, assign(socket, query: String.slice(query, 0, 100))}
 
@@ -222,14 +251,20 @@ defmodule NanoWeb.BotsLive do
         <div class="bots-tools">
           <button
             type="button"
-            phx-click={JS.focus(to: "#bot-to")}
+            phx-click="search"
             aria-label="Search bots (Control K)"
           >⌕ Search</button>
           <button type="button" phx-click="new" aria-label="New chat">＋</button>
         </div>
-        <div :if={@main} class="bot-main-card">
+        <button
+          :if={@main}
+          type="button"
+          phx-click="main"
+          class="bot-main-card"
+          aria-label={"Chat with " <> @main["name"]}
+        >
           <.face bot={@main} large={true} /><span>{@main["name"]}</span>
-        </div>
+        </button>
         <nav class="bots-chat-list" aria-label="Chats">
           <.link
             :for={c <- chats(@doc)}
@@ -293,6 +328,7 @@ defmodule NanoWeb.BotsLive do
         </div>
       </aside>
       <main class="bots-main">
+        <p :if={@doc["service_error"]} class="bot-alert" role="alert">{@doc["service_error"]}</p>
         <p :if={@error} class="bot-alert" role="alert">{@error}</p>
         <section :if={!@chat}>
           <form id="bot-recipients" phx-change="query" phx-submit="start" class="bot-to-line">

@@ -54,18 +54,27 @@ defmodule Seedling.Decision do
         {:ok, %{status: status}} ->
           {:error, {:http_status, status}}
 
-        {:error, _} ->
-          {:error, :decision_unavailable}
+        {:error, error} ->
+          {:error, {:decision_unavailable, transport_reason(error)}}
 
         _ ->
           {:error, :invalid_response}
       end
     end
   rescue
-    _ -> {:error, :decision_unavailable}
+    e in [ArgumentError, FunctionClauseError, KeyError, BadMapError, UndefinedFunctionError] ->
+      {:error, {:adapter_error, e.__struct__}}
+
+    _ ->
+      {:error, :decision_unavailable}
   catch
     :exit, _ -> {:error, :decision_unavailable}
   end
+
+  defp transport_reason(%{reason: reason})
+       when reason in [:timeout, :closed, :econnrefused, :nxdomain], do: reason
+
+  defp transport_reason(_), do: :network_error
 
   defp credentials(key),
     do: if(is_binary(key) and key != "", do: :ok, else: {:error, :missing_typesafe_api_key})

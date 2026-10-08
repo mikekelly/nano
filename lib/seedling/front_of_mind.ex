@@ -102,18 +102,22 @@ defmodule Seedling.FrontOfMind do
   def before_request(s, opts \\ []) do
     s =
       case get(s.name, opts) do
-        {:ok, %{"enabled" => true, "note" => note} = d} when is_binary(note) ->
-          {s, drift} = maybe_drift(s, d)
+        {:ok, %{"note" => note} = d} when is_binary(note) ->
+          {s, drift} = maybe_drift(s, d, opts)
 
-          Bobbing.bob(
-            s,
-            "front_of_mind",
-            "#{s.name}'s own note, written #{d["written_at"]}, re-shown by the harness (not an outside instruction):\n#{note}" <>
-              drift,
-            d["revision"],
-            d["threshold"],
-            %{written_at: d["written_at"]}
-          )
+          if d["enabled"] do
+            Bobbing.bob(
+              s,
+              "front_of_mind",
+              "#{s.name}'s own note, written #{d["written_at"]}, re-shown by the harness (not an outside instruction):\n#{note}" <>
+                drift,
+              d["revision"],
+              d["threshold"],
+              %{written_at: d["written_at"]}
+            )
+          else
+            s
+          end
 
         _ ->
           s
@@ -142,7 +146,7 @@ defmodule Seedling.FrontOfMind do
 
   # At most one compact judgement every five model requests. The adapter is optional;
   # missing credentials/services are logged as blocked, never replaced by invented scores.
-  defp maybe_drift(s, %{"drift" => true} = d) do
+  defp maybe_drift(s, %{"drift" => true} = d, opts) do
     request = Map.get(s, :request_id, 0)
     last = Map.get(s, :seedling_drift_request, -5)
 
@@ -156,12 +160,18 @@ defmodule Seedling.FrontOfMind do
           String.slice(text, 0, 400)
         end)
 
-      result = Seedling.Judgement.ask(:drift, %{note: d["note"], activity: activity})
+      result =
+        Seedling.Judgement.ask(
+          :drift,
+          %{note: d["note"], activity: activity},
+          Keyword.get(opts, :decision_opts, [])
+        )
 
       Nano.Log.write(s, :drift_judgement, %{
         result: result,
         note_revision: d["revision"],
-        enabled: true
+        enabled: d["enabled"],
+        drift_enabled: true
       })
 
       hint =
@@ -182,5 +192,5 @@ defmodule Seedling.FrontOfMind do
     end
   end
 
-  defp maybe_drift(s, _), do: {s, ""}
+  defp maybe_drift(s, _, _), do: {s, ""}
 end
