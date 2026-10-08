@@ -253,6 +253,30 @@ defmodule Seedling.ShellTest do
     assert_receive {:seedling_task, _, %{status: :cancelled}}, 2_000
   end
 
+  test "fast commands never confuse worker exit with a missing result", %{dir: dir} do
+    results =
+      Task.async_stream(1..400, fn _ -> Shell.sh("true", spool_dir: dir) end,
+        max_concurrency: 12,
+        timeout: 10_000
+      )
+
+    Enum.each(results, fn result ->
+      assert {:ok, {:ok, %{status: :exited, exit_code: 0, bytes: 0}}} = result
+    end)
+  end
+
+  test "dead workers are reconciled with monitor persistence before a missing result is declared",
+       %{dir: dir} do
+    Enum.each(1..20, fn _ ->
+      {:ok, task} = Shell.background("sleep 30", spool_dir: dir)
+      Process.exit(task.pid, :kill)
+      assert {:ok, status} = Shell.status(task)
+      assert status.status in [:running, :finishing, :error]
+      assert_receive {:seedling_task, _, %{status: :error}}, 2_000
+      assert {:ok, %{status: :error}} = Shell.status(task)
+    end)
+  end
+
   defp fake_agent(name, parent) do
     pid =
       spawn(fn ->

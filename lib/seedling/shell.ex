@@ -49,9 +49,13 @@ defmodule Seedling.Shell do
     end
   end
 
-  @doc "Read running or completed metadata. Accepts a task handle, not only a pid."
+  @doc "Read metadata; nonterminal status is :running or :finishing while monitor cleanup persists a result."
   def status(%{result_path: path, output_path: output} = task)
-      when is_binary(path) and is_binary(output) do
+      when is_binary(path) and is_binary(output), do: read_status(task, true)
+
+  def status(_), do: error(:invalid_task, "Pass the task handle returned by background/2.")
+
+  defp read_status(%{result_path: path} = task, reconcile?) do
     case File.read(path) do
       {:ok, binary} ->
         try do
@@ -69,16 +73,27 @@ defmodule Seedling.Shell do
         end
 
       {:error, :enoent} ->
-        if is_pid(task[:pid]) and Process.alive?(task.pid),
-          do: {:ok, Map.merge(task, %{status: :running, bytes: file_size(task.output_path)})},
-          else: error(:missing_result, "Task is not running and has no result at #{path}.")
+        cond do
+          is_pid(task[:pid]) and Process.alive?(task.pid) ->
+            {:ok, Map.merge(task, %{status: :running, bytes: file_size(task.output_path)})}
+
+          reconcile? and Tasks.tracked?(task[:id]) ->
+            {:ok, Map.merge(task, %{status: :finishing, bytes: file_size(task.output_path)})}
+
+          reconcile? ->
+            # The initial read and the liveness check are not atomic: the worker may
+            # have renamed its result and exited between them. Removal from the
+            # manager follows persistence, so reread after reconciliation.
+            read_status(task, false)
+
+          true ->
+            error(:missing_result, "Task is not running and has no result at #{path}.")
+        end
 
       {:error, reason} ->
         error(reason, "Cannot read #{path}: #{:file.format_error(reason)}")
     end
   end
-
-  def status(_), do: error(:invalid_task, "Pass the task handle returned by background/2.")
 
   @doc "Kill a running command's process group. Completed tasks are unchanged."
   def cancel(%{pid: pid} = task) when is_pid(pid) do
@@ -198,7 +213,7 @@ defmodule Seedling.Shell do
 
   defp await(task, opts) do
     case status(task) do
-      {:ok, %{status: :running}} ->
+      {:ok, %{status: status}} when status in [:running, :finishing] ->
         Process.sleep(10)
         await(task, opts)
 
