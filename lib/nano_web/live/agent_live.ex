@@ -266,6 +266,8 @@ defmodule NanoWeb.AgentLive do
           <pre>{@agent.system_prompt}</pre>
         </details>
 
+        <.live_component :if={@agent} module={NanoWeb.ImageComposer} id="image-composer" name={@name} />
+
         <nav class="views">
           <.link
             :for={{v, icon} <- [{"reading", "book"}, {"debug", "list"}]}
@@ -316,6 +318,7 @@ defmodule NanoWeb.AgentLive do
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
       <pre>{printed(@e["message"])}</pre>
+      <NanoWeb.ImageGallery.images term={@e} />
     </li>
     """
   end
@@ -432,6 +435,7 @@ defmodule NanoWeb.AgentLive do
     ~H"""
     <li id={@id} class={["entry eval", !@e["ok"] && "failed"]}>
       <.meta e={@e} label={"#{txt(@e["name"])} result"}>{txt(@e["duration_ms"])} ms</.meta>
+      <NanoWeb.ImageGallery.images term={@e} />
       <pre class={if !@e["ok"], do: "error"}>{txt(@e["result"])}</pre>
       <pre :if={@e["io"] not in [nil, ""]}>{txt(@e["io"])}</pre>
     </li>
@@ -487,6 +491,7 @@ defmodule NanoWeb.AgentLive do
   defp eval_result(assigns) do
     ~H"""
     <div class="result">
+      <NanoWeb.ImageGallery.images term={@result} />
       <pre class={if !@result["ok"], do: "error"}>{txt(@result["result"])}</pre>
       <div :if={@result["io"] not in [nil, ""]} class="io">
         <span class="dim">captured IO</span>
@@ -507,6 +512,7 @@ defmodule NanoWeb.AgentLive do
     <li id={@id} class="r event">
       <div class="r-label">received <time>{time(@e["at"])}</time></div>
       <pre>{printed(@e["message"])}</pre>
+      <NanoWeb.ImageGallery.images term={@e} />
     </li>
     """
   end
