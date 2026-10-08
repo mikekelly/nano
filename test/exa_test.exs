@@ -84,7 +84,40 @@ defmodule ExaTest do
              Exa.answer("x", transport: fn _, _, _, _ -> {:ok, "bad"} end)
   end
 
-  test "recursive bounds are explicit, UTF8 valid and respect JSON size budgets" do
+  test "HTTP boundary disables retries/redirects and maps errors without exposing secrets" do
+    for status <- [401, 402, 429, 503] do
+      request_fun = fn opts ->
+        assert opts[:retry] == false
+        assert opts[:redirect] == false
+        assert opts[:headers] == [{"x-api-key", "TEST-KEY"}]
+        {:ok, %{status: status, headers: %{"retry-after" => ["10"]}, body: "TEST-KEY"}}
+      end
+
+      assert {:error, err} = Exa.answer("x", api_key: "TEST-KEY", request_fun: request_fun)
+      assert err.status == status
+      assert err.retry_after == "10"
+      refute inspect(err) =~ "TEST-KEY"
+    end
+
+    assert {:error, %{kind: :transport, retryable: true}} =
+             Exa.answer("x", api_key: "TEST", request_fun: fn _ -> {:error, :timeout} end)
+  end
+
+  test "bounds preserve URLs intact rather than returning corrupted citation links" do
+    data = %{"url" => "https://example.com", "text" => String.duplicate("x", 2000)}
+
+    assert %{data: %{"url" => "https://example.com"}, truncated: true} =
+             Exa.bound(data, max_bytes: 256)
+
+    result =
+      Exa.bound(%{"url" => "https://example.com/" <> String.duplicate("a", 1000)}, max_bytes: 256)
+
+    assert result.truncated
+    refute Map.has_key?(result.data, "url")
+  end
+
+  test "recursive bounds
+ are explicit, UTF8 valid and respect JSON size budgets" do
     for cap <- [256, 1000, 16000],
         input <- [
           String.duplicate("世界\n", 30000),

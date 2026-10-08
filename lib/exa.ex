@@ -25,7 +25,8 @@ defmodule Exa do
   `(method, path, body, opts) -> {:ok, map} | {:error, map}` bypassing real HTTP
   and key lookup, so unit tests never bill. Retries and redirects are disabled;
   POSTs are never automatically billed twice. Real HTTP errors omit response
-  bodies and exception text to prevent credential leaks.
+  bodies and exception text to prevent credential leaks. For HTTP-boundary tests,
+  `request_fun:` may inject a Req-compatible one-argument request function.
 
   Docs reviewed 2026-10-08: https://exa.ai/docs/llms.txt, search/get-contents/
   answer references. Async research now uses Agent runs; see `Exa.Research`.
@@ -116,7 +117,9 @@ defmodule Exa do
 
       req = if body == nil, do: req, else: Keyword.put(req, :json, body)
 
-      case Req.request(req) do
+      request_fun = Keyword.get(opts, :request_fun, &Req.request/1)
+
+      case request_fun.(req) do
         {:ok, %{status: status, body: data}} when status in 200..299 ->
           normalize({:ok, data})
 
@@ -175,11 +178,16 @@ defmodule Exa do
   end
 
   defp trim(value, budget) when is_map(value) do
-    Enum.reduce(Enum.sort(value), {%{}, max(budget - 2, 0), false}, fn {key, v},
-                                                                       {acc, left, cut} ->
+    ordered =
+      Enum.sort_by(value, fn {k, _} ->
+        {if(to_string(k) in ["id", "url", "status"], do: 0, else: 1), k}
+      end)
+
+    Enum.reduce(ordered, {%{}, max(budget - 2, 0), false}, fn {key, v}, {acc, left, cut} ->
       cost = byte_size(Jason.encode!(to_string(key))) + 2
 
-      if left < cost + 8 do
+      if left < cost + 8 or
+           (to_string(key) in ["id", "url"] and byte_size(Jason.encode!(v)) > left - cost) do
         {acc, left, true}
       else
         {v, remaining, clipped} = trim(v, left - cost)
