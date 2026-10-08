@@ -33,7 +33,7 @@ defmodule Nano.OpenRouter do
 
     body = %{
       model: model,
-      messages: cache(messages),
+      messages: messages |> Images.Wire.openrouter() |> cache(),
       tools: tools,
       usage: %{include: true},
       reasoning: if(reasoning == "off", do: %{enabled: false}, else: %{effort: reasoning})
@@ -51,7 +51,7 @@ defmodule Nano.OpenRouter do
 
         {:ok,
          %{
-           message: choice["message"],
+           message: Nano.RawLog.sanitize(choice["message"]),
            finish_reason: choice["finish_reason"],
            usage: usage,
            provider: resp["provider"],
@@ -62,7 +62,8 @@ defmodule Nano.OpenRouter do
         {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->
-        {:error, %{status: nil, body: Exception.message(exception), class: :transient}}
+        {:error,
+         %{status: nil, body: Nano.RawLog.redact(Exception.message(exception)), class: :transient}}
     end
   end
 
@@ -70,6 +71,7 @@ defmodule Nano.OpenRouter do
   # (OpenRouter reports some upstream failures that way) goes by the object's code. 402 is the
   # account's credit; 403 is a moderation refusal, not the key.
   defp error(status, body, headers) do
+    body = Nano.RawLog.sanitize(body)
     code = if status == 200, do: is_map(body) && get_in(body, ["error", "code"]), else: status
     code = if is_integer(code), do: code
     error = %{status: status, body: body, class: Nano.Model.class(code, body)}
@@ -95,7 +97,7 @@ defmodule Nano.OpenRouter do
 
   @doc """
   OpenRouter's models as `%{id, name, context_length, max_output, prompt_price, completion_price,
-  reasoning_levels, default_reasoning}` (`max_output` the most tokens its top provider will
+  reasoning_levels, default_reasoning, input_modalities}` (`max_output` the most tokens its top provider will
   generate in one response, or nil; prices in USD per million tokens, nil if not given;
   levels as `Nano.Model.reasoning/3` gives them), sorted by id. Cached for an hour, a failure for a
   minute, and fetched again once the key or the address changes; `[]` if they cannot be
@@ -146,6 +148,8 @@ defmodule Nano.OpenRouter do
           id: m["id"],
           name: m["name"],
           context_length: m["context_length"],
+          input_modalities:
+            Nano.Model.input_modalities(get_in(m, ["architecture", "input_modalities"])),
           max_output: get_in(m, ["top_provider", "max_completion_tokens"]),
           prompt_price: price.(get_in(m, ["pricing", "prompt"])),
           completion_price: price.(get_in(m, ["pricing", "completion"]))

@@ -21,7 +21,8 @@ defmodule Nano.ChatGPT do
 
   # Used when the backend's own list cannot be had: the models it listed on 2026-10-07, in its
   # order of priority (gpt-5.5, hidden then, retires on 2026-10-14). The levels and defaults are
-  # an approximation: gpt-6.x's on that day.
+  # an approximation: gpt-6.x's on that day. Image input is explicitly confirmed for each
+  # of these slugs by the live Codex /models catalog on 2026-10-08.
   @known for(
            id <-
              ~w(gpt-6.1-sol gpt-6-astra gpt-6-sol gpt-6-luna gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna),
@@ -29,6 +30,7 @@ defmodule Nano.ChatGPT do
              id: id,
              name: id,
              context_length: 272_000,
+             input_modalities: ["text", "image"],
              reasoning_levels: ~w(low medium high xhigh max),
              default_reasoning: if(id == "gpt-6.1-sol", do: "low", else: "medium")
            }
@@ -83,7 +85,8 @@ defmodule Nano.ChatGPT do
         {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->
-        {:error, %{status: nil, body: Exception.message(exception), class: :transient}}
+        {:error,
+         %{status: nil, body: Nano.RawLog.redact(Exception.message(exception)), class: :transient}}
     end
   end
 
@@ -113,7 +116,7 @@ defmodule Nano.ChatGPT do
   ## Chat messages to Responses input items
 
   defp input(%{"role" => "user", "content" => text}),
-    do: [%{type: "message", role: "user", content: [%{type: "input_text", text: text}]}]
+    do: [%{type: "message", role: "user", content: Images.Wire.codex_content(text)}]
 
   # Reasoning first, as the model produced it, then the text, then the calls.
   defp input(%{"role" => "assistant"} = m) do
@@ -140,7 +143,16 @@ defmodule Nano.ChatGPT do
   end
 
   defp input(%{"role" => "tool"} = m),
-    do: [%{type: "function_call_output", call_id: m["tool_call_id"], output: m["content"]}]
+    do: [
+      %{
+        type: "function_call_output",
+        call_id: m["tool_call_id"],
+        output: tool_output(m["content"])
+      }
+    ]
+
+  defp tool_output(parts) when is_list(parts), do: Images.Wire.codex_content(parts)
+  defp tool_output(text), do: text
 
   ## The event stream to a chat completions response
 
@@ -166,6 +178,9 @@ defmodule Nano.ChatGPT do
   # The final items: the completed response's output, else each item as it was done (pi takes
   # the completed copy where the streamed one lacks the encrypted reasoning).
   defp message(r, events) do
+    r = Nano.RawLog.sanitize(r)
+    events = Nano.RawLog.sanitize(events)
+
     items =
       case r["output"] do
         [_ | _] = output -> output
@@ -232,6 +247,7 @@ defmodule Nano.ChatGPT do
   @quota ~w(insufficient_quota credit_balance_exhausted)
 
   defp error(status, body, headers) do
+    body = Nano.RawLog.sanitize(body)
     e = if is_map(body) and is_map(body["error"]), do: body["error"], else: %{}
     kind = Enum.find([e["type"], e["code"]], &(&1 in @limits)) || e["code"]
     quota? = kind in @quota or String.ends_with?(to_string(kind), "_spend_limit_exceeded")
@@ -286,7 +302,7 @@ defmodule Nano.ChatGPT do
 
   @doc """
   The models the connected subscription offers, as `%{id, name, context_length,
-  reasoning_levels, default_reasoning}` (ids without the `openai-codex/` prefix; levels as
+  reasoning_levels, default_reasoning, input_modalities}` (ids without the `openai-codex/` prefix; levels as
   `Nano.Model.reasoning/3` gives them): the backend's list (`GET /models`, as the Codex CLI
   fetches it, in its order of priority), or the Codex CLI's bundled list if that cannot be had;
   `[]` when no subscription is connected. Cached for an hour, a fallback for a minute, and
@@ -334,7 +350,8 @@ defmodule Nano.ChatGPT do
         %{
           id: m["slug"],
           name: m["display_name"] || m["slug"],
-          context_length: m["context_window"]
+          context_length: m["context_window"],
+          input_modalities: Nano.Model.input_modalities(m["input_modalities"])
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )
