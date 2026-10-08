@@ -35,6 +35,7 @@ defmodule Nano.Application do
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
           {Seedling.Bots, []},
+          {Seedling.Research.Pending, []},
           {Seedling.Background.Recovery, []},
           {Seedling.MCP.Supervisor, [config: "/app/config/mcp.json", name: Seedling.MCP.Connections]},
           NanoWeb.Endpoint
