@@ -504,6 +504,19 @@ defmodule Seedling.Bots.Store do
     end
   end
 
+  def handle_call({:dispatch, sid, bid, epoch, pid, event}, _, s) do
+    session = s.data["sessions"][sid]
+
+    if session && session["epoch"] == epoch && not session["paused"] &&
+         session["exchanges"] < ceiling(s) && is_pid(pid) &&
+         s.runtime.authorized?(pid, bid, sid, s.root) do
+      send(pid, event)
+      {:reply, :ok, s}
+    else
+      {:reply, :stale, s}
+    end
+  end
+
   def handle_call({:claim, sid, bid, epoch}, _, s) do
     sess = s.data["sessions"][sid]
 
@@ -800,24 +813,9 @@ defmodule Seedling.Bots.Store do
   end
 
   defp relevant_candidates(memories, query) do
-    words =
-      query
-      |> String.downcase()
-      |> String.split(~r/[^\p{L}\p{N}]+/u, trim: true)
-      |> Enum.filter(&(String.length(&1) > 2))
-      |> MapSet.new()
-
     memories
-    |> Enum.map(fn m ->
-      terms =
-        (m["text"] <> " " <> Enum.join(m["tags"], " "))
-        |> String.downcase()
-        |> String.split(~r/[^\p{L}\p{N}]+/u, trim: true)
-        |> MapSet.new()
-
-      {MapSet.intersection(words, terms) |> MapSet.size(), m}
-    end)
-    |> Enum.sort_by(fn {score, m} -> {score, m["at"]} end, :desc)
+    |> Enum.map(fn memory -> {Gate.grounded_overlap(memory, query), memory} end)
+    |> Enum.sort_by(fn {score, memory} -> {score, memory["at"]} end, :desc)
     |> Enum.take(50)
     |> Enum.map(&elem(&1, 1))
   end

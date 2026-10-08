@@ -218,4 +218,21 @@ defmodule Seedling.BotsTest do
     {:ok, snapshot} = Bots.snapshot(ctx.opts)
     assert hd(snapshot.sessions)["exchanges"] == 0
   end
+
+  test "normalized distinctive topic terms find an older hotel memory beyond the recent candidate cut and omit generic preference tags",
+       ctx do
+    {:ok, hotel} =
+      Bots.remember(
+        ctx.bot,
+        "Prefers quiet hotels.",
+        ctx.opts ++ [tags: ["travel", "hotels", "preference"]]
+      )
+
+    for i <- 1..55,
+        do: Bots.remember(ctx.bot, "Cat fact #{i}.", ctx.opts ++ [tags: ["pets", "preference"]])
+
+    {:ok, page} = Bots.memories(ctx.bot, "What hotel noise preference do I have?", ctx.opts)
+    assert Enum.map(page.memories, & &1["id"]) == [hotel["id"]]
+    assert length(page.memories) <= 5
+  end
 end

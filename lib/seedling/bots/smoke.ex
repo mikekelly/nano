@@ -15,8 +15,10 @@ defmodule Seedling.Bots.Smoke do
 
   Starts two identities; asks one to remember a hotel preference; checks a separate
   session's recall and a two-bot greeting; then exercises a clearly scripted human
-  request, correlation, answer and acknowledgement. It reports **observed replies**,
-  not a claim that their contents are correct. Inspect the snippets and durable root.
+  request, correlation, answer and acknowledgement. Success requires the durable quiet-
+  hotel fact, its id in the separate session's received event, and an assertive quiet
+  preference answer (questions/unknown denials fail). This conservative fixed English
+  fixture is not a general semantic evaluator; inspect its snippets and durable root.
 
   Returns `{:ok, %{pid:, root:}}` immediately. Completion is
   `{:bots_smoke, root, {:ok, evidence} | {:error, %{message:, diagnostics:, logs:}}}`.
@@ -73,6 +75,9 @@ defmodule Seedling.Bots.Smoke do
               case result do
                 {:ok, evidence} ->
                   {:ok, Map.put(evidence, :logs, logs)}
+
+                {:error, %{message: _} = error} ->
+                  {:error, Map.merge(error, %{diagnostics: diagnostics, logs: logs})}
 
                 {:error, message} ->
                   {:error, %{message: message, diagnostics: diagnostics, logs: logs}}
@@ -133,6 +138,7 @@ defmodule Seedling.Bots.Smoke do
              opts
            ),
          {:ok, second} <- wait(two["id"], 1, opts, timeout),
+         {:ok, recall} <- recall_check(root, muse["id"], two["id"], second),
          {:ok, group} <- Bots.create_session([muse["id"], dots["id"]], opts),
          {:ok, _} <-
            Bots.say(
@@ -155,6 +161,7 @@ defmodule Seedling.Bots.Smoke do
          identities: [muse["id"], dots["id"]],
          sessions: [one["id"], two["id"], group["id"]],
          request: request["id"],
+         recall: recall,
          replies:
            Enum.map(first ++ second ++ both, fn m ->
              %{speaker: m["name"], text: String.slice(m["text"], 0, 300)}
@@ -163,6 +170,78 @@ defmodule Seedling.Bots.Smoke do
     else
       {:error, _} = error -> error
       _ -> {:error, "Unexpected smoke result; inspect the private root."}
+    end
+  end
+
+  # This is a fixed English acceptance fixture, not a general semantic evaluator.
+  # An unknown/preference question is not recall even if it contains "quiet".
+  @doc false
+  def validate_recall(memories, retrieved_ids, replies) do
+    facts =
+      Enum.filter(memories, fn memory ->
+        Bots.Gate.grounded_overlap(memory, "quiet hotels") >= 2
+      end)
+
+    retrieved = Enum.filter(facts, &(&1["id"] in retrieved_ids))
+    answer = Enum.map_join(replies, " ", & &1["text"])
+    value_present = Regex.match?(~r/\bquiet\b/iu, answer)
+
+    uncertain =
+      Regex.match?(
+        ~r/\?|\b(?:unknown|unsure|maybe|perhaps)\b|(?:don['’]t|do not|cannot|can['’]t|haven['’]t|not).{0,35}(?:know|have|record|remember|sure|prefer|quiet)|(?:no|without).{0,25}(?:preference|record|memory)/iu,
+        answer
+      )
+
+    checks = %{
+      durable_preference: facts != [],
+      preference_retrieved: retrieved != [],
+      preference_asserted: value_present and not uncertain
+    }
+
+    evidence =
+      Map.merge(checks, %{
+        memory_ids: Enum.map(retrieved, & &1["id"]),
+        observed_reply: String.slice(answer, 0, 600)
+      })
+
+    if Enum.all?(Map.values(checks)),
+      do: {:ok, evidence},
+      else:
+        {:error,
+         %{
+           message:
+             "Quiet-hotel recall acceptance failed; transport/acknowledgement is not semantic recall.",
+           recall: evidence
+         }}
+  end
+
+  defp recall_check(root, bot, session, replies) do
+    with {:ok, bytes} <- File.read(Path.join(root, "store.json")),
+         true <- byte_size(bytes) <= 256_000,
+         {:ok, data} <- Jason.decode(bytes),
+         info when is_map(info) <- NanoAgent.info(Bots.Runtime.name(bot, session, root)) do
+      memories = data["memories"][bot] || []
+      events = Nano.Log.read(info.id) |> Enum.filter(&(&1["type"] == "event_received"))
+
+      ids =
+        memories
+        |> Enum.filter(fn m ->
+          Enum.any?(events, &String.contains?(&1["message"] || "", m["id"]))
+        end)
+        |> Enum.map(& &1["id"])
+
+      validate_recall(memories, ids, replies)
+    else
+      _ ->
+        {:error,
+         %{
+           message: "Cannot verify retained preference/retrieval evidence for the smoke.",
+           recall: %{
+             durable_preference: false,
+             preference_retrieved: false,
+             preference_asserted: false
+           }
+         }}
     end
   end
 

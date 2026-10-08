@@ -299,4 +299,28 @@ defmodule Seedling.BotsLifecycleTest do
         end
     end
   end
+
+  test "startup finishing after stop cannot send a model event or resurrect a newly created idle session agent",
+       ctx do
+    {:ok, session} = Bots.create_session([ctx.bot], ctx.opts)
+    {:ok, _} = Bots.stop(session["id"], ctx.opts)
+    {:ok, snapshot} = Bots.snapshot(ctx.opts)
+    bot = hd(snapshot.bots)
+
+    message = %{
+      "id" => "late",
+      "name" => "You",
+      "from" => "human",
+      "text" => "late claimed route",
+      "attachments" => []
+    }
+
+    assert {:error, _} =
+             Bots.Runtime.deliver(bot, session, message, [], snapshot.config, ctx.root)
+
+    name = Bots.Runtime.name(ctx.bot, session["id"], ctx.root)
+    assert NanoAgent.whereis(name) == nil
+    assert NanoAgent.info(name) == nil
+    refute_receive {:openrouter_request, _, _}, 100
+  end
 end

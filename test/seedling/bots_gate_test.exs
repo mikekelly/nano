@@ -105,4 +105,47 @@ defmodule Seedling.Bots.GateTest do
     assert instructions =~ "explicit human request"
     assert instructions =~ "bot repetition"
   end
+
+  defmodule WeakMemoryDecision do
+    def evaluate(_, _, _),
+      do:
+        {:ok,
+         %{
+           answers: %{
+             "memory_0" => %{"type" => "noul", "noul" => 0.42},
+             "memory_1" => %{"type" => "noul", "noul" => 0.42}
+           }
+         }}
+  end
+
+  test "explicit hotel preference recall survives weak typed scores with normalized grounded terms, not unrelated cat memory" do
+    hotel = %{
+      "id" => "hotel",
+      "text" => "Prefers quiet hotels.",
+      "tags" => ["travel", "hotels", "preference"]
+    }
+
+    cat = %{"id" => "cat", "text" => "Cat is named Kiwi.", "tags" => ["pets"]}
+
+    msg = %{
+      "text" =>
+        "What hotel noise preference do I have? Answer in one sentence using Seedling.Bots.post."
+    }
+
+    assert [%{"id" => "hotel"}] =
+             Gate.memories(%{"name" => "Muse"}, msg, [hotel, cat], decision: WeakMemoryDecision)
+
+    assert Gate.grounded_overlap(hotel, msg["text"]) >= 2
+    assert Gate.grounded_overlap(cat, msg["text"]) == 0
+
+    generic = %{
+      "text" => "Please answer in one sentence using Seedling.Bots.post",
+      "tags" => ["memory", "remember"]
+    }
+
+    assert Gate.grounded_overlap(generic, msg["text"]) == 0
+
+    assert Gate.memories(%{}, msg, List.duplicate(hotel, 10), decision: Unavailable) |> length() ==
+             5
+  end
 end

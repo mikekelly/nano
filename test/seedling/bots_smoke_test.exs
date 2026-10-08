@@ -102,4 +102,40 @@ defmodule Seedling.Bots.SmokeTest do
     GenServer.stop(Bots.server(root))
     File.rm_rf!(root)
   end
+
+  test "receipt is not semantic recall: reject observed actual failure, absent durable fact or missing retrieved id" do
+    memories = [
+      %{
+        "id" => "hotel",
+        "text" => "Prefers quiet hotels.",
+        "tags" => ["travel", "hotels", "preference"]
+      }
+    ]
+
+    observed = [
+      %{
+        "text" =>
+          "I don’t have your hotel noise preference recorded yet—do you prefer a quiet room?"
+      }
+    ]
+
+    assert {:error, %{recall: %{preference_asserted: false}}} =
+             Bots.Smoke.validate_recall(memories, ["hotel"], observed)
+
+    assert {:error, %{recall: %{durable_preference: false}}} =
+             Bots.Smoke.validate_recall([], [], [%{"text" => "You prefer quiet hotels."}])
+
+    assert {:error, %{recall: %{preference_retrieved: false}}} =
+             Bots.Smoke.validate_recall(memories, [], [%{"text" => "You prefer quiet hotels."}])
+
+    assert {:ok, %{preference_asserted: true, memory_ids: ["hotel"]}} =
+             Bots.Smoke.validate_recall(memories, ["hotel"], [
+               %{"text" => "You prefer quiet hotels."}
+             ])
+
+    assert {:error, _} =
+             Bots.Smoke.validate_recall(memories, ["hotel"], [
+               %{"text" => "You do not prefer quiet hotels."}
+             ])
+  end
 end
