@@ -872,7 +872,7 @@ defmodule NanoAgentTest do
     assert {name, model, max_tokens} ==
              {ctx.name, ctx.model, 30_000_000}
 
-    assert prompt == "#{ctx.name} on #{node()}, 7 turns"
+    assert String.starts_with?(prompt, "#{ctx.name} on #{node()}, 7 turns")
     assert NanoAgent.info("nobody") == nil
   end
 
@@ -1627,11 +1627,14 @@ defmodule NanoAgentTest do
     spec = File.read!("priv/system_prompt.txt")
     assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
     pattern = spec |> Regex.escape() |> String.replace(~r/\\\{\\\{\w+\\\}\\\}/, ".+?")
-    assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
 
     assert NanoAgent.info(ctx.name).system_prompt =~
-             "When a limit is reached I stop calling the model, and I make\nno call that " <>
-               "might not fit in your context with room for your reply.\nWhenever I deliver"
+             Regex.compile!("^" <> pattern <> "\nYour model cannot see images\\..*$", "s")
+
+    assert NanoAgent.info(ctx.name).system_prompt =~
+             "Whenever I deliver events or a note of my own"
+
+    assert NanoAgent.info(ctx.name).system_prompt =~ "Your model cannot see images"
   end
 
   ## Unlimited limits and the context limit
@@ -1733,16 +1736,18 @@ defmodule NanoAgentTest do
                "have halted you: I will not call the model until an operator un-halts you."
 
     # Un-halting does not shrink it: halted again, still without a call.
+    Fake.push(ctx.model, status: 400, body: %{"error" => %{"message" => "Cannot summarize"}})
     NanoAgent.unhalt(ctx.name)
+    request!(ctx.model)
     await_nth(id, :budget_exhausted, 2)
     refute_receive {:openrouter_request, _, _}, 100
     :sys.get_state(pid)
     assert NanoAgent.info(ctx.name).halted == :context
 
-    assert Enum.at(entries(id, :harness_note), -2)["text"] =~
-             "An operator un-halted you. This conversation does not shrink: its context is " <>
-               "still 4000 of 20000 tokens, so unless your limit has been raised I will halt " <>
-               "you again before my next call to the model, without making it."
+    assert Enum.any?(
+             entries(id, :harness_note),
+             &(&1["text"] =~ "I will retry automatic compaction")
+           )
   end
 
   test "a response that takes the context past its limit halts the agent", ctx do
@@ -1791,6 +1796,39 @@ defmodule NanoAgentTest do
     assert NanoAgent.whereis(ctx.name) == pid
     assert NanoAgent.info(ctx.name).halted == nil
     assert Enum.count(entries(id, :tool_result), &(&1["result"] == "42")) == 2
+  end
+
+  test "compaction cannot call summarizer when durable log fails", ctx do
+    {pid, _id} = start!(ctx, max_context: 20_000)
+
+    :sys.replace_state(pid, fn s ->
+      %{
+        s
+        | transcript:
+            Enum.map(1..3, fn _ ->
+              %{"role" => "user", "content" => String.duplicate("x", 6000)}
+            end),
+          context_used: 17000,
+          measured_bytes: 1_000_000
+      }
+    end)
+
+    old = Application.fetch_env!(:nano, :log_dir)
+    path = Path.join(System.tmp_dir!(), "lyra-log-failure-#{System.unique_integer([:positive])}")
+    File.write!(path, "not a directory")
+    Application.put_env(:nano, :log_dir, path)
+
+    on_exit(fn ->
+      Application.put_env(:nano, :log_dir, old)
+      File.rm!(path)
+    end)
+
+    send(pid, :trigger)
+    assert_receive {:nano_log, %{type: :compaction_started, log_error: _}}, 2000
+    :sys.get_state(pid)
+    assert NanoAgent.info(ctx.name).halted == :log_failed
+    refute_receive {:openrouter_request, _, _}, 100
+    Application.put_env(:nano, :log_dir, old)
   end
 
   test "a node-wide hourly cap of 0 is no cap", ctx do
@@ -1889,8 +1927,12 @@ defmodule NanoAgentTest do
     # The first agent picks the edit up when it restarts.
     Fake.push(ctx.model, text: "ok")
     new = kill(ctx, id)
-    assert NanoAgent.info(ctx.name).system_prompt == "second: #{inspect(new)}"
-    assert text(hd(request!(ctx.model)["messages"])) == "second: #{inspect(new)}"
+    assert String.starts_with?(NanoAgent.info(ctx.name).system_prompt, "second: #{inspect(new)}")
+
+    assert String.starts_with?(
+             text(hd(request!(ctx.model)["messages"])),
+             "second: #{inspect(new)}"
+           )
   end
 
   test "a missing or invalid template file fails the start", ctx do
@@ -1909,7 +1951,7 @@ defmodule NanoAgentTest do
     File.rm!(file)
     Fake.push(ctx.model, text: "ok")
     new = kill(ctx, id)
-    assert NanoAgent.info(ctx.name).system_prompt == "kept: #{inspect(new)}"
+    assert String.starts_with?(NanoAgent.info(ctx.name).system_prompt, "kept: #{inspect(new)}")
 
     assert delivery(List.last(request!(ctx.model)["messages"])) =~
              "I could not read the system prompt file #{file} (:enoent), so your system prompt " <>

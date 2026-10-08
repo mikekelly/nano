@@ -28,6 +28,11 @@ defmodule NanoWeb.AgentLive do
       |> assign(view: view(params))
       |> stream_configure(:entries, dom_id: &"e-#{&1["seq"]}")
       |> stream(:entries, [])
+      |> allow_upload(:image,
+        accept: ~w(.png .jpg .jpeg),
+        max_entries: 1,
+        max_file_size: 3_500_000
+      )
       |> mount_shared()
       |> sync()
 
@@ -67,6 +72,33 @@ defmodule NanoWeb.AgentLive do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  def handle_event("image-change", _, socket), do: {:noreply, socket}
+
+  def handle_event("image-send", params, socket) do
+    results =
+      consume_uploaded_entries(socket, :image, fn %{path: path}, _entry ->
+        result =
+          with {:ok, bytes} <- File.read(path),
+               do:
+                 Nano.Images.send(
+                   socket.assigns.name,
+                   params["text"] || "Image attachment",
+                   bytes
+                 )
+
+        {:ok, result}
+      end)
+
+    notice =
+      case results do
+        [{:ok, _}] -> {:ok, "image sent"}
+        [{:error, error}] -> {:error, inspect(error)}
+        _ -> {:error, "choose a PNG or JPEG image first"}
+      end
+
+    {:noreply, assign(socket, notice: notice)}
   end
 
   def handle_event("draft", params, socket),
@@ -162,6 +194,7 @@ defmodule NanoWeb.AgentLive do
     case type do
       t when t in ~w(event_received harness_note agent_started tool_call tool_result) -> true
       "model_response" -> present?(e["text"]) or present?(e["reasoning"])
+      "image_received" -> true
       "model_error" -> e["retry"] != true
       _ -> false
     end
@@ -279,6 +312,14 @@ defmodule NanoWeb.AgentLive do
           </ul>
         </section>
 
+        <form :if={@agent} id="image-upload" phx-submit="image-send" phx-change="image-change">
+          <label>Send image (PNG/JPEG, 3.5 MB, 2000px maximum)</label>
+          <input name="text" placeholder="Message about this image" />
+          <.live_file_input upload={@uploads.image} />
+          <span :for={error <- upload_errors(@uploads.image)}>{error}</span>
+          <button type="submit">Send image</button>
+        </form>
+
         <nav class="views">
           <.link
             :for={{v, icon} <- [{"reading", "book"}, {"debug", "list"}]}
@@ -321,6 +362,21 @@ defmodule NanoWeb.AgentLive do
 
   attr :id, :string, required: true
   attr :e, :map, required: true
+
+  defp entry(%{e: %{"type" => "image_received"}} = assigns) do
+    ~H"""
+    <li id={@id} class="entry image">
+      <.meta e={@e} label="image attachment" />
+      <p>{@e["text"]}</p>
+      <p :if={!@e["visible_to_model"]}>This model cannot see images.</p>
+      <img
+        src={"/api/images/" <> @e["image"]["id"]}
+        alt={@e["text"]}
+        style="max-width:100%;max-height:500px"
+      />
+    </li>
+    """
+  end
 
   defp entry(%{e: %{"type" => "event_received"}} = assigns) do
     ~H"""
@@ -513,6 +569,8 @@ defmodule NanoWeb.AgentLive do
 
   attr :id, :string, required: true
   attr :e, :map, required: true
+
+  defp read(%{e: %{"type" => "image_received"}} = assigns), do: entry(assigns)
 
   defp read(%{e: %{"type" => "event_received"}} = assigns) do
     ~H"""

@@ -94,6 +94,7 @@ defmodule NanoAgent do
         prompt_file: file,
         context_window: entry.context_length,
         max_output: entry[:max_output],
+        input_modalities: entry[:input_modalities] || ["text"],
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
           with [pid | _] <- Process.get(:"$callers"),
@@ -213,6 +214,7 @@ defmodule NanoAgent do
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
+        input_modalities: Map.get(s, :input_modalities, ["text"]),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -371,6 +373,7 @@ defmodule NanoAgent do
         # max_context cannot exceed, and the most it generates in one response (or nil).
         context_window: opts[:context_window],
         max_output: opts[:max_output],
+        input_modalities: opts[:input_modalities] || ["text"],
         # The size in bytes of the conversation context_used measured: what a request adds
         # is estimated from the growth since (estimate/1).
         measured_bytes: 0
@@ -571,9 +574,18 @@ defmodule NanoAgent do
       "result_max_bytes" => stated(s, :result_max_bytes)
     }
 
-    Enum.reduce(vars, s.template, fn {k, v}, acc ->
-      String.replace(acc, "{{#{k}}}", to_string(v))
-    end)
+    prompt =
+      Enum.reduce(vars, s.template, fn {k, v}, acc ->
+        String.replace(acc, "{{#{k}}}", to_string(v))
+      end)
+
+    prompt <>
+      if("image" in Map.get(s, :input_modalities, ["text"]),
+        do:
+          "\nYour model can see images. Use Nano.Images.view(path, me) in eval to view PNG/JPEG files.",
+        else:
+          "\nYour model cannot see images. Image messages are identified but not shown; never guess their contents."
+      )
   end
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
@@ -614,8 +626,6 @@ defmodule NanoAgent do
   end
 
   def handle_cast(:unhalt, s) do
-    b = budget(s)
-
     {s, more} =
       case s.halted do
         :budget ->
@@ -623,10 +633,8 @@ defmodule NanoAgent do
            " Your turn and token counters are reset to zero."}
 
         :context ->
-          {s,
-           " This conversation does not shrink: its context is still " <>
-             "#{used(b.context_used, b.max_context, "tokens")}, so unless your limit has been " <>
-             "raised I will halt you again before my next call to the model, without making it."}
+          {Map.put(s, :compaction_failed, false),
+           " I will retry automatic compaction before the next request; the context safety limit still applies if it fails."}
 
         _ ->
           {s, ""}
@@ -690,6 +698,26 @@ defmodule NanoAgent do
 
   # A stale timer (its eval finished, or an event cancelled the wakeup).
   def handle_info({tag, _, _}, %{tag: tag} = s), do: noreply(s)
+
+  def handle_info({:nano_image, text, %{"type" => "nano_image", "id" => id} = ref}, s)
+      when is_binary(text) do
+    case Nano.Images.fetch(id) do
+      {:ok, _, _} ->
+        capable = "image" in Map.get(s, :input_modalities, ["text"])
+        log(s, :image_received, %{image: ref, text: text, visible_to_model: capable})
+        s = if capable, do: Map.update(s, :pending_images, [ref], &(&1 ++ [ref])), else: s
+
+        text =
+          if capable,
+            do: text,
+            else: text <> " [Your model cannot see this image; do not guess its contents.]"
+
+        noreply(event(s, %{image_id: id, text: text}))
+
+      error ->
+        noreply(event(s, %{image_error: inspect(error)}))
+    end
+  end
 
   def handle_info(msg, s), do: noreply(event(s, msg))
 
@@ -758,6 +786,7 @@ defmodule NanoAgent do
   defp request(s, new_turn?) do
     # State from an older version of this module, still running after a reload.
     s = s |> upgrade() |> check_provider()
+    new_turn? = new_turn? or Map.get(s, :pending_images, []) != []
     node_used = Nano.StateStore.node_tokens_last_hour()
     cap = Nano.Settings.get(:node_max_tokens_per_hour)
 
@@ -789,8 +818,16 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        text = Enum.join(s.pending ++ [line], "\n")
+        images = Map.get(s, :pending_images, [])
+        content = if images == [], do: text, else: [%{"type" => "text", "text" => text} | images]
+        user = %{"role" => "user", "content" => content}
+
+        next =
+          if new_turn?,
+            do: append(s, user) |> Map.merge(%{pending: [], pending_images: []}),
+            else: s
+
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -814,17 +851,20 @@ defmodule NanoAgent do
     if older == [] do
       s |> Map.put(:compaction_failed, true) |> request(false)
     else
-      log(s, :compaction_started, %{messages: length(older), retained: length(recent)})
-      s = save(%{s | status: :thinking})
+      if log(s, :compaction_started, %{messages: length(older), retained: length(recent)}) != :ok do
+        s |> halt(:log_failed, @log_failed) |> end_turn("error")
+      else
+        s = save(%{s | status: :thinking})
 
-      task =
-        Task.Supervisor.async_nolink(Nano.EvalSupervisor, Nano.Compaction, :summarize, [
-          s.model,
-          older,
-          s.max_context
-        ])
+        task =
+          Task.Supervisor.async_nolink(Nano.EvalSupervisor, Nano.Compaction, :summarize, [
+            s.model,
+            older,
+            s.max_context
+          ])
 
-      %{s | task: %{kind: :compaction, task: task, recent: recent}}
+        %{s | task: %{kind: :compaction, task: task, recent: recent}}
+      end
     end
   end
 
@@ -840,26 +880,32 @@ defmodule NanoAgent do
           "</harness>\n" <> summary
     }
 
-    log(s, :compaction_completed, %{summary: summary, retained: length(recent), tokens: tokens})
+    logged =
+      log(s, :compaction_completed, %{summary: summary, retained: length(recent), tokens: tokens})
 
-    s =
-      Map.merge(s, %{
-        transcript: [checkpoint | recent],
-        context_used: 0,
-        measured_bytes: 0,
-        tokens_used: s.tokens_used + tokens,
-        cost: s.cost + (r.cost || 0),
-        status: :idle,
-        compaction_failed: true
-      })
+    if logged != :ok do
+      s = %{s | tokens_used: s.tokens_used + tokens, cost: s.cost + (r.cost || 0), status: :idle}
+      s |> halt(:log_failed, @log_failed) |> end_turn("error")
+    else
+      s =
+        Map.merge(s, %{
+          transcript: [checkpoint | recent],
+          context_used: 0,
+          measured_bytes: 0,
+          tokens_used: s.tokens_used + tokens,
+          cost: s.cost + (r.cost || 0),
+          status: :idle,
+          compaction_failed: true
+        })
 
-    s =
-      note(
-        s,
-        "The harness automatically compacted your older history using #{s.model}. Your identity, mailbox and eval bindings are unchanged; the full record is in the log named in your checkpoint."
-      )
+      s =
+        note(
+          s,
+          "The harness automatically compacted your older history using #{s.model}. Your identity, mailbox and eval bindings are unchanged; the full record is in the log named in your checkpoint."
+        )
 
-    s |> check_budget() |> request(true)
+      s |> check_budget() |> request(true)
+    end
   end
 
   defp compact_done(s, _recent, error) do
@@ -905,7 +951,15 @@ defmodule NanoAgent do
     do:
       byte_size(
         Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
-      )
+      ) +
+        9600 *
+          Enum.sum(
+            Enum.map(transcript, fn m ->
+              if is_list(m["content"]),
+                do: Enum.count(m["content"], &(&1["type"] == "nano_image")),
+                else: 0
+            end)
+          )
 
   defp context_halt(s, estimate) do
     b = budget(s)

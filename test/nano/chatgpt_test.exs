@@ -62,6 +62,31 @@ defmodule Nano.ChatGPTTest do
     eventually(fn -> (pid = Process.whereis(Auth)) && pid != old end)
   end
 
+  test "image parts translate to Codex input_image" do
+    connect!()
+    model = "gpt-image-#{System.unique_integer([:positive])}"
+    Fake.push(model, text: "seen")
+
+    messages = [
+      %{"role" => "system", "content" => "see image"},
+      %{
+        "role" => "user",
+        "content" => [
+          %{"type" => "text", "text" => "what is this?"},
+          %{"type" => "image_url", "image_url" => %{"url" => "data:image/png;base64,AAAA"}}
+        ]
+      }
+    ]
+
+    assert {:ok, _} = Nano.ChatGPT.chat(model, messages, [], "low")
+    assert_receive {:chatgpt_request, ^model, body, _}
+
+    assert hd(body["input"])["content"] == [
+             %{"type" => "input_text", "text" => "what is this?"},
+             %{"type" => "input_image", "image_url" => "data:image/png;base64,AAAA"}
+           ]
+  end
+
   ## Device-code login
 
   test "device flow: a code to enter, polling while pending, then tokens saved 0600" do
@@ -524,6 +549,7 @@ defmodule Nano.ChatGPTTest do
                id: "gpt-x",
                name: "GPT-X",
                context_length: 1000,
+               input_modalities: ["text"],
                reasoning_levels: ~w(low medium high xhigh max),
                default_reasoning: "low"
              },
@@ -531,6 +557,7 @@ defmodule Nano.ChatGPTTest do
                id: "gpt-y",
                name: "gpt-y",
                context_length: nil,
+               input_modalities: ["text"],
                reasoning_levels: ~w(off low medium),
                default_reasoning: "off"
              }
