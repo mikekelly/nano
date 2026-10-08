@@ -21,19 +21,60 @@ defmodule Nano.Compaction do
 
   def plan(messages, window) do
     keep = min(20_000, div(window, 4))
-    # Cut only at a user message: no kept tool result can lose its call, and the newest
-    # request remains verbatim. A single enormous turn cannot be reduced safely.
-    candidates = for {m, i} <- Enum.with_index(messages), i > 0, m["role"] == "user", do: i
+    # User boundaries keep full turns; assistant boundaries also let a long single
+    # turn checkpoint progress, never beginning at a tool result. Do not summarize
+    # just the initial request with no progress: that cannot solve an oversized turn.
+    candidates =
+      for {m, i} <- Enum.with_index(messages),
+          (i > 0 and m["role"] == "user") or (i > 1 and m["role"] == "assistant"),
+          do: i
 
     cut =
-      Enum.find(candidates, List.last(candidates), fn i ->
+      Enum.find(candidates, fn i ->
         size(Enum.drop(messages, i)) <= keep
       end)
 
     if cut, do: {:ok, Enum.take(messages, cut), Enum.drop(messages, cut)}, else: :no_prefix
   end
 
-  def size(messages), do: div(byte_size(Jason.encode!(messages)) + 1, 2)
+  def size(messages),
+    do:
+      div(byte_size(Jason.encode!(messages)) + 1, 2) +
+        Nano.Images.count(messages) * Nano.Images.tokens()
+
+  @doc "Literal file paths observed in eval arguments, independent of summary-model memory."
+  def files(messages) do
+    Enum.reduce(messages, %{read: [], modified: []}, fn m, acc ->
+      Enum.reduce(m["tool_calls"] || [], acc, fn call, acc ->
+        raw = get_in(call, ["function", "arguments"])
+
+        args =
+          cond do
+            is_map(raw) ->
+              raw
+
+            is_binary(raw) ->
+              case Jason.decode(raw) do
+                {:ok, a} when is_map(a) -> a
+                _ -> %{}
+              end
+
+            true ->
+              %{}
+          end
+
+        code = args["code"] || ""
+
+        matches =
+          Regex.scan(~r/(?:File|Seedling\.Tools)\.(read!?|write!?|edit)\s*\(\s*"([^"\n]+)"/, code)
+
+        Enum.reduce(matches, acc, fn [_, op, path], a ->
+          key = if String.starts_with?(op, "read"), do: :read, else: :modified
+          Map.update!(a, key, &Enum.uniq(&1 ++ [path]))
+        end)
+      end)
+    end)
+  end
 
   def serialize(messages) do
     Enum.map_join(messages, "\n", fn m ->

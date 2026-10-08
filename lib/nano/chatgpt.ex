@@ -60,6 +60,8 @@ defmodule Nano.ChatGPT do
       prompt_cache_key: key
     }
 
+    body = if tools == [], do: Map.delete(body, :prompt_cache_key), else: body
+
     case Req.post(url("/responses"),
            json: body,
            headers: [{"session-id", key} | headers(creds)],
