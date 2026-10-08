@@ -19,7 +19,8 @@ defmodule Seedling.Bots.Smoke do
   not a claim that their contents are correct. Inspect the snippets and durable root.
 
   Returns `{:ok, %{pid:, root:}}` immediately. Completion is
-  `{:bots_smoke, root, {:ok, evidence} | {:error, text}}`. `notify:` may be a pid or
+  `{:bots_smoke, root, {:ok, evidence} | {:error, %{message:, diagnostics:, logs:}}}`.
+  Error diagnostics are captured before cleanup clears transient routing status. `notify:` may be a pid or
   `{:agent, name}` (resolved on completion); default is the calling eval's agent or
   ordinary caller. Each phase waits at most `timeout:` milliseconds (default 45000,
   allowed 100..120000). All smoke sessions are stopped and their harness agents/tasks
@@ -65,12 +66,16 @@ defmodule Seedling.Bots.Smoke do
                 _, _ -> {:error, "Smoke process unavailable; inspect this private root."}
               end
 
+            diagnostics = diagnostics(root)
             logs = cleanup(root)
 
             result =
               case result do
-                {:ok, evidence} -> {:ok, Map.put(evidence, :logs, logs)}
-                error -> error
+                {:ok, evidence} ->
+                  {:ok, Map.put(evidence, :logs, logs)}
+
+                {:error, message} ->
+                  {:error, %{message: message, diagnostics: diagnostics, logs: logs}}
               end
 
             deliver(notify, {:bots_smoke, root, result})
@@ -192,6 +197,19 @@ defmodule Seedling.Bots.Smoke do
           Process.sleep(50)
           poll(sid, count, opts, deadline)
       end
+    end
+  end
+
+  defp diagnostics(root) do
+    case Bots.snapshot(root: root) do
+      {:ok, snapshot} ->
+        Enum.map(snapshot.statuses, fn {{session, bot}, status} ->
+          %{session: session, bot: bot, status: status}
+        end)
+        |> Enum.take(32)
+
+      {:error, error} ->
+        [%{status: error}]
     end
   end
 

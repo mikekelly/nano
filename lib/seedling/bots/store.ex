@@ -519,44 +519,71 @@ defmodule Seedling.Bots.Store do
   def handle_info({:route, sid, msg}, s) do
     sess = s.data["sessions"][sid]
 
-    if sess && not sess["paused"] do
-      store = self()
+    s =
+      if sess && not sess["paused"] do
+        statuses =
+          Enum.reduce(sess["bots"], s.statuses, fn bid, statuses ->
+            if bid != msg["from"] and statuses[{sid, bid}] in [nil, "quiet"],
+              do: Map.put(statuses, {sid, bid}, "Considering whether to respond"),
+              else: statuses
+          end)
 
-      for bid <- sess["bots"], bid != msg["from"] do
-        bot = s.data["bots"][bid]
-        candidates = relevant_candidates(s.data["memories"][bid] || [], msg["text"])
-        runtime = s.runtime
-        gate = s.gate
-        config = s.data["config"]
-        root = s.root
+        s = %{s | statuses: statuses}
+        broadcast(s, %{kind: :status})
+        store = self()
 
-        spawn(fn ->
-          try do
-            decision = gate.reply?(bot, sess, msg)
+        for bid <- sess["bots"], bid != msg["from"] do
+          bot = s.data["bots"][bid]
+          candidates = relevant_candidates(s.data["memories"][bid] || [], msg["text"])
+          runtime = s.runtime
+          gate = s.gate
+          config = s.data["config"]
+          root = s.root
 
-            if decision and GenServer.call(store, {:claim, sid, bid, sess["epoch"]}) == :ok do
-              memories = gate.memories(bot, msg, Enum.take(candidates, 30)) |> Enum.take(5)
-              result = runtime.deliver(bot, sess, msg, memories, config, root)
-              send(store, {:routed, sid, bid, sess["epoch"], result})
+          spawn(fn ->
+            try do
+              decision = gate.reply?(bot, sess, msg)
+
+              if decision and GenServer.call(store, {:claim, sid, bid, sess["epoch"]}) == :ok do
+                memories = gate.memories(bot, msg, Enum.take(candidates, 30)) |> Enum.take(5)
+                result = runtime.deliver(bot, sess, msg, memories, config, root)
+                send(store, {:routed, sid, bid, sess["epoch"], result})
+              else
+                if not decision, do: send(store, {:routed, sid, bid, sess["epoch"], :quiet})
+              end
+            rescue
+              _ ->
+                send(
+                  store,
+                  {:routed, sid, bid, sess["epoch"], {:error, "Routing unavailable; try again."}}
+                )
+            catch
+              _, _ ->
+                send(
+                  store,
+                  {:routed, sid, bid, sess["epoch"], {:error, "Routing unavailable; try again."}}
+                )
             end
-          rescue
-            _ ->
-              send(
-                store,
-                {:routed, sid, bid, sess["epoch"], {:error, "Routing unavailable; try again."}}
-              )
-          catch
-            _, _ ->
-              send(
-                store,
-                {:routed, sid, bid, sess["epoch"], {:error, "Routing unavailable; try again."}}
-              )
-          end
-        end)
+          end)
+        end
+
+        s
+      else
+        s
       end
-    end
 
     {:noreply, s}
+  end
+
+  def handle_info({:routed, sid, bid, epoch, :quiet}, s) do
+    if s.data["sessions"][sid]["epoch"] == epoch and
+         s.statuses[{sid, bid}] == "Considering whether to respond" do
+      s = %{s | statuses: Map.put(s.statuses, {sid, bid}, "quiet")}
+      broadcast(s, %{kind: :status})
+      {:noreply, s}
+    else
+      {:noreply, s}
+    end
   end
 
   def handle_info({:routed, sid, bid, epoch, {:error, error}}, s) do
