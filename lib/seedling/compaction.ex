@@ -31,8 +31,8 @@ defmodule Seedling.Compaction do
   @doc "The number of invalid summary responses before halting."
   def attempts, do: @attempts
 
-  @doc "Reserve for compaction; scaled to a quarter-window on small models."
-  def reserve(window), do: min(@reserve, div(window, 4))
+  @doc "Reserve for compaction; at least 8192 tokens to fit the note and hard reply guard."
+  def reserve(window), do: min(@reserve, max(8_192, div(window, 4)))
 
   @doc "A conservative JSON token estimate (one token per two bytes, including framing)."
   def tokens(value), do: div(byte_size(Jason.encode!(value)) + 1, 2)
@@ -142,8 +142,22 @@ defmodule Seedling.Compaction do
   # Legacy state cannot identify child senders; retain those messages conservatively.
 
   defp recover_events(text) when is_binary(text) do
-    for [text] <- Regex.scan(~r/<event seq="\d+" at="[^"]*">.*?<\/event>/s, text),
-        do: %{text: text, kind: :external}
+    # Actual headers start a line. Inspected strings escape newlines and quote their
+    # contents; literal </event> inside a received term is NOT the wrapper terminator.
+    text
+    |> then(&Regex.split(~r/(?=^<event seq="\d+" at="[^"]*">)/m, &1, trim: true))
+    |> Enum.flat_map(fn part ->
+      if String.starts_with?(part, "<event seq=") do
+        body = part |> String.split("\n<harness>", parts: 2) |> hd()
+
+        case List.last(:binary.matches(body, "</event>")) do
+          {offset, length} -> [%{text: binary_part(body, 0, offset + length), kind: :external}]
+          nil -> []
+        end
+      else
+        []
+      end
+    end)
   end
 
   defp recover_events(_), do: []

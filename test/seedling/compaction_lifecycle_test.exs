@@ -13,10 +13,17 @@ defmodule Seedling.CompactionLifecycleTest do
         do: %{"architecture" => %{"input_modalities" => ["text", "image"]}},
         else: %{}
 
+    entry =
+      if tags[:max_output],
+        do: Map.put(entry, "top_provider", %{"max_completion_tokens" => tags[:max_output]}),
+        else: entry
+
     model = Fake.model(entry)
     name = "compaction-#{System.unique_integer([:positive])}"
     Fake.listen(model)
-    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model, max_context: 100_000))
+    opts = [max_context: tags[:window] || 100_000]
+    opts = if tags[:prompt], do: Keyword.put(opts, :system_prompt, tags[:prompt]), else: opts
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model, opts))
     id = NanoAgent.info(name).id
     Nano.Log.subscribe(id)
 
@@ -428,6 +435,54 @@ defmodule Seedling.CompactionLifecycleTest do
     assert text(brief) =~ "legacy_brief"
     assert text(summary) =~ "Legacy checkpoint"
     assert NanoAgent.info(ctx.name).input_modalities == ["text"]
+    Fake.push(ctx.model, text: "done")
+  end
+
+  @tag window: 16000, prompt: "You are a compaction-test agent. Follow harness notes."
+  test "a small 16000-token window checkpoints with the unchanged hard reply guard", ctx do
+    Fake.push(ctx.model, calls: [eval: "x = 42"], usage: {8000, 100, 0})
+    send(ctx.pid, :small_window_brief)
+    request(ctx)
+    compact = request(ctx)
+    assert text(List.last(compact["messages"])) =~ "automatic compaction"
+    assert compact["max_tokens"] >= 4096
+
+    Fake.push(ctx.model,
+      calls: [eval: summary_code("Small-window checkpoint; x = 42.")],
+      usage: {9000, 100, 0}
+    )
+
+    resumed = request(ctx)
+    assert Enum.any?(resumed["messages"], &(text(&1) =~ "Small-window checkpoint"))
+    assert NanoAgent.whereis(ctx.name) == ctx.pid
+    assert NanoAgent.info(ctx.name).halted == nil
+    Fake.push(ctx.model, text: "done")
+  end
+
+  @tag max_output: 32768
+  test "bounded ordinary replies preserve reserve before reaching the checkpoint threshold",
+       ctx do
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {74800, 100, 0})
+    send(ctx.pid, :bounded_reply_brief)
+    request(ctx)
+    ordinary = request(ctx)
+    requests = Enum.filter(Nano.Log.read(ctx.id), &(&1["type"] == "model_request"))
+    estimate = List.last(requests)["approx_input_tokens"]
+    room = 100_000 - estimate
+    assert room in 24000..26000
+    assert ordinary["max_tokens"] == room - Seedling.Compaction.reserve(100_000)
+    assert ordinary["max_tokens"] < 32768
+    # Even near that output cap the next eval result can trigger a safe checkpoint.
+    Fake.push(ctx.model, calls: [eval: "2"], usage: {75000, 8650, 0})
+    compact = request(ctx)
+    assert text(List.last(compact["messages"])) =~ "automatic compaction"
+
+    Fake.push(ctx.model,
+      calls: [eval: summary_code("The bounded provider safely reached a checkpoint.")]
+    )
+
+    request(ctx)
+    assert NanoAgent.info(ctx.name).halted == nil
     Fake.push(ctx.model, text: "done")
   end
 end

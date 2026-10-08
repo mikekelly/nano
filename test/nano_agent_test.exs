@@ -1678,7 +1678,7 @@ defmodule NanoAgentTest do
                     byte_size(Jason.encode!([first["tools"] | first["messages"]])) / 2,
                     400
 
-    assert first["max_tokens"] == 100_000 - estimate
+    assert first["max_tokens"] == 100_000 - estimate - Seedling.Compaction.reserve(100_000)
     assert %{"max_output" => max} = await(id, :model_request)
     assert max == first["max_tokens"]
 
@@ -1686,7 +1686,7 @@ defmodule NanoAgentTest do
     second = request!(ctx.model)
     estimate = await(id, :model_request, &(&1["request_id"] == 2))["approx_input_tokens"]
     assert estimate in 51_000..51_100
-    assert second["max_tokens"] == 100_000 - estimate
+    assert second["max_tokens"] == 100_000 - estimate - Seedling.Compaction.reserve(100_000)
 
     # Never more than the model generates at most, as its provider lists it.
     small = %{
@@ -2034,7 +2034,7 @@ defmodule NanoAgentTest do
     body = request!(ctx.model)
     estimate = await(id, :model_request, &(&1["request_id"] == 3))["approx_input_tokens"]
     assert estimate in 3_210..3_600
-    assert body["max_tokens"] == 1_000_000 - estimate
+    assert body["max_tokens"] == 1_000_000 - estimate - Seedling.Compaction.reserve(1_000_000)
   end
 
   test "an old state file revives without the model's list: its max_context is the ceiling",
