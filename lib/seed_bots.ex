@@ -312,7 +312,7 @@ defmodule SeedBots do
 
           decision =
             if Keyword.get(s.opts, :routing, true),
-              do: SeedDecision.decide(:reply, state),
+              do: decide(s, :reply, state),
               else: {:error, :disabled}
 
           # If decision service is unavailable, only direct human turns proceed. Never
@@ -405,12 +405,17 @@ defmodule SeedBots do
     end
   end
 
+  defp decide(s, kind, state) do
+    fun = Keyword.get(s.opts, :decision, &SeedDecision.decide/2)
+    fun.(kind, state)
+  end
+
   defp retrieve(s, bot, query) do
     candidates = Map.get(s.data.memories, bot, []) |> Enum.take(50)
 
     case if(candidates == [],
            do: {:ok, %{ids: []}},
-           else: SeedDecision.decide(:memory, %{query: query, candidates: candidates})
+           else: decide(s, :memory, %{query: query, candidates: candidates})
          ) do
       {:ok, %{ids: ids}} -> Enum.filter(candidates, &(&1.id in ids)) |> Enum.take(5)
       _ -> []
