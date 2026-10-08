@@ -1,39 +1,34 @@
-# Atlas seedling: capability verification and deployment
+# Atlas seedling: verification, deployment and limits
 
-Work is on `seedling/atlas-harness`, never main. Module docs are the API manuals.
+Work is committed on `seedling/atlas-harness`, never main. Module docs are the API manuals; `prompts/orientation.md` is the lean capability map.
 
-## Deployment boundary
+## Running node
 
-Only new `Seedling.*` libraries have been loaded into the running node. Shared seed
-harness/provider/Phoenix modules have **not yet** been hot-loaded. Operators explicitly
-authorized parent-owned deployment decisions; a private prod build is being staged. The integrated source is tested in isolated `MIX_ENV=test`
-VMs. Real-provider acceptance runs also used isolated VMs and private access-only auth
-snapshots with disabled refresh, not shared-state edits. A new boot from this source
-includes the source integrations. Do not infer that `/bots`, image API/UI or automatic
-compaction is deployed in the currently running seed VM merely because source tests pass.
+The tested harness/provider/API/Phoenix cohort from revision `b53fcd02712e002041cbbddaf77c06c018a4a2be` was compiled in an exact-revision private prod snapshot and explicitly loaded with `Seedling.Deploy`. All original agent pids were preserved; no forced purge, builder restart or shared production build rewrite was used. Explicit `NanoAgent.refresh_context` refreshed each existing agent's own prompt and provider modalities at a safe boundary. New agents use the committed templates. The pure Bobbing/FrontOfMind estimate-correction follow-up and opt-in Bots.Smoke helper were separately tested and loaded parent-side. The running container has rg, util-linux, Node/npm and Lightpanda; Dockerfile records needed runtime packages (image rebuild itself not tested).
 
-## Entry points and verified scope
+Deployment is not an atomic process-state transaction: see `Seedling.Deploy` and `seeding-docs/compaction-operations.md` for safe reload, old-code refusal and rollback limitations. Sources remain authoritative for subsequent builds.
 
-| Capability | Entry point | Verification / limits |
+## Capabilities
+
+| Capability | Entry point | Verified scope / limits |
 | --- | --- | --- |
-| Files | `Seedling.Files` | Paging/caps, atomic write, exact+tolerant disjoint edits, ls/find/grep; files-only glob find (directories via ls). Requires rg. |
-| Shell/background | `Seedling.Shell` | 43 focused tests including genuine supervised agent restart and process-group kill. Full spool + bounded tail; `:finishing` reconciles persistence races. Named completion survives agent/eval restart, not node restart; detached sessions outside kill guarantee. |
-| Compaction | `Seedling.Compaction`, `seeding-docs/compaction-operations.md` | Automatic + voluntary, strict nonexecuted summary AST, frozen retries, preserved first brief/new events, checkpoint reserve. REAL-model threshold crossing retained pid and eval bindings; opt-in `scripts/compaction_smoke.exs`. Hard guard still catches oversized immutable brief/system/sudden additions; Codex cannot enforce output cap. |
-| Delegation/prompts | `Seedling.Delegation`, `Seedling.Prompts` | Explicit spending/revision, hashed prereads, isolated worktree/builds, partial composition; real child returned concise checked result. Named at-least-once protocol + ack, halt/death/restart. Full-node watcher recovery explicit `resume(directory)`. Optional MCP connection acceptance pending. |
-| Web/browser | `Seedling.Web` | HTTP-first heuristic readability, Lightpanda JS fallback, UTF-8 paging/cache/evidence; real HTTP/browser/JS/CDP smokes. PDF/video/binary unsupported; CDP is startup/stop wrapper, external clients drive. Total-deadline/browser spool hardening in progress. |
-| Search/research | `Seedling.Search` | Real Exa search/content/grounded answer/async `/agent/runs` verified ($0.026 observed total). Named at-least-once event/ack; explicit node-restart resume. Local timeout doesn't cancel paid remote job. Recovery from failed job persistence under hardening. |
-| Goals | `Seedling.Goals` | Durable why/status/parent/focus trees; bounded review; nonblocking cached agent UI. Parent actively uses them. Single-node atomic JSON store, no multi-node guarantees. |
-| Front of mind / decisions | `Seedling.FrontOfMind`, `Seedling.Bobbing`, `Seedling.Decision` | <=1000-character note, experiment toggles, token-distance bobbing, forced checkpoint re-show and structured events. Real Jev typed probability probe passed; bounded synchronous opt-in drift. No measured behavior-benefit claim. Reviewer checking context-halt bob rollback. |
-| Images | `Seedling.Images` | Immutable validated PNG/JPEG references, per-model capabilities, wire hydration, image API/uploads/timeline and raw-log redaction. Eight full scripted lifecycle tests pass incl unsupported notices after truncation; real Codex correctly identified anonymous red/blue panels. Opt-in `scripts/image_smoke.exs` and receipt. Other formats refused; <=2000 px/side, <=3,750,000 raw bytes, JPEG container not pixel decoder. |
-| Bots | `Seedling.Bots`, `/bots` | Consumer LiveView, identities, separate per-bot/session agents, selected cross-session memory, safe rendering/files, group brakes, human requests+ack and bounded notifications. 15 initial focused tests passed; real persistent-agent integration/eval attribution and hardening still in progress. Voice deferred; same unauthenticated single-person trust boundary as seed, workspaces not OS sandboxes. |
-| MCP | `Seedling.MCP` | Builder in progress; source not integrated or advertised yet. |
+| Files | `Seedling.Files` | Bounded read/write/edit/ls/find/grep, atomic writes and disjoint tolerant edits; CRLF preserved. Find lists files, directories via ls. Requires rg. |
+| Shell/background | `Seedling.Shell` | Full disk spool, bounded foreground/tail, named completion, actual supervised agent restart and descendant cleanup tests. Status `:finishing` reconciles persistence races. Survives agent/eval restart, not node restart; deliberately detached sessions evade group cleanup. Caller owns retention. |
+| Compaction | `Seedling.Compaction`, operations guide | Automatic and voluntary checkpoints, literal-only nonexecuted summaries, frozen retries, preserved first brief/events/images and safe legacy migration. Actual Codex threshold crossing retained pid and eval counter; live builder also compacted. Hard guard remains for oversized fixed context/sudden additions/unbounded Codex output. Summary size uses estimates. |
+| Delegation/prompts | `Seedling.Delegation`, `Seedling.Prompts` | Explicit spending/revision, hashed capped prereads, isolated worktree/builds, reusable partials; real child returned checked concise result. Named at-least-once reports + ack, restart and durable watcher recovery. Full-node recovery requires resume. Configured MCP before first turn verified with actual scripted server/harness. |
+| Web/browser | `Seedling.Web` | HTTP-first heuristic extraction, actual Lightpanda JS fallback and CDP startup/stop, UTF-8 pagination and exact passage evidence. Total deadline wraps fetch/extraction/storage; child file output bounded with small possible termination diagnostics. PDF/video/binary unsupported. CDP clients drive interactions. Cache eviction best effort. |
+| Search/research | `Seedling.Search` | Actual Exa search/contents/grounded answer/current async `/agent/runs`; observed acceptance cost $0.026. Named retry/ack, persisted results and explicit resume without resubmission. Local timeout does not cancel remote paid job. No SSE support claimed. |
+| Goals | `Seedling.Goals` | Durable why/status/parent/focus trees, bounded review, cache-only nonblocking dashboard; used by atlas throughout. Atomic single-node JSON, not distributed transactions. |
+| Front of mind / decisions | `Seedling.FrontOfMind`, `Seedling.Bobbing`, `Seedling.Decision` | <=1000 Unicode-character note, experiment toggles, token-distance re-show, explicit checkpoint refresh, typed Jev decisions. Real Jev probes passed. Guard/log-failure retained-note invariant tested; downward estimate corrections do not imitate compaction. Drift opt-in synchronous <=3s. Instrumentation exists; no measured behavior-benefit claim. |
+| Images | `Seedling.Images` | Immutable snapshots, per-model capability, both provider payloads, image API/dashboard upload/timeline/raw-log redaction. Eight lifecycle tests plus actual anonymous red/blue vision recognition passed. PNG/JPEG only, <=2000 pixels/side and 3,750,000 raw bytes; JPEG structural validation, not full pixel decode. |
+| Bots | `Seedling.Bots`, `/bots` | Consumer sessions/identity, separate stable per-bot/session agents, selected cross-session memory, safe Markdown/files, group brakes, human requests/answer/ack, explicit notification budgets. Actual scripted-provider agent compaction/restart/group and replacement-requester tests; real Jev gating and Lightpanda keyboard/mock notification tests. Actual OS notification display unverified; voice deferred. Same unauthenticated single-person trust boundary as seed; workspaces not OS sandboxes. Live large-model smoke pending diagnosis (first attempt timed out before any bot log/post); do not infer live acceptance from scripted tests. |
+| MCP | `Seedling.MCP` | 2026-07-28 current stdio/Streamable HTTP JSON/SSE plus legacy handshake fallback. Discovery/tools/resources/prompts, bounded spills/paging, durable named watch/subscription/reconnect events. Official filesystem reference and live mailbox resource-update/tool-change/progress verified. No OAuth/roots/sampling/elicitation/tasks advertised, no automatic side-effect replay or exactly-once guarantee. Config trusted, not sandboxed. |
+| Deployment | `Seedling.Deploy` | Private exact-revision build, loaded checksum/artifact inventory, explicit approved cohort, active-old-code refusal and tested cached rollback. Newly loaded modules cannot always be rolled back; report lists partial outcomes. |
 
-## Latest unified checks
+## Verification and receipts
 
-383 tests passed before newer hooks/bots/delegation/web integrations. A later 392-test run
-found a real shell status TOCTOU; fixed with manager reconciliation and 400-command stress
-regression, 43 focused tests pass. Two image negative regressions were intentionally added
-then fixed (all eight lifecycle tests now pass). Latest unified suite is running; exact final
-counts will replace this paragraph after remaining commits are integrated.
+Integrated source including smoke helper and estimate-correction fix: **503 tests passed under each of seeds 928330 and 1**, official MCP filesystem reference enabled. Compile warnings-as-errors, format and diff checks passed; two existing test-source warnings remain. Prior shell TOCTOU, image negative cases, small-window compaction reserves, frozen output bounds, bob rollback/log failures and restarted infrastructure dashboard classification were reproduced and fixed, not waived.
 
-Specs: `/app/seeding-docs/README.md`; methodology: `/app/seeding-docs/guidance.md`.
+Opt-in reproducible probes: `scripts/compaction_smoke.exs`, `scripts/image_smoke.exs` (curated vision receipt alongside), `Seedling.Bots.Smoke.start/2`. They require explicit spending/configuration; never run automatically. Private access-only auth snapshots for isolated provider probes were deleted; no credentials in source/receipts. Live deployment report: `/tmp/atlas-deploy/deployed-b53fcd0.term`; latest two-seed output: `/tmp/atlas-checks/final-correction/3b256e3f1262f763253559bf/output.log` (ephemeral container paths, not portable artifacts).
+
+Specs: `/app/seeding-docs/README.md`; method: `guidance.md`.
