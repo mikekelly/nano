@@ -125,6 +125,23 @@ defmodule Nano.Ops do
     end
   end
 
+  @doc "Send a local image file to an agent with optional text."
+  def send_image(name, path, text \\ "") do
+    with {:ok, pid} <- find(name), do: NanoAgent.notify_image(pid, path, text)
+  end
+
+  @doc "API/dashboard upload: snapshot base64 bytes and deliver, returning the image reference."
+  def upload_image(name, base64, text \\ "") when is_binary(text) do
+    with {:ok, pid} <- find(name),
+         {:ok, ref} <- Nano.Images.from_base64(base64),
+         :ok <- NanoAgent.deliver_images(pid, [ref], text) do
+      {:ok, ref}
+    end
+  end
+
+  @doc "Immutable image bytes for authenticated dashboard/API serving (by SHA-256 id)."
+  def image(id), do: Nano.Images.read(%{"id" => id})
+
   ## Providers
 
   @doc """
