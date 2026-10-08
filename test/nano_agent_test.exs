@@ -59,6 +59,7 @@ defmodule NanoAgentTest do
 
   defp text(%{"content" => [%{"text" => text}]}), do: text
   defp text(%{"content" => text}), do: text
+  defp with_image_prompt(prompt), do: prompt <> "\n" <> Seedling.Images.prompt(["text"])
 
   # A delivered user message without its closing budget line, checking there is exactly one.
   defp delivery(message) do
@@ -872,7 +873,7 @@ defmodule NanoAgentTest do
     assert {name, model, max_tokens} ==
              {ctx.name, ctx.model, 30_000_000}
 
-    assert prompt == "#{ctx.name} on #{node()}, 7 turns"
+    assert prompt == with_image_prompt("#{ctx.name} on #{node()}, 7 turns")
     assert NanoAgent.info("nobody") == nil
   end
 
@@ -1624,7 +1625,7 @@ defmodule NanoAgentTest do
 
   test "agents render the default template file", ctx do
     start!(ctx)
-    spec = File.read!("priv/system_prompt.txt")
+    spec = with_image_prompt(File.read!("priv/system_prompt.txt"))
     assert NanoAgent.info(ctx.name).prompt_source == "priv/system_prompt.txt"
     pattern = spec |> Regex.escape() |> String.replace(~r/\\\{\\\{\w+\\\}\\\}/, ".+?")
     assert NanoAgent.info(ctx.name).system_prompt =~ Regex.compile!("^" <> pattern <> "$", "s")
@@ -1737,8 +1738,8 @@ defmodule NanoAgentTest do
     assert NanoAgent.info(ctx.name).halted == :context
 
     assert Enum.at(entries(id, :harness_note), -2)["text"] =~
-             "An operator un-halted you. This conversation does not shrink: its context is " <>
-               "still 4000 of 20000 tokens, so unless your limit has been raised I will halt " <>
+             "An operator un-halted you. The hard context guard still applies: this context is " <>
+               "4000 of 20000 tokens, so unless your limit has been raised I will halt " <>
                "you again before my next call to the model, without making it."
   end
 
@@ -1859,8 +1860,10 @@ defmodule NanoAgentTest do
     # The first agent picks the edit up when it restarts.
     Fake.push(ctx.model, text: "ok")
     new = kill(ctx, id)
-    assert NanoAgent.info(ctx.name).system_prompt == "second: #{inspect(new)}"
-    assert text(hd(request!(ctx.model)["messages"])) == "second: #{inspect(new)}"
+    assert NanoAgent.info(ctx.name).system_prompt == with_image_prompt("second: #{inspect(new)}")
+
+    assert text(hd(request!(ctx.model)["messages"])) ==
+             with_image_prompt("second: #{inspect(new)}")
   end
 
   test "a missing or invalid template file fails the start", ctx do
@@ -1879,7 +1882,7 @@ defmodule NanoAgentTest do
     File.rm!(file)
     Fake.push(ctx.model, text: "ok")
     new = kill(ctx, id)
-    assert NanoAgent.info(ctx.name).system_prompt == "kept: #{inspect(new)}"
+    assert NanoAgent.info(ctx.name).system_prompt == with_image_prompt("kept: #{inspect(new)}")
 
     assert delivery(List.last(request!(ctx.model)["messages"])) =~
              "I could not read the system prompt file #{file} (:enoent), so your system prompt " <>
