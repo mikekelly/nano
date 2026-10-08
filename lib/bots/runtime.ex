@@ -25,7 +25,11 @@ defmodule Bots.Runtime do
   `stop/3` uses Nano's hard stop API, cancelling model/eval tasks and removing its
   saved Nano state. There is no safe cancellable-pause API in the seed. A later
   dispatch reconstructs context from the persisted conversation and bot memories;
-  private eval bindings and reasoning do not survive an explicit stop. Normal process
+  private eval bindings and reasoning do not survive an explicit stop. A durable
+  epoch fence rejects out-of-order dispatches and stops: when stopping asynchronously,
+  pass the incremented session["epoch"]. An older stop cannot kill a newer turn; a
+  delayed pre-stop dispatch cannot resurrect it. Without a session epoch, stop is an
+  unconditional administrative stop. Normal process
   and node restarts are handled by Nano's existing state restoration.
 
   Tests can pass `nano_api: Module`, implementing `start/1`, `whereis/1`, `info/1`,
@@ -100,8 +104,10 @@ defmodule Bots.Runtime do
         locked(identity.name, fn ->
           api = Keyword.get(opts, :nano_api, Bots.Runtime.Nano)
 
-          with {:ok, pid} <- ensure_agent(api, identity, bot, opts),
+          with :ok <- dispatch_epoch(identity, context.epoch),
+               {:ok, pid} <- ensure_agent(api, identity, bot, opts),
                {:ok, control, data} <- turn(identity, bot, session, context),
+               :ok <- write_epoch(identity, context.epoch, false),
                :ok <- api.notify(pid, {:bots_turn, control, data}),
                true <- Process.alive?(pid) do
             {:ok, pid}
@@ -123,14 +129,9 @@ defmodule Bots.Runtime do
           locked(identity.name, fn ->
             api = Keyword.get(opts, :nano_api, Bots.Runtime.Nano)
 
-            case owned_info(api, identity) do
-              {:ok, _} -> api.stop(identity.name)
-              {:error, :not_found} -> :ok
-              error -> error
-            end
-            |> case do
-              :ok -> File.rm(snapshot_path(identity))
-              error -> error
+            with :ok <- stop_epoch(identity, session),
+                 :ok <- stop_owned(api, identity) do
+              File.rm(snapshot_path(identity))
             end
           end)
         end
@@ -314,6 +315,65 @@ defmodule Bots.Runtime do
       {:error, :invalid_conversation}
     end
   end
+
+  defp stop_owned(api, identity) do
+    case owned_info(api, identity) do
+      {:ok, _} -> api.stop(identity.name)
+      {:error, :not_found} -> :ok
+      error -> error
+    end
+  end
+
+  defp dispatch_epoch(identity, epoch) do
+    with {:ok, fence} <- read_epoch(identity) do
+      case fence do
+        %{"epoch" => previous, "stopped" => stopped}
+        when previous > epoch or (previous == epoch and stopped) ->
+          {:error, :stale_dispatch}
+
+        _ ->
+          :ok
+      end
+    end
+  end
+
+  defp stop_epoch(identity, %{"epoch" => epoch}) when is_integer(epoch) do
+    with {:ok, fence} <- read_epoch(identity) do
+      case fence do
+        %{"epoch" => previous} when previous > epoch -> :skip
+        _ -> write_epoch(identity, epoch, true)
+      end
+    end
+  end
+
+  defp stop_epoch(_identity, _session), do: :ok
+
+  defp read_epoch(identity) do
+    case File.read(epoch_path(identity)) do
+      {:ok, text} ->
+        case Jason.decode(text) do
+          {:ok, %{"epoch" => epoch, "stopped" => stopped} = fence}
+          when is_integer(epoch) and is_boolean(stopped) ->
+            {:ok, fence}
+
+          _ ->
+            {:error, :invalid_epoch_fence}
+        end
+
+      {:error, :enoent} ->
+        {:ok, nil}
+
+      error ->
+        error
+    end
+  end
+
+  defp write_epoch(identity, epoch, stopped) do
+    write_snapshot(epoch_path(identity), Jason.encode!(%{epoch: epoch, stopped: stopped}))
+  end
+
+  defp epoch_path(identity),
+    do: Path.join([identity.root, "runtime", identity.name, "epoch.json"])
 
   defp snapshot_path(identity),
     do: Path.join([identity.root, "runtime", identity.name, "turn.json"])
