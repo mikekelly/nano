@@ -54,14 +54,41 @@ defmodule Nano.Application do
       # with their messages, before the agents (with their history) who may send to them.
       best_effort(&Nano.User.revive/0)
 
-      best_effort(fn ->
-        Nano.StateStore.load()
-        NanoAgent.revive(Nano.AgentSupervisor)
-        Delegation.restore()
-        SeedTasks.reconcile()
-      end)
+      best_effort(&Nano.StateStore.load/0)
+      best_effort(&restore_delegated_clients/0)
+      best_effort(fn -> NanoAgent.revive(Nano.AgentSupervisor) end)
+      best_effort(&Delegation.restore/0)
+      best_effort(&SeedTasks.reconcile/0)
 
       {:ok, sup}
+    end
+  end
+
+  # Readiness gates are saved before any revived agent can start a model call.
+  defp restore_delegated_clients do
+    for {name, result} <- Delegation.restore_mcp(), state = Nano.StateStore.get(name), state do
+      case result do
+        {:ok, _} ->
+          if state.halted == :mcp_bootstrap_failed do
+            {before, state} = Map.pop(state, :halted_before_mcp)
+            Nano.StateStore.put(name, %{state | halted: before})
+          end
+
+        error ->
+          text =
+            "MCP clients could not be restored at boot: #{inspect(error, limit: 10, printable_limit: 500)}. You are halted until readiness is restored; the original task remains on disk."
+
+          state = Map.put_new(state, :halted_before_mcp, state.halted)
+
+          state = %{
+            state
+            | halted: :mcp_bootstrap_failed,
+              pending: state.pending ++ ["<harness>" <> text <> "</harness>"]
+          }
+
+          Nano.StateStore.put(name, state)
+          Nano.Log.write(state, :harness_note, %{text: text})
+      end
     end
   end
 

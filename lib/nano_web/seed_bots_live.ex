@@ -99,7 +99,7 @@ defmodule NanoWeb.SeedBotsLive do
   def handle_event("picker-key", %{"key" => key}, socket) do
     choices = picker_choices(socket.assigns)
     count = length(choices)
-    index = socket.assigns.picker_index
+    index = Map.get(socket.assigns, :picker_index, 0)
 
     case key do
       "ArrowDown" when count > 0 ->
@@ -307,6 +307,8 @@ defmodule NanoWeb.SeedBotsLive do
   end
 
   def render(assigns) do
+    assigns = assign(assigns, :picker_index, Map.get(assigns, :picker_index, 0))
+
     ~H"""
     <div id="seed-bots" class="sb-app">
       <style>

@@ -69,7 +69,17 @@ defmodule NanoWeb.Layouts do
           document.addEventListener("keydown", e =>
             e.key === "Escape" && document.querySelectorAll("details.dropdown[open]").forEach(d => (d.open = false)))
 
+          window.addEventListener("keydown", event => {
+            const root = document.getElementById("seed-bots"); if (!root) return
+            if (event.target.id === "bot-query" && ["ArrowUp", "ArrowDown", "Enter"].includes(event.key)) event.preventDefault()
+            if (event.metaKey && /^[1-9]$/.test(event.key)) {
+              const option = root.querySelector(`[data-bot-shortcut="${event.key}"]`)
+              if (option) { event.preventDefault(); option.click() }
+            }
+          }, true)
+
           let lastBotNotification = 0
+
           window.addEventListener("seed-bots:notifications", async () => {
             if ("Notification" in window) await Notification.requestPermission()
           })
