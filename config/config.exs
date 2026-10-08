@@ -14,6 +14,9 @@ config :nano, NanoWeb.Endpoint,
 
 config :phoenix, :json_library, Jason
 
+# Credential answers use a direct JSON endpoint, never LiveView events.
+config :phoenix, :filter_parameters, ["password", "secret_value"]
+
 config :logger, :default_formatter, format: "$time [$level] $message\n"
 
 # Phoenix logs every request at debug; in the container that would flood `docker logs`,
