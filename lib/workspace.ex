@@ -17,8 +17,9 @@ defmodule Workspace do
     Both require `rg`; their full output is spooled to disk rather than accumulated in RAM.
     Globs filter after ignore traversal, so never override ignores. Paths with newlines
     (or colons for grep) are not supported by the text result format.
-  * `sh(command, cwd: "/app", timeout: 30000, limit: 200, bytes: 16000)` uses Background;
-    returns status, timing, full-output path and bounded tail. Long jobs: Background.start/2.
+  * `sh(command, cwd: "/app", timeout: 20000, limit: 200, bytes: 16000)` uses Background;
+    returns status, timing, full-output path and bounded tail. The 20s default leaves cleanup
+    room inside the harness's 30s eval deadline. Long jobs: Background.start/2.
 
   Text is byte-oriented (binary files are not decoded); caps count bytes before explanatory
   markers. Explicit limits may be raised. Search/shell output files are retained for callers
@@ -39,6 +40,7 @@ defmodule Workspace do
         case scan_lines(f, cap, state, fn text, size, s ->
                line = s.line + 1
                s = %{s | line: line}
+               cost = size + if(s.count > 0, do: 1, else: 0)
 
                cond do
                  line < offset ->
@@ -50,21 +52,12 @@ defmodule Workspace do
                  size > cap and s.count == 0 ->
                    {:halt, %{s | error: "line #{line} exceeds #{cap} bytes; increase bytes:"}}
 
-                 s.bytes + size + 1 > cap ->
-                   if s.count == 0 do
-                     {:halt,
-                      %{
-                        s
-                        | error:
-                            "line #{line} exceeds #{cap} bytes including newline; increase bytes:"
-                      }}
-                   else
-                     {:halt, %{s | next: line}}
-                   end
+                 s.bytes + cost > cap ->
+                   {:halt, %{s | next: line}}
 
                  true ->
                    {:cont,
-                    %{s | kept: [text | s.kept], bytes: s.bytes + size + 1, count: s.count + 1}}
+                    %{s | kept: [text | s.kept], bytes: s.bytes + cost, count: s.count + 1}}
                end
              end) do
           {:ok, %{error: error}} when not is_nil(error) ->
@@ -427,13 +420,15 @@ defmodule Workspace do
   end
 
   def sh(command, opts \\ []) do
+    opts = Keyword.put_new(opts, :timeout, 20_000)
+
     with :ok <- limits(opts, 200),
          {:ok, job} <- Background.start(command, Keyword.put(opts, :notify, self())) do
       receive do
         {:background, id, result} when id == job.id ->
           with {:ok, tail} <- tail(result.path, opts), do: {:ok, Map.put(result, :tail, tail)}
       after
-        (opts[:timeout] || 30_000) + 5000 ->
+        opts[:timeout] + 5000 ->
           Background.cancel(job)
           {:error, :completion_timeout}
       end
