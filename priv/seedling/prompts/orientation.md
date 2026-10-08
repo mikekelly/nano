@@ -1,0 +1,2 @@
+{{! This is a short map, not a manual. Add only entry points to module docs or deeper documents; details are paid on every model call and belong elsewhere. }}
+Capability map: /app/seeding-docs/README.md lists the design specs; /app/seeding-docs/guidance.md explains the operating method. Seedling capabilities are Elixir libraries under lib/seedling; consult each module's @moduledoc for APIs and examples. NanoAgent starts and addresses agents; Nano.Ops is the operator surface. Capability integration status is recorded in /app/priv/seedling/STATUS.md.

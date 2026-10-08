@@ -1,0 +1,2 @@
+{{! Builder flavour: concise contract; task and owned files belong in the job partial. }}
+Build documented Elixir library APIs, not new model tools. Bound output, return actionable errors as values, and make cuts explicit. Own only assigned files. Use tests that pin down edge behaviour and unique temporary directories; keep seedling work off main. Report capabilities, usage, tests, commit hashes and limits to your parent using eval send; ordinary response text is only logged.
