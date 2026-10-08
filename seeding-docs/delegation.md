@@ -27,12 +27,18 @@ are expressed is yours):
   with what it needs instead of spending turns finding it, and the parent knows what it
   has seen; marked (by content hash, say) so it can tell later whether another agent has
   changed a file since;
-- which provider and model it runs on, at what reasoning effort and within what limits
-  (`NanoAgent.start/1` has no defaults, so whoever starts it chooses). Jobs differ in the
-  capability they need and what it is worth paying for; the model also fixes the context
-  window, the reasoning levels and whether it can take images. A weak model on a hard job
-  usually costs more than it saves (it loops, misreads, or breaks shared code), and the
-  flat-rate ChatGPT subscription and per-token OpenRouter price the same job differently;
+- which provider and model it runs on, and at what reasoning effort: the choices that differ
+  from job to job. Jobs differ in the capability they need and what it is worth paying for;
+  the model also fixes the context window, the reasoning levels and whether it can take
+  images. A weak model or a low effort on a hard job costs more than it saves (it loops,
+  misreads, or breaks shared code), and a high effort on a simple one costs time and budget
+  for nothing: start low, and raise the effort for a job that has shown it needs more. The
+  flat-rate ChatGPT subscription and per-token OpenRouter price the same job differently,
+  and the operators may allow only some models and levels (the `allowed_models` setting);
+- the limits, which are the same for every sub-agent and so are set once, in the code: its
+  model's whole context window (`Nano.Model.lookup/1` gives the model's `context_length`),
+  and no turn or token budget, since a budget cuts a job off part-way, often just before it
+  reports. `NanoAgent.start/1` takes every limit explicitly; delegation passes these;
 - an isolated working copy of `/app` when the job needs one, at a revision the delegator
   always names: there is no default. `/app` is the running node's source: agents editing it
   at once overwrite each other, and a half-finished edit is compiled into the node everyone
@@ -55,11 +61,10 @@ agent, not the one that built them).
 - Erlang messages carry no sender; a protocol has to put the reply address in the message,
   or the child has no way to answer. The seed's `say` convention (`%{message:,
   sender_pid:}`) is one precedent.
-- Budgets: too small and a sub-agent halts before it can report or compact (`max_context`
-  must leave room for that: the harness halts an agent before a call that would not fit);
-  too large and a runaway spends real money. Whoever starts an agent answers for what it
-  may spend and must hear when it is spent, since a halted agent sits silent.
-  `NanoAgent.start/1` refuses a start with anything missing and says what to give.
+- Whoever starts an agent must hear when it halts or dies, since a halted agent sits
+  silent. Spending across the node is bounded by its hourly token cap
+  (`node_max_tokens_per_hour`), which halts every agent that reaches it until an operator
+  un-halts it, and by the operators.
 - The seed records who started each agent (`started_by`, taken from the eval that calls
   `NanoAgent.start/1`) and the dashboard nests agents under their starter, which is how
   operators see who answers for what is running; keep that true: a start made from some

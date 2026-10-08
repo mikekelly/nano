@@ -10,7 +10,8 @@ defmodule NanoWeb.StartForm do
   for the chosen provider to be connected.
 
   The model box offers only that provider's models (`Nano.OpenRouter.models/0` or
-  `Nano.ChatGPT.models/0`), filtering them as you type but taking any name; a ChatGPT model is
+  `Nano.ChatGPT.models/0`), and of those only the ones the operators allow, at the levels they
+  allow (`Nano.Model.allow/2`), filtering them as you type but taking any name; a ChatGPT model is
   shown without its `openai-codex/` prefix and sent with it. The reasoning select offers the
   chosen model's levels, if its provider lists it; whenever the model changes, the select is
   set to the model's default level and max context to its context window. Max turns and max

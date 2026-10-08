@@ -194,7 +194,7 @@ what its prompt tells it.
 to bound output, how to delegate, when to compact, how to share the machine) only helps the
 agents that end up applying it, and an agent cannot apply what it never met. So put
 methodology where it cannot be missed. Build it into the tools, so that the right way is the
-easy or the only way: a start function that requires every limit, a delegation call that
+easy or the only way: a delegation call that sets the limits itself and
 needs a starting revision, a shell helper that bounds its output. Put what is critical for an
 agent's job in that agent's system prompt, which is what a system prompt is for: it is the
 one thing an agent is certain to read. Leave the rest to progressively disclosed documents

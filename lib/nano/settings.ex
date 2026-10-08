@@ -32,6 +32,12 @@ defmodule Nano.Settings do
     {:node_max_tokens_per_hour, 100_000_000, {:integer, 0, nil}, :live,
      "Tokens all agents together may use in an hour; an agent about to call the model past " <>
        "it is halted (node_budget). 0 = no limit"},
+    {:allowed_models, "any", :allowlist, :live,
+     "The models agents may be started on, and at which reasoning levels: any, or entries " <>
+       "separated by semicolons, each a model slug and then the levels allowed on it (every " <>
+       "level the model has, if none are given), as \"openai-codex/gpt-6-astra low medium; " <>
+       "openai-codex/gpt-6.1-sol low\". Starts are checked against it from the moment it " <>
+       "changes; agents already running carry on as they are"},
     {:eval_timeout_ms, 30_000, {:integer, 1, 4_294_967_295}, :live,
      "How long an eval may run before it is killed, in milliseconds"},
     {:model_call_max_ms, 1_800_000, {:integer, 1, 4_294_967_295}, :live,
@@ -275,6 +281,43 @@ defmodule Nano.Settings do
 
       true ->
         {:error, "#{key} must be off, all, or agent names separated by commas"}
+    end
+  end
+
+  # "any", or "slug level level; slug" (levels separated by spaces or commas), kept in that
+  # form. Whether a model exists is checked at each start, against its provider's list, since
+  # a list may not be at hand when this is set.
+  defp check(key, :allowlist, value) do
+    entries =
+      if is_binary(value),
+        do: value |> String.split([";", "\n"], trim: true) |> Enum.map(&String.trim/1),
+        else: [nil]
+
+    levels = NanoAgent.reasoning_levels()
+
+    parsed =
+      for entry <- Enum.reject(entries, &(&1 == "")) do
+        case entry && String.split(entry, [" ", ","], trim: true) do
+          [model | allowed] when model != "any" ->
+            if Enum.all?(allowed, &(&1 in levels)), do: {model, Enum.uniq(allowed)}
+
+          _ ->
+            nil
+        end
+      end
+
+    cond do
+      is_binary(value) and String.trim(value) in ["", "any"] ->
+        {:ok, "any"}
+
+      parsed != [] and Enum.all?(parsed) ->
+        {:ok, Enum.map_join(parsed, "; ", fn {m, ls} -> Enum.join([m | ls], " ") end)}
+
+      true ->
+        {:error,
+         "#{key} must be any, or entries separated by semicolons, each a model slug followed " <>
+           "by the reasoning levels allowed on it (#{Enum.join(levels, ", ")}), such as " <>
+           "\"openai-codex/gpt-6-astra low medium; openai-codex/gpt-6.1-sol low\""}
     end
   end
 

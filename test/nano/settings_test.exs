@@ -169,6 +169,44 @@ defmodule Nano.SettingsTest do
     refute entry("EVAL_TIMEOUT_MS")
   end
 
+  test "allowed_models: starts only on the models and levels the operators allow, from now on" do
+    model = Fake.model()
+    other = Fake.model()
+    running = start_agent(reasoning: "high")
+
+    assert {:error, refused} = Nano.Ops.put_setting(:allowed_models, "#{model} warp")
+    assert refused =~ "allowed_models must be any, or entries separated by semicolons"
+    TestSettings.put(:allowed_models, " #{model} low,medium ;#{other}")
+    assert Nano.Settings.get(:allowed_models) == "#{model} low medium; #{other}"
+
+    start = fn model, reasoning ->
+      name = "s#{System.unique_integer([:positive])}"
+      on_exit(fn -> Nano.Ops.stop_agent(name) end)
+      NanoAgent.start([name: name] ++ Fake.opts(model, reasoning: reasoning))
+    end
+
+    assert {:ok, _} = start.(model, "low")
+    assert {:ok, _} = start.(other, "max")
+
+    assert {:error, "reasoning \"high\" is not allowed for " <> rest} = start.(model, "high")
+    assert rest =~ "(setting allowed_models); allowed: low, medium"
+
+    assert {:error, refused} = start.(running.model, "low")
+    assert refused =~ "#{running.model} is not allowed on this node (setting allowed_models)"
+    assert refused =~ "allowed: #{model} at low, medium; #{other}"
+
+    # Agents already running carry on.
+    assert NanoAgent.info(running.name).halted == nil
+
+    # What the start form offers: only the allowed models, at their allowed levels.
+    listed = Nano.Model.allow(:openrouter, Nano.OpenRouter.models())
+    assert Enum.map(listed, & &1.id) |> Enum.sort() == Enum.sort([model, other])
+    assert %{reasoning_levels: ["low", "medium"]} = Enum.find(listed, &(&1.id == model))
+
+    TestSettings.put(:allowed_models, "any")
+    assert {:ok, _} = start.(running.model, "high")
+  end
+
   test "removing OpenRouter's key halts the agents on it and refuses new ones until it is back" do
     TestSettings.put(:openrouter_api_key, "test-key")
     a = start_agent()

@@ -27,7 +27,8 @@ OpenRouter (its sign-in, or a key: the `openrouter_api_key` setting).
 
 `curl localhost:4000/api` describes the API; `docker exec nano bin/rpc 'EXPR'` evaluates
 Elixir on the node. An agent's model, reasoning level and limits are always given, and are
-checked against the model's provider; a refusal says what to give instead.
+checked against the model's provider and the node's `allowed_models` setting; a refusal says
+what to give instead.
 
 ```bash
 curl -s -XPOST localhost:4000/api/agents -H 'content-type: application/json' -d '{"name": "alice",

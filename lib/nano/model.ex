@@ -112,12 +112,14 @@ defmodule Nano.Model do
   @doc """
   What `NanoAgent.start/1` checks of an agent's model, against its provider's model list: that
   the provider can be called now and lists the model, that `reasoning` is one of the model's
-  levels, and that `max_context` is from 1 to the model's context window. `{:ok, entry}`, the
+  levels, that the operators allow both (`allowed/0`), and that `max_context` is from 1 to the
+  model's context window. `{:ok, entry}`, the
   model's entry in the list, or `{:error, message}` saying what to do instead. A model whose
   limits cannot be verified, because the list cannot be had or gives no window, is refused.
   """
   def check(model, reasoning, max_context) do
-    with {:ok, entry} <- lookup(model) do
+    with {:ok, listed} <- lookup(model),
+         {:ok, entry} <- permit(model, listed) do
       levels = Enum.join(entry.reasoning_levels, ", ")
       window = entry.context_length
 
@@ -125,6 +127,11 @@ defmodule Nano.Model do
         reasoning == nil ->
           {:error,
            "missing reasoning: #{model} supports #{levels} (its default is #{entry.default_reasoning})"}
+
+        reasoning in listed.reasoning_levels and reasoning not in entry.reasoning_levels ->
+          {:error,
+           "reasoning #{inspect(reasoning)} is not allowed for #{model} on this node (setting " <>
+             "allowed_models); allowed: #{levels}"}
 
         reasoning not in entry.reasoning_levels ->
           {:error,
@@ -148,6 +155,68 @@ defmodule Nano.Model do
         true ->
           {:ok, entry}
       end
+    end
+  end
+
+  @doc """
+  The operators' allowlist (setting `allowed_models`): `:any`, or the models agents may be
+  started on, each with the reasoning levels allowed on it (`:all` for every level it has).
+  """
+  def allowed do
+    case Nano.Settings.get(:allowed_models) do
+      "any" ->
+        :any
+
+      text ->
+        for entry <- String.split(text, ";", trim: true), into: %{} do
+          case String.split(entry) do
+            [model] -> {model, :all}
+            [model | levels] -> {model, levels}
+          end
+        end
+    end
+  end
+
+  @doc """
+  A provider's model list as the allowlist leaves it (`allowed/0`): only the models allowed,
+  each with only its allowed reasoning levels and a default among them. What the dashboard's
+  start form offers.
+  """
+  def allow(provider, entries) do
+    for entry <- entries, {:ok, entry} <- [permit(slug(provider, entry.id), entry)], do: entry
+  end
+
+  # The entry with its reasoning levels narrowed to those allowed, or why the model or all of
+  # its levels are not.
+  defp permit(model, entry) do
+    allowed = allowed()
+
+    case allowed do
+      :any ->
+        {:ok, entry}
+
+      %{^model => :all} ->
+        {:ok, entry}
+
+      %{^model => levels} ->
+        case Enum.filter(entry.reasoning_levels, &(&1 in levels)) do
+          [] ->
+            {:error,
+             "#{model} is allowed on this node only at #{Enum.join(levels, ", ")} (setting " <>
+               "allowed_models), and it supports none of them"}
+
+          ok ->
+            default = if entry.default_reasoning in ok, do: entry.default_reasoning, else: hd(ok)
+            {:ok, %{entry | reasoning_levels: ok, default_reasoning: default}}
+        end
+
+      _ ->
+        {:error,
+         "#{model} is not allowed on this node (setting allowed_models); allowed: " <>
+           Enum.map_join(allowed, "; ", fn
+             {m, :all} -> m
+             {m, levels} -> "#{m} at #{Enum.join(levels, ", ")}"
+           end)}
     end
   end
 

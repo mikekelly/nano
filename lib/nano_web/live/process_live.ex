@@ -220,8 +220,10 @@ defmodule NanoWeb.ProcessLive do
     assign(socket, recent: recent, users: Nano.User.counts())
   end
 
-  defp models("openrouter"), do: Nano.OpenRouter.models()
-  defp models("chatgpt"), do: Nano.ChatGPT.models()
+  # Only what the operators allow (setting allowed_models), so the form offers nothing a start
+  # would refuse.
+  defp models("openrouter"), do: Nano.Model.allow(:openrouter, Nano.OpenRouter.models())
+  defp models("chatgpt"), do: Nano.Model.allow(:chatgpt, Nano.ChatGPT.models())
 
   defp tail(id) do
     Nano.Log.subscribe(id)
