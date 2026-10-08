@@ -154,4 +154,132 @@ defmodule Seedling.FilesTest do
 
     assert {:ok, %{entries: [_], truncated: false}} = Files.find("*.txt", cwd: dir, limit: 1)
   end
+
+  test "read scans huge skipped lines with bounded buffers and preserves final blank lines", %{
+    path: path
+  } do
+    File.write!(path, String.duplicate("a", 300_000) <> "\r\nlast\r\n\r\n")
+    assert {:error, %{reason: :line_too_long, message: message}} = Files.read(path, max_bytes: 10)
+    assert message =~ "300002 bytes"
+    assert {:ok, result} = Files.read(path, offset: 2, max_bytes: 10)
+    assert result.text == "last\r\n\r\n"
+    assert result.total_lines == 3
+    assert result.bytes == 8
+  end
+
+  test "edit batches are transactional on a later failed match and have a size guard", %{
+    path: path
+  } do
+    File.write!(path, "original unique")
+
+    assert {:error, %{reason: :not_found}} =
+             Files.edit(path, [{"original", "new"}, {"absent", "x"}])
+
+    assert File.read!(path) == "original unique"
+
+    assert {:error, %{reason: :file_too_large}} =
+             Files.edit(path, [{"original", "new"}], max_file_bytes: 1)
+
+    assert {:error, %{reason: :invalid_replacement}} = Files.edit(path, "", "new")
+    assert {:error, %{reason: :no_changes}} = Files.edit(path, [])
+    assert {:error, %{reason: :invalid_replacement}} = Files.edit(path, [{"original", nil}])
+  end
+
+  test "tolerant fallback never hides exact ambiguity, and maps Unicode ranges accurately", %{
+    path: path
+  } do
+    File.write!(path, "é: ‘a’ – b  \nkeep ✓\n")
+    assert {:ok, %{tolerant: true}} = Files.edit(path, "'a' - b\nkeep ✓", "new\nnext ✓")
+    assert File.read!(path) == "é: new\nnext ✓\n"
+    File.write!(path, "x x “x”")
+    assert {:error, %{reason: :ambiguous_match}} = Files.edit(path, "x", "z")
+  end
+
+  test "empty listing and byte limit are distinct", %{dir: dir} do
+    assert {:ok, %{text: "(empty directory)", truncated: false}} = Files.ls(dir)
+    File.write!(Path.join(dir, "long-name"), "needle")
+    assert {:ok, result} = Files.ls(dir, max_bytes: 1)
+    assert result.truncated
+    assert result.text =~ "No entries fit"
+    assert {:ok, result} = Files.grep("needle", path: dir, max_bytes: 1)
+    assert result.truncated
+    assert result.text =~ "No matches fit"
+  end
+
+  test "find globs support path components, braces, classes and recursive zero directories", %{
+    dir: dir
+  } do
+    File.mkdir_p!(Path.join(dir, "nested/deep"))
+
+    for file <- ["root.ex", "nested/a.ex", "nested/b.exs", "nested/deep/c.ex"] do
+      File.write!(Path.join(dir, file), "needle\n")
+    end
+
+    assert {:ok, result} = Files.find("nested/*.{ex,exs}", cwd: dir)
+    assert Enum.sort(result.entries) == ["nested/a.ex", "nested/b.exs"]
+    assert {:ok, result} = Files.find("**/[ac].ex", cwd: dir)
+    assert Enum.sort(result.entries) == ["nested/a.ex", "nested/deep/c.ex"]
+    assert {:ok, result} = Files.find("**/root.ex", cwd: dir)
+    assert result.entries == ["root.ex"]
+    assert {:ok, result} = Files.grep("needle", path: dir, glob: "nested/*.ex")
+    assert result.matches == 1
+    assert hd(result.entries).path == "nested/a.ex"
+    assert {:error, %{reason: :invalid_glob}} = Files.find("[", cwd: dir)
+  end
+
+  test "grep glob still respects ignored files and excludes .git", %{dir: dir} do
+    File.mkdir_p!(Path.join(dir, ".git"))
+    File.write!(Path.join(dir, ".git/x.ex"), "needle")
+    File.write!(Path.join(dir, ".gitignore"), "ignored.ex\n")
+    File.write!(Path.join(dir, "ignored.ex"), "needle")
+    File.write!(Path.join(dir, "included.ex"), "needle")
+    assert {:ok, %{matches: 1}} = Files.grep("needle", path: dir, glob: "*.ex")
+    assert {:ok, %{entries: ["included.ex"]}} = Files.find("**/*.ex", cwd: dir)
+    assert {:ok, %{matches: 1}} = Files.grep("needle", path: Path.join(dir, "included.ex"))
+  end
+
+  test "find supports newlines in names without splitting entries", %{dir: dir} do
+    File.write!(Path.join(dir, "strange\nname.txt"), "text")
+    assert {:ok, %{entries: ["strange\nname.txt"]}} = Files.find("*.txt", cwd: dir)
+  end
+
+  test "malformed arguments return errors rather than raising", %{path: path} do
+    assert {:error, %{reason: :invalid_argument}} = Files.read(nil)
+    assert {:error, %{reason: :invalid_options}} = Files.read(path, :not_options)
+    assert {:error, %{reason: :invalid_options}} = Files.ls(".", [{"limit", 10}])
+    assert {:error, %{reason: :invalid_path}} = Files.grep("x", path: nil)
+    assert {:error, %{reason: :invalid_argument}} = Files.grep(~r/x/)
+    assert {:error, %{reason: :invalid_argument}} = Files.find(nil)
+    assert {:error, %{reason: :invalid_argument}} = Files.write(nil, "text")
+    assert {:error, %{reason: :invalid_replacement}} = Files.edit(path, nil, nil)
+  end
+
+  test "special files are refused without blocking", %{path: path} do
+    {_, 0} = System.cmd("mkfifo", [path])
+    assert {:error, %{reason: :unsupported_file_type}} = Files.read(path)
+    assert {:error, %{reason: :unsupported_file_type}} = Files.write(path, "data")
+  end
+
+  test "mixed line endings are preserved locally in replacements", %{path: path} do
+    File.write!(path, "first\r\nsecond\nthird\r\n")
+    assert {:ok, _} = Files.edit(path, [{"first", "first\nadded"}, {"second", "second\nmore"}])
+    assert File.read!(path) == "first\r\nadded\r\nsecond\nmore\nthird\r\n"
+  end
+
+  test "structured search result including metadata fits comfortably below harness cap", %{
+    path: path,
+    dir: dir
+  } do
+    File.write!(path, String.duplicate("needle " <> String.duplicate("x", 500) <> "\n", 200))
+    assert {:ok, result} = Files.grep("needle", path: dir)
+    assert result.truncated
+    assert result.lines_truncated
+    assert byte_size(inspect(result, limit: :infinity, printable_limit: :infinity)) < 40_000
+  end
+
+  test "malformed context and regex text never raise", %{dir: dir} do
+    assert {:error, %{reason: :invalid_options}} = Files.grep("x", path: dir, context: {})
+    assert {:error, %{reason: :invalid_options}} = Files.grep("x", path: dir, context: -1)
+    assert {:error, %{reason: :invalid_options}} = Files.find("*", cwd: dir, limit: 0)
+  end
 end

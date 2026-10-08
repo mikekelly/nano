@@ -20,7 +20,12 @@ defmodule Seedling.Shell.Tasks do
     id = Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
 
     dir =
-      Path.join(Keyword.get(opts, :spool_dir, Path.join(System.tmp_dir!(), "seedling-shell")), id)
+      Path.join(
+        Path.expand(
+          Keyword.get(opts, :spool_dir, Path.join(System.tmp_dir!(), "seedling-shell"))
+        ),
+        id
+      )
 
     task = %{
       id: id,
@@ -29,7 +34,7 @@ defmodule Seedling.Shell.Tasks do
       group_path: Path.join(dir, "group.pid")
     }
 
-    notify = Keyword.get(opts, :notify, caller)
+    notify = Keyword.get(opts, :notify, Worker.notification_target(caller))
 
     with :ok <- File.mkdir_p(dir),
          {:ok, pid} <- GenServer.start(Worker, {task, command, opts, caller, self()}) do
@@ -68,7 +73,7 @@ defmodule Seedling.Shell.Tasks do
           id: info.task.id,
           status: :error,
           exit_code: nil,
-          reason: inspect(reason),
+          reason: inspect(reason, limit: 20, printable_limit: 500),
           output_path: info.task.output_path,
           result_path: info.task.result_path,
           bytes: size(info.task.output_path),
@@ -100,7 +105,7 @@ defmodule Seedling.Shell.Tasks do
   defp send_to(target, result) do
     pid =
       case target do
-        {:agent, name} -> NanoAgent.whereis(name)
+        {:agent, name} -> if :ets.whereis(Nano.Names) != :undefined, do: NanoAgent.whereis(name)
         pid when is_pid(pid) -> pid
         name when is_atom(name) -> Process.whereis(name)
         _ -> nil
