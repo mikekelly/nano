@@ -1,0 +1,10 @@
+{
+  "timeout": 5,
+  "state": "/data/seed-safety-monitor",
+  "probe": [
+    "/opt/seed-safety/probe"
+  ],
+  "app": "/app",
+  "interval": 20,
+  "monitor_only": true
+}
