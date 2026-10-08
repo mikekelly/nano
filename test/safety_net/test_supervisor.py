@@ -52,7 +52,8 @@ class SafetyTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def start(self):
-        self.proc = subprocess.Popen([sys.executable, str(self.home / "runtime/supervisor.py"), "--home", str(self.home), "run"], stdout=self.log, stderr=self.log, env=dict(os.environ, MIX_ENV="test"))
+        command = ["/bin/sh", str(ROOT / "bin/start")] if getattr(self, "use_launcher", False) else [sys.executable, str(self.home / "runtime/supervisor.py"), "--home", str(self.home), "run"]
+        self.proc = subprocess.Popen(command, stdout=self.log, stderr=self.log, env=dict(os.environ, MIX_ENV="test", SAFETY_NET_HOME=str(self.home)))
 
     def halt(self):
         if self.proc and self.proc.poll() is None:
@@ -214,7 +215,21 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(safety.credentials(self.home, self.state), [])
         self.assertEqual((self.state / "settings.json").read_text(), "{}")
 
+    def test_partial_install_does_not_replace_original_launcher(self):
+        (self.home / "config.json").unlink()
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        executable = fake_bin / "elixir"
+        executable.write_text("#!/bin/sh\nprintf 'original-launch-fallback\\n'\n")
+        executable.chmod(0o700)
+        result = subprocess.run(["/bin/sh", str(ROOT / "bin/start")], env=dict(os.environ, SAFETY_NET_HOME=str(self.home), NODE_COOKIE="synthetic", PATH=str(fake_bin) + ":" + os.environ["PATH"]), capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("original-launch-fallback", result.stdout)
+        self.assertIn("unprotected", result.stderr)
+
     def test_container_restart_handoff_persists_fallback(self):
+
+        self.use_launcher = True
         self.config["restart_via_container"] = True
         safety.save(self.home / "config.json", self.config)
         good = self.known_good()
