@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "/data/seedling/mcp-fetch/bin/mcp-server-fetch",
+      "args": []
+    }
+  }
+}
