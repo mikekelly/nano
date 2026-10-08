@@ -293,7 +293,57 @@ defmodule Nano.CompactionTest do
     assert_in_delta aggregate.cost, 0.03, 0.00001
   end
 
-  test "a single oversized unicode record is continued without dropping text or splitting UTF-8" do
+  test "later checkpoint-pass failure preserves original history and reports earlier successful usage",
+       c do
+    original =
+      for i <- 1..8, do: %{"role" => "user", "content" => "#{i}:" <> String.duplicate("x", 9000)}
+
+    :sys.replace_state(c.pid, &%{&1 | transcript: original, context_used: 15_500})
+    Fake.push(c.model, text: "Goal: preserve earlier facts", usage: {100, 10, 0}, cost: 0.01)
+    Fake.push(c.model, status: 400, body: %{"error" => %{"message" => "later pass rejected"}})
+    send(c.pid, :trigger_checkpoint)
+    request(c.model)
+    request(c.model)
+    wait(fn -> NanoAgent.info(c.name).halted == :context end)
+    assert :sys.get_state(c.pid).transcript == original
+    assert NanoAgent.info(c.name).compactions == 0
+
+    error =
+      Enum.find(Nano.Log.read(NanoAgent.info(c.name).id), &(&1["type"] == "compaction_failed"))[
+        "error"
+      ]
+
+    assert error =~ "known_prompt_tokens: 100"
+    assert error =~ "known_completion_tokens: 10"
+    assert error =~ "known_cost: 0.01"
+    assert error =~ "later pass rejected"
+  end
+
+  test "invalid later successful response reports all known usage without claiming checkpoint success",
+       c do
+    older = for _ <- 1..4, do: %{"role" => "user", "content" => String.duplicate("x", 9000)}
+    Fake.push(c.model, text: "Goal: initial valid checkpoint", usage: {100, 10, 0}, cost: 0.01)
+    Fake.push(c.model, text: String.duplicate("z", 10001), usage: {200, 20, 0}, cost: 0.02)
+    task = Task.async(fn -> Nano.Compaction.summarize(c.model, "off", older, 20_000) end)
+    request(c.model)
+    request(c.model)
+    assert {:error, detail} = Task.await(task)
+    assert detail.known_prompt_tokens == 300
+    assert detail.known_completion_tokens == 30
+    assert detail.successful_summary_passes == 1
+    assert_in_delta detail.known_cost, 0.03, 0.00001
+    assert detail.reason =~ "exceeded its length bound"
+  end
+
+  test "summary staging has
+ a finite pass bound before any model call" do
+    huge = [%{"role" => "user", "content" => String.duplicate("x", 1_400_000)}]
+    assert {:error, error} = Nano.Compaction.inputs(huge, 20_000)
+    assert error =~ "64-pass"
+  end
+
+  test "a single oversized unicode
+ record is continued without dropping text or splitting UTF-8" do
     older = [
       %{
         "role" => "user",
