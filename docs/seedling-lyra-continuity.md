@@ -1,0 +1,5 @@
+# Continuity
+
+Automatic compaction runs before a request lacks a scaled reserve (16,384 tokens for large windows), and on provider context errors after history grows. Nano.Compaction builds no-tools structured checkpoints via the agent model; keeps recent complete tool exchanges; retries transient summary errors three times. NanoAgent remains the same process with mailbox/bindings intact, logs checkpoint and summary usage/cost, resets context estimation conservatively, preserves original logs and history on failure. State is backward-compatible for live loading (load Nano.Compaction first). No live modules loaded during development.
+
+Tests: full suite 270 passed, including a real supervised agent crossing threshold through fake HTTP, continuing eval with persistent binding/pid. Boundary unit tests added. Safety fallback can still halt if a huge recent exchange or system prompt alone cannot fit. Very small histories rejected by providers still halt rather than attempt an unhelpful summary. Summary responses limited to 24KB and prompt requests 6K characters.
