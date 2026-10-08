@@ -161,8 +161,16 @@ the server stays subscribed while another agent still needs it.
 The one-for-all MCP supervisor contains a dynamic connection supervisor and the
 manager. Connections retry OS death and initialization failure with exponential
 backoff (100 ms to 30 s), fail outstanding calls promptly, and announce failures.
-Client-process kills are supervised; linked HTTP workers and owned stdio ports
-are cleaned up with the client. Reconnected clients rehydrate **current** intent,
+Client-process kills are supervised; linked HTTP workers are cleaned up with
+the client. Each stdio Port has an independent watchdog monitoring both Port
+and Client termination, including `:kill` (which skips `terminate/2`). It records
+Linux `/proc` PID+starttime identity before server use, gives stdin EOF a 50 ms
+grace, then sends TERM, waits up to 250 ms, and escalates to KILL if necessary.
+Identity is checked immediately before each signal so stale PID reuse is not
+treated as the owned child. Cleanup is asynchronous and bounded; it signals
+only the directly launched process, not arbitrary descendant process trees.
+Stdio currently requires readable Linux `/proc` and the OS `kill` utility.
+Reconnected clients rehydrate **current** intent,
 not stale original start arguments. Side-effecting calls are never replayed.
 
 For isolated instances:
@@ -257,7 +265,7 @@ MIX_ENV=test MIX_BUILD_ROOT=/tmp/orion-mcp/.seedling-build mix test test/seedlin
 The foundation's mix.exs clears MIX_BUILD_ROOT in test, so actual builds land in
 this worktree's private `_build/test`, not `/app`'s build.
 
-**16 tests passed** on 2026-10-08. The fixture is a real local Python OS process:
+**18 tests passed** on 2026-10-08. The fixture is a real local Python OS process:
 stdio and loopback HTTP servers (port **0**), unique temp directories per test.
 It asserts current metadata/HTTP headers and legacy initialization/session order;
 SSE data lines and chunk boundaries are split. Tests cover all four transport/era
@@ -269,7 +277,8 @@ HTTP annotated headers, invalid schema rejection, encoded Unicode headers, UTF-8
 paging, and a **second independent BEAM VM** restoring saved subscriptions with
 no connect/subscribe calls. Tests spend no model calls and require only Python 3.
 
-The complete foundation checkout suite also passed: **285 tests**, with two
+Before the final stdio watchdog follow-up, the complete foundation checkout
+suite also passed: **285 tests**, with two
 pre-existing unused-variable/default-argument warnings and an expected
 `:retry_start` agent log in a restart test. No MCP compilation warnings. The first
 follow-up full run had 284/285 passing: the unowned Nano.StateStoreTest pid-exit
@@ -285,6 +294,16 @@ transports' request/response/progress/log/update maps appear in that agent's
 timeline. Config/default service were untouched, no modules reloaded for this
 demo, and fixture/supervisor cleanup occurred in the same eval. Local evidence
 was saved under `/tmp/orion-mcp-live-c93c3f2cc2/wire.jsonl` (ephemeral).
+
+The final watchdog regressions use a real Python stdio server that answers
+valid discovery, then ignores stdin EOF **and SIGTERM**. Both normal disconnect
+and `:kill` of the connection terminate the original identity-checked OS
+process via TERM/KILL escalation; killed connections also restart and the
+replacement is explicitly disconnected and verified gone. This production
+cleanup gap (Port.close alone left noncooperative servers alive) was reproduced
+by the auditor and fixed, separately from fixture teardown. The final complete
+foundation suite passed **287/287** (seed 872910), with only the same pre-existing
+warnings/expected restart log; focused MCP tests passed **18/18**.
 
 Follow-up regressions check multi-server deferred-event release, oversized
 resource routing plus spill-failure safety, and HTTP worker cleanup on a killed
