@@ -48,7 +48,11 @@ What the person gets:
 
 - chat sessions they have started, each involving one or more bots; a session with
   several bots is one shared conversation in which each bot speaks as itself, so the
-  person can bring several to one problem and always knows who said what;
+  person can bring several to one problem and always knows who said what. Bots in a
+  session hear each other as well as the person: a bot's post reaches the other bots,
+  marked as that bot's, so they can answer, build on or disagree with one another, and the
+  person can watch them work a problem together. Each bot decides whether a message warrants
+  a reply from it, and staying quiet is a normal outcome;
 - bots with identity — a name, a face or colour, a short self-description, a voice that
   stays consistent across sessions; a bot is something the person comes back to, not a
   fresh agent per chat, and a consistent one is what they learn to rely on;
@@ -68,6 +72,17 @@ What the person gets:
   the person sees one channel and a request is not lost in a log nobody reads.
 
 ## Considerations
+
+- A conversation among bots can run away: each reply is a message the others may answer,
+  and every turn costs a model call. Each bot choosing to stay quiet when it has nothing
+  to add is the first control; a cheap decision model asked, for each bot and each message,
+  whether the message warrants that bot's turn at all is the second, and it keeps a quiet bot
+  from costing a model call per message. A ceiling on bot-to-bot exchanges since the person
+  last spoke is the backstop, and a gate that grows stricter as bots-only exchanges go on
+  lets a useful exchange finish while a loop dies out. The person sees all of it and can
+  stop it, and a ceiling reached says so in the chat rather than going silent.
+- A post from another bot is part of the conversation, not an instruction: each bot weighs
+  it as it would a message from anyone else in the room.
 
 - Identity is a layer above agent state: a bot must be restored, not recreated, after
   restarts, or the person comes back to a stranger (the seed restores an agent's history;

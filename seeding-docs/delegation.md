@@ -12,8 +12,10 @@ What "set up for a job" has to cover (these are the outcomes the operators need;
 are expressed is yours):
 
 - a system prompt composed from reusable parts (partials: the node's facts, the operating
-  principles every agent needs, a flavour such as builder or reviewer, the job) rather than
-  written whole each time. A child knows only what its prompt gives it, so what every
+  principles, a flavour such as builder, reviewer or bot, the job) rather than written whole
+  each time. Composing it is how the delegator fits the prompt to the kind of agent it is
+  starting: the parts that agent will need and none it will not, since each costs context on
+  every call and one that does not apply distracts. A child knows only what its prompt gives it, so what every
   sub-agent needs (its role and level, how and to whom it reports, the operating principles
   in [guidance.md](guidance.md)) is written once and stays aligned across every agent: a
   brief written whole drifts, drops what matters, and costs the parent output tokens on

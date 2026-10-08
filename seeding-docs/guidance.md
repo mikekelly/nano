@@ -168,19 +168,24 @@ same BEAM. Nothing stops agents colliding except each one taking care, so:
 Once you start sub-agents, the collisions are between your own agents, and each knows only
 what its prompt tells it.
 
-**Compose prompts from partials, and give every agent the operating principles.** Build the
-system prompts of the agents you start from reusable parts rather than writing each whole:
-the node's facts (the seed's own template, which is true of every agent here), a shared
-part with the operating principles, a part for the agent's flavour (a builder, a reviewer,
-an auditor, a bot), and the job. Written once, the parts stay aligned across every agent you
+**Compose prompts from partials, fitted to each agent.** When you start an agent, you write
+its system prompt, and that is your chance to fit it to the kind of agent it is and the job
+it has. Build it from reusable parts rather than writing it whole: the node's facts (the
+seed's own template, which is true of every agent here), the operating principles, a part
+for the agent's flavour (a builder, a reviewer, an auditor, a bot), and the job. Choose the
+parts for the agent: include what it will need and leave out what it will not, since every
+part costs context on every call it makes and a part that does not apply distracts it.
+Written once, the parts stay aligned across every agent you
 start: fix or improve one and every later agent has it, and nothing drifts between copies.
 Flavours then compose for the task at hand instead of being written from scratch, and the
 shared prefix caches well. The operating principles are the four above, in a sentence or two
 each (the reasons can stay here, a path away): know your role and level, and delegate to
 defend your context; when you fan out, land shared foundations first; compact before your
-context runs out; you share this machine. Once an agent can start others, all four apply to
-it, and a child knows only what its prompt gives it, so each agent passes them on to the
-agents it starts. Keep every part lean: it is paid for on every call of every agent that
+context runs out; you share this machine. They apply to any agent that may build, run long
+or start others, which includes one that does real work for a person, and a child knows
+only what its prompt gives it, so each agent passes them on to the agents it starts that
+need them; a narrow, short-lived job (a single classification, one lookup) may need none
+of them. Keep every part lean: it is paid for on every call of every agent that
 carries it.
 
 **Use decision models where the LLM is too expensive and code is too brittle.** Some
