@@ -26,8 +26,14 @@ defmodule SeedMCP.Client do
            {:ok, list} when is_list(list) <- Jason.decode(b),
            do: list
 
+    event_owner =
+      case Keyword.get(opts, :event_owner, owner) do
+        pid when is_pid(pid) -> if Process.alive?(pid), do: pid, else: owner
+        recipient -> recipient
+      end
+
     s = %{
-      owner: Keyword.get(opts, :event_owner, owner),
+      owner: event_owner,
       name: name,
       server: Keyword.fetch!(opts, :server),
       dir: dir,
