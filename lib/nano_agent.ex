@@ -1379,9 +1379,10 @@ defmodule NanoAgent do
     do: Map.get(s, :compact_requested, false) or Nano.Compaction.due?(s.max_context, estimate)
 
   defp front_of_mind(s, hook) do
-    if function_exported?(Seedling.FrontOfMind, hook, 1),
-      do: apply(Seedling.FrontOfMind, hook, [s]),
-      else: s
+    if Code.ensure_loaded?(Seedling.FrontOfMind) and
+         function_exported?(Seedling.FrontOfMind, hook, 1),
+       do: apply(Seedling.FrontOfMind, hook, [s]),
+       else: s
   end
 
   defp compactable?(s), do: match?({:ok, _, _}, Nano.Compaction.plan(s.transcript, s.max_context))
@@ -1459,6 +1460,9 @@ defmodule NanoAgent do
         cost: s.cost + (r.cost || 0)
     }
 
+    # Validate the final context including freshly reinstated reminders, not just the summary.
+    s = front_of_mind(s, :after_compaction)
+
     if estimate(s) >= s.max_context - Nano.Compaction.reserve(s.max_context) do
       compaction_done(
         %{original | tokens_used: s.tokens_used, cost: s.cost},
@@ -1479,7 +1483,7 @@ defmodule NanoAgent do
         completion_tokens: completion
       })
 
-      s = s |> front_of_mind(:after_compaction) |> check_budget() |> save()
+      s = s |> check_budget() |> save()
 
       case t.resume do
         {:request, new?} -> request(s, new?)
