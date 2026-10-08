@@ -11,13 +11,14 @@ since otherwise a parent waiting on a dead child waits forever.
 What "set up for a job" has to cover (these are the outcomes the operators need; how they
 are expressed is yours):
 
-- a system prompt composed from reusable parts (an identity, the node's facts, a job body)
-  rather than written whole each time. What every sub-agent needs (its role and level, how
-  and to whom it reports, when to compact, and that it shares the machine; see
-  [guidance.md](guidance.md), "You share this machine": a child knows only what its prompt
-  gives it) is then written once and stays consistent; a
+- a system prompt composed from reusable parts (partials: the node's facts, the operating
+  principles every agent needs, a flavour such as builder or reviewer, the job) rather than
+  written whole each time. A child knows only what its prompt gives it, so what every
+  sub-agent needs (its role and level, how and to whom it reports, the operating principles
+  in [guidance.md](guidance.md)) is written once and stays aligned across every agent: a
   brief written whole drifts, drops what matters, and costs the parent output tokens on
-  every delegation. A shared prefix also caches well, and improving one part improves
+  every delegation. Partials also let agent flavours be composed for the task at hand rather
+  than written from scratch; a shared prefix caches well; and improving one part improves
   every agent started after it;
 - pre-reading: files the sub-agent has in its context before its first turn, so it starts
   with what it needs instead of spending turns finding it, and the parent knows what it
