@@ -115,7 +115,12 @@ defmodule Seedling.Compaction do
   @doc "Fills missing compaction state, including recovering legacy rendered events."
   def migrate(s) do
     s
+    |> Map.put_new(
+      :input_modalities_source,
+      if(Map.has_key?(s, :input_modalities), do: :legacy_saved, else: :legacy_text_only)
+    )
     |> Map.put_new(:input_modalities, ["text"])
+    |> Map.put_new(:context_refresh, nil)
     |> Map.put_new(:compaction, nil)
     |> Map.put_new(:compaction_summary, nil)
     |> Map.put_new(:compaction_fresh, false)
