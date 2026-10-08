@@ -421,7 +421,7 @@ defmodule NanoWeb.ApiControllerTest do
                post_json("/api/agents", agent_body(name, %{system_prompt_file: file}))
                |> json_response(201)
 
-      assert rest == "#{name}, read from a file."
+      assert rest == "#{name}, read from a file.\n\n" <> Images.prompt(["text"])
 
       assert %{
                "error" =>
