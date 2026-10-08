@@ -1667,8 +1667,16 @@ defmodule NanoAgent do
     case result do
       {:ok, value, bindings, warnings, images} ->
         Nano.StateStore.put_bindings(s.name, bindings)
-        s = if images == [], do: s, else: add_images(s, images, :tool_images)
-        tool_result(%{s | bindings: bindings}, call, started, true, value, output <> warnings)
+        {s, image_warning} = admit_eval_images(s, images)
+
+        tool_result(
+          %{s | bindings: bindings},
+          call,
+          started,
+          true,
+          image_warning <> value,
+          output <> warnings
+        )
 
       {:error, error} ->
         tool_result(s, call, started, false, error, output)
@@ -1710,6 +1718,24 @@ defmodule NanoAgent do
 
   defp tool_message(call, text),
     do: %{"role" => "tool", "tool_call_id" => call["id"], "content" => text}
+
+  defp admit_eval_images(s, []), do: {s, ""}
+
+  defp admit_eval_images(s, images) do
+    accumulated = Map.get(s, :tool_images, []) ++ images
+
+    case image_admission(s, accumulated, "Images viewed by your eval.") do
+      :ok ->
+        {add_images(s, images, :tool_images), ""}
+
+      {:error, reason} ->
+        log(s, :images_refused, %{source: "eval", reason: reason, images: images})
+        # The next request may be mid-turn and does not deliver pending harness notes.
+        # Keep the eval's value/bindings, but warn in this exact tool result immediately.
+        {s,
+         "Image view refused: #{reason}. No pixels from this eval were admitted; use fewer images or a larger max_context.\n\n"}
+    end
+  end
 
   # Shared admission boundary: API, dashboard, bots and eval callers cannot insert an
   # unbounded caption, or an image bundle which cannot fit even with no older history.
