@@ -49,7 +49,12 @@ def handle(msg):
             os._exit(17)
         if name == "hang":
             return None
-        if name == "large":
+        if name == "media_image":
+            image = {"type": "image", "mimeType": "image/png", "data": p["arguments"]["data"]}
+            events.put({"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "info", "data": image}})
+            result = {"content": [{"type": "text", "text": "caption stays intact", "annotations": {"audience": ["assistant"]}}, image]}
+        elif name == "large":
+
             result = {"content": [{"type": "text", "text": "x" * 100000}]}
         elif name == "emit":
             for uri in list(subscriptions):

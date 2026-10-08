@@ -962,6 +962,7 @@ defmodule Vega.MCP.Connection do
   defp bound_result({tag, result}, s), do: {tag, bound(result, s)}
 
   defp bound(value, s) do
+    value = Vega.MCP.Media.normalize(value)
     encoded = Jason.encode!(value)
     limit = (s.config["result_limit"] || 16_384) |> max(256) |> min(32_768)
 
