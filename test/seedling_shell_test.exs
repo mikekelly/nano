@@ -1,0 +1,94 @@
+defmodule Seedling.ShellTest do
+  use ExUnit.Case, async: true
+  alias Seedling.{Shell, Background}
+
+  setup do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "lyra-shell-" <> Base.url_encode64(:crypto.strong_rand_bytes(12))
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    {:ok, dir: dir}
+  end
+
+  test "actual shell merges streams, sets env/cwd, preserves nonzero status", %{dir: dir} do
+    assert {:ok, r} =
+             Shell.sh("printf '%s:%s' \"$PWD\" \"$SEED_TEST\"; printf err >&2; exit 7",
+               cwd: dir,
+               dir: dir,
+               env: [{"SEED_TEST", "value"}]
+             )
+
+    assert r.output == dir <> ":valueerr"
+    assert r.exit_code == 7
+    assert r.status == :completed
+    assert {:ok, saved} = Background.receipt(r.receipt_path)
+    assert saved.id == r.id
+  end
+
+  test "bounded tail retains full output", %{dir: dir} do
+    assert {:ok, r} = Shell.sh("seq 1 10000", dir: dir, max_bytes: 100, max_lines: 3)
+    assert r.truncated
+    assert byte_size(r.output) <= 100
+    assert r.output =~ "10000"
+    assert r.total_bytes > 10000
+  end
+
+  test "timeout and cancellation kill real OS commands", %{dir: dir} do
+    assert {:ok, r} = Shell.sh("printf before; sleep 10; printf after", dir: dir, timeout: 100)
+    assert r.status == :timed_out
+    assert r.output =~ "before"
+    refute r.output =~ "after"
+    assert {:ok, task} = Background.start("sleep 10", dir: dir, owner: self())
+    assert Nano.Ops.owner(task.pid) == nil
+    assert :ok = Background.cancel(task)
+    assert_receive {:seedling_background, %{status: :cancelled}}, 2000
+  end
+
+  test "worker survives caller death and routes to replacement named owner", %{dir: dir} do
+    name = "shell-" <> Base.url_encode64(:crypto.strong_rand_bytes(12))
+    parent = self()
+
+    old =
+      spawn(fn ->
+        :yes = Nano.Names.register_name({:agent, name}, self())
+        Process.put(:"$callers", [self()])
+        {:ok, task} = Background.start("sleep 0.2; printf survived", dir: dir)
+        send(parent, {:task, task})
+
+        receive do
+          :die -> :ok
+        end
+      end)
+
+    assert_receive {:task, task}
+    assert Nano.Ops.owner(task.pid) == name
+    send(old, :die)
+    Process.sleep(350)
+    assert Process.alive?(task.pid)
+    :yes = Nano.Names.register_name({:agent, name}, self())
+    assert_receive {:seedling_background, r}, 2000
+    assert r.owner == name
+    assert File.read!(r.output_path) == "survived"
+    Nano.Names.unregister_name({:agent, name})
+  end
+
+  test "unlinked worker survives initiating eval-like process", %{dir: dir} do
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        {:ok, task} = Background.start("sleep 0.1; echo ok", owner: parent, dir: dir)
+        send(parent, {:started, task})
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive {:started, task}
+    Process.exit(pid, :kill)
+    assert Process.alive?(task.pid)
+    assert_receive {:seedling_background, %{exit_code: 0}}, 2000
+  end
+end
