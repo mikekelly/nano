@@ -596,6 +596,13 @@ defmodule NanoAgent do
   ## Mailbox
 
   @impl true
+  def handle_cast({:compaction_summary, text}, s) do
+    case Compaction.validate(text) do
+      :ok -> noreply(Map.put(s, :pending_summary, text))
+      _ -> noreply(s)
+    end
+  end
+
   def handle_cast({:notify, term}, s), do: noreply(event(s, term))
 
   # From Nano.StateStore after it restarted with an empty table: save again, and be watched.
@@ -794,9 +801,22 @@ defmodule NanoAgent do
         estimate = estimate(next)
         room = b.max_context - estimate
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        cond do
+          b.max_context > 0 and room < @reply_room ->
+            s |> context_halt(estimate) |> end_turn("budget")
+
+          Compaction.due?(next, estimate) ->
+            task =
+              Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
+                Compaction.generate(next)
+              end)
+
+            log(next, :compaction_started, %{estimate: estimate})
+            %{next | status: :thinking, task: %{kind: :compaction, task: task}}
+
+          true ->
+            call(next, new_turn? && line, estimate, room)
+        end
     end
   end
 
@@ -980,6 +1000,38 @@ defmodule NanoAgent do
   end
 
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
+
+  defp task_done(%{task: %{kind: :compaction}} = s, {:ok, summary, response}) do
+    usage = (response.usage["prompt_tokens"] || 0) + (response.usage["completion_tokens"] || 0)
+    Nano.StateStore.add_node_tokens(usage)
+    log(s, :compaction_completed, %{summary: summary, tokens: usage})
+
+    s =
+      Compaction.rebuild(
+        %{
+          s
+          | task: nil,
+            tokens_used: s.tokens_used + usage,
+            turns_used: s.turns_used + 1,
+            cost: s.cost + (response.cost || 0)
+        },
+        summary
+      )
+
+    if estimate(s) >= s.max_context - @reply_room do
+      s
+      |> halt(:compaction_failed, "Checkpoint still exceeds available context")
+      |> end_turn("error")
+    else
+      request(s, s.pending != [])
+    end
+  end
+
+  defp task_done(%{task: %{kind: :compaction}} = s, error) do
+    %{s | task: nil}
+    |> halt(:compaction_failed, "Automatic compaction failed: #{inspect(error, limit: 5)}")
+    |> end_turn("error")
+  end
 
   defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
 
@@ -1208,6 +1260,16 @@ defmodule NanoAgent do
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
   defp run_calls(%{calls: []} = s) do
+    s =
+      case Map.pop(s, :pending_summary) do
+        {nil, s} ->
+          s
+
+        {summary, s} ->
+          log(s, :compaction_completed, %{summary: summary, voluntary: true})
+          Compaction.rebuild(s, summary)
+      end
+
     cond do
       not s.idle_called -> request(s, false)
       s.wakeup_after && s.pending == [] -> end_turn(%{s | wakeup: arm_wakeup(s)}, "idle")

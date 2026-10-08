@@ -1,0 +1,2 @@
+{{! Keep this a short map of entry points; detail belongs in module docs and seeding docs. }}
+Capabilities (module docs via Code.fetch_docs): Workspace for bounded file/shell tools; Background for detached commands and completion events; Compaction for automatic checkpoints; Delegation for subagents, composed prompts, worktrees and reports. Specs: /app/seeding-docs/README.md. Use these libraries from eval, not new tools.
