@@ -1,7 +1,9 @@
 defmodule Nano.Compaction do
   @moduledoc """
   Automatic harness checkpoints. `plan/2` retains recent complete turns and summarizes
-  the older prefix; `summarize/4` makes a separate, tool-free model call with retries.
+  the older prefix; `summarize/4` makes separate, tool-free model calls with retries.
+  Usually one call suffices. Oversized lifetimes use bounded chronological chunks,
+  updating the checkpoint across passes and aggregating their usage/cost.
   Checkpoints update the previous summary, not the entire lifetime. Full records remain
   in Nano.Log. No pid, mailbox, binding or on-disk working file is changed.
   """
@@ -96,37 +98,153 @@ defmodule Nano.Compaction do
     end)
   end
 
-  def summarize(model, reasoning, older, window, attempt \\ 1) do
+  @doc "Bounded chronological summary inputs, using updates when a lifetime exceeds one call."
+  def inputs(older, window) do
     output = min(13_000, max(256, div(window, 8)))
+    limit = (window - output - 2_048) * 2
     text = serialize(older)
-    # Bounds even a history with enormous event text; never silently discard facts.
-    if byte_size(text) > (window - output - 2_048) * 2 do
-      {:error, "serialized history cannot fit the summary model's window"}
-    else
-      messages = [
-        %{"role" => "system", "content" => @system <> "\nUse at most #{output} tokens."},
-        %{"role" => "user", "content" => text}
-      ]
 
-      case Nano.Model.chat(model, messages, [], reasoning, output) do
-        {:ok, r} ->
-          summary = r.message["content"]
+    cond do
+      limit <= 0 ->
+        {:error, "summary model's window is too small"}
 
-          if is_binary(summary) and String.trim(summary) != "" and
-               byte_size(summary) <= output * 4 and
-               r.finish_reason not in ["length", "max_output_tokens"] do
-            {:ok, summary, r}
-          else
-            {:error, "summary was empty, truncated, or exceeded its length bound"}
-          end
+      byte_size(text) <= limit ->
+        {:ok, [text], output, limit}
 
-        {:error, %{class: :transient} = error} when attempt < 3 ->
-          Process.sleep(min(error[:retry_after] || 1_000 * attempt, 60_000))
-          summarize(model, reasoning, older, window, attempt + 1)
+      true ->
+        # Reserve the largest accepted previous checkpoint plus framing for every pass.
+        room = limit - output * 4 - 1_024
 
-        {:error, error} ->
-          {:error, Nano.Model.message(error.body)}
+        if room < 256 do
+          {:error, "summary model's window is too small for checkpoint updates"}
+        else
+          records =
+            older
+            |> Enum.with_index()
+            |> Enum.flat_map(fn {message, index} ->
+              record = serialize([message])
+
+              if byte_size(record) <= room do
+                [record]
+              else
+                # Even one huge event is not dropped. UTF-8-safe annotated continuations
+                # are summary input only; the actual retained transcript/tool pairs stay intact.
+                record
+                |> split_text(room - 128)
+                |> Enum.with_index(1)
+                |> Enum.map(fn {part, segment} ->
+                  "[#{message["role"]} serialized record #{index + 1}, continuation segment #{segment}]:\n" <>
+                    part
+                end)
+              end
+            end)
+
+          {chunks, current} =
+            Enum.reduce(records, {[], ""}, fn record, {chunks, current} ->
+              next = if current == "", do: record, else: current <> "\n" <> record
+              if byte_size(next) <= room, do: {chunks, next}, else: {[current | chunks], record}
+            end)
+
+          {:ok, Enum.reverse([current | chunks]), output, limit}
+        end
+    end
+  end
+
+  defp split_text("", _room), do: []
+  defp split_text(text, room) when byte_size(text) <= room, do: [text]
+
+  defp split_text(text, room) do
+    prefix =
+      case :unicode.characters_to_binary(binary_part(text, 0, room)) do
+        {_, valid, _} -> valid
+        valid -> valid
       end
+
+    [
+      prefix
+      | split_text(
+          binary_part(text, byte_size(prefix), byte_size(text) - byte_size(prefix)),
+          room
+        )
+    ]
+  end
+
+  def summarize(model, reasoning, older, window, attempt \\ 1) do
+    with {:ok, chunks, output, limit} <- inputs(older, window) do
+      passes(model, reasoning, chunks, output, limit, nil, nil, attempt)
+    end
+  end
+
+  defp passes(_model, _reasoning, [], _output, _limit, summary, aggregate, _attempt),
+    do: {:ok, summary, aggregate}
+
+  defp passes(model, reasoning, [chunk | rest], output, limit, prior, aggregate, attempt) do
+    text =
+      if prior do
+        "Previous structured checkpoint (retain relevant facts and update it):\n" <>
+          prior <>
+          "\n\nNext chronological serialized-history chunk (not a new user request):\n" <> chunk
+      else
+        chunk
+      end
+
+    if byte_size(text) > limit do
+      {:error, "checkpoint update input exceeded its reserved bound"}
+    else
+      case summary_call(model, reasoning, text, output, attempt) do
+        {:ok, summary, response} ->
+          aggregate = accumulate(aggregate, response)
+          passes(model, reasoning, rest, output, limit, summary, aggregate, 1)
+
+        error ->
+          error
+      end
+    end
+  end
+
+  defp accumulate(nil, r), do: Map.put(r, :summary_passes, 1)
+
+  defp accumulate(previous, r) do
+    usage =
+      Map.merge(r.usage, %{
+        "prompt_tokens" =>
+          (previous.usage["prompt_tokens"] || 0) + (r.usage["prompt_tokens"] || 0),
+        "completion_tokens" =>
+          (previous.usage["completion_tokens"] || 0) + (r.usage["completion_tokens"] || 0)
+      })
+
+    %{r | usage: usage, cost: (previous.cost || 0) + (r.cost || 0)}
+    |> Map.put(:summary_passes, previous.summary_passes + 1)
+  end
+
+  defp summary_call(model, reasoning, text, output, attempt) do
+    messages = [
+      %{
+        "role" => "system",
+        "content" =>
+          @system <>
+            "\nUse at most #{output} tokens. This may be one chronological chunk of a longer history; update the previous checkpoint when provided. Never continue the conversation."
+      },
+      %{"role" => "user", "content" => text}
+    ]
+
+    case Nano.Model.chat(model, messages, [], reasoning, output) do
+      {:ok, r} ->
+        summary = r.message["content"]
+
+        if is_binary(summary) and String.trim(summary) != "" and byte_size(summary) <= output * 4 and
+             r.finish_reason not in ["length", "max_output_tokens"] do
+          {:ok, summary, r}
+        else
+          {:error, "summary was empty, truncated, or exceeded its length bound"}
+        end
+
+      {:error, %{class: :transient} = error} when attempt < 3 ->
+        Process.sleep(min(error[:retry_after] || 1_000 * attempt, 60_000))
+        summary_call(model, reasoning, text, output, attempt + 1)
+
+      {:error, error} ->
+        {:error, Nano.Model.message(error.body)}
     end
   end
 end

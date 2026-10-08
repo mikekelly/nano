@@ -250,7 +250,73 @@ defmodule Nano.CompactionTest do
     end
   end
 
-  test "retention target is soft: a 50KB recent tool pair still compacts in a 272K window" do
+  test "oversized serialized lifetimes use bounded chronological checkpoint updates and aggregate usage",
+       c do
+    older =
+      for i <- 1..4,
+          do: %{
+            "role" => "user",
+            "content" => "START-#{i}:" <> String.duplicate("x", 9_000) <> ":END-#{i}"
+          }
+
+    assert {:ok, chunks, output, limit} = Nano.Compaction.inputs(older, 20_000)
+    assert length(chunks) == 2
+    assert Enum.all?(chunks, &(byte_size(&1) + output * 4 + 1024 <= limit))
+
+    Fake.push(c.model,
+      text: "Goal: first checkpoint preserves alpha",
+      usage: {100, 10, 0},
+      cost: 0.01
+    )
+
+    Fake.push(c.model,
+      text: "Goal: updated checkpoint preserves alpha and beta",
+      usage: {200, 20, 0},
+      cost: 0.02
+    )
+
+    task = Task.async(fn -> Nano.Compaction.summarize(c.model, "off", older, 20_000) end)
+    first = request(c.model)
+    assert first["tools"] == []
+    assert List.last(first["messages"])["content"] =~ "START-1"
+    second = request(c.model)
+    text = List.last(second["messages"])["content"]
+    assert text =~ "Previous structured checkpoint"
+    assert text =~ "first checkpoint preserves alpha"
+    assert text =~ "END-4"
+    assert byte_size(text) <= limit
+    assert {:ok, summary, aggregate} = Task.await(task)
+    assert summary =~ "alpha and beta"
+    assert aggregate.usage["prompt_tokens"] == 300
+    assert aggregate.usage["completion_tokens"] == 30
+    assert aggregate.summary_passes == 2
+    assert_in_delta aggregate.cost, 0.03, 0.00001
+  end
+
+  test "a single oversized unicode record is continued without dropping text or splitting UTF-8" do
+    older = [
+      %{
+        "role" => "user",
+        "content" => "exact-path:/tmp/task.ex " <> String.duplicate("界", 20_000) <> " END"
+      }
+    ]
+
+    assert {:ok, chunks, output, limit} = Nano.Compaction.inputs(older, 20_000)
+    assert length(chunks) > 1
+    assert Enum.all?(chunks, &(String.valid?(&1) and byte_size(&1) + output * 4 + 1024 <= limit))
+
+    reconstructed =
+      Enum.map_join(
+        chunks,
+        "",
+        &Regex.replace(~r/\[user serialized record \d+, continuation segment \d+\]:\n/, &1, "")
+      )
+
+    assert reconstructed == Nano.Compaction.serialize(older)
+  end
+
+  test "retention target is soft
+: a 50KB recent tool pair still compacts in a 272K window" do
     older =
       Enum.flat_map(1..10, fn _ ->
         [
