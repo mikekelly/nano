@@ -145,7 +145,11 @@ defmodule Nano.Compaction do
               if byte_size(next) <= room, do: {chunks, next}, else: {[current | chunks], record}
             end)
 
-          {:ok, Enum.reverse([current | chunks]), output, limit}
+          chunks = Enum.reverse([current | chunks])
+
+          if length(chunks) <= 64,
+            do: {:ok, chunks, output, limit},
+            else: {:error, "serialized history exceeds the 64-pass checkpoint safety limit"}
         end
     end
   end
@@ -196,10 +200,27 @@ defmodule Nano.Compaction do
           aggregate = accumulate(aggregate, response)
           passes(model, reasoning, rest, output, limit, summary, aggregate, 1)
 
-        error ->
-          error
+        {:error, reason} ->
+          failure(reason, aggregate)
       end
     end
+  end
+
+  defp failure(reason, nil), do: {:error, reason}
+
+  defp failure(reason, aggregate) do
+    detail = if is_map(reason), do: reason, else: %{reason: reason}
+
+    {:error,
+     %{
+       reason: detail.reason,
+       known_prompt_tokens:
+         (aggregate.usage["prompt_tokens"] || 0) + (detail[:known_prompt_tokens] || 0),
+       known_completion_tokens:
+         (aggregate.usage["completion_tokens"] || 0) + (detail[:known_completion_tokens] || 0),
+       known_cost: (aggregate.cost || 0) + (detail[:known_cost] || 0),
+       successful_summary_passes: aggregate.summary_passes
+     }}
   end
 
   defp accumulate(nil, r), do: Map.put(r, :summary_passes, 1)
@@ -236,7 +257,14 @@ defmodule Nano.Compaction do
              r.finish_reason not in ["length", "max_output_tokens"] do
           {:ok, summary, r}
         else
-          {:error, "summary was empty, truncated, or exceeded its length bound"}
+          {:error,
+           %{
+             reason: "summary was empty, truncated, or exceeded its length bound",
+             known_prompt_tokens: r.usage["prompt_tokens"] || 0,
+             known_completion_tokens: r.usage["completion_tokens"] || 0,
+             known_cost: r.cost || 0,
+             successful_summary_passes: 0
+           }}
         end
 
       {:error, %{class: :transient} = error} when attempt < 3 ->
