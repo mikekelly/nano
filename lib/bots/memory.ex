@@ -81,6 +81,7 @@ defmodule Bots.Memory do
                %{query: query},
                questions,
                Keyword.get(opts, :decision_opts, [])
+               |> Keyword.put(:timeout, Keyword.get(opts, :memory_timeout, 10_000))
              ]) do
           {:ok, answers} ->
             Enum.with_index(candidates, fn {entry, _}, n ->
