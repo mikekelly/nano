@@ -77,7 +77,7 @@ defmodule Images.Format do
 
   defp jpeg(<<0xFF, 0xDA, len::16, rest::binary>>, {w, h}) when len >= 2 do
     case rest do
-      <<_header::binary-size(len - 2), scan::binary>> when byte_size(scan) >= 2 ->
+      <<_header::binary-size(^len - 2), scan::binary>> when byte_size(scan) >= 2 ->
         if binary_part(scan, byte_size(scan) - 2, 2) == <<0xFF, 0xD9>>,
           do: {:ok, "image/jpeg", w, h},
           else: invalid()
@@ -89,7 +89,7 @@ defmodule Images.Format do
 
   defp jpeg(<<0xFF, marker, len::16, rest::binary>>, dims) when len >= 2 do
     case rest do
-      <<segment::binary-size(len - 2), tail::binary>> ->
+      <<segment::binary-size(^len - 2), tail::binary>> ->
         if marker in [0xC0, 0xC1, 0xC2] do
           case segment do
             <<8, h::16, w::16, components, data::binary>>
@@ -116,7 +116,7 @@ defmodule Images.Format do
     size = if (flags &&& 128) != 0, do: 3 * (1 <<< ((flags &&& 7) + 1)), else: 0
 
     case rest do
-      <<_::binary-size(size), tail::binary>> -> {:ok, tail}
+      <<_::binary-size(^size), tail::binary>> -> {:ok, tail}
       _ -> invalid()
     end
   end
@@ -166,7 +166,7 @@ defmodule Images.Format do
     padding = rem(size, 2)
 
     case rest do
-      <<_::binary-size(padding), rest::binary>> ->
+      <<_::binary-size(^padding), rest::binary>> ->
         case {type, data, pixels} do
           {"ANIM", _, _} ->
             animated()
