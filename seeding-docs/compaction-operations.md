@@ -36,7 +36,8 @@ A later successful submission in the same response replaces an earlier submissio
 
 The last provider-measured context plus a cautious estimate of additions triggers
 compaction when less than 16,384 tokens remain. For models below 65,536 tokens the
-reserve scales to a quarter-window. The harness appends an explicit checkpoint note
+reserve scales to a quarter-window but never below 8,192 tokens, so the checkpoint note
+and the unchanged 4,096-token hard reply guard can both fit on small supported windows. The harness appends an explicit checkpoint note
 to the existing tip, calls the same provider/model/reasoning, and extracts a literal
 summary from exactly one `Seedling.Compaction.provide_summary("...")` eval AST. It
 does **not** run that eval or any other code returned during automatic compaction.
@@ -49,6 +50,12 @@ Summaries are bounded at an estimated 12,000 tokens (one per two JSON bytes). Th
 aims for 2,000–8,000 tokens and fixed headings. The output bound is at most 12,000 when
 the provider supports one; ChatGPT does not support an output limit. Like the harness's
 existing input estimate, this is cautious on ordinary text, not an exact tokenizer.
+Ordinary bounded-provider replies leave the checkpoint reserve unspent rather than
+being allowed to consume all remaining room. The minimum ordinary output cap is 128
+when a first fixed prompt already occupies that reserve. ChatGPT/Codex ignores output
+caps, so an unexpectedly enormous reply can still consume the reserve or exceed the
+window; the post-response limit check and next-request hard guard remain authoritative.
+
 
 First brief and newest external events survive word for word, in original order, within
 about a fifth-window allowance. The first brief survives even when larger than that
@@ -102,7 +109,9 @@ State is persisted in the agent's normal state file; no new global process or ta
 required. New fields are filled lazily for live older agents and at restoration:
 `compaction`, `compaction_summary`, `compaction_fresh`, `compaction_events`,
 `compaction_pending_events`, `front_of_mind_compacted`, and saved `input_modalities` (legacy defaults text-only).
-Old rendered user events are recovered from the transcript, excluding harness notes.
+Old rendered user events are recovered from line-anchored headers and the final wrapper
+terminator, excluding harness notes; literal `</event>` inside inspected received words
+is preserved rather than mistaken for the wrapper boundary.
 Legacy state lacks exact child-report metadata, so those events remain external. If an
 old batched user message has images but lacks per-event metadata, all its images are
 assigned to its first event to avoid silently losing attachments.
@@ -112,7 +121,10 @@ Test a separate `MIX_ENV=test` build first; never rewrite the running shared pro
 For an approved deployment, load supporting `Seedling` modules **before** the harness.
 Live model responses and evals started by the previous harness version are accepted;
 the old eval four-element success tuple and the new image-aware five-element tuple
-are both handled. New calls use the image-aware tuple, while public `run_eval/2` and
+are both handled. Image-aware task results accept either the older refs list or the new
+provider/originals/notice metadata map. Unsupported-model image notices precede inspected
+values so truncation cannot hide them; operator logs retain canonical originals while
+provider/transcript attachments remain empty. New calls use the image-aware tuple, while public `run_eval/2` and
 `eval/3` retain their original return shapes. If the process dies while an automatic
 checkpoint is in flight, it resumes that checkpoint; restart notes queue behind it.
 A process/node restart changes the system pid prompt truthfully, so its request prefix

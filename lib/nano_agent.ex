@@ -740,7 +740,9 @@ defmodule NanoAgent do
     at = timestamp(DateTime.utc_now())
 
     rendered = ~s(<event seq="#{seq}" at="#{at}">#{text}</event>)
-    {images, notice} = Seedling.Images.prepare(Seedling.Images.collect(term), s.input_modalities)
+    image_metadata = image_metadata(term, s.input_modalities)
+    images = image_metadata.provider
+    notice = image_metadata.notice
     rendered = rendered <> notice
     record = %{text: rendered, kind: event_kind(s, term), images: images}
 
@@ -762,7 +764,8 @@ defmodule NanoAgent do
         event_seq: seq,
         message: text,
         queue_length: queued,
-        images: images,
+        images: image_metadata.originals,
+        image_notice: notice,
         truncated: truncated
       })
     )
@@ -1066,7 +1069,11 @@ defmodule NanoAgent do
     output = if s.max_context > 0, do: min(room, s.max_output || room), else: s.max_output
 
     output =
-      if s.compaction, do: s.compaction[:output] || min(output || 12_000, 12_000), else: output
+      cond do
+        s.compaction -> s.compaction[:output] || min(output || 12_000, 12_000)
+        s.max_context > 0 -> min(output, max(room - Compaction.reserve(s.max_context), 128))
+        true -> output
+      end
 
     fields = %{
       request_id: id,
@@ -1604,12 +1611,13 @@ defmodule NanoAgent do
         try do
           {value, bindings} = Code.eval_string(code, bindings)
 
-          {images, notice} =
+          metadata =
             if modalities,
-              do: Seedling.Images.prepare(Seedling.Images.collect(value), modalities),
-              else: {[], ""}
+              do: image_metadata(value, modalities),
+              else: %{provider: [], originals: [], notice: ""}
 
-          {:ok, inspect(value, [pretty: true] ++ inspect_opts()) <> notice, bindings, images}
+          {:ok, metadata.notice <> inspect(value, [pretty: true] ++ inspect_opts()), bindings,
+           metadata}
         catch
           kind, reason -> {:error, kind, reason, __STACKTRACE__}
         end
@@ -1753,6 +1761,7 @@ defmodule NanoAgent do
   # The model sees the result followed by any captured IO, truncated as a whole; the log
   # keeps result and IO apart for the dashboard.
   defp tool_result(s, call, started, ok, result, io \\ "", images \\ []) do
+    metadata = normalize_image_metadata(images)
     whole = if io == "", do: result, else: result <> "\n\nCaptured IO:\n" <> io
     max = stated(s, :result_max_bytes)
     {text, truncated, spill} = truncate(whole, max, {s.id, "call-#{s.call_seq}"})
@@ -1764,7 +1773,8 @@ defmodule NanoAgent do
         call_id: call["id"],
         name: call["function"]["name"],
         duration_ms: System.monotonic_time(:millisecond) - started,
-        images: images,
+        images: metadata.originals,
+        image_notice: metadata.notice,
         ok: ok,
         result: elem(truncate(result, max), 0),
         io: elem(truncate(io, max), 0),
@@ -1772,13 +1782,37 @@ defmodule NanoAgent do
       })
     )
 
-    append(s, attach_images(tool_message(call, text), images))
+    append(s, attach_images(tool_message(call, text), metadata.provider))
   end
 
   defp tool_message(call, text),
     do: %{"role" => "tool", "tool_call_id" => call["id"], "content" => text}
 
+  defp image_metadata(value, modalities) do
+    refs = Seedling.Images.collect(value)
+
+    case Seedling.Images.validate_refs(refs) do
+      {:ok, originals} ->
+        {provider, notice} = Seedling.Images.prepare(originals, modalities)
+        %{provider: provider, originals: originals, notice: notice}
+
+      {:error, reason} ->
+        %{
+          provider: [],
+          originals: [],
+          notice: "\n[Images unavailable: #{reason}. No image data was sent.]\n"
+        }
+    end
+  end
+
+  # Accept the refs-only task result from the first image-aware harness revision.
+  defp normalize_image_metadata(images) when is_list(images),
+    do: %{provider: images, originals: images, notice: ""}
+
+  defp normalize_image_metadata(%{provider: _, originals: _, notice: _} = metadata), do: metadata
+
   defp attach_images(message, []), do: message
+
   defp attach_images(message, images), do: Map.put(message, "images", images)
 
   ## Helpers
