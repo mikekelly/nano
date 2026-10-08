@@ -485,4 +485,27 @@ defmodule Seedling.CompactionLifecycleTest do
     assert NanoAgent.info(ctx.name).halted == nil
     Fake.push(ctx.model, text: "done")
   end
+
+  @tag window: 5000, prompt: "Short."
+  test "a guard refusal preserves the eagerly logged reminder and it is delivered after recovery",
+       ctx do
+    note = String.duplicate("x", 1000)
+    {:ok, _} = Seedling.FrontOfMind.set(ctx.name, note)
+    send(ctx.pid, :brief_before_bob)
+    await(ctx, :budget_exhausted)
+    refute_receive {:openrouter_request, _, _}, 100
+    state = :sys.get_state(ctx.pid)
+    assert state.halted == :context
+    assert Enum.any?(state.transcript, &String.contains?(&1["content"], note))
+    assert Enum.any?(state.transcript, &String.contains?(&1["content"], "brief_before_bob"))
+    assert Enum.count(Nano.Log.read(ctx.id), &(&1["type"] == "context_bob")) == 1
+    # Once an operator increases the limit, the already inserted bob is not silently lost
+    # or duplicated even though its durable cursor was advanced by the initial hook.
+    :sys.replace_state(ctx.pid, &%{&1 | max_context: 10000})
+    Fake.push(ctx.model, text: "recovered")
+    NanoAgent.unhalt(ctx.name)
+    recovered = request(ctx)
+    assert Enum.any?(recovered["messages"], &String.contains?(text(&1), note))
+    assert Enum.count(Nano.Log.read(ctx.id), &(&1["type"] == "context_bob")) == 1
+  end
 end

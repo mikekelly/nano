@@ -878,7 +878,7 @@ defmodule NanoAgent do
           if compact_due?(next) do
             begin_compaction(next)
           else
-            dispatch_request(next, new_turn? && line, s)
+            dispatch_request(next, new_turn? && line)
           end
         end
     end
@@ -928,14 +928,16 @@ defmodule NanoAgent do
       Enum.any?(s.transcript, &(&1["role"] == "assistant"))
   end
 
-  defp dispatch_request(s, line, before_delivery \\ nil) do
+  # Keep the prepared transcript even when the guard refuses: eager reminder hooks
+  # have persisted their cursor and logged placement, so rolling back would lose the bob.
+  defp dispatch_request(s, line) do
     estimate = estimate(s)
     room = s.max_context - estimate
 
     minimum = if s.compaction, do: max(@reply_room, s.compaction[:output] || 0), else: @reply_room
 
     if s.max_context > 0 and room < minimum,
-      do: (before_delivery || s) |> context_halt(estimate, minimum) |> end_turn("budget"),
+      do: s |> context_halt(estimate, minimum) |> end_turn("budget"),
       else: call(s, line, estimate, room)
   end
 

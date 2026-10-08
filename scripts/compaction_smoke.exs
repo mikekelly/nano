@@ -86,7 +86,7 @@ result =
 wait_idle = fn wait_idle, remaining ->
   state = :sys.get_state(pid)
 
-  if state.status == :idle or state.halted or remaining <= 0 do
+  if state.status == :idle or not is_nil(state.halted) or remaining <= 0 do
     :ok
   else
     Process.sleep(100)
