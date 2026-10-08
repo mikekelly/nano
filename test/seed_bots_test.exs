@@ -27,6 +27,38 @@ defmodule SeedBotsTest do
     assert length(SeedBots.get_session(a.id).messages) == 12
   end
 
+  test "decision-selected memory is shared across sessions but never across identities", %{
+    dir: dir
+  } do
+    stop_supervised!(SeedBots)
+
+    decision = fn :memory, %{query: query, candidates: candidates} ->
+      {:ok, %{ids: for(c <- candidates, String.contains?(c.text, query), do: c.id)}}
+    end
+
+    start_supervised!(
+      {SeedBots, directory: dir, agents: false, routing: false, decision: decision}
+    )
+
+    {:ok, muse} = SeedBots.create_bot(%{name: "Muse"})
+    {:ok, scout} = SeedBots.create_bot(%{name: "Scout"})
+    {:ok, first} = SeedBots.create_session([muse.id])
+    {:ok, second} = SeedBots.create_session([muse.id])
+    {:ok, tea} = SeedBots.remember(muse.id, "Likes tea", session: first.id)
+    {:ok, _} = SeedBots.remember(muse.id, "Prefers walking", session: first.id)
+    assert [^tea] = SeedBots.memories(muse.id, "tea")
+    assert SeedBots.get_session(second.id).messages == []
+    assert [] = SeedBots.memories(scout.id, "tea")
+    assert [] = SeedBots.memories(muse.id, "unrelated")
+    stop_supervised!(SeedBots)
+
+    start_supervised!(
+      {SeedBots, directory: dir, agents: false, routing: false, decision: decision}
+    )
+
+    assert [^tea] = SeedBots.memories(muse.id, "tea")
+  end
+
   test "human request is answerable once and sends correlated response" do
     {:ok, bot} = SeedBots.create_bot(%{name: "Bot"})
     {:ok, chat} = SeedBots.create_session([bot.id])

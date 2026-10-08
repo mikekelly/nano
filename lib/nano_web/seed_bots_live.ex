@@ -102,8 +102,19 @@ defmodule NanoWeb.SeedBotsLive do
 
   def handle_event("open", %{"id" => id}, socket) do
     case Enum.find(socket.assigns.sessions, &(&1.id == id)) do
-      nil -> {:noreply, assign(socket, error: "That chat is no longer available.")}
-      session -> {:noreply, assign(socket, current: session, draft: "", error: nil, notice: nil)}
+      nil ->
+        {:noreply, assign(socket, error: "That chat is no longer available.")}
+
+      session ->
+        requests =
+          for m <- session.messages,
+              rid = Map.get(m, :request_id),
+              rid != nil,
+              into: %{},
+              do: {rid, SeedBots.request(rid)}
+
+        {:noreply,
+         assign(socket, current: session, draft: "", error: nil, notice: nil, requests: requests)}
     end
   end
 
@@ -173,7 +184,11 @@ defmodule NanoWeb.SeedBotsLive do
   end
 
   def handle_event("answer", %{"request" => rid, "text" => text}, socket) do
-    case SeedBots.answer(rid, text) do
+    permitted =
+      socket.assigns.current &&
+        Enum.any?(socket.assigns.current.messages, &(Map.get(&1, :request_id) == rid))
+
+    case if(permitted, do: SeedBots.answer(rid, text), else: {:error, :wrong_chat}) do
       :ok ->
         {:noreply, refresh(socket)}
 
