@@ -64,6 +64,36 @@ defmodule Seedling.Index do
           ~s|Seedling.Decision.evaluate("Recent activity", %{"drift" => Seedling.Decision.noul("Has activity drifted from the goal?")})|,
         detail:
           "Typesafe Jev typed noul/choice/score judgments; returns probabilities/errors as values. Supplied TYPESAFE_API_KEY live validated against jev-1.13.0; never print credentials."
+      },
+      %{
+        module: Nano.Images,
+        name: "Images",
+        detail:
+          "Immutable sniffed and fully decoded single-frame PNG/JPEG/GIF refs, bounded bytes/dimensions. Fresh vision agents receive actual pixels on provider wire; text-only agents get explicit warning. API POST /api/agents/:name/images {base64,text}, GET /api/images/:id and dashboard upload/timeline. Hot source integration done, router live reload forthcoming. docs/compaction-and-images.md.",
+        example: "Nano.Images.view(\"/tmp/screenshot.png\")"
+      },
+      %{
+        module: Seedling.Web,
+        name: "Web reading",
+        detail:
+          "HTTP-first readable text, Lightpanda JS fallback, 1h/100-entry disk cache. read(id,offset:next), cite(id,offset:,limit:). Bounded Unicode pages; PDFs/video/repository checkout explicitly unsupported. docs/web-search.md.",
+        example: "Seedling.Web.fetch(\"https://elixir-lang.org\", mode: :auto, limit: 2000)"
+      },
+      %{
+        module: Seedling.Search,
+        name: "Search and async research",
+        detail:
+          "Exa compact highlights/ids, contents/answer citations, current /agent/runs research completion events by stable agent name. research_read/watch/cancel; explicit key errors, no scraping. Actual grounded structured research cost $0.012 validated. After node restart call watch(remote_id). docs/web-search.md.",
+        example:
+          "Seedling.Search.search(\"Erlang OTP documentation\"); Seedling.Search.research(\"Explain BEAM mailboxes\", effort: \"minimal\", notify: me)"
+      },
+      %{
+        module: Seedling.Browser,
+        name: "Browser",
+        detail:
+          "Lightpanda JS DOM/fill/click and owned loopback CDP, stop(session); fetch_async returns Background job, read_background(event) pages render. Actual JS/forms/CDP and agent restart lifecycle tested. docs/web-search.md.",
+        example:
+          "Seedling.Browser.run(url, [{:fill, \"#q\", \"text\"}, {:click, \"#go\"}]); Seedling.Browser.serve()"
       }
     ]
   end

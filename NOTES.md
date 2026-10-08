@@ -65,3 +65,35 @@ Seedling.FrontOfMind.set(me, "Keep the constraint in view"); Seedling.FrontOfMin
 ```elixir
 Seedling.Decision.evaluate("Recent activity", %{"drift" => Seedling.Decision.noul("Has activity drifted from the goal?")})
 ```
+
+## Images
+
+`Nano.Images` — Immutable sniffed and fully decoded single-frame PNG/JPEG/GIF refs, bounded bytes/dimensions. Fresh vision agents receive actual pixels on provider wire; text-only agents get explicit warning. API POST /api/agents/:name/images {base64,text}, GET /api/images/:id and dashboard upload/timeline. Hot source integration done, router live reload forthcoming. docs/compaction-and-images.md.
+
+```elixir
+Nano.Images.view("/tmp/screenshot.png")
+```
+
+## Web reading
+
+`Seedling.Web` — HTTP-first readable text, Lightpanda JS fallback, 1h/100-entry disk cache. read(id,offset:next), cite(id,offset:,limit:). Bounded Unicode pages; PDFs/video/repository checkout explicitly unsupported. docs/web-search.md.
+
+```elixir
+Seedling.Web.fetch("https://elixir-lang.org", mode: :auto, limit: 2000)
+```
+
+## Search and async research
+
+`Seedling.Search` — Exa compact highlights/ids, contents/answer citations, current /agent/runs research completion events by stable agent name. research_read/watch/cancel; explicit key errors, no scraping. Actual grounded structured research cost $0.012 validated. After node restart call watch(remote_id). docs/web-search.md.
+
+```elixir
+Seedling.Search.search("Erlang OTP documentation"); Seedling.Search.research("Explain BEAM mailboxes", effort: "minimal", notify: me)
+```
+
+## Browser
+
+`Seedling.Browser` — Lightpanda JS DOM/fill/click and owned loopback CDP, stop(session); fetch_async returns Background job, read_background(event) pages render. Actual JS/forms/CDP and agent restart lifecycle tested. docs/web-search.md.
+
+```elixir
+Seedling.Browser.run(url, [{:fill, "#q", "text"}, {:click, "#go"}]); Seedling.Browser.serve()
+```
