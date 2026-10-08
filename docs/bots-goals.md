@@ -229,9 +229,10 @@ perpetual thinking. Cuts retain the latest human request first and page durable 
 Drift can run while bobbing is disabled, and logs both controls; network timeout and adapter
 programming errors are sanitized but distinguishable.
 
-Final isolated integrated worktree run: **358 tests passed**, `mix format --check-formatted`
+Final isolated integrated worktree run: **362 tests passed** (including the final shared
+native compaction/image chain through `8af9d5f`), `mix format --check-formatted`
 and `mix compile --warnings-as-errors` passed (`MIX_ENV=test`, unique build root).
-Run output: `/tmp/seedling-tools/1791469497668141-72354.log`. Parent's broader merged suite
+Run output: `/tmp/seedling-tools/1791469594989161-72450.log`. Parent's broader merged suite
 includes other siblings and is validated separately. Browser notification permission/popups and
 physical OS isolation remain untested/unimplemented; server limits and notification events are
 covered by tests. The task demonstrates a trusted local beta, not a hardened multi-user product.
