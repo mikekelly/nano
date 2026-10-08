@@ -131,6 +131,35 @@ defmodule Nano.OpsTest do
   end
 
   describe "processes/0" do
+    test "a restarted core child stays standard without hiding ordinary eval tasks" do
+      store = Process.whereis(Nano.StateStore)
+      ref = Process.monitor(store)
+      Process.exit(store, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^store, :killed}
+
+      replacement =
+        Enum.find_value(1..100, fn _ ->
+          case Process.whereis(Nano.StateStore) do
+            pid when is_pid(pid) and pid != store ->
+              pid
+
+            _ ->
+              Process.sleep(10)
+              nil
+          end
+        end)
+
+      assert is_pid(replacement)
+      refute MapSet.member?(Nano.Application.boot_set(), replacement)
+      assert %{kind: :standard, pid: ^replacement} = Ops.process(Nano.StateStore)
+      refute Map.has_key?(kinds(), replacement)
+
+      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, sleeper())
+      on_exit(fn -> Task.Supervisor.terminate_child(Nano.EvalSupervisor, task.pid) end)
+      assert %{kind: :other} = Ops.process(task.pid)
+      assert kinds()[task.pid] == :other
+    end
+
     test "lists agents first, then users and other new processes, without boot-time ones" do
       {agent, agent_pid} = fake_agent()
       {user, user_pid} = start_user()
