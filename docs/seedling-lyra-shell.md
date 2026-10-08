@@ -13,12 +13,16 @@
   second for dashboard attribution and at completion; delivery waits if name absent.
   Atomic terminal receipts allow status after worker exit. Tests exercise actual OS
   commands, env/cwd/nonzero exit, bounded logs, cancel/timeout, caller death, named
-  owner replacement and Nano.Ops ownership: 5 passed in isolated MIX_ENV=test build.
+  owner replacement, Nano.Ops ownership, brutal worker kill cleanup and stale-record
+  boot recovery: 7 passed in isolated MIX_ENV=test build.
 
-Limitations: not BEAM/host restart recovery; terminal receipts/logs persist but running
-commands are not reconstructed. Mailbox delivery is not acknowledged/exactly-once;
+Limitations: not running OS command continuity over BEAM/host restart; a boot scanner
+marks stale running records interrupted and notifies their named owner, never rerunning
+side effects. Parent should start `{Seedling.Background.Recovery, []}` after Nano.Names.
+Custom command dirs need their own recovery child (`dir:` option). Mailbox delivery is not acknowledged/exactly-once;
 restart between send and processing may lose notification (receipt remains readable).
 Named owners that never return retain a waiting worker. Trusted POSIX commands only;
-commands escaping their process group cannot be cancelled reliably. Use cancel(task),
-not brutal dashboard process kill (which cannot guarantee descendant cleanup).
+commands escaping their process group cannot be cancelled reliably. An independent guardian now monitors worker death (including brutal dashboard :kill)
+and kills its OS process group, persists interrupted receipt and routes completion.
+Killing both worker and guardian, or deliberate setsid escape, can still evade cleanup.
 setsid can print a diagnostic when killed; retained as merged output. No live code loaded.
