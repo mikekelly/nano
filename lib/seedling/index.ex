@@ -94,6 +94,14 @@ defmodule Seedling.Index do
           "Lightpanda JS DOM/fill/click and owned loopback CDP, stop(session); fetch_async returns Background job, read_background(event) pages render. Actual JS/forms/CDP and agent restart lifecycle tested. docs/web-search.md.",
         example:
           "Seedling.Browser.run(url, [{:fill, \"#q\", \"text\"}, {:click, \"#go\"}]); Seedling.Browser.serve()"
+      },
+      %{
+        module: Seedling.MCP,
+        name: "MCP",
+        detail:
+          "Durable current2026-07-28/legacy2025-11-25 stdio+HTTP JSON/SSE clients. Config priv/seedling/mcp.json, tools/resources/prompts discovery, call/read/subscribe stable-name mailbox events, bounded result_page. Supervised live startup active. docs/seedling/mcp.md lists subset/no OAuth or sampling, offline event-memory limit. Delegation optional servers gated before first turn; constructor glue pending final tests.",
+        example:
+          "Seedling.MCP.servers(); Seedling.MCP.connect(\"configured-server\", agent: \"orion\"); Seedling.MCP.tools(\"configured-server\")"
       }
     ]
   end

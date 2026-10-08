@@ -97,3 +97,11 @@ Seedling.Search.search("Erlang OTP documentation"); Seedling.Search.research("Ex
 ```elixir
 Seedling.Browser.run(url, [{:fill, "#q", "text"}, {:click, "#go"}]); Seedling.Browser.serve()
 ```
+
+## MCP
+
+`Seedling.MCP` — Durable current2026-07-28/legacy2025-11-25 stdio+HTTP JSON/SSE clients. Config priv/seedling/mcp.json, tools/resources/prompts discovery, call/read/subscribe stable-name mailbox events, bounded result_page. Supervised live startup active. docs/seedling/mcp.md lists subset/no OAuth or sampling, offline event-memory limit. Delegation optional servers gated before first turn; constructor glue pending final tests.
+
+```elixir
+Seedling.MCP.servers(); Seedling.MCP.connect("configured-server", agent: "orion"); Seedling.MCP.tools("configured-server")
+```
