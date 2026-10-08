@@ -100,9 +100,8 @@ defmodule NanoWeb.Overview do
         <.link navigate={"/agents/#{@agent.name}"} class="name" title={@agent.name}>{@agent.name}</.link>
         <.status agent={@agent} />
       </header>
-      <div class="line dim">
-        {txt(@agent.model)} · reasoning {txt(Map.get(@agent, :reasoning) || "off")}
-      </div>
+      <div class="line dim" title={txt(@agent.model)}>{txt(@agent.model)}</div>
+      <div class="line dim">reasoning {txt(Map.get(@agent, :reasoning) || "off")}</div>
       <%!-- One slot: why it is halted, or else who started it. --%>
       <p :if={@agent.halted} class="line halt" title={halt_reason(@agent.halted)}>
         {halt_reason(@agent.halted)}
