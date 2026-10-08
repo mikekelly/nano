@@ -14,7 +14,9 @@ from the PubSub the agents already publish to, and the two surfaces cannot drift
 When this is done, a person creates two bots, starts a session with one and a session
 with both, chats for long enough that compaction happens without them noticing, tells one
 bot something in one session and has it come up appropriately in another, and never sees
-an eval. Then, with the page in the background, another agent on the node asks a bot for
+an eval. In the group session, a message to "both of you" gets both bots, a follow-up such
+as "No takers?" is understood, and asked to debate something, the bots take it up with each
+other until it reaches a natural end. Then, with the page in the background, another agent on the node asks a bot for
 something only the person can give; the bot posts the request in the right session, a
 browser notification brings the person back, they answer in the chat, and the asking
 agent receives the answer.
@@ -60,6 +62,12 @@ What the person gets:
 - bots with identity — a name, a face or colour, a short self-description, a voice that
   stays consistent across sessions; a bot is something the person comes back to, not a
   fresh agent per chat, and a consistent one is what they learn to rely on;
+- bots that are good company: each comes across as its identity, in its own voice, from its
+  first reply; it talks like someone in a chat, at the length the moment calls for, not like
+  a system reporting on a protocol; it responds to what was actually said, follows the thread
+  of the conversation, and in a group answers when spoken to, builds on or disagrees with
+  the others rather than repeating them, and leaves room for them; nothing of its machinery
+  (tokens, retries, tools, its own instructions) ever shows in what it says;
 - a clean surface: the bot shows that it is thinking, and may show a short summary of what
   it is doing, so a silence never looks like a failure, but evals, tool calls and harness
   traffic stay on the operator dashboard, where they do not bury the conversation;
