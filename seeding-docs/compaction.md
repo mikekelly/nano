@@ -37,21 +37,28 @@ block from the cache.
    plain enough not to be mistaken for anything else, for example:
 
    > The context limit is near: automatic compaction is starting. Do not ignore this. Call
-   > `Compaction.provide_summary(text)` from `eval` with a summary of this conversation in the
-   > format below. Everything above, except the messages you received, will be replaced by
+   > `Compaction.provide_summary(~S"""…""")` from `eval` with a summary of this conversation in
+   > the format below. Everything above, except the messages you received, will be replaced by
    > it, and the next reader is you, with no memory of anything here except this summary and
    > those messages. If a summary from an earlier compaction is above, update it: keep what is
    > there, move finished work to Done, add new decisions, drop what no longer matters.
 
    The note also states the summary's format and its length (below).
-3. **The reply.** Accept it only if its code is exactly one call,
-   `Compaction.provide_summary("…")` with a string, and take the summary from it without
-   running anything else: an agent mid-compaction should not run other code. A summary that
-   is empty or over its length does not count.
-4. **Retries.** Anything else is not kept: send the same request again, unchanged, up to three
-   times. If none of them gives a summary, halt the agent with a reason that says so and a
-   note telling it what happened; its full history is still in the log, and an operator can
-   un-halt it to try again.
+3. **The reply.** Accept it only if its code is exactly one call to
+   `Compaction.provide_summary` with a string, and take the summary as the text of that
+   string, exactly as written, without running anything: an agent mid-compaction should not
+   run other code. A summary of code work quotes code, with its `#{…}`, quotes and
+   backslashes, so the note asks for `~S"""…"""`, which takes text exactly as written, and
+   the harness takes the text of whatever string it is given. A summary that is empty or
+   over its length does not count.
+4. **Retries.** Up to three attempts in all. When the call itself failed (a dropped
+   connection, a timeout), send the same request again, unchanged. When a reply came back
+   but was refused for something in it (other code, a summary that is empty or too long,
+   code that does not parse), send the same history with the note again and the reason it
+   was refused: a cause in the reply would otherwise come back every time, and since only
+   the tip changes, the history is still read from the cache. If no attempt gives a summary,
+   halt the agent with a reason that says so and a note telling it what happened; its full
+   history is still in the log, and an operator can un-halt it to try again.
 5. **Voluntary compaction.** The same function, called by the agent itself from `eval` with
    its own summary whenever it judges the moment right: between tasks, say, or before starting
    something large once more than about half the context is used. No note is needed. It takes
