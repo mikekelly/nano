@@ -79,8 +79,10 @@ defmodule Seedling.Images do
             :ok
 
           {:error, :eexist} ->
-            case File.read(path) do
-              {:ok, ^bytes} -> :ok
+            with {:ok, %{type: :regular}} <- File.lstat(path),
+                 {:ok, ^bytes} <- File.read(path) do
+              :ok
+            else
               _ -> {:error, "stored image is corrupt; refusing to replace immutable bytes"}
             end
 
@@ -143,14 +145,16 @@ defmodule Seedling.Images do
   defp walk([], acc, _), do: acc
   defp walk([{_, depth} | rest], acc, n) when depth > 10, do: walk(rest, acc, n - 1)
 
-  defp walk([{%{"type" => "image_reference"} = ref, _} | rest], acc, n),
-    do: walk(rest, [ref | acc], n - 1)
+  defp walk([{%{"type" => "image_reference"} = ref, _} | rest], acc, n) do
+    acc = if Enum.any?(acc, &(&1["id"] == ref["id"])), do: acc, else: [ref | acc]
+    walk(rest, acc, n - 1)
+  end
 
   defp walk([{term, depth} | rest], acc, n) do
     children =
       cond do
-        is_map(term) -> term |> Map.values() |> Enum.take(n)
-        is_tuple(term) -> term |> Tuple.to_list() |> Enum.take(n)
+        is_map(term) -> term |> Enum.take(n) |> Enum.map(&elem(&1, 1))
+        is_tuple(term) -> for(i <- 0..(min(tuple_size(term), n) - 1)//1, do: elem(term, i))
         is_list(term) -> take_list(term, n)
         true -> []
       end

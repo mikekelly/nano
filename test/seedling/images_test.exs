@@ -60,6 +60,8 @@ defmodule Seedling.ImagesTest do
     {:ok, ref} = Images.store(Fixture.png())
     assert Images.collect({:ok, ref}) == [ref]
     assert Images.collect(%{other: {ref, [ref | :tail]}}) == [ref]
+    {:ok, other} = Images.store(Fixture.png(2, 1))
+    assert Images.collect(List.duplicate(ref, 150) ++ [other]) == [ref, other]
     assert Images.collect(Enum.reduce(1..20, ref, fn _, acc -> [acc] end)) == []
   end
 
@@ -74,6 +76,75 @@ defmodule Seedling.ImagesTest do
     assert Images.estimate_bytes(messages) == byte_size(Jason.encode!(messages)) + 9600
     assert {[], invalid} = Images.prepare(["missing"], ["image"])
     assert invalid =~ "invalid, missing or corrupt"
+  end
+
+  test "modified immutable objects fail closed, and cannot be overwritten by re-upload" do
+    bytes = Fixture.png(5, 7)
+    {:ok, ref} = Images.store(bytes)
+    path = Path.join(Images.dir(), ref["id"])
+    File.chmod!(path, 0o600)
+    File.write!(path, "modified")
+
+    on_exit(fn ->
+      File.write!(path, bytes)
+      File.chmod!(path, 0o444)
+    end)
+
+    assert {:error, _} = Images.fetch(ref)
+    assert {:error, _} = Images.data_url(ref)
+    assert {:error, _} = Images.store(bytes)
+  end
+
+  test "symlinks cannot masquerade as immutable images" do
+    bytes = Fixture.png(11, 12)
+    id = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+    path = Path.join(Images.dir(), id)
+    source = path <> ".source"
+    File.mkdir_p!(Images.dir())
+    File.write!(source, bytes)
+    File.ln_s!(source, path)
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm(source)
+    end)
+
+    assert {:error, _} = Images.fetch(id)
+    assert {:error, _} = Images.store(bytes)
+  end
+
+  test "PNG compressed data and scanline sizes are validated, including decompression bombs" do
+    png = Fixture.png()
+    <<header::binary-size(33), _::binary>> = png
+    # Header is a valid 1x1 RGB image, but the payload is one megabyte rather than 4 bytes.
+    data = :zlib.compress(:binary.copy(<<0>>, 1_000_000))
+    idat = <<byte_size(data)::32, "IDAT", data::binary, :erlang.crc32("IDAT" <> data)::32>>
+    iend = <<0::32, "IEND", :erlang.crc32("IEND")::32>>
+    assert {:error, _} = Images.store(header <> idat <> iend)
+  end
+
+  test "interlaced and palette PNG plus progressive JPEG fixtures" do
+    for name <- ["interlaced.png", "palette.png", "progressive.jpg"] do
+      bytes = File.read!(Path.join([__DIR__, "fixtures", name]))
+      assert {:ok, ref} = Images.store(bytes)
+      assert ref["width"] == 3 and ref["height"] == 3
+    end
+  end
+
+  test "indexed PNG needs a palette and unknown critical chunks are refused" do
+    chunk = fn type, data ->
+      <<byte_size(data)::32, type::binary, data::binary, :erlang.crc32(type <> data)::32>>
+    end
+
+    header =
+      <<137, 80, 78, 71, 13, 10, 26, 10>> <> chunk.("IHDR", <<1::32, 1::32, 8, 3, 0, 0, 0>>)
+
+    body = chunk.("IDAT", :zlib.compress(<<0, 0>>)) <> chunk.("IEND", "")
+    assert {:error, _} = Images.store(header <> body)
+    palette = chunk.("PLTE", <<255, 0, 0>>)
+    assert {:ok, ref} = Images.store(header <> palette <> body)
+    assert ref["mime_type"] == "image/png"
+    assert {:error, _} = Images.store(header <> palette <> chunk.("BADX", "") <> body)
   end
 
   test "JPEG type and dimensions from SOF rather than filename" do

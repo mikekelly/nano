@@ -199,7 +199,12 @@ defmodule Nano.RawLog do
         resp = %{resp | body: IO.iodata_to_binary(body)}
 
         write(req.private.raw_model_log <> ".response.txt", fn ->
-          ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, resp.body]
+          [
+            "HTTP #{resp.status}\n",
+            headers(resp.headers),
+            ?\n,
+            Seedling.Images.Wire.redact(resp.body)
+          ]
         end)
 
         write(req.private.raw_model_log <> ".timing.txt", fn ->
