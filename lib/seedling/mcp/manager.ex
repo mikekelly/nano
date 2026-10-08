@@ -38,6 +38,7 @@ defmodule Seedling.MCP.Manager do
       intents: intents,
       clients: %{},
       pending: %{},
+      held: MapSet.new(),
       resolver: opts[:resolver] || (&resolve/1)
     }
 
@@ -68,10 +69,15 @@ defmodule Seedling.MCP.Manager do
     end
   end
 
-  def handle_call({:connect, name, agent}, _, s) do
+  def handle_call({:connect, name, agent, defer}, _, s) do
     with {:ok, _} <- server_config(s, name) do
       intent = Map.get(s.intents, name, %{}) |> Map.put_new(agent, [])
-      next = %{s | intents: Map.put(s.intents, name, intent)}
+
+      next = %{
+        s
+        | intents: Map.put(s.intents, name, intent),
+          held: if(defer, do: MapSet.put(s.held, agent), else: s.held)
+      }
 
       with :ok <- persist(next), {:ok, pid, next} <- ensure_client(next, name) do
         {:reply, {:ok, pid}, next}
@@ -81,6 +87,11 @@ defmodule Seedling.MCP.Manager do
     else
       error -> {:reply, error, s}
     end
+  end
+
+  def handle_call({:release_events, agent}, _, s) do
+    next = %{s | held: MapSet.delete(s.held, agent)}
+    {:reply, :ok, flush(next)}
   end
 
   def handle_call({:intent, name, agent, uri, add}, _, s) do
@@ -131,6 +142,15 @@ defmodule Seedling.MCP.Manager do
               next
             end
 
+          next =
+            if Enum.any?(next.intents, fn {_, agents} -> Map.has_key?(agents, agent) end),
+              do: next,
+              else: %{
+                next
+                | held: MapSet.delete(next.held, agent),
+                  pending: Map.delete(next.pending, agent)
+              }
+
           {:reply, :ok, next}
 
         error ->
@@ -154,20 +174,8 @@ defmodule Seedling.MCP.Manager do
   end
 
   def handle_info(:flush, s) do
-    pending =
-      Enum.reduce(s.pending, %{}, fn {agent, events}, acc ->
-        case s.resolver.(agent) do
-          pid when is_pid(pid) ->
-            Enum.each(events, &send(pid, &1))
-            acc
-
-          _ ->
-            Map.put(acc, agent, events)
-        end
-      end)
-
     Process.send_after(self(), :flush, 250)
-    {:noreply, %{s | pending: pending}}
+    {:noreply, flush(s)}
   end
 
   def handle_info(_, s), do: {:noreply, s}
@@ -177,8 +185,12 @@ defmodule Seedling.MCP.Manager do
 
     payload =
       case Result.bound(payload, 4096, Path.join(s.dir, "events")) do
-        {:ok, bounded} -> Map.merge(bounded, Map.take(original, [:type, :method]))
-        {:error, reason} -> %{type: :event_spill_failed, reason: inspect(reason)}
+        {:ok, bounded} ->
+          Map.merge(bounded, Map.take(original, [:type, :method]))
+          |> Map.put(:uri, get_in(original, [:params, "uri"]))
+
+        {:error, reason} ->
+          %{type: :event_spill_failed, reason: inspect(reason)}
       end
 
     event = Map.merge(%{mcp: name, at: DateTime.utc_now() |> DateTime.to_iso8601()}, payload)
@@ -191,7 +203,7 @@ defmodule Seedling.MCP.Manager do
         original[:method] != "notifications/resources/updated" or uri in s.intents[name][agent]
 
       if eligible do
-        case s.resolver.(agent) do
+        case destination(s, agent) do
           pid when is_pid(pid) ->
             send(pid, event)
             s
@@ -206,6 +218,26 @@ defmodule Seedling.MCP.Manager do
         s
       end
     end)
+  end
+
+  defp flush(s) do
+    pending =
+      Enum.reduce(s.pending, %{}, fn {agent, events}, acc ->
+        case destination(s, agent) do
+          pid when is_pid(pid) ->
+            Enum.each(events, &send(pid, &1))
+            acc
+
+          _ ->
+            Map.put(acc, agent, events)
+        end
+      end)
+
+    %{s | pending: pending}
+  end
+
+  defp destination(s, agent) do
+    if MapSet.member?(s.held, agent), do: :undefined, else: s.resolver.(agent)
   end
 
   defp resolve(agent) do
