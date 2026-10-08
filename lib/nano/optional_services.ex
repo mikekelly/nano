@@ -36,8 +36,27 @@ defmodule Nano.OptionalServices do
   def status(server \\ __MODULE__), do: GenServer.call(server, :status)
   def retry(id, server \\ __MODULE__), do: GenServer.call(server, {:retry, id})
 
-  @doc "Whether this manager owns the desired service ID. False when the manager is absent. Lazy facades should return unavailable, not start a competing process, while this is true."
+  @doc """
+  Whether this manager owns the desired ID, or the default manager's application
+  configuration declares it. Lazy facades must not start a competing process while true.
+  `:nano, :optional_services` remains authoritative while the default manager is absent
+  or restarting; explicitly addressed isolated managers do not use that global fallback.
+  Declare production specs in application config, not only start_link arguments, to
+  protect the restart gap. This function never invokes a service's child_spec callback.
+  """
   def configured?(id, server \\ __MODULE__) do
+    configured_in_application?(id, server) or configured_in_manager?(id, server)
+  end
+
+  defp configured_in_application?(id, __MODULE__) do
+    Application.get_env(:nano, :optional_services, [])
+    |> List.wrap()
+    |> Enum.any?(&(spec_id(&1, :unknown) == id))
+  end
+
+  defp configured_in_application?(_, _), do: false
+
+  defp configured_in_manager?(id, server) do
     GenServer.call(server, {:configured, id})
   catch
     :exit, _ -> false

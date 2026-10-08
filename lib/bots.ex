@@ -109,7 +109,7 @@ defmodule Bots do
     server = Keyword.get(opts, :server, Bots.Server)
 
     if server == Bots.Server and Process.whereis(Bots.Server) == nil do
-      if Process.whereis(Nano.OptionalServices) do
+      if Nano.OptionalServices.configured?(__MODULE__) do
         raise "Bots service unavailable: waiting for supervised recovery"
       end
 

@@ -40,10 +40,12 @@ config :nano,
   # node's settings (settings.json) and the ChatGPT subscription's tokens.
   state_dir: env.("STATE_DIR", Path.join(data, "state")),
   # Immutable image references use the same environment-specific data root.
-  images_dir: env.("IMAGES_DIR", Path.join(data, "images"))
+  images_dir: env.("IMAGES_DIR", Path.join(data, "images")),
+  # Keep desired ownership available even while the optional manager is restarting.
+  optional_services: if(test?, do: [], else: [{MCP, []}, {Bots, []}])
 
 # Optional integrations are explicitly started by isolated tests and browser fixtures.
-if test?, do: config(:nano, test_dir: data, optional_services: [])
+if test?, do: config(:nano, test_dir: data)
 
 # NODE_COOKIE is not read here: it is consumed by `elixir --cookie` before the app starts.
 
