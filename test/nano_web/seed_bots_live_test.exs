@@ -12,6 +12,7 @@ defmodule NanoWeb.SeedBotsLiveTest do
       current: nil,
       selected: [],
       query: "",
+      picker_index: 0,
       search: "",
       draft: "",
       creating: false,
@@ -107,6 +108,32 @@ defmodule NanoWeb.SeedBotsLiveTest do
     refute html =~ ">Work<"
     assert html =~ "phx-value-id=\"b1\""
     refute html =~ "phx-value-id=\"b2\""
+  end
+
+  test "picker arrow keys wrap, Enter selects, Escape resets and no match creates" do
+    {:noreply, s} = View.handle_event("picker-key", %{"key" => "ArrowDown"}, socket())
+    assert s.assigns.picker_index == 1
+    {:noreply, wrapped} = View.handle_event("picker-key", %{"key" => "ArrowDown"}, s)
+    assert wrapped.assigns.picker_index == 0
+    {:noreply, wrapped} = View.handle_event("picker-key", %{"key" => "ArrowUp"}, wrapped)
+    assert wrapped.assigns.picker_index == 1
+    html = render_component(&View.render/1, s.assigns)
+    assert html =~ "aria-activedescendant=\"bot-option-b2\""
+    assert html =~ "data-bot-shortcut=\"2\""
+    {:noreply, s} = View.handle_event("picker-key", %{"key" => "Enter"}, s)
+    assert s.assigns.selected == ["b2"]
+    {:noreply, s} = View.handle_event("query", %{"query" => "muse"}, s)
+    assert s.assigns.picker_index == 0
+    {:noreply, s} = View.handle_event("picker-key", %{"key" => "ArrowUp"}, s)
+    assert s.assigns.picker_index == 0
+    {:noreply, s} = View.handle_event("picker-key", %{"key" => "Enter"}, s)
+    assert s.assigns.selected == ["b2", "b1"]
+    {:noreply, s} = View.handle_event("query", %{"query" => "New Friend"}, s)
+    {:noreply, s} = View.handle_event("picker-key", %{"key" => "Enter"}, s)
+    assert s.assigns.creating
+    {:noreply, s} = View.handle_event("picker-key", %{"key" => "Escape"}, s)
+    assert s.assigns.query == ""
+    refute s.assigns.creating
   end
 
   test "validation saves draft and starting over clears old selection" do
