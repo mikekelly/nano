@@ -221,7 +221,11 @@ in `git diff`; state that must outlive a process goes to disk under `/data` or i
 agent's own saved state. Assume restarts.
 
 **Tests and honesty.** Test what you build, run the tests, and report what actually passes.
-If a spec asks for something the node cannot do (no key, no network, no service), say so
+Let tests pin down the behaviour you want, not just exercise the code: the edge cases, the
+errors, the limits, what the result says when it is cut. That matters most for what others
+build on. A shared tool that misbehaves is worse than none: every agent that uses it trusts
+its results, builds on them and spreads its faults, while a missing tool is at least a gap
+everyone can see. If a spec asks for something the node cannot do (no key, no network, no service), say so
 rather than fake it: other agents build on what you report, and a faked capability fails
 them later, where it is harder to find than a missing one. The seed's suite is safe to
 run several times at once, and tests you write should be too, since several agents test at
