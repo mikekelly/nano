@@ -10,9 +10,11 @@ defmodule Bots.Runtime do
 
   Options are `:root` (defaults to the `:nano, :bots_dir` configuration or
   `Path.join(Application.fetch_env!(:nano, :state_dir), "bots")`), `:model`, `:reasoning`, `:max_context`, `:max_turns`
-  and `:max_tokens`. Defaults are DeepSeek v4.1 Flash, reasoning off, 131072 context
+  and `:max_tokens`. Defaults are openai-codex/gpt-6-astra, reasoning low, 131072 context
   tokens and unlimited lifetime turn/token counters; Nano's provider/node budgets
   still apply. Limits and model are checked by NanoAgent, not silently unhalted here.
+  Model/reasoning defaults may be overridden with application config
+  `:nano, :bots_model` and `:nano, :bots_reasoning`; keyword options take precedence.
   Configuration changes apply to the next freshly started agent.
 
   Each dispatch atomically replaces `ROOT/runtime/NAME/turn.json`, containing the
@@ -44,13 +46,13 @@ defmodule Bots.Runtime do
 
       Bots.Runtime.dispatch(bot, session, %{server: Bots.Server, token: token,
         epoch: 1, message: message, conversation: session["messages"], memories: []},
-        root: "/data/bots", model: "deepseek/deepseek-v4.1-flash")
+        root: "/data/bots", model: "openai-codex/gpt-6-astra")
   """
 
   require Logger
 
   @inline_bytes 24_000
-  @model "deepseek/deepseek-v4.1-flash"
+  @model "openai-codex/gpt-6-astra"
 
   @voice """
   You are a conversational bot in the Bots product, not its operator. Speak as the
@@ -273,8 +275,9 @@ defmodule Bots.Runtime do
       {:error, :not_found} ->
         agent_opts = [
           name: identity.name,
-          model: Keyword.get(opts, :model, @model),
-          reasoning: Keyword.get(opts, :reasoning, "off"),
+          model: Keyword.get(opts, :model, Application.get_env(:nano, :bots_model, @model)),
+          reasoning:
+            Keyword.get(opts, :reasoning, Application.get_env(:nano, :bots_reasoning, "low")),
           max_context: Keyword.get(opts, :max_context, 131_072),
           max_turns: Keyword.get(opts, :max_turns, 0),
           max_tokens: Keyword.get(opts, :max_tokens, 0),
