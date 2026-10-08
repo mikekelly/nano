@@ -63,24 +63,46 @@ defmodule MCP.HTTP do
 
   @impl true
   def init({opts, owner}) do
+    Process.flag(:trap_exit, true)
+
     {:ok,
      Map.merge(opts, %{
        owner: owner,
        owner_ref: Process.monitor(owner),
        workers: %{},
        session: nil,
-       protocol: nil,
+       protocol: opts.protocol,
+       era:
+         if(opts.protocol in ["2025-03-26", "2025-06-18", "2025-11-25"],
+           do: :legacy,
+           else: :modern
+         ),
        get_started: false,
        expired: false
      })}
   end
 
   @impl true
+  def handle_cast(
+        {:send, %{"method" => "notifications/cancelled", "params" => %{"requestId" => id}}},
+        %{era: :modern} = s
+      ) do
+    {cancelled, kept} = Enum.split_with(s.workers, fn {_pid, w} -> w.message["id"] == id end)
+
+    Enum.each(cancelled, fn {pid, w} ->
+      Process.demonitor(w.ref, [:flush])
+      Process.exit(pid, :kill)
+    end)
+
+    {:noreply, %{s | workers: Map.new(kept)}}
+  end
+
   def handle_cast({:send, message}, s) do
     with true <- is_map(message),
          {:ok, body} <- Jason.encode(message),
          true <- byte_size(body) <= s.limit,
          true <- map_size(s.workers) < 64 do
+      s = if message["method"] == "initialize", do: %{s | era: :legacy, protocol: nil}, else: s
       {:noreply, launch(s, "POST", message, body)}
     else
       _ -> fail(s, :invalid_or_oversized_outbound_message)
@@ -103,9 +125,10 @@ defmodule MCP.HTTP do
             s = %{s | workers: Map.delete(s.workers, pid)}
 
             s =
-              if w.message["method"] == "notifications/initialized" and not s.get_started,
-                do: launch(%{s | get_started: true}, "GET", %{}, ""),
-                else: s
+              if s.era == :legacy and w.message["method"] == "notifications/initialized" and
+                   not s.get_started,
+                 do: launch(%{s | get_started: true}, "GET", %{}, ""),
+                 else: s
 
             {:reply, :halt, s}
 
@@ -134,7 +157,15 @@ defmodule MCP.HTTP do
       headers = headers(s, "DELETE", %{})
       uri = s.uri
       # This worker owns its socket and is bounded independently of the caller.
-      spawn(fn -> request(uri, "DELETE", headers, "", 1000, fn _ -> :halt end) end)
+      spawn(fn ->
+        {:ok, timer} = :timer.exit_after(1000, :kill)
+
+        try do
+          request(uri, "DELETE", headers, "", 1000, fn _ -> :halt end)
+        after
+          :timer.cancel(timer)
+        end
+      end)
     end
 
     :ok
@@ -154,19 +185,22 @@ defmodule MCP.HTTP do
     stream = method == "GET" or message["method"] == "subscriptions/listen"
 
     {pid, ref} =
-      spawn_monitor(fn ->
-        request(
-          s.uri,
-          method,
-          hs,
-          body,
-          timeout,
-          fn event ->
-            GenServer.call(parent, {:http, self(), event}, :infinity)
-          end,
-          stream
-        )
-      end)
+      :erlang.spawn_opt(
+        fn ->
+          request(
+            s.uri,
+            method,
+            hs,
+            body,
+            timeout,
+            fn event ->
+              GenServer.call(parent, {:http, self(), event}, :infinity)
+            end,
+            stream
+          )
+        end,
+        [:link, :monitor]
+      )
 
     w = %{
       ref: ref,
@@ -175,7 +209,7 @@ defmodule MCP.HTTP do
       status: nil,
       type: nil,
       buffer: "",
-      frame: %{line: "", skip_lf: false, data: [], event: "", bytes: 0}
+      frame: %{line: "", first_line: true, skip_lf: false, data: [], event: "", bytes: 0}
     }
 
     put_in(s.workers[pid], w)
@@ -199,7 +233,7 @@ defmodule MCP.HTTP do
     base = if s.session, do: base ++ [{"mcp-session-id", s.session}], else: base
     base = if is_binary(version), do: base ++ [{"mcp-protocol-version", version}], else: base
 
-    if meta_version && is_binary(message["method"]) do
+    if s.era == :modern and is_binary(message["method"]) do
       base = base ++ [{"mcp-method", encode_header(message["method"])}]
 
       name =
@@ -357,6 +391,16 @@ defmodule MCP.HTTP do
     end
   end
 
+  defp sse_line(line, %{first_line: true} = frame, messages) do
+    line =
+      case line do
+        <<239, 187, 191, rest::binary>> -> rest
+        _ -> line
+      end
+
+    sse_line(line, %{frame | first_line: false}, messages)
+  end
+
   defp sse_line("", frame, messages) do
     data = frame.data |> Enum.reverse() |> Enum.join("\n")
 
@@ -443,15 +487,18 @@ defmodule MCP.HTTP do
     hs = Map.get(config, "headers", %{})
     timeout = Map.get(config, "timeout_ms", 30_000)
     limit = Map.get(config, "max_message_bytes", @default_limit)
+    protocol = Map.get(config, "protocol_version") || "2026-07-28"
 
     with true <- is_binary(url),
          %URI{scheme: scheme, host: host, userinfo: nil, fragment: nil} = uri <- URI.parse(url),
          true <- scheme in ["http", "https"] and is_binary(host) and host != "",
          true <- is_map(hs) and Enum.all?(hs, &valid_header?/1),
          true <- is_integer(timeout) and timeout > 0 and timeout <= 2_147_483_647,
-         true <- is_integer(limit) and limit > 0 do
+         true <- is_integer(limit) and limit > 0,
+         true <- is_binary(protocol) and Regex.match?(~r/^\d{4}-\d{2}-\d{2}$/, protocol),
+         true <- uri.port in 1..65535 do
       hs = for {k, v} <- hs, String.downcase(k) not in @reserved, do: {String.downcase(k), v}
-      {:ok, %{uri: uri, headers: hs, timeout: timeout, limit: limit}}
+      {:ok, %{uri: uri, headers: hs, timeout: timeout, limit: limit, protocol: protocol}}
     else
       _ -> {:error, :invalid_config}
     end
