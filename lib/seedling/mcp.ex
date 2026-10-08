@@ -21,6 +21,44 @@ defmodule Seedling.MCP do
     end
   end
 
+  @doc "Return/start a configured supervised connection; requires the MCP supervisor to be running."
+  def ensure_connection(name, opts \\ []) do
+    sup = Keyword.get(opts, :supervisor, Seedling.MCP.Supervisor)
+
+    try do
+      case Seedling.MCP.Supervisor.connections(sup)[name] do
+        pid when is_pid(pid) ->
+          {:ok, pid}
+
+        :restarting ->
+          {:error, :restarting}
+
+        _ ->
+          with {:ok, text} <- File.read(Keyword.get(opts, :config, "config/mcp.json")),
+               {:ok, config} <- Jason.decode(text),
+               server when is_map(server) <- get_in(config, ["mcpServers", name]) do
+            child_opts =
+              opts
+              |> Keyword.drop([:supervisor, :config, :name])
+              |> Keyword.merge(server_name: name, server: server)
+
+            child = Supervisor.child_spec({Client, child_opts}, id: name)
+
+            case Supervisor.start_child(sup, child) do
+              {:error, {:already_started, pid}} -> {:ok, pid}
+              {:error, :already_present} -> {:error, :restarting}
+              result -> result
+            end
+          else
+            nil -> {:error, :unknown_server}
+            error -> error
+          end
+      end
+    catch
+      :exit, reason -> {:error, {:supervisor_unavailable, reason}}
+    end
+  end
+
   def request(c, method, params \\ %{}, timeout \\ 30_000),
     do: GenServer.call(c, {:request, method, params, timeout}, timeout + 1000)
 

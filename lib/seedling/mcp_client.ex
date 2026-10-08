@@ -14,8 +14,8 @@ defmodule Seedling.MCP.Client do
       server: Keyword.fetch!(opts, :server),
       name: name,
       file: file,
-      subs: if(is_map(subs), do: subs, else: %{}),
-      watchers: [],
+      subs: if(is_map(subs), do: Map.get(subs, "subscriptions", subs), else: %{}),
+      watchers: if(is_map(subs), do: Map.get(subs, "watchers", []), else: []),
       resolver: Keyword.get(opts, :resolver, &NanoAgent.whereis/1),
       port: nil,
       buffer: "",
@@ -33,7 +33,7 @@ defmodule Seedling.MCP.Client do
   def handle_call(:status, _, s), do: {:reply, Map.take(s, [:ready, :info, :name]), s}
 
   def handle_call({:watch, agent}, _, s),
-    do: {:reply, :ok, %{s | watchers: Enum.uniq([agent | s.watchers])}}
+    do: {:reply, :ok, save(%{s | watchers: Enum.uniq([agent | s.watchers])})}
 
   def handle_call({:request, method, params, timeout}, from, s) do
     if s.ready,
@@ -288,7 +288,7 @@ defmodule Seedling.MCP.Client do
   defp save(s) do
     File.mkdir_p!(Path.dirname(s.file))
     temp = s.file <> ".tmp"
-    File.write!(temp, Jason.encode!(s.subs))
+    File.write!(temp, Jason.encode!(%{"subscriptions" => s.subs, "watchers" => s.watchers}))
     File.rename!(temp, s.file)
     s
   end
