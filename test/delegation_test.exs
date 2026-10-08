@@ -501,6 +501,29 @@ defmodule DelegationWatcherTest do
     Process.unlink(pid)
   end
 
+  test "legacy alive statuses migrate silently but changed pid or counter still reports restart",
+       ctx do
+    parent(self())
+    info(alive(self(), 4))
+    legacy = Map.put(ctx.record, :status, "alive:#{inspect(self())}")
+    File.write!(Path.join(ctx.root, "child.json"), Jason.encode!(legacy))
+    watcher = watcher(ctx.root)
+    Watcher.poll(watcher)
+    refute_receive {:delegation, _, :restarted, _}
+    stored = ctx.root |> Path.join("child.json") |> File.read!() |> Jason.decode!()
+    assert stored["status"] == "alive:#{inspect(self())}:4"
+    info(alive(self(), 5))
+    Watcher.poll(watcher)
+    assert_receive {:delegation, "child", :restarted, _}
+    # Also cover an old in-memory watcher whose pid changed before hot reload.
+    :sys.replace_state(watcher, fn s ->
+      put_in(s.records["child"]["status"], "alive:#PID<0.999999999.0>")
+    end)
+
+    Watcher.poll(watcher)
+    assert_receive {:delegation, "child", :restarted, _}
+  end
+
   test "disk errors are returned, not crashes, and failed transitions retry", ctx do
     parent(self())
     info(alive(self()))
