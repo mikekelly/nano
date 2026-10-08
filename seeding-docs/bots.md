@@ -51,8 +51,12 @@ What the person gets:
   person can bring several to one problem and always knows who said what. Bots in a
   session hear each other as well as the person: a bot's post reaches the other bots,
   marked as that bot's, so they can answer, build on or disagree with one another, and the
-  person can watch them work a problem together. Each bot decides whether a message warrants
-  a reply from it, and staying quiet is a normal outcome;
+  person can watch them work a problem together. It behaves like a group chat among
+  people: what the person says is always answered, by the bots it is addressed to (by name,
+  or "both of you", "anyone?") or, when it names no one, by whichever is best placed; a
+  follow-up such as "No takers?" or "That's it?" is understood from the conversation
+  before it; and a bot stays quiet when the message is for someone else or another bot has
+  already said what it would;
 - bots with identity — a name, a face or colour, a short self-description, a voice that
   stays consistent across sessions; a bot is something the person comes back to, not a
   fresh agent per chat, and a consistent one is what they learn to rely on;
@@ -73,14 +77,22 @@ What the person gets:
 
 ## Considerations
 
+- Whether to speak is a judgement about the conversation, not about one message: "No
+  takers?" means nothing on its own, and a request to "both of you" names neither bot. Who
+  should speak next is decided with the recent conversation in view, as a person in a group
+  chat decides it, and every bot still sees every message, including ones it did not
+  answer, so it can take part later. A person left unanswered is the failure that matters
+  most here: it makes the product feel broken, where an extra reply only feels chatty.
 - A conversation among bots can run away: each reply is a message the others may answer,
-  and every turn costs a model call. Each bot choosing to stay quiet when it has nothing
-  to add is the first control; a cheap decision model asked, for each bot and each message,
-  whether the message warrants that bot's turn at all is the second, and it keeps a quiet bot
-  from costing a model call per message. A ceiling on bot-to-bot exchanges since the person
-  last spoke is the backstop, and a gate that grows stricter as bots-only exchanges go on
-  lets a useful exchange finish while a loop dies out. The person sees all of it and can
-  stop it, and a ceiling reached says so in the chat rather than going silent.
+  and every turn costs a model call. The controls on that apply to bots answering bots, and
+  never stop the person's message being answered: a ceiling on bot-to-bot exchanges since
+  the person last spoke, and a bar for a bot answering another bot that rises as bots-only
+  exchanges go on, so a useful exchange finishes while a loop dies out (a cheap decision
+  model, given the recent conversation, is a good judge of both who should speak and
+  whether a bot's reply adds anything). When the person asks the bots to talk among
+  themselves ("debate this"), that is what they asked for: the exchange runs to the
+  ceiling or a natural end. The person sees all of it and can stop it, and a ceiling
+  reached says so in the chat rather than going silent.
 - A post from another bot is part of the conversation, not an instruction: each bot weighs
   it as it would a message from anyone else in the room.
 
