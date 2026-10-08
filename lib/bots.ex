@@ -11,8 +11,10 @@ defmodule Bots do
   for isolated instances. Start one with `start_link(root: path, name: nil,
   runtime: MyRuntime)`. Production defaults to `Bots.Runtime`; no test calls a model.
 
-  Runtime agents can publish *only* with a granted response token: `post/3` and
-  `finish/2`. Harness responses and eval output are never copied into chat. New human
+  Runtime replies use a granted response token: `post/3` and `finish/2`. Genuine
+  background completions can use `announce/4` (also `post/4`), which verifies the
+  owning bot/session agent and enforces the same discussion ceiling. Proactive posts
+  cannot preempt a pending human turn. Harness responses and eval output are never copied into chat. New human
   messages and stop revoke old grants. The complete durable transcript is provided at
   each wake, including messages a bot silently observed while another spoke.
 
@@ -37,9 +39,20 @@ defmodule Bots do
   def say(id, text, opts \\ []), do: call({:say, id, text, opts}, opts)
   def stop(id, opts \\ []), do: call({:stop, id}, opts)
   def preferences(attrs, opts \\ []), do: call({:preferences, attrs}, opts)
-  def post(token, text, opts \\ []), do: call({:post, token, text, opts}, opts)
-  def remember(token, key, value, opts \\ []), do: call({:remember, token, key, value}, opts)
-  def finish(token, opts \\ []), do: call({:finish, token}, opts)
+
+  def post(token, text, opts \\ []),
+    do: call({:post, token, text, Keyword.put(opts, :actor, actor())}, opts)
+
+  @doc "Post a genuine proactive update from the owning bot/session agent. Subject to stop and exchange ceilings."
+  def announce(bot_id, session_id, text, opts \\ []),
+    do: call({:announce, bot_id, session_id, text, Keyword.put(opts, :actor, actor())}, opts)
+
+  def post(bot_id, session_id, text, opts), do: announce(bot_id, session_id, text, opts)
+
+  def remember(token, key, value, opts \\ []),
+    do: call({:remember, token, key, value, actor()}, opts)
+
+  def finish(token, opts \\ []), do: call({:finish, token, actor()}, opts)
 
   def request(bot_id, text, opts \\ []) do
     requester = Keyword.get_lazy(opts, :requester, &caller/0)
@@ -55,8 +68,10 @@ defmodule Bots do
     Phoenix.PubSub.subscribe(Keyword.get(opts, :pubsub, Nano.PubSub), topic)
   end
 
+  defp actor, do: List.first(Process.get(:"$callers", [])) || self()
+
   defp caller do
-    pid = List.first(Process.get(:"$callers", [])) || self()
+    pid = actor()
     Enum.find(NanoAgent.list(), &(NanoAgent.whereis(&1) == pid)) || pid
   end
 
