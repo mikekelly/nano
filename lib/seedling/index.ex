@@ -31,7 +31,7 @@ defmodule Seedling.Index do
         module: Nano.Compaction,
         example: ~s|NanoAgent.info("orion")|,
         detail:
-          "Harness automatically summarizes older history before context exhaustion and within long tool loops; preserves pid/mailbox/bindings, paired recent turns and durable logs. Structured checkpoint plus deterministic files list. docs/compaction-and-images.md; explicit failure/retry, pre-call safety remains."
+          "Harness automatically summarizes older history before context exhaustion and within long tool loops; preserves pid/mailbox/bindings, paired recent turns and durable logs. Structured checkpoint plus deterministic files list; actual subscription threshold/sentinel73 test passed (docs/live-compaction-images-smoke.md). docs/compaction-and-images.md; explicit failure/retry, pre-call safety remains."
       },
       %{
         name: "Goals",
@@ -99,7 +99,7 @@ defmodule Seedling.Index do
         module: Seedling.MCP,
         name: "MCP",
         detail:
-          "Durable current2026-07-28/legacy2025-11-25 stdio+HTTP JSON/SSE clients. Config priv/seedling/mcp.json, tools/resources/prompts discovery, call/read/subscribe stable-name mailbox events, bounded result_page. Supervised live startup active. docs/seedling/mcp.md lists subset/no OAuth or sampling, offline event-memory limit. Delegation optional servers gated before first turn; constructor glue pending final tests.",
+          "Durable current2026-07-28/legacy2025-11-25 stdio+HTTP JSON/SSE clients. Config priv/seedling/mcp.json, tools/resources/prompts discovery, call/read/subscribe stable-name mailbox events, bounded result_page. Supervised live startup active. docs/seedling/mcp.md lists subset/no OAuth or sampling, offline event-memory limit. Delegation optional servers gated until all ready before first turn; constructor guard handles eval death/error without orphaning child.",
         example:
           "Seedling.MCP.servers(); Seedling.MCP.connect(\"configured-server\", agent: \"orion\"); Seedling.MCP.tools(\"configured-server\")"
       },
