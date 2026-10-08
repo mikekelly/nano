@@ -15,6 +15,11 @@ defmodule SeedMCP.Runtime do
   foundation. Each stable handle is `{:via, Nano.Names, {:mcp, owner, server}}`.
   No atoms are created from names. Starting an existing owner/server is idempotent.
   Owner names are resolved per event; child PID replacement needs no rebinding.
+  During first-turn setup pass `event_owner: worker_pid` to `start_for` to route
+  bootstrap events away from the child while keeping its named persistence and
+  registry identity. Deliver the original task first, then call
+  `SeedMCP.owner(handle, child_name)` for each handle to enable child events.
+  That rerouting changes only the recipient, not the durable subscription key.
 
   `start_for` stores JSON runtime specs under `state_dir` (default
   `/data/seed_mcp`), with mode 0600. Specs can include headers/environment secrets;

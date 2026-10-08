@@ -27,7 +27,7 @@ defmodule SeedMCP.Client do
            do: list
 
     s = %{
-      owner: owner,
+      owner: Keyword.get(opts, :event_owner, owner),
       name: name,
       server: Keyword.fetch!(opts, :server),
       dir: dir,
