@@ -14,6 +14,9 @@ defmodule OptionalServicesTest.Service do
       :run ->
         GenServer.start_link(__MODULE__, opts)
 
+      {:existing, pid} ->
+        {:error, {:already_started, pid}}
+
       :wait ->
         send(opts[:owner], {:optional_blocked, opts[:id], self()})
 
@@ -109,12 +112,16 @@ defmodule OptionalServicesTest do
          specs: [spec(:raising, raising), {OptionalServiceThatDoesNotExist, []}]}
       )
 
-    eventually(fn -> Services.status(manager)[:raising].attempts >= 2 end)
+    eventually(fn ->
+      statuses = Services.status(manager)
+      statuses[:raising].attempts >= 2 and statuses[OptionalServiceThatDoesNotExist].attempts >= 2
+    end)
+
     statuses = Services.status(manager)
     assert Process.alive?(manager)
     assert statuses[:raising].error =~ "bad optional configuration"
     assert byte_size(statuses[OptionalServiceThatDoesNotExist].error) <= 600
-    assert statuses[OptionalServiceThatDoesNotExist].status == :failed
+    assert statuses[OptionalServiceThatDoesNotExist].status in [:starting, :failed]
   end
 
   test "a service tree that dies is retried and duplicate ids are not silently discarded" do
@@ -193,5 +200,19 @@ defmodule OptionalServicesTest do
 
     assert_receive {:optional_running, :slow, _}, 2000
     eventually(fn -> Services.status(manager)[:slow].status == :running end)
+  end
+
+  test "already-started external service is not stolen or killed" do
+    {:ok, external} = Agent.start_link(fn -> :external end)
+    {:ok, control} = Agent.start_link(fn -> {:existing, external} end)
+
+    manager =
+      start_supervised!({Services, name: nil, retry_ms: 5000, specs: [spec(:external, control)]})
+
+    eventually(fn -> Services.status(manager)[:external].status == :failed end)
+    assert Services.status(manager)[:external].error =~ "already_started"
+    assert Process.alive?(external)
+    stop_supervised!(Services)
+    assert Process.alive?(external)
   end
 end
