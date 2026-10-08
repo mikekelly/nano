@@ -16,6 +16,7 @@ defmodule NanoWeb.BotsLive do
   use Phoenix.LiveView
   import Phoenix.Component
   alias NanoWeb.BotsMarkdown
+  alias NanoWeb.BotsBackend, as: Bots
 
   @impl true
   def mount(_params, session, socket) do
@@ -25,13 +26,16 @@ defmodule NanoWeb.BotsLive do
         _ -> []
       end
 
-    if connected?(socket), do: Bots.subscribe(opts)
-
     {:ok,
      socket
      |> assign(
        page_title: "Bots",
        opts: opts,
+       available: false,
+       subscribed: false,
+       bots: [],
+       sessions: [],
+       preferences: %{"notifications" => false, "cooldown_seconds" => 300, "max_per_hour" => 6},
        active: nil,
        active_id: nil,
        selected: [],
@@ -58,6 +62,16 @@ defmodule NanoWeb.BotsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
+    if socket.assigns.available do
+      change_chat(params, socket)
+    else
+      {:noreply, assign(socket, active_id: params["id"])}
+    end
+  catch
+    :throw, :bots_service_unavailable -> {:noreply, unavailable_socket(socket)}
+  end
+
+  defp change_chat(params, socket) do
     id = params["id"]
     active = if id, do: Bots.session(id, socket.assigns.opts)
 
@@ -97,13 +111,27 @@ defmodule NanoWeb.BotsLive do
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("search", %{"search" => query}, socket),
+  def handle_event("retry-service", _, socket), do: {:noreply, refresh(socket)}
+  def handle_event(_, _, %{assigns: %{available: false}} = socket), do: {:noreply, socket}
+
+  def handle_event(name, params, socket) do
+    socket =
+      if name in ["send", "draft"] and is_binary(params["text"]),
+        do: assign(socket, draft: String.slice(params["text"], 0, 32_000)),
+        else: socket
+
+    event(name, params, socket)
+  catch
+    :throw, :bots_service_unavailable -> {:noreply, unavailable_socket(socket)}
+  end
+
+  defp event("search", %{"search" => query}, socket),
     do: {:noreply, assign(socket, search: String.slice(query, 0, 200))}
 
-  def handle_event("recipient-query", %{"query" => query}, socket),
+  defp event("recipient-query", %{"query" => query}, socket),
     do: {:noreply, assign(socket, query: String.slice(query, 0, 80))}
 
-  def handle_event("choose-bot", %{"id" => id}, socket) do
+  defp event("choose-bot", %{"id" => id}, socket) do
     selected =
       if Enum.any?(socket.assigns.bots, &(&1["id"] == id)),
         do: Enum.uniq(socket.assigns.selected ++ [id]),
@@ -112,20 +140,20 @@ defmodule NanoWeb.BotsLive do
     {:noreply, assign(socket, selected: selected, query: "", error: nil)}
   end
 
-  def handle_event("remove-bot", %{"id" => id}, socket),
+  defp event("remove-bot", %{"id" => id}, socket),
     do: {:noreply, assign(socket, selected: List.delete(socket.assigns.selected, id))}
 
-  def handle_event("group", _, socket),
+  defp event("group", _, socket),
     do:
       {:noreply,
        socket |> assign(error: nil) |> push_event("bots:focus", %{id: "recipient-input"})}
 
-  def handle_event("create-open", _, socket),
+  defp event("create-open", _, socket),
     do: {:noreply, assign(socket, create_open: true, new_name: socket.assigns.query, error: nil)}
 
-  def handle_event("create-close", _, socket), do: {:noreply, assign(socket, create_open: false)}
+  defp event("create-close", _, socket), do: {:noreply, assign(socket, create_open: false)}
 
-  def handle_event("create-bot", %{"bot" => attrs}, socket) do
+  defp event("create-bot", %{"bot" => attrs}, socket) do
     case Bots.create_bot(Map.take(attrs, ["name", "description"]), socket.assigns.opts) do
       {:ok, bot} ->
         {:noreply,
@@ -144,14 +172,14 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
-  def handle_event("start-chat", _, socket) do
+  defp event("start-chat", _, socket) do
     case open_session(socket) do
       {:ok, chat} -> {:noreply, push_patch(socket, to: chat_path(chat["id"]))}
       {:error, _} -> {:noreply, assign(socket, error: "Choose at least one bot to start a chat.")}
     end
   end
 
-  def handle_event("main-bot", %{"id" => id}, socket) do
+  defp event("main-bot", %{"id" => id}, socket) do
     if Enum.any?(socket.assigns.bots, &(&1["id"] == id)) do
       existing = Enum.find(socket.assigns.sessions, &(&1["bot_ids"] == [id]))
 
@@ -167,10 +195,10 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
-  def handle_event("draft", %{"text" => text}, socket),
+  defp event("draft", %{"text" => text}, socket),
     do: {:noreply, assign(socket, draft: String.slice(text, 0, 32_000))}
 
-  def handle_event("send", %{"text" => text}, socket) do
+  defp event("send", %{"text" => text}, socket) do
     text = String.trim(text)
 
     cond do
@@ -189,7 +217,7 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
-  def handle_event("reply", %{"id" => id}, socket) do
+  defp event("reply", %{"id" => id}, socket) do
     request =
       Enum.find(
         messages(socket.assigns.active),
@@ -206,9 +234,9 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
-  def handle_event("cancel-reply", _, socket), do: {:noreply, assign(socket, reply_to: nil)}
+  defp event("cancel-reply", _, socket), do: {:noreply, assign(socket, reply_to: nil)}
 
-  def handle_event("stop", _, socket) do
+  defp event("stop", _, socket) do
     case Bots.stop(socket.assigns.active_id, socket.assigns.opts) do
       {:ok, _} ->
         {:noreply, refresh(socket)}
@@ -218,19 +246,19 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
-  def handle_event("show-chats", _, socket), do: {:noreply, assign(socket, mobile_list: true)}
+  defp event("show-chats", _, socket), do: {:noreply, assign(socket, mobile_list: true)}
 
-  def handle_event("preferences-open", _, socket),
+  defp event("preferences-open", _, socket),
     do: {:noreply, assign(socket, preferences_open: true, error: nil)}
 
-  def handle_event("preferences-close", _, socket),
+  defp event("preferences-close", _, socket),
     do: {:noreply, assign(socket, preferences_open: false)}
 
-  def handle_event("permission", %{"permission" => value}, socket)
-      when value in ["granted", "denied", "default", "unsupported"],
-      do: {:noreply, assign(socket, permission: value)}
+  defp event("permission", %{"permission" => value}, socket)
+       when value in ["granted", "denied", "default", "unsupported"],
+       do: {:noreply, assign(socket, permission: value)}
 
-  def handle_event("save-preferences", %{"preferences" => prefs}, socket) do
+  defp event("save-preferences", %{"preferences" => prefs}, socket) do
     attrs = %{
       "notifications" => prefs["notifications"] == "true",
       "cooldown_seconds" => integer(prefs["cooldown_seconds"], 300),
@@ -249,7 +277,7 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
-  def handle_event("review-request", %{"id" => id}, socket) do
+  defp event("review-request", %{"id" => id}, socket) do
     entries = messages(socket.assigns.active)
 
     index =
@@ -268,15 +296,15 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
-  def handle_event("older-messages", _, socket),
+  defp event("older-messages", _, socket),
     do: {:noreply, update(socket, :message_limit, &(&1 + 100))}
 
-  def handle_event("dismiss-error", _, socket), do: {:noreply, assign(socket, error: nil)}
+  defp event("dismiss-error", _, socket), do: {:noreply, assign(socket, error: nil)}
 
-  def handle_event("cancel-upload", %{"ref" => ref}, socket),
+  defp event("cancel-upload", %{"ref" => ref}, socket),
     do: {:noreply, cancel_upload(socket, :pictures, ref)}
 
-  def handle_event("remove-attachment", %{"id" => id}, socket),
+  defp event("remove-attachment", %{"id" => id}, socket),
     do:
       {:noreply,
        assign(socket, attachments: Enum.reject(socket.assigns.attachments, &(&1["id"] == id)))}
@@ -391,6 +419,8 @@ defmodule NanoWeb.BotsLive do
            error: "Your message wasn’t sent. It’s still here — please try again."
          )}
     end
+  catch
+    :throw, :bots_service_unavailable -> {:noreply, unavailable_socket(socket)}
   end
 
   defp open_session(%{assigns: %{active: chat}}) when is_map(chat), do: {:ok, chat}
@@ -398,9 +428,22 @@ defmodule NanoWeb.BotsLive do
   defp open_session(socket), do: Bots.create_session(socket.assigns.selected, socket.assigns.opts)
 
   defp refresh(socket) do
+    do_refresh(socket)
+  catch
+    :throw, :bots_service_unavailable -> unavailable_socket(socket)
+  end
+
+  defp unavailable_socket(socket), do: assign(socket, available: false, subscribed: false)
+
+  defp do_refresh(socket) do
+    if connected?(socket) and not socket.assigns.subscribed,
+      do: Bots.subscribe(socket.assigns.opts)
+
     snapshot = Bots.snapshot(socket.assigns.opts)
 
     assign(socket,
+      available: true,
+      subscribed: connected?(socket),
       bots: snapshot["bots"],
       sessions: snapshot["sessions"],
       preferences: snapshot["preferences"],
@@ -511,6 +554,32 @@ defmodule NanoWeb.BotsLive do
 
   @impl true
   def render(assigns) do
+    if assigns.available, do: render_chat(assigns), else: render_unavailable(assigns)
+  end
+
+  defp render_unavailable(assigns) do
+    ~H"""
+    <main id="bots-shell" class="bots-app bots-unavailable">
+      <section role="status" aria-labelledby="bots-unavailable-title">
+        <span class="bots-dot" aria-hidden="true">✦</span>
+        <h1 id="bots-unavailable-title">Your chats are temporarily unavailable</h1>
+        <p>We couldn’t connect to your bots. Your saved conversations have not been changed.</p>
+        <button
+          id="bots-retry"
+          type="button"
+          class="bots-primary"
+          phx-click="retry-service"
+          phx-disable-with="Reconnecting…"
+        >Try reconnecting</button>
+        <p class="bots-unavailable-note">
+          If this continues, the person looking after this computer may need to check the service.
+        </p>
+      </section>
+    </main>
+    """
+  end
+
+  defp render_chat(assigns) do
     entries = messages(assigns.active)
 
     pending_requests =

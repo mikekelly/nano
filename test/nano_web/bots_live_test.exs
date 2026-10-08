@@ -349,6 +349,31 @@ defmodule NanoWeb.BotsLiveTest do
     assert has_element?(view, "#create-bot-dialog .bots-modal-error", "couldn’t create")
   end
 
+  test "a dead backend at mount shows a calm unavailable page and a safe retry", ctx do
+    dead = spawn(fn -> :ok end)
+    monitor = Process.monitor(dead)
+    assert_receive {:DOWN, ^monitor, :process, ^dead, _}
+    conn = Plug.Test.init_test_session(ctx.conn, %{"bots_server" => inspect(dead)})
+    {:ok, view, html} = live(conn, "/bots")
+    assert html =~ "Your chats are temporarily unavailable"
+    refute html =~ "GenServer"
+    refute has_element?(view, "#bots-composer")
+    refute has_element?(view, "#create-bot-form")
+    view |> element("#bots-retry") |> render_click()
+    assert has_element?(view, ".bots-unavailable")
+    render_click(view, "create-open")
+    refute has_element?(view, "#create-bot-dialog")
+  end
+
+  test "losing the backend during a send does not crash the LiveView", ctx do
+    {:ok, chat} = Bots.create_session([ctx.luna["id"]], ctx.opts)
+    {:ok, view, _} = live(ctx.conn, "/bots/" <> chat["id"])
+    :ok = stop_supervised(Bots)
+    view |> form("#bots-composer", %{text: "Please keep this"}) |> render_submit()
+    assert has_element?(view, ".bots-unavailable", "temporarily unavailable")
+    assert Process.alive?(view.pid)
+  end
+
   test "empty messages do not create chats", ctx do
     {:ok, view, _} = live(ctx.conn, "/bots")
     view |> element("#recipient-" <> ctx.luna["id"]) |> render_click()
