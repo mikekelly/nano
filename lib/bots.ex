@@ -14,8 +14,8 @@ defmodule Bots do
   Runtime replies use a granted response token: `post/3` and `finish/2`. Genuine
   background completions can use `announce/4` (also `post/4`), which verifies the
   owning bot/session agent and enforces the same discussion ceiling. Proactive posts
-  cannot preempt a pending human turn. Harness responses and eval output are never copied into chat. New human
-  messages and stop revoke old grants. The complete durable transcript is provided at
+  cannot preempt a pending human turn. Harness responses and eval output are never
+  copied into chat. New human messages and stop revoke old grants. The complete durable transcript is provided at
   each wake, including messages a bot silently observed while another spoke.
 
   Other agents ask humans with `request(bot_id, text, requester: "agent-name")`.
@@ -28,6 +28,36 @@ defmodule Bots do
   `subscribe/1` publishes `{:bots_changed, session_id_or_nil}` and budgeted
   `{:bots_notification, %{title: ..., body: ..., session_id: ..., id: ...}}` on
   Nano.PubSub. Notifications default off. All text and attachments are untrusted.
+
+  ## Service options and limits
+
+  Storage defaults to `Application.get_env(:nano, :bots_dir)` or a `bots` directory
+  under `:nano, :state_dir`. Use one service per root on one BEAM node. Writes sync
+  and atomically rename a private JSON snapshot; this is not a multi-node database.
+  The store rewrites the complete transcript per change, suitable for a personal
+  messaging service, not an unbounded multi-tenant message archive.
+
+  `max_bot_exchanges: 6` bounds bot-to-bot turns since the last human. Humans reset
+  that counter and always get a responder even if Decision fails. Selected but
+  unfinished speakers survive restart; opaque response tokens do not. `stop/2`
+  revokes all work; the next human message (including a request reply) resumes it.
+  Failure, silence and response deadlines are explicit system messages, never an
+  indefinitely spinning chat. Default budgets: routing 12 s, memory judgment 10 s,
+  runtime dispatch 25 s, response 120 s (`routing_timeout`, `memory_timeout`,
+  `dispatch_timeout`, `response_timeout`, milliseconds). Keep memory timeout below
+  dispatch timeout when overriding. `Bots.Runtime` documents model and provider
+  options; `Bots.Router` documents the cheap Decision selection policy.
+
+  `say/3` and `post/3` accept `attachments: [image_ref]`, canonicalized against
+  `Images.resolve/1` (10 maximum). String-only metadata maps are preserved as
+  untrusted file descriptors for consumers that support them; no path is read and
+  no URL is fetched by this service. The built-in UI currently displays images.
+
+  There is no application authentication or filesystem sandbox. Runtime ownership
+  and grants prevent accidental cross-bot/session posts, not a malicious node
+  operator with eval access. PID request destinations expire at VM restart; use a
+  stable NanoAgent name and an idempotency key for durable integrations. Pending
+  requests remain visible until answered; there is no automatic request expiry.
   """
 
   def start_link(opts \\ []), do: Bots.Server.start_link(opts)
@@ -64,8 +94,8 @@ defmodule Bots do
   def request_status(id, opts \\ []), do: call({:request_status, id}, opts)
 
   def subscribe(opts \\ []) do
-    topic = call(:topic, opts)
-    Phoenix.PubSub.subscribe(Keyword.get(opts, :pubsub, Nano.PubSub), topic)
+    {pubsub, topic} = call(:subscription, opts)
+    Phoenix.PubSub.subscribe(pubsub, topic)
   end
 
   defp actor, do: List.first(Process.get(:"$callers", [])) || self()
