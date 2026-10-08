@@ -243,7 +243,12 @@ defmodule Delegation do
       specs = Keyword.get(opts, :mcp, []) || []
 
       if specs == [] do
-        with :ok <- deliver_task(name, task), do: {:ok, %{}}
+        intent =
+          existing_intent(name)
+          |> Map.drop(["mcp_options", "mcp_bootstrap_task"])
+          |> Map.merge(%{"name" => name, "parent" => parent})
+
+        with :ok <- save_intent(intent), :ok <- deliver_task(name, task), do: {:ok, %{}}
       else
         options = %{
           "config" => Keyword.get(opts, :mcp_config, "/app/lib/seed_mcp/servers.json"),
@@ -258,7 +263,7 @@ defmodule Delegation do
           "mcp_bootstrap_task" => task
         }
 
-        with :ok <- save_intent(intent) do
+        with :ok <- private_dir(options["state_dir"]), :ok <- save_intent(intent) do
           result =
             bounded_mcp(name, options["timeout"], fn ->
               SeedMCP.start_for(name, specs, runtime_options(options))
@@ -359,13 +364,26 @@ defmodule Delegation do
     temp = path <> ".#{System.unique_integer([:positive, :monotonic])}.tmp"
 
     try do
-      with :ok <- File.mkdir_p(monitor_dir()),
+      with :ok <- private_dir(monitor_dir()),
            :ok <- File.write(temp, Jason.encode!(intent)),
            :ok <- File.chmod(temp, 0o600),
            do: File.rename(temp, path)
     after
       File.rm(temp)
     end
+  end
+
+  defp existing_intent(name) do
+    path = Path.join(monitor_dir(), safe_key(name) <> ".json")
+
+    with {:ok, text} <- File.read(path),
+         {:ok, intent} when is_map(intent) <- Jason.decode(text),
+         do: intent,
+         else: (_ -> %{})
+  end
+
+  defp private_dir(path) do
+    with :ok <- File.mkdir_p(path), do: File.chmod(path, 0o700)
   end
 
   @doc """
@@ -405,7 +423,9 @@ defmodule Delegation do
 
   @doc "Persist a child-parent relationship and watch name-based restarts. Call restore/0 at boot."
   def monitor(name, parent) do
-    with :ok <- save_intent(%{"name" => name, "parent" => parent}) do
+    intent = Map.merge(existing_intent(name), %{"name" => name, "parent" => parent})
+
+    with :ok <- save_intent(intent) do
       start_watch(name, parent)
       :ok
     end
