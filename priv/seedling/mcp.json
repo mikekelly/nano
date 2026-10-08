@@ -1,0 +1,18 @@
+{
+  "servers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"],
+      "cwd": "/app",
+      "env": {},
+      "max_message_bytes": 8000000
+    },
+    "http-example": {
+      "transport": "http",
+      "url": "http://127.0.0.1:3001/mcp",
+      "headers": {},
+      "max_message_bytes": 8000000
+    }
+  }
+}
