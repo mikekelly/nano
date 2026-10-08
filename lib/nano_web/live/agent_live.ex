@@ -355,6 +355,7 @@ defmodule NanoWeb.AgentLive do
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
       <pre>{printed(@e["message"])}</pre>
+      <Seedling.ImageComponents.images refs={@e["images"] || []} />
     </li>
     """
   end
@@ -473,6 +474,7 @@ defmodule NanoWeb.AgentLive do
       <.meta e={@e} label={"#{txt(@e["name"])} result"}>{txt(@e["duration_ms"])} ms</.meta>
       <pre class={if !@e["ok"], do: "error"}>{txt(@e["result"])}</pre>
       <pre :if={@e["io"] not in [nil, ""]}>{txt(@e["io"])}</pre>
+      <Seedling.ImageComponents.images refs={@e["images"] || []} />
     </li>
     """
   end
@@ -532,6 +534,7 @@ defmodule NanoWeb.AgentLive do
         <pre>{txt(@result["io"])}</pre>
       </div>
       <span :if={@result["truncated"]} class="dim">truncated for the model</span>
+      <Seedling.ImageComponents.images refs={@result["images"] || []} />
     </div>
     """
   end
@@ -546,6 +549,7 @@ defmodule NanoWeb.AgentLive do
     <li id={@id} class="r event">
       <div class="r-label">received <time>{time(@e["at"])}</time></div>
       <pre>{printed(@e["message"])}</pre>
+      <Seedling.ImageComponents.images refs={@e["images"] || []} />
     </li>
     """
   end
