@@ -87,17 +87,15 @@ Either way:
 - Automatic, not left to the model: the agent that most needs compacting is the one deep in
   a task, least likely to stop and do housekeeping, and once the harness has halted it for
   its context it can do nothing at all.
-- Size things from measurements. After every call the provider reports exactly how many
-  tokens the conversation took; only what was added since is unmeasured, and a cautious
-  estimate is fine for that small gap. Anything else, such as the size of a re-serialised
-  copy of the history, is best estimated from that measurement (this agent's own bytes per
-  token, from what was sent and what it cost), or not estimated at all and left to the
-  provider to refuse. A fixed rule of thumb applied to a whole history can be off several
-  times over, and refuse a summary that would have fitted easily.
-- If a summary really does not fit, cut harder or summarise in parts; never halt for size
-  without trying. Which parts of a history are large depends on the agent: a builder's
-  context fills with tool output, an orchestrator's with the reports it receives, and every
-  agent's with the code it writes into its calls.
+- A summary fits by construction: compaction starts before the context reaches its limit,
+  the summariser reads the older part of that same context (as it is at the tip, or as a
+  copy that is usually smaller once tool output is cut), and the summary's own length fits
+  in the reserve. So there is nothing to measure first, and a size check that can refuse is
+  only a way to fail; if a provider ever does refuse, cut harder or summarise in parts
+  rather than halt. Cutting what the summariser reads is for cost and focus alone, and what
+  is worth cutting depends on the agent: a builder's context fills with tool output, an
+  orchestrator's with the reports it receives, and every agent's with the code it writes
+  into its calls.
 - On the ChatGPT subscription the backend accepts no limit on a reply's length, so a
   summary call there is bounded only by what it is asked to write: say how long the summary
   may be, and check its length when it comes back. OpenRouter takes a limit (`max_tokens`).
