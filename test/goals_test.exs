@@ -133,6 +133,100 @@ defmodule GoalsTest do
     assert {:error, {:invalid_option, :bytes}} = Goals.summary("a", opts ++ [bytes: 16_001])
   end
 
+  test "same-revision writers conflict instead of overwriting and Memory shares the lock", %{
+    opts: opts
+  } do
+    assert {:ok, _} = Goals.create("a", goal("g"), opts)
+
+    edits =
+      for n <- 1..8 do
+        Task.async(fn ->
+          Goals.update("a", "g", %{title: "writer #{n}"}, opts ++ [expected_revision: 1])
+        end)
+      end
+
+    memory = Task.async(fn -> Memory.put("a", "parallel", %{"untouched" => true}, opts) end)
+    results = Task.await_many(edits)
+    assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+    assert Enum.count(results, &(&1 == {:error, :conflict})) == 7
+    assert {:ok, _} = Task.await(memory)
+    assert {:ok, %{"untouched" => true}} = Memory.get("a", "parallel", opts)
+    assert {:ok, %{"revision" => 2}} = Goals.get("a", "g", opts)
+  end
+
+  test "automatic identifiers, owner validation, text limits and all statuses", %{opts: opts} do
+    assert {:ok, g} = Goals.create("a", %{title: "a", why: "b"}, opts)
+    assert is_binary(g["id"]) and byte_size(g["id"]) > 0
+
+    for status <- [:open, :in_progress, :blocked, :done, :cancelled] do
+      assert {:ok, changed} = Goals.update("a", g["id"], %{status: status}, opts)
+      assert changed["status"] == Atom.to_string(status)
+    end
+
+    assert {:ok, %{total: 0, omitted: 0, goals: []}} = Goals.open("a", opts)
+    assert {:error, :invalid_name} = Goals.list("", opts)
+    assert {:error, :invalid_attributes} = Goals.create("a", [title: "a"], opts)
+    assert {:error, :invalid_goal} = Goals.create("a", goal(" "), opts)
+
+    assert {:error, :invalid_goal} =
+             Goals.create("a", goal("long", %{why: String.duplicate("x", 4097)}), opts)
+
+    assert {:ok, _} =
+             Goals.create(
+               "a",
+               goal("maximum", %{
+                 title: String.duplicate("x", 512),
+                 why: String.duplicate("x", 4096)
+               }),
+               opts
+             )
+
+    assert {:error, {:invalid_option, :limit}} = Goals.open("a", opts ++ [limit: 101])
+    assert {:error, {:invalid_option, :bytes}} = Goals.summary("a", opts ++ [bytes: 255])
+  end
+
+  test "maximum tree size is enforced and reads remain bounded", %{opts: opts} do
+    assert {:ok, template} = Goals.create("a", goal("template"), opts)
+
+    goals =
+      for n <- 1..256, into: %{} do
+        id = "g#{n}"
+        {id, Map.put(template, "id", id)}
+      end
+
+    assert {:ok, _} = Memory.put("a", "__goals_v1__", %{"version" => 1, "goals" => goals}, opts)
+    assert {:error, :too_many_goals} = Goals.create("a", goal("overflow"), opts)
+    assert {:ok, %{total: 256, omitted: 236, goals: selected}} = Goals.open("a", opts)
+    assert length(selected) == 20
+    assert {:ok, text} = Goals.summary("a", opts)
+    assert byte_size(text) <= 2000
+    assert text =~ "omitted 248"
+    assert {:ok, all} = Goals.list("a", opts)
+    assert length(all) == 256
+  end
+
+  test "malformed stored goals and cycles return errors, never partial summaries", %{opts: opts} do
+    assert {:ok, a} = Goals.create("a", goal("a"), opts)
+    malformed = Map.put(a, "why", nil)
+
+    assert {:ok, _} =
+             Memory.put(
+               "a",
+               "__goals_v1__",
+               %{"version" => 1, "goals" => %{"a" => malformed}},
+               opts
+             )
+
+    assert {:error, :invalid_goal} = Goals.open("a", opts)
+    cyclic = Map.put(a, "parent_id", "a")
+
+    assert {:ok, _} =
+             Memory.put("a", "__goals_v1__", %{"version" => 1, "goals" => %{"a" => cyclic}}, opts)
+
+    assert {:error, :cycle} = Goals.summary("a", opts)
+    assert {:error, :cycle} = Goals.update("a", "a", %{parent_id: nil}, opts)
+  end
+
   test "corrupt or incompatible stores are reported and not overwritten", %{opts: opts} do
     assert {:ok, _} = Memory.put("a", "__goals_v1__", %{"version" => 99}, opts)
     assert {:error, :invalid_goal_store} = Goals.summary("a", opts)
