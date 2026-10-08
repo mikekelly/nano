@@ -91,6 +91,7 @@ defmodule NanoWeb.MessagesLive do
           <li :for={m <- @thread.messages} class={["m", m.dir]}>
             <div class="bubble">
               <div :if={said(m)} class="said">{said(m)}</div>
+              <Seedling.ImageComponents.images :if={said(m)} refs={Seedling.Images.collect(m.term)} />
               <.message :if={!said(m)} term={m.term} />
             </div>
             <time>{if m.dir == :sent, do: "sent", else: "received"} {time(m.at)}</time>

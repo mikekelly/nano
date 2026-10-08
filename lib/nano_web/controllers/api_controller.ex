@@ -75,7 +75,11 @@ defmodule NanoWeb.ApiController do
        "send to it (Nano.User.pid(name))."},
     {"POST", "/api/users", "Start a user, or find it if already started. Body: name."},
     {"POST", "/api/users/:name/say",
-     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text."},
+     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text (may be empty with images), optional images (list of ids or image_reference maps from POST /api/images)."},
+    {"POST", "/api/images",
+     "Upload immutable PNG/JPEG bytes. JSON body: data (base64, not a data URL). Type is detected from bytes. Maximum 3,750,000 decoded bytes, 2000 pixels/side. Returns image_reference; no base64 is logged or saved in transcripts."},
+    {"GET", "/api/images/:id",
+     "Validated immutable image bytes, with detected Content-Type. An id is 64 lowercase hex characters from POST /api/images."},
     {"POST", "/api/users/:name/send_raw",
      "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
     {"GET", "/api/users/:name/inbox?clear=true",
@@ -280,9 +284,15 @@ defmodule NanoWeb.ApiController do
   end
 
   def say(conn, %{"name" => name} = params) do
-    case strings(params, ["to", "text"]) do
-      {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
-      {:error, field} -> missing(conn, field)
+    with {:ok, [to]} <- strings(params, ["to"]),
+         text when is_binary(text) <- params["text"] || "",
+         {:ok, refs} <- Seedling.Images.validate_refs(params["images"] || []),
+         true <- text != "" or refs != [] do
+      sent(conn, name, to, User.say(name, to, text, refs))
+    else
+      {:error, "to"} -> missing(conn, "to")
+      {:error, reason} -> error(conn, 422, reason)
+      _ -> error(conn, 422, "text is required (or send images with empty text)")
     end
   end
 
@@ -300,6 +310,9 @@ defmodule NanoWeb.ApiController do
   end
 
   defp sent(conn, _name, _to, :ok), do: json(conn, %{ok: true})
+
+  defp sent(conn, _name, _to, {:error, reason}) when is_binary(reason),
+    do: error(conn, 422, reason)
 
   defp sent(conn, name, _to, {:error, :unknown_user}),
     do: error(conn, 404, "no such user: #{name}")
@@ -406,6 +419,39 @@ defmodule NanoWeb.ApiController do
   def chatgpt_logout(conn, _params) do
     :ok = Ops.chatgpt_logout()
     json(conn, %{ok: true})
+  end
+
+  ## Immutable images
+
+  def upload_image(conn, %{"data" => data}) when is_binary(data) do
+    # Bound before decoding, not just after allocating the bytes.
+    with true <- byte_size(data) <= 5_000_000,
+         {:ok, bytes} <- Base.decode64(data),
+         {:ok, ref} <- Seedling.Images.store(bytes) do
+      conn |> put_status(201) |> json(ref)
+    else
+      false -> error(conn, 422, "base64 image exceeds 5 MB")
+      :error -> error(conn, 422, "data must be base64 image bytes, not a data URL")
+      {:error, reason} -> error(conn, 422, reason)
+    end
+  end
+
+  def upload_image(conn, _), do: error(conn, 422, "data is required (base64 image bytes)")
+
+  def image(conn, %{"id" => id}) do
+    case Seedling.Images.fetch(id) do
+      {:ok, ref, bytes} ->
+        conn
+        |> put_resp_content_type(ref["mime_type"])
+        |> put_resp_header("x-content-type-options", "nosniff")
+        |> put_resp_header("content-security-policy", "sandbox")
+        |> put_resp_header("cache-control", "public, max-age=31536000, immutable")
+        |> put_resp_header("etag", ~s("#{id}"))
+        |> send_resp(200, bytes)
+
+      {:error, _} ->
+        error(conn, 404, "no such image")
+    end
   end
 
   ## Raw model requests and responses
