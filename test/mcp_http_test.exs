@@ -28,6 +28,58 @@ defmodule MCP.HTTPTest do
     transport
   end
 
+  test "per-message headers are isolated and override configured headers", %{url: url} do
+    transport = start_transport(url, %{"headers" => %{"X-Custom" => "base"}})
+
+    message = %{
+      "jsonrpc" => "2.0",
+      "id" => 10,
+      "method" => "tools/call",
+      "params" => %{"name" => "example", "arguments" => %{}}
+    }
+
+    assert :ok =
+             HTTP.send_message(transport, message, %{
+               "Mcp-Param-Region" => "west",
+               "x-custom" => "request"
+             })
+
+    {connection, req} = request("POST")
+    assert req.headers["mcp-param-region"] == "west"
+    assert req.headers["x-custom"] == "request"
+    assert req.headers["mcp-method"] == "tools/call"
+    assert req.headers["mcp-name"] == "example"
+
+    Server.reply(
+      connection,
+      200,
+      [{"content-type", "application/json"}],
+      Jason.encode!(%{"id" => 10, "result" => %{}})
+    )
+
+    assert_receive {:mcp_transport, ^transport, {:message, %{"id" => 10}}}, 2000
+    HTTP.send_message(transport, %{"jsonrpc" => "2.0", "method" => "notifications/custom"})
+    {connection, req} = request("POST")
+    assert req.headers["x-custom"] == "base"
+    refute Map.has_key?(req.headers, "mcp-param-region")
+    Server.reply(connection, 202, [], "")
+  end
+
+  test "per-message headers reject injection and transport-owned overrides", %{url: url} do
+    for headers <- [
+          %{"x-test" => "a\r\nb"},
+          %{"Accept" => "text/plain"},
+          %{"MCP-Protocol-Version" => "wrong"},
+          %{"x-test" => 123}
+        ] do
+      transport = start_transport(url)
+      HTTP.send_message(transport, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"}, headers)
+      assert_receive {:mcp_transport, ^transport, {:down, :invalid_message_headers}}, 2000
+    end
+
+    refute_receive {:http_request, _, _}, 30
+  end
+
   defp request(method) do
     assert_receive {:http_request, connection, %{method: ^method} = request}, 2000
     {connection, request}

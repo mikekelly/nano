@@ -26,7 +26,8 @@ defmodule MCP.HTTP do
   method and name headers and forwards JSON error bodies even on non-2xx status.
   No GET or session is created without a legacy initialize exchange. Modern
   schema-derived `Mcp-Param-*` headers and protocol negotiation belong to the
-  caller; this transport does not discover tool schemas. Legacy HTTP+SSE with
+  caller through the optional `send_message/3` header hook; this transport does
+  not discover or validate tool schemas. Legacy HTTP+SSE with
   a separate `endpoint` event is not supported.
 
   Modern `notifications/cancelled` messages are intercepted: the matching
@@ -56,7 +57,19 @@ defmodule MCP.HTTP do
   def start(_, _), do: {:error, :invalid_config}
 
   @doc "Enqueue one JSON object. Delivery errors are sent to the owner."
-  def send_message(pid, message), do: GenServer.cast(pid, {:send, message})
+  def send_message(pid, message), do: send_message(pid, message, %{})
+
+  @doc """
+  Enqueue with additional per-message HTTP headers (string map).
+
+  Use this hook for caller-validated schema-derived `Mcp-Param-*` headers.
+  Values must already be safely encoded as ASCII HTTP field values (including
+  the MCP base64 sentinel when necessary). Per-message headers override config
+  headers case-insensitively, but may not override transport-owned headers
+  such as Accept, Content-Type, session, protocol, method or name. Invalid
+  headers terminate the transport with `:invalid_message_headers`.
+  """
+  def send_message(pid, message, headers), do: GenServer.cast(pid, {:send, message, headers})
 
   @doc "Close sockets and terminate the session, if any. Safe to call more than once."
   def close(pid) do
@@ -91,7 +104,8 @@ defmodule MCP.HTTP do
 
   @impl true
   def handle_cast(
-        {:send, %{"method" => "notifications/cancelled", "params" => %{"requestId" => id}}},
+        {:send, %{"method" => "notifications/cancelled", "params" => %{"requestId" => id}},
+         _headers},
         %{era: :modern} = s
       ) do
     {cancelled, kept} = Enum.split_with(s.workers, fn {_pid, w} -> w.message["id"] == id end)
@@ -104,14 +118,16 @@ defmodule MCP.HTTP do
     {:noreply, %{s | workers: Map.new(kept)}}
   end
 
-  def handle_cast({:send, message}, s) do
-    with true <- is_map(message),
+  def handle_cast({:send, message, extra_headers}, s) do
+    with :ok <- validate_message_headers(extra_headers),
+         true <- is_map(message),
          {:ok, body} <- Jason.encode(message),
          true <- byte_size(body) <= s.limit,
          true <- map_size(s.workers) < 64 do
       s = if message["method"] == "initialize", do: %{s | era: :legacy, protocol: nil}, else: s
-      {:noreply, launch(s, "POST", message, body)}
+      {:noreply, launch(s, "POST", message, body, extra_headers)}
     else
+      {:error, :invalid_message_headers} -> fail(s, :invalid_message_headers)
       _ -> fail(s, :invalid_or_oversized_outbound_message)
     end
   end
@@ -185,9 +201,15 @@ defmodule MCP.HTTP do
 
   defp notify(s, event), do: send(s.owner, {:mcp_transport, self(), event})
 
-  defp launch(s, method, message, body) do
+  defp launch(s, method, message, body, extra_headers \\ %{}) do
     parent = self()
-    hs = headers(s, method, message)
+
+    hs =
+      headers(s, method, message)
+      |> Map.new()
+      |> Map.merge(Map.new(extra_headers, fn {k, v} -> {String.downcase(k), v} end))
+      |> Map.to_list()
+
     timeout = s.timeout
     stream = method == "GET" or message["method"] == "subscriptions/listen"
 
@@ -511,6 +533,13 @@ defmodule MCP.HTTP do
     end
   rescue
     _ -> {:error, :invalid_config}
+  end
+
+  defp validate_message_headers(headers) do
+    if is_map(headers) and
+         Enum.all?(headers, fn pair ->
+           valid_header?(pair) and String.downcase(elem(pair, 0)) not in @reserved
+         end), do: :ok, else: {:error, :invalid_message_headers}
   end
 
   defp valid_header?({k, v}) when is_binary(k) and is_binary(v),
