@@ -21,6 +21,12 @@ defmodule SeedSafety do
   Rollback excludes .git, deps, _build; git status then shows restored working
   tree against current HEAD. Evidence preserves untracked/uncommitted sources.
   No protection against host loss, deleted volumes, or malicious root processes.
+  Passive live deployment: install bin/seed-safety-monitor.json as a root-only
+  /opt/seed-safety/monitor.json and run installed watchdog with that config. It
+  only probes and logs; status explicitly says protected=false. This mode never
+  starts/stops the existing BEAM, restores credentials or changes source. Active
+  protection requires the watchdog to be the next container entrypoint. Template
+  bin/seed-safety-config.json preserves /app/bin/start as the child command.
   This module does not start anything or alter the shared node on load.
   """
   def status(dir \\ directory()) do

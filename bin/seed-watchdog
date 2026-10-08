@@ -50,7 +50,7 @@ class Watchdog:
         record = dict(time=time.time(), event=kind, **details)
         with open(self.state/'events.jsonl', 'a', opener=lambda p,f: os.open(p,f,0o600)) as out:
             out.write(json.dumps(record)+'\n'); out.flush(); os.fsync(out.fileno())
-        atomic(self.state/'status.json', dict(record, attempts=self.attempts, protected=not (self.state/'disabled').exists()))
+        atomic(self.state/'status.json', dict(dict(attempts=self.attempts, protected=not (self.state/'disabled').exists()), **record))
         print(json.dumps(record), flush=True)
     def snapshot(self, target):
         shutil.copytree(self.app, target, symlinks=True, ignore=lambda directory,names: EXCLUDE.intersection(names))
@@ -133,6 +133,15 @@ class Watchdog:
         def shutdown(*_): self.stopping = True
         signal.signal(signal.SIGTERM,shutdown); signal.signal(signal.SIGINT,shutdown)
         failures = 0
+        if self.c.get('monitor_only',False):
+            self.event('monitoring', protected=False)
+            try:
+                while not self.stopping:
+                    healthy = self.probe()
+                    self.event('monitor_healthy' if healthy else 'monitor_failure', protected=False)
+                    time.sleep(self.c.get('interval',20))
+            finally: lock.close()
+            return
         if not (self.state/'exhausted').exists(): self.start()
         else: self.event('exhausted',reason='persisted budget')
         try:
