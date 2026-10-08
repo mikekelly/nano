@@ -1,0 +1,20 @@
+#!/bin/sh
+# Build-time bootstrap. Requires python3 already installed (Dockerfile apt-get).
+# RUN bin/seed-install-safety /app /opt/seed-safety
+# CMD ["/opt/seed-safety/watchdog", "/opt/seed-safety/config.json"]
+# Source-only config by default; no unverified provider secrets are backed up.
+set -eu
+source=${1:-/app}
+target=${2:-/opt/seed-safety}
+command -v python3 >/dev/null
+install -d -m 0700 "$target"
+install -m 0755 "$source/bin/seed-watchdog" "$target/watchdog"
+install -m 0755 "$source/bin/seed-probe" "$target/probe"
+install -m 0600 "$source/bin/seed-safety-config.json" "$target/config.json"
+install -m 0600 "$source/bin/seed-safety-monitor.json" "$target/monitor.json"
+# Syntax validation without executing watchdog or touching any live node.
+python3 - "$target/watchdog" "$target/config.json" <<'PY'
+import sys, ast, json
+ast.parse(open(sys.argv[1]).read())
+assert json.load(open(sys.argv[2]))['credentials'] == []
+PY

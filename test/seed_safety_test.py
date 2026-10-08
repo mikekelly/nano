@@ -8,10 +8,10 @@ class SafetyTest(unittest.TestCase):
         self.base = pathlib.Path(self.tmp.name); self.app = self.base/'app'; self.app.mkdir()
         (self.app/'source').write_text('good')
         self.settings = self.base/'settings.json'; mod.atomic(self.settings,{'key':'secret','other':42})
-        self.w = mod.Watchdog(dict(app=str(self.app),state=str(self.base/'state'),command=[sys.executable,'-c','import time; time.sleep(30)'],probe=[sys.executable,'-c','pass'],credentials=[dict(path=str(self.settings),keys=['key'])],backoff=0,stop_timeout=.1,max_attempts=2))
+        self.w = mod.Watchdog(dict(app=str(self.app),state=str(self.base/'state'),command=[sys.executable,'-c','import time; time.sleep(30)'],probe=[sys.executable,'-c','pass'],credentials=[dict(path=str(self.settings),keys=['key'],provider='fixture')],backoff=0,stop_timeout=.1,max_attempts=2))
     def tearDown(self): self.w.stop(); self.tmp.cleanup()
     def certify(self):
-        self.w.start(); mod.atomic(self.w.state/'attestation.json',{'boot':self.w.token}); self.w.certify()
+        self.w.start(); mod.atomic(self.w.state/'attestation.json',{'boot':self.w.token,'providers':['fixture']}); self.w.certify()
     def test_rollback_preserves_uncommitted_and_untracked(self):
         self.certify(); (self.app/'source').write_text('broken'); (self.app/'new').write_text('work')
         self.w.stop(); self.assertTrue(self.w.rollback())
@@ -22,8 +22,15 @@ class SafetyTest(unittest.TestCase):
         self.w.start(); mod.atomic(self.w.state/'attestation.json',{'boot':'old'}); self.w.certify()
         self.assertFalse((self.w.state/'good').exists())
         (self.app/'source').write_text('later')
-        mod.atomic(self.w.state/'attestation.json',{'boot':self.w.token}); self.w.certify()
+        mod.atomic(self.w.state/'attestation.json',{'boot':self.w.token,'providers':['fixture']}); self.w.certify()
         self.assertFalse((self.w.state/'good').exists())
+    def test_source_attestation_does_not_backup_unverified_provider(self):
+        self.w.start(); mod.atomic(self.w.state/'attestation.json',{'boot':self.w.token})
+        self.w.certify(); self.assertEqual(mod.read(self.w.state/'credentials.json'),[])
+        mod.atomic(self.w.state/'attestation.json',{'boot':self.w.token,'providers':['unrelated']})
+        self.w.certify(); self.assertEqual(mod.read(self.w.state/'credentials.json'),[])
+        mod.atomic(self.w.state/'attestation.json',{'boot':self.w.token,'providers':['fixture']})
+        self.w.certify(); self.assertEqual(mod.read(self.w.state/'credentials.json')[0]['values']['key'],'secret')
     def test_credentials_missing_invalid_rejected_and_newer_valid(self):
         self.certify(); mod.atomic(self.settings,{'key':'new','other':99}); self.assertFalse(self.w.credentials())
         mod.atomic(self.w.state/'rejected.json',{str(self.settings):{'key':mod.fingerprint('secret')}})
