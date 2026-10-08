@@ -6,6 +6,9 @@ defmodule Bots.ManagedStartCheck do
   use ExUnit.Case
 
   test "managed recovery cannot be bypassed by facade lazy start" do
+    old = Application.get_env(:nano, :optional_services, [])
+    Application.put_env(:nano, :optional_services, [{Bots, []}])
+    on_exit(fn -> Application.put_env(:nano, :optional_services, old) end)
     manager = spawn(fn -> Process.sleep(:infinity) end)
     true = Process.register(manager, Nano.OptionalServices)
     on_exit(fn -> Process.exit(manager, :kill) end)
