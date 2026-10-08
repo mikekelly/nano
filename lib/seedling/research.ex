@@ -1,13 +1,19 @@
 defmodule Seedling.Research do
-  @moduledoc "Async Exa Agent research (current /agent/runs API). start(query) returns local ref immediately; owner receives {:research, ref, result}. Results cached, remote id retained. Default budget $1. Resume with watch(remote_id). Workers are not durable; remote jobs are."
+  @moduledoc "Async Exa Agent research (current /agent/runs API). start(query) returns local ref immediately; owner receives {:research, ref, result}. Results cached, remote id retained. Default budget $1. Resume with watch(remote_id). Named owner strings enable durable pending records and restart-resolved delivery; add the optional Seedling.Research.Pending supervisor child to resume on reboot. PID owners are ephemeral."
   alias Seedling.Web.Cache
 
   def start(query, opts \\ []) do
     owner = Keyword.get(opts, :owner, self())
-    ref = make_ref()
+
+    ref =
+      if is_binary(owner),
+        do: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower),
+        else: make_ref()
 
     pid =
       spawn(fn ->
+        Process.put(:research_token, ref)
+
         body = %{
           query: query,
           effort: "auto",
@@ -18,11 +24,29 @@ defmodule Seedling.Research do
 
         result =
           with {:ok, %{"id" => id}} <- Seedling.Search.request("/agent/runs", body, opts) do
-            send(owner, {:research_started, ref, id})
-            poll(id, opts, deadline(opts))
+            notify(owner, {:research_started, ref, id}, opts)
+
+            if is_binary(owner) do
+              record = Seedling.Research.Pending.record(id, owner, ref, opts)
+
+              with :ok <- Seedling.Research.Pending.save(record, opts) do
+                result = await(id, opts)
+
+                case result do
+                  {:ok, summary} ->
+                    Seedling.Research.Pending.complete(record, summary, opts)
+                    :durable_delivery
+
+                  _ ->
+                    result
+                end
+              end
+            else
+              await(id, opts)
+            end
           end
 
-        send(owner, {:research, ref, result})
+        if result != :durable_delivery, do: notify(owner, {:research, ref, result}, opts)
       end)
 
     {:ok, %{ref: ref, pid: pid}}
@@ -30,9 +54,41 @@ defmodule Seedling.Research do
 
   def watch(id, opts \\ []) do
     owner = Keyword.get(opts, :owner, self())
-    ref = make_ref()
-    pid = spawn(fn -> send(owner, {:research, ref, poll(id, opts, deadline(opts))}) end)
+
+    ref =
+      if is_binary(owner),
+        do: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower),
+        else: make_ref()
+
+    pid =
+      spawn(fn ->
+        Process.put(:research_token, ref)
+
+        if is_binary(owner) do
+          record = Seedling.Research.Pending.record(id, owner, ref, opts)
+
+          with :ok <- Seedling.Research.Pending.save(record, opts),
+               do: Seedling.Research.Pending.resume(record, opts)
+        else
+          notify(owner, {:research, ref, await(id, opts)}, opts)
+        end
+      end)
+
     {:ok, %{ref: ref, pid: pid}}
+  end
+
+  @doc false
+  def await(id, opts), do: poll(id, opts, deadline(opts))
+
+  defp notify(owner, message, opts) do
+    target =
+      if is_binary(owner),
+        do: Keyword.get(opts, :resolver, &NanoAgent.whereis/1).(owner),
+        else: owner
+
+    if is_pid(target), do: send(target, message), else: :owner_unavailable
+  rescue
+    _ -> :owner_unavailable
   end
 
   def status(id, opts \\ []) do

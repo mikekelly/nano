@@ -61,6 +61,81 @@ defmodule Seedling.WebTest do
     assert {:error, :invalid_url} = Seedling.Web.fetch("file:///etc/passwd")
   end
 
+  test "automatic bounded browser fallback on JavaScript shell", %{dir: dir} do
+    url =
+      server(
+        "<html><body><div id='root'></div><script>document.getElementById('root').innerHTML = '<p>Rendered evidence</p>';</script></body></html>"
+      )
+
+    assert {:ok, result} = Seedling.Web.fetch(url, cache_dir: dir)
+    assert result.metadata["method"] == "browser_fallback"
+    assert result.text =~ "Rendered evidence"
+
+    assert {:ok, result} =
+             Seedling.Web.fetch(url, cache_dir: dir, refresh: true, browser_fallback: false)
+
+    assert result.metadata["method"] == "http"
+    assert result.text == ""
+    refute Seedling.Web.js_shell?("<p>Short page</p><script>analytics()</script>", "Short page")
+  end
+
+  test "durable named-owner completion survives initializer restart and cache deletion", %{
+    dir: dir
+  } do
+    token = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    opts = [pending_dir: Path.join(dir, "pending"), cache_dir: Path.join(dir, "cache")]
+    record = Seedling.Research.Pending.record("agent_run_durable", "returning-agent", token, opts)
+    {:ok, id} = Seedling.Web.Cache.put("citation", %{url: "https://example.org"}, opts)
+
+    assert :pending =
+             Seedling.Research.Pending.complete(
+               record,
+               %{id: id, run_id: "agent_run_durable", status: "completed"},
+               Keyword.put(opts, :resolver, fn _ -> nil end)
+             )
+
+    assert length(Seedling.Research.Pending.list(opts)) == 1
+    File.rm_rf(Keyword.fetch!(opts, :cache_dir))
+    owner = self()
+
+    initializer =
+      start_supervised!(
+        {Seedling.Research.Pending,
+         opts ++ [resolver: fn "returning-agent" -> owner end, scan_interval: 10]}
+      )
+
+    assert_receive {:research, ^token, {:ok, %{id: restored}}}, 5000
+    assert {:ok, %{text: "citation"}} = Seedling.Web.read(restored, opts)
+    assert Seedling.Research.Pending.list(opts) == []
+    assert Process.alive?(initializer)
+  end
+
+  test "initializer reattaches a saved remote research run", %{dir: dir} do
+    body =
+      Jason.encode!(%{id: "agent_run_resume", status: "completed", output: %{text: "evidence"}})
+
+    owner = self()
+
+    opts = [
+      pending_dir: Path.join(dir, "pending"),
+      cache_dir: dir,
+      api_key: "test-key",
+      base_url: server(body)
+    ]
+
+    token = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    record = Seedling.Research.Pending.record("agent_run_resume", "named-agent", token, opts)
+    assert :ok = Seedling.Research.Pending.save(record, opts)
+
+    start_supervised!(
+      {Seedling.Research.Pending,
+       opts ++ [resolver: fn "named-agent" -> owner end, scan_interval: 10]}
+    )
+
+    assert_receive {:research, ^token, {:ok, %{status: "completed"}}}, 5000
+    assert Seedling.Research.Pending.list(opts) == []
+  end
+
   test "bounded process output and timeout" do
     assert {:error, {:body_too_large, 4}} =
              Seedling.Web.Transport.run("printf", ["123456"], max_bytes: 4)
