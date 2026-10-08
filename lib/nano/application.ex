@@ -38,7 +38,8 @@ defmodule Nano.Application do
           {Seedling.Bots, []},
           {Seedling.Research.Pending, []},
           {Seedling.Background.Recovery, []},
-          {Seedling.MCP.Supervisor, [config: "/app/config/mcp.json", name: Seedling.MCP.Connections]},
+          {Seedling.MCP.Supervisor,
+           [config: "/app/config/mcp.json", name: Seedling.MCP.Connections]},
           NanoWeb.Endpoint
         ],
         &retrying/1

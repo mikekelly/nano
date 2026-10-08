@@ -44,7 +44,10 @@ defmodule Seedling.ShellTest do
           after
             5000 -> flunk("instant command did not complete")
           end
-        end, max_concurrency: 20, timeout: 10_000)
+        end,
+        max_concurrency: 20,
+        timeout: 10_000
+      )
       |> Enum.to_list()
 
     assert Enum.all?(results, &match?({:ok, _}, &1))
