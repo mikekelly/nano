@@ -30,6 +30,12 @@ defmodule MCP do
   """
   use GenServer
 
+  defp default_root do
+    Application.get_env(:nano, :state_dir, "/data/state")
+    |> Path.dirname()
+    |> Path.join("mcp")
+  end
+
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
 
@@ -219,7 +225,7 @@ defmodule MCP do
     if byte_size(encoded) <= cap do
       {tag, data}
     else
-      dir = opts[:spill_dir] || "/data/mcp/spill"
+      dir = opts[:spill_dir] || Path.join(default_root(), "spill")
 
       path =
         Path.join(
@@ -288,7 +294,7 @@ defmodule MCP do
   end
 
   def init(opts) do
-    root = opts[:state_dir] || "/data/mcp"
+    root = opts[:state_dir] || default_root()
     config_path = opts[:config_path] || "/app/config/mcp.json"
 
     path = Path.join(root, "subscriptions.json")
