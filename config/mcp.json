@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "deepwiki": {
+      "url": "https://mcp.deepwiki.com/mcp",
+      "protocol_version": "2025-03-26",
+      "transport": "http"
+    },
+    "demo": {
+      "args": [
+        "/app/config/mcp_demo.py"
+      ],
+      "command": "python3",
+      "protocol_version": "2026-07-28",
+      "transport": "stdio"
+    }
+  }
+}
