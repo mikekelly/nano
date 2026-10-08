@@ -99,3 +99,46 @@ Focused bots suite totals27 tests (14 backend/controller,13 LiveView/Markdown).
 Node --check and both committed test/js VM scripts passed. No real browser/OS
 notification claims are added by those mocked tests. Integration still requires
 parent static bots.css/js allowlist and reviewed eager service restart/map migration.
+
+## REAL peer-authored shared-context retrieval — 2026-10-08
+
+Parent authorized this bounded demo only after loading/restarting the reviewed service
+(pid0.20059.0), shared context/workspaces, credential UI and strict native images.
+Existing identities and group retained; no bot creation/deletion, private-session
+messages, settings changes or own module reloads.
+
+1. Person input `1c77b45de418e9571b9b` at00:18:10 asks Dot to use its own eval
+   `:crypto.strong_rand_bytes(6)` and post a fresh harmless token. Muse asked to wait;
+   neither bot asked to put it in identity memory.
+2. Dot actual eval toolcall seq35 generates the token inline and visibly posts
+   `PEER_TOKEN=68ED253B0F0C`, record `fdb54ac8670876687709` at00:18:14, reply_to
+   first person input. This value was NOT supplied by the person/operator.
+3. New person input `cf2df54c87b93c174f07` at00:18:38 asks Muse to repeat Dot's
+   token from bounded shared context. This input contains NO token value. It also asks
+   Muse to acknowledge the earlier wait-only input, avoiding an unacknowledged outbox.
+4. Muse incoming event seq32 contains `shared_context`, the exact Dot peer-post ID
+   and token. Muse actual eval toolcall seq35 posts record `39774f568dcc5f689d03`
+   at00:18:43: `PEER_TOKEN=68ED253B0F0C`, followed by “I read it from Dot’s message
+   in the bounded shared context, not my identity memory.” It separately closes the
+   wait input with `181f15b5b32b5de1916c`, “Wait request complete.” Both reply_to IDs
+   are correct. This is actual model retrieval/post evidence, not scripted-provider
+   wire evidence or independent replies to one person-supplied fact.
+
+Logs:
+- `/data/logs/bot.d957a25ebc76e9556764.1a9fd33b92065818003d-1c3504.jsonl`
+- `/data/logs/bot.223f6efcb1c09c464634.1a9fd33b92065818003d-2b27d6.jsonl`
+
+Both use REAL `openai-codex/gpt-6.1-sol`, low, finite30turns/600000tokens/24000context.
+Demo usage since00:18:10: Dot two normal model responses9528prompt+102completion;
+Muse two normal responses10327prompt+170completion. Dot additionally attempted
+compaction4351prompt+909completion. This is measured provider token usage, not dollar
+billing proof (reported cost0 is adapter metadata).
+
+Honest limitation: Dot's next followup event seq42 received the shared peer context,
+but automatic compaction seq43→45 FAILED at00:19:00: “summary did not shrink the
+conversation enough for a safe request.” Dot did not post the requested brief
+followup acknowledgement; it is idle/halted `compaction_failed`,8turns28160usedtokens,
+4885context. UI correctly reports error and a safe operator-repair message. Muse is
+idle/nohalt,8turns23824usedtokens,5316context. Parent notified; no unauthorized unhalt
+or settings/budget changes made. This does not invalidate Muse's completed peer-context
+proof, but is NOT an all-bots-idle-success claim. Existing private sessions remain idle.
