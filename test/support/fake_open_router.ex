@@ -24,7 +24,9 @@ defmodule Nano.FakeOpenRouter do
   arguments value itself), `usage: {prompt, completion, cached}` (default `{100, 10, 0}`),
   `cost:` (default 0.001), `provider:`, `finish_reason:`, `reasoning:`, `reasoning_details:`. Or
   `status:` (and optionally `body:` and `headers:`, a list of `{name, value}`) for an error
-  response. The success shape mirrors what
+  response, or `chunks:`, strings sent as they are, one HTTP chunk each, as a 200 JSON body:
+  any enumerable, so a `Stream` can pause between them, or never end (it stops when the
+  client hangs up). The success shape mirrors what
   OpenRouter returned for anthropic/claude-haiku-4.5 in October 2026.
   """
   use GenServer
@@ -158,8 +160,11 @@ defmodule Nano.FakeOpenRouter do
   end
 
   defp build(opts) do
-    case opts[:status] do
-      nil ->
+    case {opts[:status], opts[:chunks]} do
+      {nil, chunks} when chunks != nil ->
+        {200, {:chunks, chunks}, []}
+
+      {nil, nil} ->
         {prompt, completion, cached} = opts[:usage] || {100, 10, 0}
 
         calls =
@@ -200,7 +205,7 @@ defmodule Nano.FakeOpenRouter do
            }
          }, []}
 
-      status ->
+      {status, _} ->
         {status,
          opts[:body] || %{"error" => %{"code" => status, "message" => "fake error #{status}"}},
          opts[:headers] || []}
@@ -239,12 +244,16 @@ defmodule Nano.FakeOpenRouter do
           Nano.FakeOpenRouter.request(Jason.decode!(raw))
         end
 
-      body = if is_binary(body), do: body, else: Jason.encode!(body)
+      conn =
+        headers
+        |> Enum.reduce(conn, fn {k, v}, conn -> Plug.Conn.put_resp_header(conn, k, v) end)
+        |> Plug.Conn.put_resp_content_type("application/json")
 
-      headers
-      |> Enum.reduce(conn, fn {k, v}, conn -> Plug.Conn.put_resp_header(conn, k, v) end)
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(status, body)
+      case body do
+        {:chunks, chunks} -> Nano.FakeChatGPT.Endpoint.chunked(conn, status, chunks)
+        body when is_binary(body) -> Plug.Conn.send_resp(conn, status, body)
+        body -> Plug.Conn.send_resp(conn, status, Jason.encode!(body))
+      end
     end
   end
 end

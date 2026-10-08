@@ -24,7 +24,9 @@ defmodule Nano.FakeChatGPT do
   text; the item also carries encrypted content `"enc-<n>"`), `usage: {input, output,
   cached}` (default `{100, 10, 0}`), `incomplete:` (a reason), or `status:` with `body:` (and
   `headers:`, a list of `{name, value}`) for an HTTP error, or `failed:` (an error map) for a stream that ends in `response.failed`,
-  or `chunks:`, a list of strings sent as they are, one HTTP chunk each, as a 200 event stream.
+  or `chunks:`, strings sent as they are, one HTTP chunk each, as a 200 event stream: any
+  enumerable, so a `Stream` can pause between them, or never end (it stops when the client
+  hangs up).
   """
   use GenServer
 
@@ -315,13 +317,22 @@ defmodule Nano.FakeChatGPT do
         |> Plug.Conn.put_resp_content_type(type)
 
       case out do
-        {:chunks, chunks} ->
-          conn = Plug.Conn.send_chunked(conn, status)
-          Enum.reduce(chunks, conn, fn c, conn -> elem(Plug.Conn.chunk(conn, c), 1) end)
-
-        out ->
-          Plug.Conn.send_resp(conn, status, out)
+        {:chunks, chunks} -> chunked(conn, status, chunks)
+        out -> Plug.Conn.send_resp(conn, status, out)
       end
+    end
+
+    @doc false
+    # Each of `chunks` as an HTTP chunk, as it comes, until they end or the client hangs up.
+    def chunked(conn, status, chunks) do
+      conn = Plug.Conn.send_chunked(conn, status)
+
+      Enum.reduce_while(chunks, conn, fn c, conn ->
+        case Plug.Conn.chunk(conn, c) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _} -> {:halt, conn}
+        end
+      end)
     end
   end
 end

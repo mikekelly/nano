@@ -82,8 +82,8 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
   `network_policy` setting to match, because the system prompt must stay true
   ([docs/network.md](docs/network.md) shows one way).
 - For debugging, the `raw_model_log` setting (off by default) records the exact bytes of the
-  named agents' model requests and responses in `data/logs/raw/`, linked from their log
-  entries. Credentials are redacted from the headers, but each request holds the agent's
+  named agents' model requests and responses in `data/logs/raw/`, with when each piece of a
+  response arrived, linked from their log entries. Credentials are redacted from the headers, but each request holds the agent's
   whole conversation, including anything sensitive it saw, and the files are large (the
   oldest go past `raw_model_log_max_bytes`, 1 GB by default).
 - Agents can change and hot-reload the running node's code, the harness included. If an edit

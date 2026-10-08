@@ -34,6 +34,11 @@ defmodule Nano.Settings do
        "it is halted (node_budget). 0 = no limit"},
     {:eval_timeout_ms, 30_000, {:integer, 1, 4_294_967_295}, :live,
      "How long an eval may run before it is killed, in milliseconds"},
+    {:model_call_max_ms, 1_800_000, {:integer, 1, 4_294_967_295}, :live,
+     "How long one model request may take, in milliseconds, from sending it to the end of " <>
+       "its reply, however steadily the reply arrives: past it the request is cancelled and " <>
+       "fails as a transient error, retried as any other. It caps one reply, not a " <>
+       "connection; requests sent after a change use the new value"},
     {:result_max_bytes, 51_200, {:integer, 1, 8_388_608}, :agent_start,
      "Where tool results and events are cut, in bytes; the whole text goes to a spill file"},
     {:max_bindings_bytes, 16_000_000, {:integer, 0, nil}, :live,

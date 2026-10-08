@@ -50,6 +50,31 @@ defmodule Nano.RawLogTest do
   # A recorded file's first line and headers, and its body.
   defp split(path), do: path |> read() |> String.split("\n\n", parts: 2) |> List.to_tuple()
 
+  # Each chunk after a pause, so that each arrives on its own.
+  defp paced(chunks, ms), do: Stream.map(chunks, &(Process.sleep(ms) && &1))
+
+  # A timing file's lines, as [ms, offset, bytes].
+  defp timing(path) do
+    assert ["ms offset bytes" | lines] = path |> read() |> String.split("\n", trim: true)
+    for line <- lines, do: line |> String.split(" ") |> Enum.map(&String.to_integer/1)
+  end
+
+  # The timing a body sent as `chunks`, `pause` ms apart, should have.
+  defp assert_timed(path, chunks, pause) do
+    times = timing(path)
+    sizes = Enum.map(chunks, &byte_size/1)
+
+    assert for([_, offset, bytes] <- times, do: {offset, bytes}) ==
+             Enum.zip(offsets(sizes), sizes)
+
+    ms = for [ms, _, _] <- times, do: ms
+    assert hd(ms) >= pause
+    # Each came at least most of a pause after the one before (timers are not exact).
+    for [a, b] <- Enum.chunk_every(ms, 2, 1, :discard), do: assert(b - a >= div(pause, 2))
+  end
+
+  defp offsets(sizes), do: Enum.scan([0 | Enum.drop(sizes, -1)], &+/2)
+
   defp all_recorded do
     for path <- Path.wildcard(Path.join(RawLog.dir(), "**/*")),
         File.regular?(path),
@@ -113,7 +138,7 @@ defmodule Nano.RawLogTest do
     assert await(a.id, "model_response")["text"] == "two  words "
     await(b.id, "model_response")
 
-    files = ["#{a.id}/1-1.request.txt", "#{a.id}/1-1.response.txt"]
+    files = for kind <- ~w(request response timing), do: "#{a.id}/1-1.#{kind}.txt"
     assert await(a.id, "model_request")["raw"] == ["#{a.id}/1-1.request.txt"]
     assert await(a.id, "model_response")["raw"] == files
 
@@ -140,10 +165,10 @@ defmodule Nano.RawLogTest do
     NanoAgent.notify(a.name, :hi)
 
     assert await(a.id, "model_response")["raw"] ==
-             ["#{a.id}/1-2.request.txt", "#{a.id}/1-2.response.txt"]
+             for(kind <- ~w(request response timing), do: "#{a.id}/1-2.#{kind}.txt")
 
     assert await(a.id, "model_error")["raw"] ==
-             ["#{a.id}/1-1.request.txt", "#{a.id}/1-1.response.txt"]
+             for(kind <- ~w(request response timing), do: "#{a.id}/1-1.#{kind}.txt")
 
     assert {"HTTP 500" <> _, ~s({"error":) <> _} = split("#{a.id}/1-1.response.txt")
     assert {"HTTP 200" <> _, _} = split("#{a.id}/1-2.response.txt")
@@ -160,6 +185,66 @@ defmodule Nano.RawLogTest do
     assert %{"status" => nil, "raw" => [request, response]} = await(a.id, "model_error")
     assert {"POST http://127.0.0.1:1/api/v1/chat/completions\n" <> _, _} = split(request)
     assert read(response) =~ ~r/\Ano response: .+\n\z/
+  end
+
+  test "each piece of a body is timed as it comes; the bytes and what the provider reads are unchanged" do
+    a = start_agent()
+    b = start_agent()
+    TestSettings.put(:raw_model_log, a.name)
+
+    body =
+      ~s({"id": "gen-raw", "provider":"Fake",\n "choices":[{"index":0,"finish_reason":"stop",) <>
+        ~s("message":{"role":"assistant","content":"naïve  words ","refusal":null}}],) <>
+        ~s( "usage":{"prompt_tokens":100,"completion_tokens":10,"cost":0.001}}  \n)
+
+    # Cut anywhere, the ï in the middle of its two bytes included.
+    [{cut, 1}] = :binary.matches(body, <<0xC3>>)
+    cuts = [0, 7, cut + 1, byte_size(body) - 2, byte_size(body)]
+
+    chunks =
+      for [from, to] <- Enum.chunk_every(cuts, 2, 1, :discard),
+          do: binary_part(body, from, to - from)
+
+    for x <- [a, b] do
+      FakeOpenRouter.push(x.model, chunks: paced(chunks, 50))
+      NanoAgent.notify(x.name, :hi)
+    end
+
+    recorded = await(a.id, "model_response")
+    unrecorded = await(b.id, "model_response")
+    assert recorded["text"] == "naïve  words "
+
+    fields =
+      ~w(text reasoning tool_calls finish_reason provider prompt_tokens completion_tokens cost)
+
+    assert Map.take(recorded, fields) == Map.take(unrecorded, fields)
+
+    assert {"HTTP 200" <> _, ^body} = split("#{a.id}/1-1.response.txt")
+    assert_timed("#{a.id}/1-1.timing.txt", chunks, 50)
+    refute File.exists?(Path.join(RawLog.dir(), b.id))
+  end
+
+  test "a request cancelled for taking too long keeps its request, and records no response" do
+    TestSettings.put(:raw_model_log, "all")
+    TestSettings.put(:model_call_max_ms, 200)
+    a = start_agent()
+    # Valid JSON so far, but never done.
+    FakeOpenRouter.push(a.model, chunks: Stream.repeatedly(fn -> Process.sleep(10) && " " end))
+    FakeOpenRouter.push(a.model, text: "ok")
+    NanoAgent.notify(a.name, :hi)
+
+    assert %{"status" => nil, "class" => "transient", "retry" => true, "raw" => raw} =
+             await(a.id, "model_error")
+
+    assert raw == ["#{a.id}/1-1.request.txt", "#{a.id}/1-1.response.txt"]
+
+    assert read("#{a.id}/1-1.response.txt") ==
+             "no response: the model call took longer than 200 ms, so I cancelled it\n"
+
+    assert await(a.id, "model_response")["raw"] ==
+             for(kind <- ~w(request response timing), do: "#{a.id}/1-2.#{kind}.txt")
+
+    assert Path.wildcard(Path.join(RawLog.dir(), "**/*.tmp")) == []
   end
 
   test "the ChatGPT event stream as received, not trimmed; no token or account id" do
@@ -193,7 +278,7 @@ defmodule Nano.RawLogTest do
 
     # The token is refused once, refreshed, and the request sent again in the same attempt.
     FakeChatGPT.push(model, status: 401)
-    FakeChatGPT.push(model, chunks: chunks)
+    FakeChatGPT.push(model, chunks: paced(chunks, 50))
     NanoAgent.notify(name, :hi)
 
     assert %{"text" => "two  words ", "raw" => raw} = await(id, "model_response")
@@ -201,7 +286,7 @@ defmodule Nano.RawLogTest do
     assert raw ==
              for(
                n <- ["1-1", "1-1.2"],
-               kind <- ["request", "response"],
+               kind <- ["request", "response", "timing"],
                do: "#{id}/#{n}.#{kind}.txt"
              )
 
@@ -209,6 +294,7 @@ defmodule Nano.RawLogTest do
     assert stream == Enum.join(chunks)
     assert head =~ ~r/\AHTTP 200\n/
     assert head =~ "content-type: text/event-stream"
+    assert_timed("#{id}/1-1.2.timing.txt", chunks, 50)
     assert {"HTTP 401" <> _, _} = split("#{id}/1-1.response.txt")
 
     for n <- ["1-1", "1-1.2"] do
@@ -275,7 +361,8 @@ defmodule Nano.RawLogTest do
 
     assert File.ls!(Path.join(RawLog.dir(), a.id)) |> Enum.sort() == [
              "1-1.request.txt",
-             "1-1.response.txt"
+             "1-1.response.txt",
+             "1-1.timing.txt"
            ]
   end
 

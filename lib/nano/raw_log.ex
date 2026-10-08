@@ -6,12 +6,12 @@ defmodule Nano.RawLog do
   question such as "did the model send these words run together, or did we join them?" can
   be settled.
 
-  Each HTTP exchange of a model call is two files under `<LOG_DIR>/raw/<agent id>/`, named for
-  the request and the attempt (`NanoAgent` makes up to 3): `<request id>-<attempt>.request.txt`
-  and `.response.txt`. A second exchange in one attempt (the ChatGPT subscription refreshes a
-  refused token once and sends again) adds `.2` to the name. Each file is an HTTP message, a
-  first line (`POST <url>`, or `HTTP <status>`), the headers one per line, a blank line, then
-  the body's bytes exactly:
+  Each HTTP exchange of a model call is three files under `<LOG_DIR>/raw/<agent id>/`, named
+  for the request and the attempt (`NanoAgent` makes up to 3): `<request id>-<attempt>.request.txt`,
+  `.response.txt` and `.timing.txt`. A second exchange in one attempt (the ChatGPT subscription
+  refreshes a refused token once and sends again) adds `.2` to the name. The request and the
+  response are each an HTTP message, a first line (`POST <url>`, or `HTTP <status>`), the
+  headers one per line, a blank line, then the body's bytes exactly:
 
       HTTP 200
       content-type: text/event-stream
@@ -21,13 +21,23 @@ defmodule Nano.RawLog do
       data: {"type":"response.created",...}
 
   The request is recorded as `Req` hands it to the HTTP client, after all its other request
-  steps: the JSON as encoded, and the headers that were sent. The response is recorded as the
-  client returned it, before any of `Req`'s response steps: before it decodes JSON, and before
-  `Nano.ChatGPT` parses the event stream. (`Req` asks for no compression; a body the provider
-  compressed anyway would be recorded compressed.) No response at all is recorded as
-  `no response:` and why. The two files of an exchange are written apart, the request before
-  it is sent, so a request that never gets an answer is still there; each is written whole (a
-  temp file, renamed).
+  steps: the JSON as encoded, and the headers that were sent. The response body is read as the
+  HTTP client takes each piece of it off the connection (`Req`'s `into:`), and recorded once
+  whole, before any of `Req`'s response steps: before it decodes JSON, and before
+  `Nano.ChatGPT` parses the event stream, which see the same bytes they would otherwise.
+  (`Req` asks for no compression; a body the provider compressed anyway would be recorded
+  compressed.) The timing file says when each piece came, a line each: milliseconds since the
+  request was sent (connecting included), where the piece starts in the body, and its size in
+  bytes, so the long silences of a model reasoning show:
+
+      ms offset bytes
+      812 0 297
+      15204 297 1180
+
+  No response at all is recorded as `no response:` and why, with no timing; so is a request
+  `NanoAgent` cancels for taking too long (`cancelled/2`). The files of an exchange are
+  written apart, the request before it is sent, so a request that never gets an answer is
+  still there; each is written whole (a temp file, renamed).
 
   Headers that carry credentials (authorization, chatgpt-account-id, cookies, anything named
   like a key, token or secret) are written as `[redacted]`. The bodies are not: a request
@@ -73,16 +83,52 @@ defmodule Nano.RawLog do
     {result, files}
   end
 
-  @doc "Adds the recording steps to a model request, when it is made in `recording/2`."
+  @doc """
+  Adds the recording steps to a model request, when it is made in `recording/2`: the body
+  is then read as it streams in (`into:`), each piece timed, and put together again, byte for
+  byte, before `Req`'s response steps and the provider see it.
+  """
   def attach(%Req.Request{} = req) do
     if Process.get(@key) do
-      req
+      %{req | into: &chunk/2}
       |> Req.Request.append_request_steps(raw_model_log: &request/1)
       |> Req.Request.prepend_response_steps(raw_model_log: &response/1)
       |> Req.Request.prepend_error_steps(raw_model_log: &no_response/1)
     else
       req
     end
+  end
+
+  @doc """
+  What `recording/2` under `name` would have returned, after its `fun` was killed (`NanoAgent`
+  cancels a model request at the `model_call_max_ms` setting): the files its exchanges wrote,
+  an exchange left without a response recorded as `no response:` and `why`. What had arrived
+  of that response is not kept.
+  """
+  def cancelled(nil, _why), do: []
+
+  def cancelled(name, why) do
+    Process.put(@key, {name, 0, []})
+    # A file the killed process was writing.
+    for tmp <- Path.wildcard(Path.join(dir(), name <> ".*.tmp")), do: File.rm(tmp)
+
+    Stream.iterate(1, &(&1 + 1))
+    |> Stream.map(&if(&1 == 1, do: name, else: "#{name}.#{&1}"))
+    |> Stream.take_while(&File.regular?(Path.join(dir(), &1 <> ".request.txt")))
+    |> Enum.each(fn exchange ->
+      for kind <- ~w(request response timing),
+          file = "#{exchange}.#{kind}.txt",
+          File.regular?(Path.join(dir(), file)),
+          do: written(file)
+
+      if not File.regular?(Path.join(dir(), exchange <> ".response.txt")),
+        do: write(exchange <> ".response.txt", fn -> ["no response: ", why, ?\n] end)
+    end)
+
+    {_, _, files} = Process.delete(@key)
+    files = Enum.reverse(files)
+    if files != [], do: prune(files)
+    files
   end
 
   @doc """
@@ -116,22 +162,45 @@ defmodule Nano.RawLog do
           [method, ?\s, URI.to_string(req.url), ?\n, headers(req.headers), ?\n, body(req.body)]
         end)
 
-        Req.Request.put_private(req, :raw_model_log, name)
+        req
+        |> Req.Request.put_private(:raw_model_log, name)
+        |> Req.Request.put_private(:raw_model_log_body, {System.monotonic_time(), [], 0, []})
 
       nil ->
         req
     end
   end
 
-  # The first response step: the body as the HTTP client returned it.
-  defp response({req, resp}) do
-    if name = req.private[:raw_model_log] do
-      write(name <> ".response.txt", fn ->
-        ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, body(resp.body)]
-      end)
-    end
+  # Each piece of the body as the HTTP client reads it off the connection: kept, with when it
+  # came (ms since the request was sent), where it starts in the body and its size.
+  defp chunk({:data, data}, {req, resp}) do
+    {sent, body, size, times} = req.private.raw_model_log_body
+    ms = System.convert_time_unit(System.monotonic_time() - sent, :native, :millisecond)
+    line = "#{ms} #{size} #{byte_size(data)}\n"
+    body = {sent, [body | data], size + byte_size(data), [line | times]}
+    {:cont, {Req.Request.put_private(req, :raw_model_log_body, body), resp}}
+  end
 
-    {req, resp}
+  # The first response step: the body put together as the HTTP client returned it, and the
+  # timing of its pieces.
+  defp response({req, resp}) do
+    case req.private[:raw_model_log_body] do
+      {sent, body, _, times} ->
+        resp = %{resp | body: IO.iodata_to_binary(body)}
+
+        write(req.private.raw_model_log <> ".response.txt", fn ->
+          ["HTTP #{resp.status}\n", headers(resp.headers), ?\n, resp.body]
+        end)
+
+        write(req.private.raw_model_log <> ".timing.txt", fn ->
+          ["ms offset bytes\n" | Enum.reverse(times)]
+        end)
+
+        {Req.Request.put_private(req, :raw_model_log_body, {sent, [], 0, []}), resp}
+
+      nil ->
+        {req, resp}
+    end
   end
 
   defp no_response({req, exception}) do
@@ -170,13 +239,18 @@ defmodule Nano.RawLog do
 
     case result do
       :ok ->
-        {base, n, files} = Process.get(@key)
-        Process.put(@key, {base, n, [name | files]})
+        written(name)
 
       {:error, reason} ->
         File.rm(tmp)
         warn(path, reason)
     end
+  end
+
+  # One of the attempt's files, as recording/2 returns them.
+  defp written(name) do
+    {base, n, files} = Process.get(@key)
+    Process.put(@key, {base, n, [name | files]})
   end
 
   defp warn(path, reason) do

@@ -2327,6 +2327,59 @@ defmodule NanoAgentTest do
     assert DateTime.diff(at, DateTime.utc_now()) in 115..121
   end
 
+  test "a model call past model_call_max_ms is cancelled, its connection closed, and made again",
+       ctx do
+    model_wait(40)
+    {pid, id} = start!(ctx)
+    # Applies live: to the next calls of an agent already running.
+    Nano.TestSettings.put(:model_call_max_ms, 200)
+    test = self()
+
+    # A reply that never ends: a byte every 10 ms, for as long as the connection is open.
+    trickle = Stream.repeatedly(fn -> send(test, :byte) && Process.sleep(10) && " " end)
+    for _ <- 1..3, do: Fake.push(ctx.model, chunks: trickle)
+    Fake.push(ctx.model, text: "back")
+    send(pid, :go)
+    for _ <- 1..4, do: request!(ctx.model)
+    assert await(id, :model_response)["text"] == "back"
+
+    body = "the model call took longer than 200 ms, so I cancelled it"
+
+    assert [
+             %{"status" => nil, "class" => "transient", "body" => ^body, "attempt" => 1},
+             %{"body" => ^body, "attempt" => 2, "retry" => true},
+             %{"body" => ^body, "attempt" => 3, "retry" => false}
+           ] = entries(id, :model_error)
+
+    assert [note] = failed_notes(id)
+
+    assert note =~
+             "My call to the model failed (3 attempts): no response: #{body}. I will call it again"
+
+    # The fake stops sending once the client has closed each cancelled call's connection.
+    Process.sleep(50)
+    drain = fn drain -> receive do: (:byte -> drain.(drain)), after: (0 -> :ok) end
+    drain.(drain)
+    refute_receive :byte, 100
+  end
+
+  test "a slow reply that ends within model_call_max_ms is left alone", ctx do
+    {pid, id} = start!(ctx)
+    Nano.TestSettings.put(:model_call_max_ms, 1_000)
+
+    body =
+      ~s({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"slow"}}],) <>
+        ~s("usage":{"prompt_tokens":100,"completion_tokens":10}})
+
+    chunks = body |> :binary.bin_to_list() |> Enum.chunk_every(20) |> Enum.map(&to_string/1)
+    Fake.push(ctx.model, chunks: Stream.map(chunks, &(Process.sleep(60) && &1)))
+    send(pid, :go)
+
+    assert %{"text" => "slow", "latency_ms" => ms} = await(id, :model_response)
+    assert ms >= 60 * length(chunks)
+    assert entries(id, :model_error) == []
+  end
+
   test "a request refused as invalid halts the agent at once, with the provider's message", ctx do
     {pid, id} = start!(ctx)
     error = %{"error" => %{"code" => 400, "message" => "Unsupported parameter: 'reasoning'"}}

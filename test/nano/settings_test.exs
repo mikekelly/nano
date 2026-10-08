@@ -100,6 +100,8 @@ defmodule Nano.SettingsTest do
     for {key, value, message} <- [
           {:eval_timeout_ms, 0, "eval_timeout_ms must be a whole number from 1 to 4294967295"},
           {:eval_timeout_ms, "soon", "eval_timeout_ms must be a whole number from 1 to"},
+          {:model_call_max_ms, 0,
+           "model_call_max_ms must be a whole number from 1 to 4294967295"},
           {:node_max_tokens_per_hour, -5,
            "node_max_tokens_per_hour must be a whole number of 0 or more (0 = no limit)"},
           {:result_max_bytes, 9_000_000,

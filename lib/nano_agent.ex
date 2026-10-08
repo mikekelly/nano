@@ -906,7 +906,7 @@ defmodule NanoAgent do
     started = System.monotonic_time(:millisecond)
 
     {result, files} =
-      Nano.RawLog.recording(raw && "#{raw}-#{attempt}", fn ->
+      within_max(raw && "#{raw}-#{attempt}", fn ->
         Nano.Model.chat(model, messages, @tools, reasoning, max_output)
       end)
 
@@ -931,6 +931,34 @@ defmodule NanoAgent do
         else
           {:error, Map.put(error, :attempts, attempt)}
         end
+    end
+  end
+
+  # One attempt, recorded under `raw` (Nano.RawLog.recording/2), in a task of its own that is
+  # killed once it has run for the `model_call_max_ms` setting: the attempt then fails as
+  # transient, so it is retried like any other. Req's receive_timeout only bounds each wait for
+  # more of the reply (10 minutes; the Codex CLI's stream idle timeout is 5,
+  # DEFAULT_STREAM_IDLE_TIMEOUT_MS in codex-rs/model-provider-info/src/lib.rs), so a reply that
+  # keeps trickling in would otherwise hold the agent forever. The killed task held its HTTP/1
+  # connection checked out of the pool: the pool sees it die and closes that connection; its
+  # idle connections are left alone.
+  defp within_max(raw, fun) do
+    max = Nano.Settings.get(:model_call_max_ms)
+    task = Task.async(fn -> Nano.RawLog.recording(raw, fun) end)
+
+    case Task.yield(task, max) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        body = "the model call took longer than #{duration(max)}, so I cancelled it"
+
+        {{:error, %{status: nil, body: body, class: :transient}},
+         Nano.RawLog.cancelled(raw, body)}
+
+      # Not reached: the task is linked, so its crash is this process's.
+      {:exit, reason} ->
+        exit(reason)
     end
   end
 
