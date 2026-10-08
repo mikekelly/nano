@@ -71,13 +71,29 @@ defmodule Seedling.FrontOfMind do
         {:error, :unknown_agent}
 
       name ->
-        CapabilityStore.update(
-          :front_of_mind,
-          name,
-          @empty,
-          fn d -> {:ok, fun.(d), :ok} end,
-          opts
-        )
+        case CapabilityStore.update(
+               :front_of_mind,
+               name,
+               @empty,
+               fn d ->
+                 new = fun.(d)
+                 {:ok, new, new}
+               end,
+               opts
+             ) do
+          {:ok, doc} ->
+            if info = NanoAgent.info(name),
+              do:
+                Nano.Log.write(info, :front_of_mind_updated, %{
+                  configuration: Map.take(doc, ~w(enabled threshold drift revision written_at)),
+                  note_characters: if(doc["note"], do: String.length(doc["note"]), else: 0)
+                })
+
+            {:ok, :ok}
+
+          error ->
+            error
+        end
     end
   end
 
@@ -130,11 +146,15 @@ defmodule Seedling.FrontOfMind do
     request = Map.get(s, :request_id, 0)
     last = Map.get(s, :seedling_drift_request, -5)
 
-    if request - last >= 5 do
+    if request - last >= 5 or Map.get(s, :seedling_drift_revision) != d["revision"] do
       activity =
         s.transcript
         |> Enum.take(-6)
-        |> Enum.map_join("\n", &String.slice(&1["content"] || "", 0, 400))
+        |> Enum.map_join("\n", fn m ->
+          content = m["content"] || ""
+          text = if is_binary(content), do: content, else: Jason.encode!(content)
+          String.slice(text, 0, 400)
+        end)
 
       result = Seedling.Judgement.ask(:drift, %{note: d["note"], activity: activity})
 
@@ -153,9 +173,12 @@ defmodule Seedling.FrontOfMind do
             ""
         end
 
-      {Map.put(s, :seedling_drift_request, request), hint}
+      {s
+       |> Map.put(:seedling_drift_request, request)
+       |> Map.put(:seedling_drift_hint, hint)
+       |> Map.put(:seedling_drift_revision, d["revision"]), hint}
     else
-      {s, ""}
+      {s, Map.get(s, :seedling_drift_hint, "")}
     end
   end
 
