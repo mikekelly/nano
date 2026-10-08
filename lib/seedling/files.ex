@@ -351,7 +351,15 @@ defmodule Seedling.Files do
     limit = Keyword.get(opts, :limit, 100)
     cap = Keyword.get(opts, :max_bytes, 16_000)
     chars = Keyword.get(opts, :max_line_chars, 500)
-    state = %{entries: [], matches: 0, bytes: 0, truncated: false, lines_truncated: false}
+
+    state = %{
+      entries: [],
+      matches: 0,
+      bytes: 0,
+      truncated: false,
+      lines_truncated: false,
+      transformed: false
+    }
 
     result =
       Enum.reduce_while(File.stream!(path), state, fn line, state ->
@@ -360,8 +368,11 @@ defmodule Seedling.Files do
             text = data["lines"]["text"] || Base.decode64!(data["lines"]["bytes"])
             file = data["path"]["text"] || Base.decode64!(data["path"]["bytes"])
 
+            sanitized = Shell.display(text)
+            transformed = sanitized != text
+
             text =
-              text |> Shell.scrub() |> String.trim_trailing("\n") |> String.trim_trailing("\r")
+              sanitized |> String.trim_trailing("\n") |> String.trim_trailing("\r")
 
             cut_line = String.length(text) > chars
             text = String.slice(text, 0, chars)
@@ -394,7 +405,8 @@ defmodule Seedling.Files do
                      matches: state.matches + if(type == "match", do: 1, else: 0),
                      bytes:
                        state.bytes + byte_size(display) + byte_size(text) + byte_size(file) + 192,
-                     lines_truncated: state.lines_truncated or cut_line
+                     lines_truncated: state.lines_truncated or cut_line,
+                     transformed: state.transformed or transformed
                  }}
             end
 
@@ -410,6 +422,10 @@ defmodule Seedling.Files do
         if(result.truncated,
           do:
             "Search limit reached (#{limit} matches/#{cap} bytes). Increase limit/max_bytes or refine pattern."
+        ),
+        if(result.transformed,
+          do:
+            "Some binary/control bytes sanitized for display; inspect the raw files for original bytes."
         ),
         if(result.lines_truncated,
           do: "Some lines truncated to #{chars} characters. Use read/2 to see full lines."
@@ -433,6 +449,7 @@ defmodule Seedling.Files do
        matches: result.matches,
        truncated: result.truncated,
        lines_truncated: result.lines_truncated,
+       transformed: result.transformed,
        notice: if(notice == "", do: nil, else: notice),
        output_path: path
      }}

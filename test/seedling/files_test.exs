@@ -282,4 +282,17 @@ defmodule Seedling.FilesTest do
     assert {:error, %{reason: :invalid_options}} = Files.grep("x", path: dir, context: -1)
     assert {:error, %{reason: :invalid_options}} = Files.find("*", cwd: dir, limit: 0)
   end
+
+  test "search display sanitation is announced and raw search spool is available", %{
+    path: path,
+    dir: dir
+  } do
+    File.write!(path, "needle" <> <<1>> <> "text\n")
+    assert {:ok, result} = Files.grep("needle", path: dir)
+    assert result.matches == 1
+    assert result.transformed
+    assert result.text =~ "\\x01"
+    assert result.notice =~ "sanitized"
+    assert File.exists?(result.output_path)
+  end
 end
