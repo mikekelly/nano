@@ -8,8 +8,11 @@ defmodule Seedling.Bobbing do
 
   `tip` is the harness's current estimated context token length, **not** lifetime
   billed tokens. The cursor remembers the tip of the most recent appearance.
-  A bob is due initially, on source change, after compaction, on context reset,
-  after a distance strictly greater than the threshold, or on a drift signal.
+  A bob is due initially, on source change, after explicit compaction, after a
+  distance strictly greater than the threshold, or on a drift signal. Provider
+  measurements can correct an eager estimate downward; that alone is not a
+  context reset and conservatively clamps distance at zero until the tip grows
+  past the previous appearance. Callers must flag actual compaction explicitly.
   Disabled experiments do not change the cursor. The caller must append `text`
   to the conversation and log the returned event before its next model call.
   Do this mid-turn too, not just when a mailbox message arrives.
@@ -30,7 +33,6 @@ defmodule Seedling.Bobbing do
         opts[:compacted] == true -> "compaction"
         last == nil -> "initial"
         cursor["version"] != source.version -> "updated"
-        tip < last -> "context_reset"
         opts[:drift_probability] != nil -> "drift"
         distance > threshold -> "distance"
         true -> nil

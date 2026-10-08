@@ -59,13 +59,61 @@ defmodule Seedling.FrontOfMindTest do
     assert text =~ "New priority"
     assert {:ok, %{events: []}} = FrontOfMind.before_call("alice", 11, ctx.opts)
 
-    assert {:ok, %{events: [%{reason: "context_reset"}]}} =
-             FrontOfMind.before_call("alice", 0, ctx.opts)
+    assert {:ok, %{events: []}} = FrontOfMind.before_call("alice", 0, ctx.opts)
 
     assert {:error, :invalid_token_tip} = FrontOfMind.before_call("alice", -1, ctx.opts)
   end
 
-  test "independent toggles persist and configuration changes are logged", ctx do
+  test "provider estimate correction does not masquerade as compaction or repeat drift checks",
+       ctx do
+    source = %{source: "front_of_mind", text: "Stay focused", version: 1, written_at: "now"}
+    {:bob, cursor, %{reason: "initial"}} = Bobbing.check(source, %{}, 10_000)
+
+    for tip <- [9_000, 9_100, 9_500, 10_000, 14_000] do
+      assert {:skip, ^cursor} = Bobbing.check(source, cursor, tip)
+    end
+
+    assert {:bob, _, %{reason: "distance", distance_tokens: 4_001}} =
+             Bobbing.check(source, cursor, 14_001)
+
+    assert {:bob, _, %{reason: "compaction"}} =
+             Bobbing.check(source, cursor, 9_000, compacted: true)
+
+    assert {:bob, _, %{reason: "updated"}} = Bobbing.check(%{source | version: 2}, cursor, 9_000)
+
+    FrontOfMind.set("alice", "Stay focused", ctx.opts)
+    FrontOfMind.configure("alice", [drift: true], ctx.opts)
+    me = self()
+
+    opts =
+      ctx.opts ++
+        [
+          recent_activity: "Work",
+          drift_adapter: fn _, _ ->
+            send(me, :judged)
+            {:ok, %{probability: 0.1, model: "fake"}}
+          end
+        ]
+
+    assert {:ok, %{events: [_, %{type: :drift_judgement}, %{reason: "initial"}]}} =
+             FrontOfMind.before_call("alice", 10_000, opts)
+
+    assert_receive :judged
+
+    for tip <- [9_000, 9_100, 9_500, 10_000] do
+      assert {:ok, %{events: [], messages: []}} = FrontOfMind.before_call("alice", tip, opts)
+    end
+
+    refute_receive :judged, 10
+
+    assert {:ok, %{events: [%{type: :drift_judgement}, %{reason: "compaction"}]}} =
+             FrontOfMind.before_call("alice", 9_000, opts ++ [compacted: true])
+
+    assert_receive :judged
+  end
+
+  test "independent toggles persist and configuration changes are logged",
+       ctx do
     FrontOfMind.set("alice", "Remember", ctx.opts)
     assert {:error, :invalid_config} = FrontOfMind.configure("alice", [threshold: 0], ctx.opts)
     assert {:error, :invalid_config} = FrontOfMind.configure("alice", [unknown: true], ctx.opts)

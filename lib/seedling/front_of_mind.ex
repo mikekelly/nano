@@ -216,7 +216,7 @@ defmodule Seedling.FrontOfMind do
 
     due =
       config["drift"] and doc["note"] != nil and
-        (last == nil or opts[:compacted] == true or tip < last or
+        (last == nil or opts[:compacted] == true or
            distance > config["drift_interval"])
 
     if due do
