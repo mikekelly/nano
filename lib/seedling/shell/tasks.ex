@@ -12,10 +12,30 @@ defmodule Seedling.Shell.Tasks do
     end
   end
 
+  def tracked?(id) when is_binary(id) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        false
+
+      pid ->
+        try do
+          GenServer.call(pid, {:tracked, id})
+        catch
+          :exit, _ -> false
+        end
+    end
+  end
+
+  def tracked?(_), do: false
+
   @impl true
   def init(_), do: {:ok, %{tasks: %{}, pending: []}}
 
   @impl true
+  def handle_call({:tracked, id}, _from, state) do
+    {:reply, Enum.any?(state.tasks, fn {_ref, info} -> info.task.id == id end), state}
+  end
+
   def handle_call({:start, command, opts, caller}, _from, state) do
     id = Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
 
