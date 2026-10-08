@@ -96,5 +96,25 @@ defmodule Seedling.MCPTest do
     assert_receive {:mcp, "fixture", "notifications/resources/updated", _}
     assert :ok = MCP.unsubscribe(c2, "test://one", "agent")
     GenServer.stop(c2)
+    config = Path.join(dir, "config.json")
+    File.write!(config, Jason.encode!(%{"mcpServers" => %{"fixture" => opts[:server]}}))
+
+    {:ok, sup} =
+      Seedling.MCP.Supervisor.start_link(config: config, state_dir: dir, resolver: resolver)
+
+    assert {:ok, supervised} = MCP.ensure_connection("fixture", supervisor: sup, config: config)
+    ready(supervised)
+    assert :ok = MCP.watch(supervised, "agent")
+    Process.exit(supervised, :kill)
+    Process.sleep(30)
+    assert {:ok, restarted} = MCP.ensure_connection("fixture", supervisor: sup, config: config)
+    refute restarted == supervised
+    ready(restarted)
+    assert_receive {:mcp, "fixture", "connected", _}
+
+    assert {:error, :unknown_server} =
+             MCP.ensure_connection("absent", supervisor: sup, config: config)
+
+    Supervisor.stop(sup)
   end
 end

@@ -11,7 +11,7 @@ Seedling.MCP.discover(c) # paginated tools/resources/templates/prompts
 Seedling.MCP.call_tool(c, "read_file", %{"path" => "/tmp/example"})
 Seedling.MCP.read_resource(c, "test://one")
 Seedling.MCP.subscribe(c, "test://one", "lyra")
-Seedling.MCP.watch(c, "lyra") # all notifications, not persisted
+Seedling.MCP.watch(c, "lyra") # all notifications, persisted
 Seedling.MCP.page(result, offset: 0, limit: 8000) # print this, not large raw results
 ```
 
@@ -28,7 +28,9 @@ Never commit secrets. Headers are static: no OAuth discovery/refresh implemented
 
 Mailbox events are `{:mcp, server_name, method, params}`. `watch` receives all;
 subscriptions receive updates for their URI and connection/list/log/progress events.
-Every delivery resolves agent name through `NanoAgent.whereis/1`, so agent PID changes
+`ensure_connection(name, supervisor: Seedling.MCP.Supervisor, config: path)` returns
+an existing supervised client or starts one from config (supervisor must be running).
+Both watch names and subscriptions persist and replay. Every delivery resolves agent name through `NanoAgent.whereis/1`, so agent PID changes
 are safe. Subscriptions persist at `/data/mcp/<base64-server-name>.json` (or `state_dir`)
 and replay after client or server restart. One client per server/state_dir; no multiwriter
 locking. A corrupt state file is currently treated as empty. Filesystem persistence
