@@ -34,3 +34,14 @@ because the subprocess was stopped before natural exit. Both functions advertise
 search directory; existing path-shaped glob API retained. Ignore files follow
 ripgrep semantics (gitignore applies in a repository). Reads/search never mutate
 node settings. Files' original read/write/edit/ls functions unchanged.
+
+### Live goal validation (2026-10-08)
+
+Disposable delegated agent `lyra-goals-proof` received a vague brief, created a root
+and child with reasons, then idled. Its actual process was restarted (PID 0.2521 to
+0.3209); on a followup it reread persisted goals and marked both done. A fresh Task
+reader verified both statuses, retained reasons and child-parent link. Goal ids:
+`3MAiQHcvd24T263r`, `WZ0MiMqWWJfqBxd-`. Agent was stopped after validation; its JSON
+remains as a durable sample. Agent exhausted the 12,000 token budget after writing
+completion, before reporting completion; evidence comes from persisted reads, not
+a fabricated final report. This validates agent restart, not a whole-node reboot.
