@@ -98,7 +98,10 @@ for an orientation (below) first: on this node some rungs may already exist.
    exist, which module to start from for each, where the deeper documentation is (module
    docs, the seeding docs, the guidance). Each entry point leads further in, like a wiki,
    so the next agent (or you after a restart or a compaction) starts from the map instead of
-   from the source, and the map costs a few lines, not a manual.
+   from the source, and the map costs a few lines, not a manual. Put that design constraint
+   in the partial itself, as a template comment (in Mustache, `{{! … }}`), which is removed
+   when the prompt is rendered: whoever edits it sees why it must stay a short list of entry
+   points, and the agents it is rendered into pay nothing for it.
 5. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
    and pre-reading, give it a task, get its result as a message. From here on, anything
    large is a sub-agent's job and your context stays at the level of the plan. Build it
@@ -204,7 +207,8 @@ agent that may start others carries, with the operating principles, the guidance
 composing its children's prompts (fit each to the agent, from parts, passing on what that
 child needs). Without it, the next generation composes prompts with nothing to go on, and
 what you fitted for your children is lost one level down. Keep every part lean: it is paid for on every call of every agent that
-carries it.
+carries it. Let each part state its own purpose and limits in a template comment, removed
+when the prompt is rendered, so they travel with the part and cost no agent anything.
 
 **Use decision models where the LLM is too expensive and code is too brittle.** Some
 judgments come up constantly, must be fast and cheap, and are beyond deterministic code
