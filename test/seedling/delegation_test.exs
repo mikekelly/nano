@@ -75,7 +75,27 @@ defmodule Seedling.DelegationTest do
     assert :ok = D.report(name, %{summary: "persisted"})
     path = Seedling.Delegation.Supervisor.file(name)
     assert File.exists?(path)
-    Supervisor.stop(Seedling.Delegation.Supervisor)
+    child_id = Seedling.Delegation.Supervisor
+
+    supervised? =
+      Enum.any?(Supervisor.which_children(Nano.Supervisor), fn {id, _, _, _} -> id == child_id end)
+
+    saved_ready = :persistent_term.get({child_id, :boot_ready}, :unset)
+
+    if supervised?,
+      do: Supervisor.terminate_child(Nano.Supervisor, child_id),
+      else: Supervisor.stop(child_id)
+
+    on_exit(fn ->
+      if pid = Process.whereis(child_id), do: Supervisor.stop(pid)
+
+      if saved_ready == :unset,
+        do: :persistent_term.erase({child_id, :boot_ready}),
+        else: :persistent_term.put({child_id, :boot_ready}, saved_ready)
+
+      if supervised?, do: Supervisor.restart_child(Nano.Supervisor, child_id)
+    end)
+
     :persistent_term.erase({Seedling.Delegation.Supervisor, :boot_ready})
     {:ok, boot_sup} = Seedling.Delegation.Supervisor.start_link(restore: false)
     Process.unlink(boot_sup)
