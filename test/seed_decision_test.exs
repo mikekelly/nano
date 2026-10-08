@@ -267,6 +267,40 @@ defmodule SeedDecisionTest do
     assert {:error, :invalid_options} = SeedDecision.decide(:unknown, @reply, [])
   end
 
+  test "drift hook returns real Noul probability on the SeedFocus two-argument contract" do
+    http = fn opts ->
+      assert opts[:json].state == %{note: "Finish the parser", recent: "Repainting the UI"}
+      assert opts[:json].questions["drift"].type == "noul"
+      response(%{"drift" => answer(0.94)})
+    end
+
+    assert {:ok, 0.94} =
+             SeedDecision.drift("Finish the parser", "Repainting the UI",
+               api_key: "test-only-key",
+               http: http
+             )
+
+    assert is_function(&SeedDecision.drift/2, 2)
+  end
+
+  test "drift remains unavailable without a key and rejects malformed model answers" do
+    assert {:error, {:unavailable, :missing_api_key}} =
+             SeedDecision.drift("note", "recent", api_key: nil)
+
+    assert {:error, :invalid_response} =
+             SeedDecision.drift("note", "recent", api_key: "test-only-key", http: fake(%{}))
+
+    assert {:error, :invalid_state} = SeedDecision.drift(nil, "recent", api_key: nil)
+
+    assert {:ok, %{probability: 0.2}} =
+             SeedDecision.decide(
+               :drift,
+               %{"note" => %{intent: "parser"}, "recent" => "parser tests"},
+               api_key: "test-only-key",
+               http: fake(%{"drift" => answer(0.2)})
+             )
+  end
+
   defmodule Endpoint do
     @behaviour Plug
     def init(opts), do: opts
