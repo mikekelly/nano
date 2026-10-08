@@ -28,6 +28,7 @@ defmodule Nano.Application do
           Nano.Settings,
           Nano.StateStore,
           {Task.Supervisor, name: Nano.EvalSupervisor},
+          {DynamicSupervisor, name: SeedMCP.Supervisor, strategy: :one_for_one},
           # Holds the ChatGPT subscription's tokens; its init cannot fail, so it cannot stop the boot.
           Nano.ChatGPT.Auth,
           # OpenRouter logins under way (its OAuth PKCE flow).
