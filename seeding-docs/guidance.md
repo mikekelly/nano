@@ -27,13 +27,21 @@ the agent's situation and name where to find more, not contain more. Put detail 
 the ones before it, and each makes the next one cheaper, so it is a good default. Check
 for an orientation (below) first: on this node some rungs may already exist.
 
-1. *Files*: `read(path, opts)` with paging and a size cap, `write(path, content)`,
+1. *Compaction* ([compaction.md](compaction.md)), first, and live: your conversation
+   compacted automatically, before any model call that would leave too little room, so you
+   stay the same agent and keep working. Reaching the context limit is the commonest way an
+   agent is bricked, apart from mistakes made at runtime: the harness stops calling the
+   model, and the agent cannot act, report, or even shrink its own context. Every other rung
+   assumes an agent can run as long as its job takes, and compaction protects nobody until it
+   is loaded into the running node, so build it first and put it live before anything else
+   is built on it, and before work fans out to agents that will each meet the limit.
+2. *Files*: `read(path, opts)` with paging and a size cap, `write(path, content)`,
    `edit(path, old, new)` as an exact-text replacement, `ls`, `find(glob)`, `grep(pattern)`.
    Everything else reads and changes files; without these, every other rung is written by
    hand. Return shapes that are easy to pattern-match, errors returned not raised: a
    caller can branch on a value in the same eval, while a raise ends the eval and costs a
    stacktrace in context.
-2. *Shell*: `sh(cmd, opts)` with cwd, timeout and bounded, tail-able output; then
+3. *Shell*: `sh(cmd, opts)` with cwd, timeout and bounded, tail-able output; then
    background tasks whose completion arrives as a mailbox event
    ([background-tasks.md](background-tasks.md)), so long commands never hold a turn.
 
@@ -88,11 +96,6 @@ for an orientation (below) first: on this node some rungs may already exist.
    What they share: every cut is announced in the result, together with the exact way to
    get the rest; every error says what to do next; and results are compact text that is
    cheap to read, not raw data structures.
-3. *Compaction* ([compaction.md](compaction.md)): your conversation compacted
-   automatically, before any model call that would leave too little room, so you stay the
-   same agent and keep working. Without it every agent's working life ends at its context
-   limit, mid-task and unable to report; every rung after this assumes an agent can run as
-   long as its job takes, and it has to be working before it is needed.
 4. *Orientation*: a short partial, `orientation.md`, that goes into the system prompt of every
    agent you compose, and whose only job is to give the entry points: what capabilities
    exist, which module to start from for each, where the deeper documentation is (module
@@ -142,7 +145,8 @@ more context than doing it. This is one of the operating principles every agent 
 **When you fan out, put shared foundations on the critical path.** Agents working in
 parallel each start from the code that exists when they start, and cannot use what a
 sibling is still building until it is merged. If several tasks will need the same
-foundation (file and shell utilities, a delegation module, a test helper), fanning out
+foundation (compaction, live in the node, which every agent will need; file and shell
+utilities; a delegation module; a test helper), fanning out
 before it exists means each child builds its own, and you pay for that work several times
 over and again when the copies conflict at merge. So decide what the tasks share, land
 that first (yourself or through one agent), and start the parallel work from it; fan out
@@ -153,8 +157,8 @@ when it nears your limit (when the next call, with room for a reply, might not f
 harness stops calling the model: you cannot then do anything, including shrink it. The seed
 has no compaction, and an agent that will run long needs it to happen automatically, before
 the limit, while it stays the same agent ([compaction.md](compaction.md) is the spec). Build
-it early, while you have plenty of room, and keep your goals current as you go:
-they are what a summary can point to, and what survives it. Until it exists, the budget
+it first, while you have plenty of room, put it live, and keep your goals current as you
+go: they are what a summary can point to, and what survives it. Until it exists, the budget
 line delivered with your events tells you where you are. Every agent you start needs it as
 much as you do (it is one of the operating principles, below): an agent halted for its
 context cannot report what it found.
