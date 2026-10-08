@@ -50,7 +50,7 @@ defmodule Seedling.Delegation do
   never a claimed reliable delivery. `status/1` reads disk even without a watcher.
   """
 
-  alias Seedling.{Files, Shell, Prompts}
+  alias Seedling.{Shell, Prompts}
   alias Seedling.Delegation.Watch
   @required [:model, :reasoning, :max_turns, :max_tokens, :max_context]
 
@@ -245,84 +245,31 @@ defmodule Seedling.Delegation do
     do: error(:invalid_prereads, "pre must be a list of files, with positive pre_max_bytes.")
 
   defp compose(parent, opts, prereads) do
-    prompt_root = opts[:prompt_root] || Path.expand("../../priv/seedling/prompts", __DIR__)
+    vars = %{
+      "job" => literal(opts[:job]),
+      "parent" => parent,
+      "prereads" =>
+        Enum.map_join(prereads, "\n", fn r ->
+          "Preread data: #{r.path} (SHA-256 #{r.sha256}, #{r.bytes} bytes).\n---\n#{literal(r.text)}\n---\n"
+        end)
+    }
+
     parts = opts[:parts] || ["operating", "orientation", opts[:flavour] || "builder"]
+    overrides = opts[:partials] || %{}
 
-    with true <- is_list(parts) and Enum.all?(parts, &valid_name?/1),
-         {:ok, facts} <-
-           read_facts(opts[:facts_file] || Path.expand("../../priv/system_prompt.txt", __DIR__)),
-         {:ok, partials} <- load_parts(parts ++ ["report"], prompt_root, opts[:partials] || %{}) do
-      vars = %{
-        "job" => literal(opts[:job]),
-        "parent" => parent,
-        "prereads" =>
-          Enum.map_join(prereads, "\n", fn r ->
-            "Preread data: #{r.path} (SHA-256 #{r.sha256}, #{r.bytes} bytes).\n---\n#{literal(r.text)}\n---\n"
-          end)
-      }
+    if is_list(parts) and is_map(overrides) do
+      overrides = Map.put(overrides, "delegation-job", "Assigned job: {{job}}\n{{prereads}}")
 
-      template =
-        facts <>
-          "\n" <>
-          Enum.map_join(parts, "\n", &"{{>#{&1}}}") <>
-          "\n{{>report}}\nAssigned job: {{job}}\n{{prereads}}"
+      prompt_opts =
+        opts
+        |> Keyword.take([:facts_file, :prompt_root])
+        |> Keyword.merge(partials: overrides, max_bytes: opts[:prompt_max_bytes] || 48_000)
 
-      Prompts.render(template, vars,
-        partials: partials,
-        preserve: Prompts.runtime_variables(),
-        max_bytes: opts[:prompt_max_bytes] || 48_000
-      )
+      Prompts.compose(parts ++ ["report", "delegation-job"], vars, prompt_opts)
     else
-      {:error, _} = error ->
-        error
-
-      _ ->
-        error(:prompt_parts, "Give a list of partial names and readable facts_file/prompt_root.")
+      error(:prompt_parts, "Give a list of partial names and a string-keyed partials text map.")
     end
   end
-
-  defp read_facts(path) when is_binary(path) do
-    case Files.read(path, limit: 5000, max_bytes: 48_000) do
-      {:ok, %{truncated: false, text: text}} ->
-        {:ok, text}
-
-      {:ok, _} ->
-        error(
-          :facts_too_large,
-          "Node facts exceed 48 KB/5000 lines; keep the facts template lean."
-        )
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp read_facts(_), do: error(:invalid_facts, "facts_file must be a readable text path.")
-
-  defp load_parts(names, dir, overrides) when is_map(overrides) do
-    Enum.reduce_while(names, {:ok, overrides}, fn name, {:ok, acc} ->
-      case Map.fetch(acc, name) do
-        {:ok, text} when is_binary(text) ->
-          {:cont, {:ok, acc}}
-
-        _ ->
-          case File.read(Path.join(dir, name <> ".md")) do
-            {:ok, text} ->
-              {:cont, {:ok, Map.put(acc, name, text)}}
-
-            {:error, reason} ->
-              {:halt,
-               error(
-                 :missing_partial,
-                 "Cannot read partial #{name}: #{inspect(reason)}; supply partials override or prompt_root."
-               )}
-          end
-      end
-    end)
-  end
-
-  defp load_parts(_, _, _),
-    do: error(:prompt_parts, "partials must be a string-keyed map of text.")
 
   defp literal(text), do: String.replace(text, "{{", "{ {")
 
