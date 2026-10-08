@@ -89,6 +89,53 @@ defmodule SeedTasksTest do
     assert_receive {:seed_task, _, %{status: :exited, bytes: 5}}, 2000
   end
 
+  test "reconciliation marks orphans, replays pending completion, acknowledgment stops replay", %{
+    root: root
+  } do
+    name = "seed-tasks-reconcile-" <> Path.basename(root)
+    {:ok, h} = SeedTasks.start("true", root: root, owner: name)
+    Process.sleep(100)
+    {:ok, state} = SeedTasks.status(h)
+    path = Path.join(root, h.id <> ".state")
+    orphan = Map.merge(state, %{status: :running, boot_id: :old_vm})
+    File.write!(path, :erlang.term_to_binary(orphan))
+    assert {:ok, [{:ok, _, :interrupted}]} = SeedTasks.reconcile(root)
+    assert {:ok, %{status: :interrupted}} = SeedTasks.status(h)
+    assert :yes = Nano.Names.register_name({:agent, name}, self())
+    on_exit(fn -> Nano.Names.unregister_name({:agent, name}) end)
+    assert_receive {:seed_task, _, %{status: :interrupted}}, 2000
+    assert :ok = SeedTasks.ack(h)
+    Process.sleep(300)
+    # A replay already in flight can arrive before ack; flush at-least-once duplicates.
+    flush_events()
+    assert {:ok, _} = SeedTasks.reconcile(root)
+    refute_receive {:seed_task, _, _}, 400
+    assert {:ok, %{pending: false}} = SeedTasks.status(h)
+  end
+
+  test "reconcile preserves live workers and repeated cancellation completes once", %{root: root} do
+    for _ <- 1..20 do
+      {:ok, h} = SeedTasks.start("sleep 5", root: root)
+      assert {:error, :not_finished} = SeedTasks.ack(h)
+      assert {:ok, _} = SeedTasks.reconcile(root)
+      assert {:ok, %{status: status}} = SeedTasks.status(h)
+      assert status in [:starting, :running]
+      for _ <- 1..10, do: SeedTasks.cancel(h)
+      assert_receive {:seed_task, id, %{status: :cancelled}}, 2000
+      assert id == h.id
+      assert {:error, :not_running} = SeedTasks.cancel(h)
+      refute_receive {:seed_task, ^id, _}, 20
+    end
+  end
+
+  defp flush_events do
+    receive do
+      {:seed_task, _, _} -> flush_events()
+    after
+      0 -> :ok
+    end
+  end
+
   test "empty output and errors", %{root: root} do
     {:ok, h} = SeedTasks.start("true", root: root)
     assert_receive {:seed_task, _, %{bytes: 0}}, 3000

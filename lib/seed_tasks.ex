@@ -13,7 +13,10 @@ defmodule SeedTasks do
   kill commands. State and full merged stdout/stderr live under `root`
   (default `/data/seed_tasks`). Handles contain that root and are portable
   across evals. Finished status survives VM restart; running commands do not
-  survive VM/container restart (their last recorded status is retained).
+  survive VM/container restart: call `reconcile(root)` on boot to mark orphan
+  records `:interrupted` and replay pending named-owner completions. Named
+  recipients call `ack(handle)` after processing; delivery is at-least-once,
+  deduplicate by task id. Unacknowledged delivery follows owner pid changes.
 
   Integration: SeedTools.sh may delegate to this API, but must not wrap it in
   a linked Task. No application supervisor or harness reload is required.
@@ -44,6 +47,9 @@ defmodule SeedTasks do
       state =
         Map.merge(handle, %{
           status: :starting,
+          boot_id: boot_id(),
+          owner: owner,
+          pending: is_binary(owner),
           worker: pid,
           output_path: Path.join(root, id <> ".log"),
           exit_code: nil,
@@ -284,7 +290,7 @@ defmodule SeedTasks do
 
     case save(result) do
       :ok ->
-        notify(owner, {:seed_task, state.id, Map.drop(result, [:worker, :root])})
+        if is_binary(owner), do: deliver(state, nil), else: notify(owner, event(result))
 
       {:error, reason} ->
         notify(
@@ -292,6 +298,85 @@ defmodule SeedTasks do
           {:seed_task, state.id,
            %{status: :state_error, error: reason, output_path: state.output_path}}
         )
+    end
+  end
+
+  @doc "Acknowledge a named-owner completion after handling it. Delivery is at-least-once across restarts; deduplicate by task id."
+  def ack(handle) do
+    with {:ok, state} <- status(handle) do
+      if state.status in [:starting, :running],
+        do: {:error, :not_finished},
+        else: save(Map.put(state, :pending, false))
+    end
+  end
+
+  @doc "Reconcile a root on application boot. Marks orphan active records interrupted (never signals stale OS pids), and replays unacknowledged named-owner completions. Call once on boot for each root; replay can duplicate deliveries, so deduplicate by id."
+  def reconcile(root \\ "/data/seed_tasks") do
+    with {:ok, names} <- File.ls(root) do
+      results =
+        for name <- names, String.ends_with?(name, ".state") do
+          handle = %{root: Path.expand(root), id: String.trim_trailing(name, ".state")}
+
+          case status(handle) do
+            {:ok, state} ->
+              active = state.status in [:starting, :running]
+
+              orphan =
+                active and
+                  (Map.get(state, :boot_id) != boot_id() or not Process.alive?(state.worker))
+
+              if orphan do
+                bytes =
+                  case File.stat(state.output_path) do
+                    {:ok, st} -> st.size
+                    _ -> 0
+                  end
+
+                interrupted =
+                  Map.merge(state, %{status: :interrupted, exit_code: nil, bytes: bytes})
+
+                case save(interrupted) do
+                  :ok ->
+                    replay(interrupted)
+                    {:ok, state.id, :interrupted}
+
+                  error ->
+                    error
+                end
+              else
+                unless active, do: replay(state)
+                {:ok, state.id, state.status}
+              end
+
+            error ->
+              error
+          end
+        end
+
+      {:ok, results}
+    end
+  end
+
+  defp boot_id, do: {:erlang.system_info(:start_time), :erlang.time_offset()}
+
+  defp event(state),
+    do: {:seed_task, state.id, Map.drop(state, [:worker, :root, :boot_id, :owner, :pending])}
+
+  defp replay(%{pending: true, owner: owner} = state) when is_binary(owner),
+    do: spawn(fn -> deliver(state, nil) end)
+
+  defp replay(_), do: :ok
+
+  defp deliver(handle, previous) do
+    case status(handle) do
+      {:ok, %{pending: true, owner: owner} = state} ->
+        pid = NanoAgent.whereis(owner)
+        if is_pid(pid) and pid != previous, do: send(pid, event(state))
+        Process.sleep(250)
+        deliver(handle, pid)
+
+      _ ->
+        :ok
     end
   end
 
