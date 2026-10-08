@@ -60,21 +60,34 @@ defmodule FrontOfMind do
 
   def get(owner, opts \\ []), do: Memory.get(namespace(owner), @key, opts)
 
-  def configure(owner, config, opts \\ []) when is_list(config) or is_map(config) do
-    config = Map.new(config, fn {k, v} -> {to_string(k), v} end)
+  def configure(owner, config, opts \\ [])
 
-    if Enum.all?(config, fn
-         {k, v} when k in ["enabled", "drift_enabled"] -> is_boolean(v)
-         {"threshold_tokens", v} -> is_integer(v) and v in 100..1_000_000
-         {"drift_every_calls", v} -> is_integer(v) and v in 1..1000
-         {"drift_threshold", v} -> is_number(v) and v >= 0 and v <= 1
-         _ -> false
-       end) do
-      mutate(owner, opts, &Map.update!(&1, "config", fn old -> Map.merge(old, config) end))
+  def configure(owner, config, opts)
+      when is_list(config) or (is_map(config) and not is_struct(config)) do
+    normalized =
+      Enum.reduce_while(config, %{}, fn
+        {key, value}, acc when is_atom(key) or is_binary(key) ->
+          key = to_string(key)
+          if Map.has_key?(acc, key), do: {:halt, :error}, else: {:cont, Map.put(acc, key, value)}
+
+        _, _ ->
+          {:halt, :error}
+      end)
+
+    if is_map(normalized) and Enum.all?(normalized, &valid_option?/1) do
+      mutate(owner, opts, &Map.update!(&1, "config", fn old -> Map.merge(old, normalized) end))
     else
       {:error, :invalid_configuration}
     end
   end
+
+  def configure(_, _, _), do: {:error, :invalid_configuration}
+
+  defp valid_option?({k, v}) when k in ["enabled", "drift_enabled"], do: is_boolean(v)
+  defp valid_option?({"threshold_tokens", v}), do: is_integer(v) and v in 100..1_000_000
+  defp valid_option?({"drift_every_calls", v}), do: is_integer(v) and v in 1..1000
+  defp valid_option?({"drift_threshold", v}), do: is_number(v) and v >= 0 and v <= 1
+  defp valid_option?(_), do: false
 
   defp mutate(owner, opts, fun) do
     Memory.update(
@@ -330,7 +343,10 @@ defmodule FrontOfMind do
     div(bytes + 1, 2)
   end
 
-  defp namespace(owner), do: "front-of-mind:" <> owner
+  defp namespace(owner) when is_binary(owner) and byte_size(owner) > 0,
+    do: "front-of-mind:" <> owner
+
+  defp namespace(_), do: ""
   defp now(), do: DateTime.utc_now() |> DateTime.to_iso8601()
   defp version(), do: Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
 end
