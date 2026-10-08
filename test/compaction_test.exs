@@ -31,4 +31,75 @@ defmodule CompactionTest do
     assert compacted.pending == ["new"]
     assert compacted.context_used == 0
   end
+
+  test "raw sigils preserve quoted code without evaluating interpolation" do
+    code = "Compaction.provide_summary(~S|literal " <> <<35>> <> "{danger()} \\ path|)"
+    assert {:ok, text} = Compaction.parse(code)
+    assert text == "literal " <> <<35>> <> "{danger()} \\ path"
+  end
+
+  test "transport retries identical request and usage includes refused replies" do
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    owner = self()
+
+    chat = fn _, messages, _, _, _ ->
+      send(owner, {:request, messages})
+      n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+
+      case n do
+        0 ->
+          {:error, :connection_lost}
+
+        1 ->
+          {:ok, %{message: %{}, usage: %{"total_tokens" => 5}, cost: 1}}
+
+        2 ->
+          {:ok,
+           %{
+             message: %{
+               "tool_calls" => [
+                 %{
+                   "function" => %{
+                     "name" => "eval",
+                     "arguments" =>
+                       Jason.encode!(%{code: ~s|Compaction.provide_summary("Goal: continue")|})
+                   }
+                 }
+               ]
+             },
+             usage: %{"total_tokens" => 9},
+             cost: 2
+           }}
+      end
+    end
+
+    assert {:ok, "Goal: continue", metrics} =
+             Compaction.run_with_usage("test", "low", [], chat: chat)
+
+    assert metrics.attempts == 3
+    assert length(metrics.responses) == 2
+    assert_receive {:request, first}
+    assert_receive {:request, second}
+    assert_receive {:request, third}
+    assert first == second
+    assert third != second
+    Agent.stop(counter)
+  end
+
+  test "hung provider calls time out and stop after three attempts" do
+    owner = self()
+
+    chat = fn _, _, _, _, _ ->
+      send(owner, {:worker, self()})
+      Process.sleep(:infinity)
+    end
+
+    assert {:error, _, %{attempts: 3, responses: []}} =
+             Compaction.run_with_usage("test", "low", [], chat: chat, timeout: 5)
+
+    for _ <- 1..3 do
+      assert_receive {:worker, worker}
+      refute Process.alive?(worker)
+    end
+  end
 end
