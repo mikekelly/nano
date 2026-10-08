@@ -30,11 +30,17 @@ defmodule Nano.Model do
     * `:refused`: the request is invalid, and sending it again would not change that (a 4xx
       such as an unsupported parameter). The agent halts, `:model_refused`.
   """
-  def chat(@prefix <> model, messages, tools, reasoning, _max_output),
-    do: Nano.ChatGPT.chat(model, messages, tools, reasoning)
+  def chat(model, messages, tools, reasoning, max_output) do
+    messages = Nano.Images.expand(messages)
 
-  def chat(model, messages, tools, reasoning, max_output),
-    do: Nano.OpenRouter.chat(model, messages, tools, reasoning, max_output)
+    case model do
+      @prefix <> id -> Nano.ChatGPT.chat(id, messages, tools, reasoning)
+      _ -> Nano.OpenRouter.chat(model, messages, tools, reasoning, max_output)
+    end
+  rescue
+    error in ArgumentError ->
+      {:error, %{status: nil, body: Exception.message(error), class: :refused}}
+  end
 
   @doc """
   The class (see `chat/5`) of an HTTP failure, by its status: none at all, 408, 409, 425, 429

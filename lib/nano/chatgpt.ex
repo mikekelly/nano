@@ -28,6 +28,7 @@ defmodule Nano.ChatGPT do
              id: id,
              name: id,
              context_length: 272_000,
+             input_modalities: ["text", "image"],
              reasoning_levels: ~w(low medium high xhigh max),
              default_reasoning: if(id == "gpt-6.1-sol", do: "low", else: "medium")
            }
@@ -107,6 +108,19 @@ defmodule Nano.ChatGPT do
   defp reasoning(level), do: %{effort: level, summary: "auto"}
 
   ## Chat messages to Responses input items
+
+  defp input(%{"role" => "user", "content" => parts}) when is_list(parts) do
+    content =
+      Enum.map(parts, fn
+        %{"type" => "text", "text" => text} ->
+          %{type: "input_text", text: text}
+
+        %{"type" => "image_url", "image_url" => %{"url" => url}} ->
+          %{type: "input_image", image_url: url}
+      end)
+
+    [%{type: "message", role: "user", content: content}]
+  end
 
   defp input(%{"role" => "user", "content" => text}),
     do: [%{type: "message", role: "user", content: [%{type: "input_text", text: text}]}]
@@ -330,7 +344,8 @@ defmodule Nano.ChatGPT do
         %{
           id: m["slug"],
           name: m["display_name"] || m["slug"],
-          context_length: m["context_window"]
+          context_length: m["context_window"],
+          input_modalities: m["input_modalities"] || ["text"]
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )

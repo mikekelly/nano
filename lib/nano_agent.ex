@@ -94,6 +94,7 @@ defmodule NanoAgent do
         prompt_file: file,
         context_window: entry.context_length,
         max_output: entry[:max_output],
+        input_modalities: entry[:input_modalities] || ["text"],
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
           with [pid | _] <- Process.get(:"$callers"),
@@ -166,6 +167,24 @@ defmodule NanoAgent do
   @doc "Casts a term to an agent (pid or name); it arrives as an event, like a plain `send/2`."
   def notify(agent, term), do: GenServer.cast(target(agent), {:notify, term})
 
+  @doc "Snapshots an image file and delivers it with text; returns :ok or {:error, reason}."
+  def notify_image(agent, path, text \\ "") do
+    with {:ok, ref} <- Nano.Images.import(path) do
+      deliver_images(agent, [ref], text)
+    end
+  end
+
+  @doc "Delivers already imported image references (for API/dashboard uploads)."
+  def deliver_images(agent, refs, text \\ "") when is_list(refs) and is_binary(text) do
+    with true <- refs != [] and length(refs) <= 20,
+         true <- Enum.all?(refs, &match?({:ok, _, _}, Nano.Images.read(&1))) do
+      GenServer.cast(target(agent), {:images, refs, text})
+      :ok
+    else
+      _ -> {:error, "invalid images: supply 1..20 valid imported references"}
+    end
+  end
+
   @doc "Clears an agent's halt, whatever the reason; for `:start_failed` that retries the start."
   def unhalt(agent), do: GenServer.cast(target(agent), :unhalt)
 
@@ -213,6 +232,8 @@ defmodule NanoAgent do
         cost: s.cost,
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
+        input_modalities: Map.get(s, :input_modalities, ["text"]),
+        compactions: Map.get(s, :compactions, 0),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
         budget: budget(s)
       }
@@ -333,6 +354,8 @@ defmodule NanoAgent do
       bindings: [],
       status: :idle,
       pending: [],
+      pending_images: [],
+      tool_images: [],
       halted: nil,
       max_turns: opts[:max_turns],
       max_tokens: opts[:max_tokens],
@@ -371,6 +394,8 @@ defmodule NanoAgent do
         # max_context cannot exceed, and the most it generates in one response (or nil).
         context_window: opts[:context_window],
         max_output: opts[:max_output],
+        input_modalities: opts[:input_modalities] || ["text"],
+        compactions: 0,
         # The size in bytes of the conversation context_used measured: what a request adds
         # is estimated from the growth since (estimate/1).
         measured_bytes: 0
@@ -497,7 +522,13 @@ defmodule NanoAgent do
   # come from the model's list if it can be had, and the window then caps max_context (which
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
-  defp upgrade(%{context_window: _} = s), do: s
+  defp upgrade(%{context_window: _} = s),
+    do:
+      s
+      |> Map.put_new(:input_modalities, ["text"])
+      |> Map.put_new(:compactions, 0)
+      |> Map.put_new(:pending_images, [])
+      |> Map.put_new(:tool_images, [])
 
   defp upgrade(s) do
     entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
@@ -511,7 +542,11 @@ defmodule NanoAgent do
       max_context: if(window && (max == 0 or max > window), do: window, else: max),
       context_used: Map.get(s, :context_used, 0),
       measured_bytes:
-        if(measured == [], do: 0, else: bytes(s.system_prompt, Enum.reverse(measured)))
+        if(measured == [], do: 0, else: bytes(s.system_prompt, Enum.reverse(measured))),
+      input_modalities: entry[:input_modalities] || ["text"],
+      compactions: 0,
+      pending_images: [],
+      tool_images: []
     })
   end
 
@@ -574,6 +609,14 @@ defmodule NanoAgent do
     Enum.reduce(vars, s.template, fn {k, v}, acc ->
       String.replace(acc, "{{#{k}}}", to_string(v))
     end)
+    |> Kernel.<>(
+      if("image" in Map.get(s, :input_modalities, []),
+        do:
+          "\nYou can see image attachments. Use Nano.Images.view(path) in eval to view a local PNG, JPEG or GIF.",
+        else:
+          "\nYour model cannot see images. The harness will explicitly warn when an image arrives; do not guess its contents."
+      )
+    )
   end
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
@@ -596,6 +639,9 @@ defmodule NanoAgent do
   ## Mailbox
 
   @impl true
+  def handle_cast({:images, refs, text}, s),
+    do: noreply(maybe_start_turn(add_images(note(s, text), refs)))
+
   def handle_cast({:notify, term}, s), do: noreply(event(s, term))
 
   # From Nano.StateStore after it restarted with an empty table: save again, and be watched.
@@ -789,14 +835,37 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        refs = if new_turn?, do: s.pending_images ++ s.tool_images, else: s.tool_images
+
+        text =
+          if new_turn?,
+            do: Enum.join(s.pending ++ [line], "\n"),
+            else: "Images viewed by your eval."
+
+        content = if refs == [], do: text, else: Nano.Images.parts(text, refs)
+        user = %{"role" => "user", "content" => content}
+
+        next =
+          cond do
+            new_turn? -> %{append(s, user) | pending: [], pending_images: [], tool_images: []}
+            refs != [] -> %{append(s, user) | tool_images: []}
+            true -> s
+          end
+
+        next = front_of_mind(next, :before_request)
         estimate = estimate(next)
         room = b.max_context - estimate
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        cond do
+          Nano.Compaction.due?(b.max_context, estimate) and compactable?(s) ->
+            compact(s, {:request, new_turn?})
+
+          b.max_context > 0 and room < @reply_room ->
+            s |> context_halt(estimate) |> end_turn("budget")
+
+          true ->
+            call(next, new_turn? && line, estimate, room)
+        end
     end
   end
 
@@ -831,7 +900,7 @@ defmodule NanoAgent do
     do:
       byte_size(
         Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
-      )
+      ) + Nano.Images.count(transcript) * Nano.Images.tokens() * 2
 
   defp context_halt(s, estimate) do
     b = budget(s)
@@ -940,6 +1009,9 @@ defmodule NanoAgent do
 
   defp jitter(ms), do: round(ms * (0.9 + :rand.uniform() / 5))
 
+  defp task_done(%{task: %{kind: :compaction} = t} = s, result),
+    do: compaction_done(%{s | task: nil}, t, result)
+
   defp task_done(%{task: %{kind: :model}} = s, result), do: model_done(%{s | task: nil}, result)
 
   defp task_done(%{task: %{kind: :eval} = t} = s, result),
@@ -966,9 +1038,18 @@ defmodule NanoAgent do
     s = check_budget(s)
 
     cond do
-      s.halted -> end_turn(s, "error")
-      error.class == :transient -> wait(s, error)
-      true -> s |> refused(error) |> end_turn("error")
+      s.halted ->
+        end_turn(s, "error")
+
+      error.class == :context and not Map.get(s, :context_retry_compacted, false) and
+          compactable?(s) ->
+        compact(Map.put(s, :context_retry_compacted, true), {:request, false})
+
+      error.class == :transient ->
+        wait(s, error)
+
+      true ->
+        s |> refused(error) |> end_turn("error")
     end
   end
 
@@ -1016,6 +1097,7 @@ defmodule NanoAgent do
       |> Map.put(:context_used, prompt + completion)
       # Calls no longer fail in a row.
       |> Map.put(:retry, nil)
+      |> Map.put(:context_retry_compacted, false)
       |> append(message)
 
     s =
@@ -1128,7 +1210,7 @@ defmodule NanoAgent do
           "You have used #{turns} and #{used(b.tokens_used, b.max_tokens, "tokens")}"
         )
 
-      reached?(b.context_used, b.max_context) ->
+      reached?(b.context_used, b.max_context) and not compactable?(s) ->
         log(s, :budget_exhausted, Map.put(b, :scope, "context"))
 
         text =
@@ -1267,7 +1349,104 @@ defmodule NanoAgent do
 
   defp end_turn(s, reason) do
     log(s, :turn_ended, %{reason: reason})
-    maybe_start_turn(%{s | status: :idle, calls: [], idle_called: false})
+    s = %{s | status: :idle, calls: [], idle_called: false}
+
+    if s.halted == nil and Nano.Compaction.due?(s.max_context, estimate(s)) and compactable?(s),
+      do: compact(s, :idle),
+      else: maybe_start_turn(s)
+  end
+
+  defp front_of_mind(s, hook) do
+    if function_exported?(Seedling.FrontOfMind, hook, 1),
+      do: apply(Seedling.FrontOfMind, hook, [s]),
+      else: s
+  end
+
+  defp compactable?(s), do: match?({:ok, _, _}, Nano.Compaction.plan(s.transcript, s.max_context))
+
+  defp compact(s, resume) do
+    {:ok, older, recent} = Nano.Compaction.plan(s.transcript, s.max_context)
+
+    log(s, :compaction_started, %{
+      model: s.model,
+      removed_messages: length(older),
+      kept_messages: length(recent)
+    })
+
+    s = save(%{s | status: :compacting})
+
+    task =
+      Task.Supervisor.async_nolink(Nano.EvalSupervisor, Nano.Compaction, :summarize, [
+        s.model,
+        s.reasoning,
+        older,
+        min(s.context_window || s.max_context, s.max_context)
+      ])
+
+    %{s | task: %{kind: :compaction, task: task, recent: recent, resume: resume}}
+  end
+
+  defp compaction_done(s, t, {:ok, summary, r}) do
+    prompt = r.usage["prompt_tokens"] || 0
+    completion = r.usage["completion_tokens"] || 0
+    Nano.StateStore.add_node_tokens(prompt + completion)
+    record = Path.join(env(:log_dir), s.id <> ".jsonl")
+
+    checkpoint = %{
+      "role" => "user",
+      "content" =>
+        "<harness>History compacted automatically by the harness using #{s.model}; full record: #{record}. Your pid, mailbox and bindings are unchanged.</harness>\n" <>
+          summary
+    }
+
+    transcript = [checkpoint | t.recent]
+
+    s = %{
+      s
+      | transcript: transcript,
+        context_used: 0,
+        measured_bytes: 0,
+        compactions: s.compactions + 1,
+        status: :idle,
+        tokens_used: s.tokens_used + prompt + completion,
+        cost: s.cost + (r.cost || 0)
+    }
+
+    if estimate(s) >= s.max_context - Nano.Compaction.reserve(s.max_context) do
+      compaction_done(
+        s,
+        t,
+        {:error, "checkpoint and recent history still exceed the safe context size"}
+      )
+    else
+      log(s, :compaction_completed, %{
+        model: s.model,
+        summary: summary,
+        record: record,
+        context_estimate: estimate(s),
+        prompt_tokens: prompt,
+        completion_tokens: completion
+      })
+
+      s = s |> front_of_mind(:after_compaction) |> check_budget() |> save()
+
+      case t.resume do
+        {:request, new?} -> request(s, new?)
+        :idle -> maybe_start_turn(s)
+      end
+    end
+  end
+
+  defp compaction_done(s, _t, error) do
+    log(s, :compaction_failed, %{error: brief(error)})
+
+    s
+    |> Map.put(:status, :idle)
+    |> halt(
+      :context,
+      "Automatic harness compaction failed: #{brief(error)}; full history remains in the harness log"
+    )
+    |> end_turn("error")
   end
 
   @doc """
@@ -1293,8 +1472,11 @@ defmodule NanoAgent do
     {output, spawned} = release(io, gl, self())
 
     case result do
-      {:ok, value, bindings, warnings} -> {{:ok, value, bindings}, output <> warnings, spawned}
-      error -> {error, output, spawned}
+      {:ok, value, bindings, warnings, _images} ->
+        {{:ok, value, bindings}, output <> warnings, spawned}
+
+      error ->
+        {error, output, spawned}
     end
   end
 
@@ -1317,7 +1499,7 @@ defmodule NanoAgent do
     diagnostics = Enum.map_join(diagnostics, &"#{&1.severity}: #{&1.message}#{where(&1)}\n")
 
     case result do
-      {:ok, value, bindings} -> {:ok, value, bindings, diagnostics}
+      {:ok, value, bindings} -> {:ok, value, bindings, diagnostics, Nano.Images.take_views()}
       {:error, kind, reason, stack} -> {:error, format_error(kind, reason, stack, diagnostics)}
     end
   end
@@ -1403,8 +1585,9 @@ defmodule NanoAgent do
     s = %{s | spawned: s.spawned ++ spawned}
 
     case result do
-      {:ok, value, bindings, warnings} ->
+      {:ok, value, bindings, warnings, images} ->
         Nano.StateStore.put_bindings(s.name, bindings)
+        s = if images == [], do: s, else: add_images(s, images, :tool_images)
         tool_result(%{s | bindings: bindings}, call, started, true, value, output <> warnings)
 
       {:error, error} ->
@@ -1447,6 +1630,22 @@ defmodule NanoAgent do
 
   defp tool_message(call, text),
     do: %{"role" => "tool", "tool_call_id" => call["id"], "content" => text}
+
+  defp add_images(s, refs, key \\ :pending_images) do
+    log(s, :images_received, %{
+      images: refs,
+      visible_to_model: "image" in Map.get(s, :input_modalities, [])
+    })
+
+    if "image" in Map.get(s, :input_modalities, []) do
+      Map.update(s, key, refs, &(&1 ++ refs))
+    else
+      note(
+        s,
+        "Image attachment received, but your model cannot see images. Do not infer its contents from its name or path."
+      )
+    end
+  end
 
   ## Helpers
 
