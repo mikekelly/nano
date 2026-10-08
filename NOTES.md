@@ -26,9 +26,17 @@ Seedling.Background.start("MIX_ENV=test mix test", owner: "orion", timeout: 1200
 Seedling.Delegation.subagent("scout", model: "openai-codex/gpt-6.1-sol", reasoning: "high", max_turns: 40, max_tokens: 200000, max_context: 100000, prompt: "Investigate", pre: ["/app/NOTES.md"], message: "Begin")
 ```
 
+## Automatic checkpoints
+
+`Nano.Compaction` — Harness automatically summarizes older history before context exhaustion and within long tool loops; preserves pid/mailbox/bindings, paired recent turns and durable logs. Structured checkpoint plus deterministic files list. docs/compaction-and-images.md; explicit failure/retry, pre-call safety remains.
+
+```elixir
+NanoAgent.info("orion")
+```
+
 ## Goals
 
-`Seedling.Goals` — Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard integration pending.
+`Seedling.Goals` — Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard integration forthcoming; real orchestration goals persisted for orion.
 
 ```elixir
 Seedling.Goals.create(me, "Deliver capability", "Why it matters"); Seedling.Goals.review(me)
@@ -44,7 +52,7 @@ Seedling.Memory.remember("my-bot", "preference", "Prefers quiet hotels"); Seedli
 
 ## Front of mind (experimental)
 
-`Seedling.FrontOfMind` — At most 1000 characters, durable set/replace/clear. Automatic bobbing hooks pending integration. Do not infer efficacy from implementation; controlled comparison required.
+`Seedling.FrontOfMind` — At most 1000 characters, durable set/replace/clear. Automatic bobbing hooks integrated at every model request and after compaction; own note visibly re-shown on real orion. Do not infer efficacy from implementation; controlled comparison required.
 
 ```elixir
 Seedling.FrontOfMind.set(me, "Keep the constraint in view"); Seedling.FrontOfMind.configure(me, threshold: 8000, drift: true)

@@ -26,12 +26,19 @@ defmodule Seedling.Index do
           "Composed prompts, hashed pre-reading, explicit worktree revision, optional MCP. Durable completion/failure/restart events by parent name. report/2, result/1, tell/2; docs/seedling/delegation.md."
       },
       %{
+        name: "Automatic checkpoints",
+        module: Nano.Compaction,
+        example: ~s|NanoAgent.info("orion")|,
+        detail:
+          "Harness automatically summarizes older history before context exhaustion and within long tool loops; preserves pid/mailbox/bindings, paired recent turns and durable logs. Structured checkpoint plus deterministic files list. docs/compaction-and-images.md; explicit failure/retry, pre-call safety remains."
+      },
+      %{
         name: "Goals",
         module: Seedling.Goals,
         example:
           ~s|Seedling.Goals.create(me, "Deliver capability", "Why it matters"); Seedling.Goals.review(me)|,
         detail:
-          "Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard integration pending."
+          "Durable goal trees with why, parent IDs and open/active/blocked/done/cancelled status. Child completion checked. Bobbing optional via configure/2. Dashboard integration forthcoming; real orchestration goals persisted for orion."
       },
       %{
         name: "Memory",
@@ -47,7 +54,7 @@ defmodule Seedling.Index do
         example:
           ~s|Seedling.FrontOfMind.set(me, "Keep the constraint in view"); Seedling.FrontOfMind.configure(me, threshold: 8000, drift: true)|,
         detail:
-          "At most 1000 characters, durable set/replace/clear. Automatic bobbing hooks pending integration. Do not infer efficacy from implementation; controlled comparison required."
+          "At most 1000 characters, durable set/replace/clear. Automatic bobbing hooks integrated at every model request and after compaction; own note visibly re-shown on real orion. Do not infer efficacy from implementation; controlled comparison required."
       },
       %{
         name: "Typed decisions",
