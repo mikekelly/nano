@@ -169,7 +169,58 @@ defmodule Nano.ImagesTest do
     assert NanoAgent.info(name).system_prompt =~ "cannot see images"
   end
 
-  test "text-only eval views warn in the immediately following request, not a later turn", c do
+  test "tiny-context eval view refuses pixels in the immediate tool result while preserving value and bindings",
+       c do
+    {name, pid, model} = start_agent(true, max_context: 8192)
+    Fake.push(model, calls: [eval: "saved = 99; Nano.Images.view(#{inspect(c.path)}); saved"])
+    Fake.push(model, text: "refused without guessing")
+    send(pid, :view)
+    request(model)
+    body = request(model)
+    assert List.last(body["messages"])["role"] == "tool"
+    content = inspect(List.last(body["messages"])["content"])
+    assert content =~ "Image view refused"
+    assert content =~ "No pixels from this eval were admitted"
+    assert content =~ "99"
+    refute inspect(body) =~ "data:image"
+    {bindings, _} = Nano.StateStore.bindings(name)
+    assert bindings[:saved] == 99
+    assert NanoAgent.info(name).halted == nil
+
+    assert Enum.any?(
+             Nano.Log.read(NanoAgent.info(name).id),
+             &(&1["type"] == "images_refused" and &1["source"] == "eval")
+           )
+  end
+
+  test "multiple eval views preflight their accumulated bundle and retain only accepted pixels",
+       c do
+    {name, pid, model} = start_agent(true, max_context: 14000)
+
+    Fake.push(model,
+      calls: [
+        eval: "Nano.Images.view(#{inspect(c.path)}); 10",
+        eval: "Nano.Images.view(#{inspect(c.path)}); 11"
+      ]
+    )
+
+    Fake.push(model, text: "one picture only")
+    send(pid, :views)
+    request(model)
+    body = request(model)
+    user = List.last(body["messages"])
+    assert user["role"] == "user"
+    assert Enum.count(user["content"], &(&1["type"] == "image_url")) == 1
+    tools = Enum.filter(body["messages"], &(&1["role"] == "tool"))
+    assert inspect(hd(tools)["content"]) =~ "10"
+    assert inspect(List.last(tools)["content"]) =~ "Image view refused"
+    assert inspect(List.last(tools)["content"]) =~ "11"
+    assert NanoAgent.info(name).halted == nil
+  end
+
+  test "text-only eval views
+ warn in the immediately following request, not a later turn",
+       c do
     {_name, pid, model} = start_agent(false)
     Fake.push(model, calls: [eval: "Nano.Images.view(#{inspect(c.path)})"])
     Fake.push(model, text: "cannot see")

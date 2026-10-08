@@ -40,7 +40,9 @@ resource/time limits (64 MiB memory/map, no disk cache, 10 s decoder/12 s OS dea
 with warnings treated as failures and forced allowlisted coders. Animated GIFs are refused;
 only one nonanimated frame is supported. Shared caption admission refuses over 16,000
 bytes and bundles which cannot fit even an otherwise-empty recorded agent context with
-the reply reserve; this covers API/dashboard/bot/library callers, not just HTTP uploads. Missing ImageMagick is a fail-closed error. WebP is not yet supported. There is no image
+the reply reserve; this covers API/dashboard/bot/library callers, not just HTTP uploads.
+Eval views preflight the accumulated attachment bundle too: refusal preserves the eval
+value and bindings, but adds a warning to that same tool result and admits no new pixels. Missing ImageMagick is a fail-closed error. WebP is not yet supported. There is no image
 transcoding and no automatic deletion policy.
 
 Images are snapshotted by SHA-256 under `<state_dir>/images` (`:image_dir` app env can
