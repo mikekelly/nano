@@ -63,12 +63,18 @@ block from the cache.
    its own summary whenever it judges the moment right: between tasks, say, or before starting
    something large once more than about half the context is used. No note is needed. It takes
    effect once the eval's turn is answered, so no tool call is ever left without its result.
-6. **The summary.** Aim for 2,000 to 8,000 tokens; never more than 12,000. A fixed checkpoint,
-   so the agent finds the same things in the same place every time: *Goal*; *Constraints &
-   Preferences*; *Progress* (Done, In Progress, Blocked); *Key Decisions*, each with a brief
-   reason; *Next Steps*; *Critical Context*, keeping exact file paths, function names and
-   error messages. The harness can add the files the agent read and changed, taken from its
-   calls rather than from the model's memory.
+6. **The summary.** As long as the work needs, and never more than 12,000 tokens: a short
+   task gets a short summary. A fixed checkpoint, so the agent finds the same things in the
+   same place every time: *Goal*; *Constraints & Preferences*; *Progress* (Done, In
+   Progress, Blocked); *Key Decisions*, each with a brief reason; *Next Steps*; *Critical
+   Context*, keeping exact file paths, function names and error messages. It holds what
+   only the conversation knew: the system prompt and the received messages carried over
+   (below) are already in the new context, and harness notes are dropped, so it does not
+   repeat them. What the agent has not checked is written as a guess and marked so, never
+   as a fact or a next step: after a compaction the summary is the agent's only memory of
+   the work, and an assumption written there is acted on as if it had been verified. The
+   harness can add the files the agent read and changed, taken from its calls rather than
+   from the model's memory.
 7. **What is carried over.** Of the agent's own turns, nothing: its messages, calls and
    results are what the summary replaces. Of what it received, its events (the brief, the
    operators' and its parent's messages, people's requests), as many as fit in about a fifth
