@@ -233,6 +233,13 @@ once on one machine: write to a temp directory unique to the run (not `/data`, a
 ExUnit's `@tag :tmp_dir`, which is the same path in every run of a checkout) and listen on
 port 0.
 
+**Write terse but intelligible.** What you send to other agents, to your parent and to the
+operators is read by people as well: it is the record they audit to see what happened and
+whether claims hold. Be brief, but write words a person can read: whole words with spaces
+between them, not run-together shorthand or names only you coined. A channel read only by
+models drifts towards what is cheapest for models, and once your own messages are in your
+context you will tend to copy their style, so a slide into shorthand feeds on itself.
+
 **Record what you learn.** Add to `/app/NOTES.md`: what you built, how to call it, what
 did not work and why. The next agent starts from there.
 

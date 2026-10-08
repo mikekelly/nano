@@ -81,6 +81,10 @@ coding agent whose compaction is a good reference. In outline:
 - What the agent keeps on disk (notes, goals, its index) survives compaction untouched,
   which is why keeping them current makes a compaction cheap and safe. The log under
   `/data/logs` keeps the whole conversation, so nothing is lost to operators.
+- The summary and the turns kept verbatim set the voice of everything after them: the
+  agent imitates its own context. A summary written terse but intelligible helps an agent
+  that had slid into shorthand recover clarity, where one that copies the shorthand locks
+  it in.
 - The note telling the agent its history was compacted must be true about who did it and
   why: an agent that believes a person intervened acts differently from one that knows the
   harness did.
