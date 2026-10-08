@@ -195,32 +195,82 @@ defmodule Compaction do
     end
   end
 
+  defp retained_events(transcript) do
+    Enum.flat_map(transcript, fn
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        Enum.map(event_texts(content), &%{"role" => "user", "content" => &1})
+
+      %{"role" => "user", "content" => parts} when is_list(parts) ->
+        {events, current} =
+          Enum.reduce(parts, {[], nil}, fn
+            %{"type" => "text", "text" => text}, {events, current} when is_binary(text) ->
+              case event_texts(text) do
+                [] ->
+                  {events, current}
+
+                texts ->
+                  events = flush_event(events, current)
+                  {head, [last]} = Enum.split(texts, -1)
+
+                  events =
+                    events ++ Enum.map(head, fn text -> [%{"type" => "text", "text" => text}] end)
+
+                  {events, [%{"type" => "text", "text" => last}]}
+              end
+
+            %{"type" => "seed_image"} = image, {events, current} when is_list(current) ->
+              {events, current ++ [image]}
+
+            _, state ->
+              state
+          end)
+
+        Enum.map(flush_event(events, current), &%{"role" => "user", "content" => &1})
+
+      _ ->
+        []
+    end)
+  end
+
+  defp event_texts(text), do: Regex.scan(~r/<event\b[^>]*>.*?<\/event>/s, text) |> Enum.map(&hd/1)
+  defp flush_event(events, nil), do: events
+  defp flush_event(events, current), do: events ++ [current]
+
+  defp event_bytes(%{"content" => content}) when is_binary(content), do: byte_size(content)
+
+  defp event_bytes(%{"content" => parts}) do
+    byte_size(Jason.encode!(parts)) +
+      Enum.reduce(parts, 0, fn
+        %{"type" => "seed_image"}, n -> n + 9600
+        _, n -> n
+      end)
+  end
+
   defp event_budget(s, first) do
     window = if s.max_context > 0, do: s.max_context, else: Map.get(s, :context_window) || 272_000
-    max(div(window * 4, 5) - Enum.reduce(first, 0, &(byte_size(&1) + &2)), 0)
+    # Match the harness's conservative two-bytes-per-token estimator, including images.
+    max(div(window * 2, 5) - Enum.reduce(first, 0, &(event_bytes(&1) + &2)), 0)
   end
 
   def apply_summary(s, text) do
-    events =
-      for %{"role" => "user", "content" => content} <- s.transcript,
-          event <- Regex.scan(~r/<event\b[^>]*>.*?<\/event>/s, content),
-          do: hd(event)
-
+    events = retained_events(s.transcript)
     first = Enum.take(events, 1)
 
     rest =
       events
       |> Enum.drop(1)
       |> Enum.reverse()
-      |> Enum.reduce({[], 0}, fn e, {acc, size} ->
-        if size + byte_size(e) < event_budget(s, first),
-          do: {[e | acc], size + byte_size(e)},
+      |> Enum.reduce({[], 0}, fn event, {acc, size} ->
+        cost = event_bytes(event)
+
+        if size + cost <= event_budget(s, first),
+          do: {[event | acc], size + cost},
           else: {acc, size}
       end)
       |> elem(0)
 
     transcript =
-      Enum.map(first ++ rest, &%{"role" => "user", "content" => &1}) ++
+      (first ++ rest) ++
         [
           %{
             "role" => "user",
