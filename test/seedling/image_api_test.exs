@@ -24,6 +24,10 @@ defmodule Seedling.ImageApiTest do
 
     assert_receive %{message: "look", images: [^ref]}
     assert [%{messages: [%{term: term}]}] = Nano.User.threads(name)
+
+    assert [%{"images" => [^ref]}] =
+             build_conn() |> get("/api/users/#{name}/threads/*") |> json_response(200)
+
     refute inspect(term) =~ "base64"
 
     assert %{"ok" => true} =

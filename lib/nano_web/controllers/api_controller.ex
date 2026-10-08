@@ -340,7 +340,17 @@ defmodule NanoWeb.ApiController do
         unresponsive(conn, name)
 
       messages ->
-        json(conn, for(m <- messages, do: %{at: DateTime.to_iso8601(m.at), term: show(m.term)}))
+        json(
+          conn,
+          for(
+            m <- messages,
+            do: %{
+              at: DateTime.to_iso8601(m.at),
+              term: show(m.term),
+              images: Seedling.Images.collect(m.term)
+            }
+          )
+        )
     end
   end
 
@@ -382,7 +392,15 @@ defmodule NanoWeb.ApiController do
 
         json(
           conn,
-          for(m <- messages, do: %{at: DateTime.to_iso8601(m.at), dir: m.dir, term: show(m.term)})
+          for(
+            m <- messages,
+            do: %{
+              at: DateTime.to_iso8601(m.at),
+              dir: m.dir,
+              term: show(m.term),
+              images: Seedling.Images.collect(m.term)
+            }
+          )
         )
     end
   end
@@ -442,7 +460,7 @@ defmodule NanoWeb.ApiController do
     case Seedling.Images.fetch(id) do
       {:ok, ref, bytes} ->
         conn
-        |> put_resp_content_type(ref["mime_type"])
+        |> put_resp_content_type(ref["mime_type"], nil)
         |> put_resp_header("x-content-type-options", "nosniff")
         |> put_resp_header("content-security-policy", "sandbox")
         |> put_resp_header("cache-control", "public, max-age=31536000, immutable")
