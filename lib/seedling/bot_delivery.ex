@@ -37,14 +37,20 @@ defmodule Seedling.BotDelivery do
                 end),
               else: []
 
-          if refs == [],
-            do: send(pid, event),
-            else:
-              NanoAgent.deliver_images(
-                pid,
-                refs,
-                Seedling.ChatContext.serialize(event)
+          with {:ok, bytes} <- Seedling.ChatContext.admission(info, bot, length(refs)),
+               {:ok, event} <- Seedling.ChatContext.fit(event, bytes) do
+            if refs == [],
+              do: send(pid, event),
+              else: NanoAgent.deliver_images(pid, refs, Seedling.ChatContext.serialize(event))
+          else
+            {:error, _} ->
+              GenServer.cast(
+                server,
+                {:delivery, session_id, bot["id"],
+                 "This message or its images cannot fit the bot's context. Send fewer images or use a larger context limit.",
+                 info && info.id}
               )
+          end
 
         {:error, reason} ->
           GenServer.cast(
@@ -81,8 +87,8 @@ defmodule Seedling.BotDelivery do
                model: bot["model"],
                reasoning: bot["reasoning"],
                max_context: bot["max_context"],
-               max_turns: 0,
-               max_tokens: 0,
+               max_turns: Map.get(bot, "max_turns", 0),
+               max_tokens: Map.get(bot, "max_tokens", 0),
                start_idle: true,
                system_prompt: prompt
              ) do

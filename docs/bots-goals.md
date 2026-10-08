@@ -40,8 +40,12 @@ workspace and avoiding other agents' files; do not treat bots as mutually untrus
 Changes use existing `Nano.PubSub` topic `"bots"`, `{:bots, event}`. Human delivery is serialized
 per session with a durable pending queue, replayed on service restart. The send/ack boundary
 is **at least once**; a crash can repeat an event, not an exactly-once broker. Provider failures
-stay visible. Each event includes that session's last 24 human-facing messages and small
-selected memories. Jev Choice routes groups to one participant or all; uncertainty/missing
+stay visible. Each event includes bounded excerpts of that session's recent 24 human-facing messages
+and small selected memories, excluding a duplicate of the latest message. Current text is
+prioritized, cuts announced, and originals are paged with `Seedling.Bots.message/3`.
+Delivery is admitted against the actual agent context window, system prompt and conservative
+image tokens: total new input is capped to at most one quarter of the window. Images or
+messages that cannot fit are refused with a human-visible status, never silently halting. Jev Choice routes groups to one participant or all; uncertainty/missing
 service falls back to all with a labelled reason. Bot posts don't recursively wake peers
 (avoids runaway feedback); peers see them in the next human-delivered shared snapshot.
 This supports shared discussions, not instantaneous autonomous peer debate.

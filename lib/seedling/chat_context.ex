@@ -30,6 +30,58 @@ defmodule Seedling.ChatContext do
     }
   end
 
+  def admission(info, bot, image_count) do
+    window = if info, do: info.budget.max_context, else: bot["max_context"]
+    prompt = if info, do: info.system_prompt, else: ""
+    baseline = div(byte_size(Jason.encode!(prompt)) + 1, 2) + 1000
+    total = min(div(window, 4), window - 4096 - baseline - div(window, 8))
+    caption = total - image_count * 4800
+
+    if caption >= 1000,
+      do: {:ok, min(40000, caption * 2) - 300},
+      else: {:error, :chat_or_images_exceed_context_budget}
+  end
+
+  def fit(event, max_bytes) do
+    size = byte_size(inspect(event, limit: :infinity, printable_limit: :infinity))
+
+    cond do
+      size <= max_bytes ->
+        {:ok, event}
+
+      event.conversation != [] ->
+        fit(
+          %{
+            event
+            | conversation: [],
+              context_notice:
+                "Older conversation omitted for context budget; originals can be paged using Seedling.Bots.message/3. " <>
+                  event.context_notice
+          },
+          max_bytes
+        )
+
+      event.memory != "" ->
+        fit(%{event | memory: ""}, max_bytes)
+
+      byte_size(event.message) > 180 ->
+        fit(
+          %{
+            event
+            | message:
+                bounded(
+                  event.message,
+                  max(160, byte_size(event.message) - max(div(size - max_bytes + 1, 2), 64))
+                )
+          },
+          max_bytes
+        )
+
+      true ->
+        {:error, :chat_or_images_exceed_context_budget}
+    end
+  end
+
   def serialize(event) do
     # Current human text is first, so any cap cuts old context rather than the request.
     text =

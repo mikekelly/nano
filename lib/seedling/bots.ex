@@ -159,6 +159,16 @@ defmodule Seedling.Bots do
           "model" => opts[:model],
           "reasoning" => opts[:reasoning],
           "max_context" => opts[:max_context],
+          "max_turns" =>
+            if(is_integer(opts[:max_turns]) and opts[:max_turns] >= 0,
+              do: opts[:max_turns],
+              else: 0
+            ),
+          "max_tokens" =>
+            if(is_integer(opts[:max_tokens]) and opts[:max_tokens] >= 0,
+              do: opts[:max_tokens],
+              else: 0
+            ),
           "created_at" => Store.now()
         }
 
@@ -431,7 +441,24 @@ defmodule Seedling.Bots do
     end
   end
 
-  def handle_info({:nano_log, _}, s), do: {:noreply, s}
+  def handle_info({:nano_log, %{type: type, agent_id: id} = entry}, s)
+      when type in [:model_request, :tool_call, :agent_started] do
+    case s.watchers[id] do
+      {session, bot} ->
+        status =
+          if type == :agent_started,
+            do: if(entry[:halted], do: "paused; operator attention needed", else: "idle"),
+            else: "thinking"
+
+        handle_cast({:delivery, session, bot, status, id}, s)
+
+      _ ->
+        {:noreply, s}
+    end
+  end
+
+  def handle_info({:nano_log, _}, s),
+    do: {:noreply, s}
 
   def handle_info(:expire, s) do
     Process.send_after(self(), :expire, 30_000)
