@@ -2446,4 +2446,72 @@ defmodule NanoAgentTest do
     assert delivered =~ "while waiting to call the model again and was restarted"
     assert await(id, :model_response)["text"] == "ok"
   end
+
+  test "automatic checkpoint preserves pid and charges refused summary attempts", ctx do
+    {pid, id} = start!(ctx, max_context: 40000)
+    Fake.push(ctx.model, calls: [eval: "1 + 1"], usage: {28000, 10, 0}, cost: 0.001)
+    Fake.push(ctx.model, text: "invalid summary reply", cost: 0.002)
+
+    Fake.push(ctx.model,
+      calls: [eval: "Compaction.provide_summary(~S\"\"\"\nGoal: keep working\n\"\"\")"],
+      cost: 0.003
+    )
+
+    Fake.push(ctx.model, text: "continued", cost: 0.004)
+    send(pid, "original task")
+    request!(ctx.model)
+    compact = request!(ctx.model)
+    assert text(List.last(compact["messages"])) =~ "Automatic compaction"
+    retry = request!(ctx.model)
+    assert text(List.last(retry["messages"])) =~ "Previous attempt refused"
+    resumed = request!(ctx.model)
+    assert text(List.last(resumed["messages"])) =~ "Goal: keep working"
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    state = Nano.StateStore.get(ctx.name)
+    assert NanoAgent.whereis(ctx.name) == pid
+    assert state.tokens_used == 28340
+    assert state.turns_used == 4
+    assert state.responses == 4
+    assert_in_delta state.cost, 0.010, 0.000001
+    assert state.compaction_generation == 1
+    assert length(entries(id, :compaction_response)) == 2
+    assert state.halted == nil
+  end
+
+  test "a checkpoint that still fills the window halts instead of recompacting", ctx do
+    {pid, id} = start!(ctx, max_context: 40000, system_prompt: String.duplicate("s", 8000))
+    Fake.push(ctx.model, calls: [eval: "1 + 1"], usage: {28000, 10, 0})
+    summary = String.duplicate("x", 48000)
+    code = "Compaction.provide_summary(#{inspect(summary, printable_limit: :infinity)})"
+    assert {:ok, ^summary} = Compaction.parse(code)
+    Fake.push(ctx.model, calls: [eval: code])
+
+    send(pid, "original brief")
+    request!(ctx.model)
+    request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    assert NanoAgent.info(ctx.name).halted == :compaction_failed
+    refute_receive {:openrouter_request, _, _}, 50
+    assert length(entries(id, :compacted)) == 1
+  end
+
+  test "failed compaction charges responses and obeys the remaining turn budget", ctx do
+    {pid, id} = start!(ctx, max_context: 40000, max_turns: 2)
+    Fake.push(ctx.model, calls: [eval: "1 + 1"], usage: {28000, 10, 0})
+    Fake.push(ctx.model, text: "invalid checkpoint", cost: 0.002)
+    send(pid, "brief")
+    request!(ctx.model)
+    request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    state = Nano.StateStore.get(ctx.name)
+    assert state.halted == :budget
+    assert state.turns_used == 2
+    assert state.tokens_used == 28120
+    assert state.responses == 2
+    assert_in_delta state.cost, 0.003, 0.000001
+    refute_receive {:openrouter_request, _, _}, 50
+  end
 end

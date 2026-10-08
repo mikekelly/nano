@@ -797,6 +797,15 @@ defmodule NanoAgent do
         room = b.max_context - estimate
 
         cond do
+          b.max_context > 0 and Map.get(next, :compaction_just_applied, false) and
+              room < min(16384, div(b.max_context, 3)) ->
+            next
+            |> halt(
+              :compaction_failed,
+              "The compacted context still leaves too little room; refusing to compact repeatedly. The first brief is preserved in full."
+            )
+            |> end_turn("error")
+
           b.max_context > 0 and room < @reply_room ->
             s |> context_halt(estimate) |> end_turn("budget")
 
@@ -804,7 +813,12 @@ defmodule NanoAgent do
             compact(next)
 
           true ->
-            call(next, new_turn? && line, estimate, room)
+            call(
+              Map.put(next, :compaction_just_applied, false),
+              new_turn? && line,
+              estimate,
+              room
+            )
         end
     end
   end
@@ -995,15 +1009,37 @@ defmodule NanoAgent do
 
     task =
       Task.Supervisor.async_nolink(Nano.EvalSupervisor, fn ->
-        Compaction.run(s.model, s.reasoning, messages)
+        attempts = if s.max_turns > 0, do: min(3, max(s.max_turns - s.turns_used, 1)), else: 3
+        opts = [max_attempts: attempts]
+
+        opts =
+          if s.max_tokens > 0,
+            do: Keyword.put(opts, :token_budget, s.max_tokens - s.tokens_used),
+            else: opts
+
+        Compaction.run_with_usage(s.model, s.reasoning, messages, opts)
       end)
 
     %{s | status: :thinking, task: %{kind: :compaction, task: task}}
   end
 
-  defp task_done(%{task: %{kind: :compaction}} = s, {:ok, text}) do
-    log(s, :compacted, %{summary: text})
-    s |> Map.put(:task, nil) |> Compaction.apply_summary(text) |> request(false)
+  defp task_done(%{task: %{kind: :compaction}} = s, {:ok, text, metrics}) do
+    s = s |> Map.put(:task, nil) |> account_compaction(metrics)
+    log(s, :compacted, %{summary: text, attempts: metrics.attempts})
+    s = Compaction.apply_summary(s, text)
+    if s.halted, do: end_turn(s, "budget"), else: request(s, false)
+  end
+
+  defp task_done(%{task: %{kind: :compaction}} = s, {:error, reason, metrics}) do
+    s = s |> Map.put(:task, nil) |> account_compaction(metrics)
+
+    if s.halted do
+      end_turn(s, "budget")
+    else
+      s
+      |> halt(:compaction_failed, "Automatic compaction failed: #{inspect(reason)}")
+      |> end_turn("error")
+    end
   end
 
   defp task_done(%{task: %{kind: :compaction}} = s, error),
@@ -1017,6 +1053,28 @@ defmodule NanoAgent do
 
   defp task_done(%{task: %{kind: :eval} = t} = s, result),
     do: eval_done(%{s | task: nil}, t, result)
+
+  defp account_compaction(s, metrics) do
+    s =
+      Enum.reduce(metrics.responses, s, fn response, s ->
+        usage = response[:usage] || %{}
+        prompt = usage["prompt_tokens"] || 0
+        completion = usage["completion_tokens"] || 0
+        cached = get_in(usage, ["prompt_tokens_details", "cached_tokens"]) || 0
+        Nano.StateStore.add_node_tokens(prompt + completion)
+        log(s, :compaction_response, response)
+
+        %{
+          s
+          | tokens_used: s.tokens_used + prompt + completion,
+            cost: s.cost + (response[:cost] || 0),
+            responses: s.responses + 1,
+            cache_hits: s.cache_hits + if(cached > 0, do: 1, else: 0)
+        }
+      end)
+
+    %{s | turns_used: s.turns_used + metrics.attempts} |> check_budget() |> save()
+  end
 
   defp model_done(s, {:exit, reason}) do
     body = "model request task exited: " <> brief(reason)
