@@ -85,6 +85,9 @@ defmodule DelegationTest do
     assert_receive {:setup, {:ok, %{"fake" => handle}}}, 2000
     assert SeedMCP.status(handle).phase == :ready
     assert Delegation.mcp_clients(name) == %{"fake" => handle}
+    assert :ok = Delegation.monitor(name, parent)
+    assert private_mcp_intent(name)["mcp_options"]["config"] == opts[:mcp_config]
+    assert Bitwise.band(File.stat!(opts[:mcp_state_dir]).mode, 0o777) == 0o700
     old = GenServer.whereis(handle)
     Process.exit(old, :kill)
     assert_receive %{mcp: "fake", event: :connected}, 2000
@@ -153,6 +156,32 @@ defmodule DelegationTest do
     refute part["text"] =~ "server/discover"
     assert NanoAgent.whereis(name) == pid
     assert SeedMCP.status(handle).phase == :ready
+  end
+
+  test "manual monitor preserves pending MCP task, while explicit empty MCP clears old intent" do
+    {name, parent, opts} = mcp_fixture(1000)
+
+    assert {:error, :mcp_ready_timeout} =
+             Delegation.setup_mcp(name, parent, Keyword.put(opts, :mcp_timeout, 10), %{
+               "message" => "pending"
+             })
+
+    assert :ok = Delegation.monitor(name, parent)
+    saved = private_mcp_intent(name)
+    assert saved["mcp_bootstrap_task"] == %{"message" => "pending"}
+    assert saved["mcp_options"]["state_dir"] == opts[:mcp_state_dir]
+    assert {:ok, %{}} = Delegation.setup_mcp(name, parent, mcp: [])
+    cleared = private_mcp_intent(name)
+    refute Map.has_key?(cleared, "mcp_options")
+    refute Map.has_key?(cleared, "mcp_bootstrap_task")
+    assert cleared["name"] == name
+    assert cleared["parent"] == parent
+  end
+
+  defp private_mcp_intent(name) do
+    key = Base.encode16(:crypto.hash(:sha256, name), case: :lower)
+    path = Path.join([Application.fetch_env!(:nano, :test_dir), "delegation", key <> ".json"])
+    Jason.decode!(File.read!(path))
   end
 
   defp mcp_fixture(delay) do
