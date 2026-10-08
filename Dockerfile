@@ -16,6 +16,11 @@ ENV MIX_ENV=prod \
 
 WORKDIR /app
 
+# Workspace search and Background process-group controls must exist on fresh images too.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ripgrep util-linux procps \
+ && rm -rf /var/lib/apt/lists/*
+
 # Hex and rebar, a git identity, the node's default cookie, and git's blessing for a
 # checkout mounted over /app that another uid owns.
 RUN install -d /opt/nano /data/logs /data/state \

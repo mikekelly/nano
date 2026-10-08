@@ -588,7 +588,8 @@ defmodule Delegation.Watcher do
     previous = record["status"]
     next = Map.put(record, "status", status)
 
-    if previous != status and (previous != nil or not String.starts_with?(status, "alive:")) do
+    if not same_status?(previous, status) and
+         (previous != nil or not String.starts_with?(status, "alive:")) do
       type =
         cond do
           status == "down" -> "down"
@@ -601,6 +602,17 @@ defmodule Delegation.Watcher do
       next
     end
   end
+
+  # The first watcher stored alive:<pid> without a restart counter. Upgrade that
+  # observation silently when the pid is unchanged; a different pid still is a restart.
+  defp same_status?(status, status), do: true
+
+  defp same_status?(previous, current) when is_binary(previous) do
+    Regex.match?(~r/^alive:#PID<[^>]+>$/, previous) and
+      String.starts_with?(current, previous <> ":")
+  end
+
+  defp same_status?(_, _), do: false
 
   defp deliver(%{"pending" => []} = record, _), do: record
 
