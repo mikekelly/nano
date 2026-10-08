@@ -122,6 +122,7 @@ defmodule Background do
 
   defp run(caller, ref, id, path, command, notify, owner, exe, opts) do
     started = System.monotonic_time(:millisecond)
+    Process.put(:background_started_at, started)
     # The pid printed *inside* setsid is the group leader, not setsid's waiting parent.
     script =
       "printf '%s\\n' \"$$\"; IFS= read -r start && exec /bin/sh -c " <>
@@ -161,7 +162,7 @@ defmodule Background do
             after
               Process.cancel_timer(timer)
               kill_group(Process.delete(:background_pgid))
-              if guard = Process.delete(:background_guard), do: send(guard, {:finished, self()})
+              mark_group_stopped()
             end
 
           await_stopped(port, status)
@@ -179,6 +180,7 @@ defmodule Background do
               {:error, reason} -> Map.put(result, :metadata_error, inspect(reason))
             end
 
+          finish_guard()
           deadline = System.monotonic_time(:millisecond) + (opts[:delivery_timeout] || 86_400_000)
           deliver(notify, {:background, id, result}, deadline, owner)
 
@@ -187,7 +189,8 @@ defmodule Background do
       end
     after
       if pgid = Process.delete(:background_pgid), do: kill_group(pgid)
-      if guard = Process.delete(:background_guard), do: send(guard, {:finished, self()})
+      mark_group_stopped()
+      unless Process.get(:background_started), do: finish_guard()
       if Port.info(port), do: Port.close(port)
     end
   rescue
@@ -197,10 +200,12 @@ defmodule Background do
           status: :error,
           path: path,
           error: Exception.message(e),
-          bytes: file_size(path)
+          bytes: file_size(path),
+          duration_ms: System.monotonic_time(:millisecond) - Process.get(:background_started_at)
         }
 
         persist(path, result)
+        finish_guard()
 
         deliver(
           notify,
@@ -211,6 +216,14 @@ defmodule Background do
       else
         send(caller, {ref, {:error, Exception.message(e)}})
       end
+  end
+
+  defp mark_group_stopped do
+    if guard = Process.get(:background_guard), do: send(guard, {:group_stopped, self()})
+  end
+
+  defp finish_guard do
+    if guard = Process.delete(:background_guard), do: send(guard, {:finished, self()})
   end
 
   defp guard(worker, pgid, id, path, notify, owner, started, opts) do
@@ -225,8 +238,13 @@ defmodule Background do
       {:finished, ^worker} ->
         Process.demonitor(ref, [:flush])
 
+      {:group_stopped, ^worker} ->
+        # Keep delivery protection through metadata persistence, without retaining a
+        # dead OS group identifier that could be reused for an unrelated process.
+        guard_wait(worker, ref, nil, id, path, notify, owner, started, opts)
+
       {:DOWN, ^ref, :process, ^worker, reason} ->
-        kill_group(pgid)
+        if pgid, do: kill_group(pgid)
 
         result = %{
           status: :error,
