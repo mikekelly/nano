@@ -12,6 +12,12 @@ defmodule NanoWeb.ApiController do
 
   @endpoints [
     {"GET", "/api", "This index."},
+    {"POST", "/api/images",
+     "Upload multipart field file with X-Nano-Upload: 1 header. Returns an image_ref object (201); invalid images give 422. Types and dimensions are checked from bytes, never filenames. Maximum body 4 MB."},
+    {"GET", "/api/images/:id",
+     "Immutable image bytes by SHA-256 id; missing or invalid ids give 404."},
+    {"POST", "/api/agents/:name/message",
+     "Notify an agent. JSON body: text (optional with images), images (optional list of image_ref objects returned by POST /api/images, maximum 20). No local paths or inline image bytes accepted."},
     {"GET", "/api/processes",
      "Live processes outside the standard set (boot-time, OTP and dashboard processes), agents first. " <>
        "Each: pid, name, kind (agent | user | spawned_by | other), spawned_by (agent name), " <>
@@ -75,7 +81,7 @@ defmodule NanoWeb.ApiController do
        "send to it (Nano.User.pid(name))."},
     {"POST", "/api/users", "Start a user, or find it if already started. Body: name."},
     {"POST", "/api/users/:name/say",
-     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text."},
+     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text; optional images (image_ref list from POST /api/images); text may be empty with images."},
     {"POST", "/api/users/:name/send_raw",
      "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
     {"GET", "/api/users/:name/inbox?clear=true",
@@ -122,7 +128,7 @@ defmodule NanoWeb.ApiController do
   @conventions "Pids are strings such as \"#PID<0.231.0>\". Wherever a target is expected (to), " <>
                  "give an agent name, a user name, a registered process name, or a pid string. " <>
                  "Terms are sent as Elixir source strings and returned as inspect/2 output. " <>
-                 "Request bodies are JSON. Errors are JSON with an error field and, for parse or " <>
+                 "Request bodies are JSON, except multipart image uploads. Errors are JSON with an error field and, for parse or " <>
                  "eval failures, the exception in message. Unknown agents, users and processes give 404."
 
   def index(conn, _params) do
@@ -280,9 +286,19 @@ defmodule NanoWeb.ApiController do
   end
 
   def say(conn, %{"name" => name} = params) do
-    case strings(params, ["to", "text"]) do
-      {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
-      {:error, field} -> missing(conn, field)
+    if Map.has_key?(params, "images") do
+      with {:ok, [to]} <- strings(params, ["to"]),
+           {:ok, message} <- NanoWeb.ImageInput.message(params) do
+        sent(conn, name, to, User.say(name, to, message))
+      else
+        {:error, "to"} -> missing(conn, "to")
+        {:error, reason} -> error(conn, 422, reason)
+      end
+    else
+      case strings(params, ["to", "text"]) do
+        {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
+        {:error, field} -> missing(conn, field)
+      end
     end
   end
 
