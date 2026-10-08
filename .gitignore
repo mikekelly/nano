@@ -6,3 +6,7 @@
 .env
 erl_crash.dump
 /archive/
+
+# External SafetyNet test/runtime bytecode caches.
+__pycache__/
+*.pyc
