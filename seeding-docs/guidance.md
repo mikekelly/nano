@@ -151,7 +151,7 @@ every start to those pairs:
 | Level | The work | Model and effort |
 | --- | --- | --- |
 | Exec | Planning the whole of a piece of work, architecture, judging between plans, orchestrating the agents that carry it out | `openai-codex/gpt-6-astra`, `low` |
-| Engineering | Building, reviewing, testing, debugging, and the research a build needs | `anthropic/claude-opus-5.5`, `low` |
+| Engineering | Building, reviewing, testing, debugging, and the research a build needs | `openai-codex/gpt-6.1-sol`, `low` |
 
 Start each agent you delegate to on the pair for the level of its job. Low effort is
 enough for multi-step agentic work, which builds its own chain of thought across its turns.
