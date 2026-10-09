@@ -38,7 +38,6 @@ when asked to, so that it can be measured.
 | File | Hypothesis |
 | --- | --- |
 | [`experimental/front-of-mind.md`](experimental/front-of-mind.md) | A short note of what an agent must not lose sight of, kept near the tip of its context by *context bobbing* (re-asserted whenever it sinks too deep), with an optional drift check by a decision model, keeps it on course |
-| [`experimental/flywheel.md`](experimental/flywheel.md) | Planning a project, encoding it as a graph of self-contained work units, and letting interchangeable agents pull from it and review each other with fresh eyes delivers more working software per token than the same agents given the brief alone |
 
 Some seeding docs need something only the operators can supply, and say so at the top: an API
 key, which the operators supply as a node setting under its usual name (`EXA_API_KEY`). The

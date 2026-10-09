@@ -8,6 +8,7 @@ shell). [README.md](README.md) says what Nano Agent is and why.
 | | |
 | --- | --- |
 | [seeding-docs/](seeding-docs/README.md) | Specs for capabilities agents grow from the seed |
+| [seedling-docs/](seedling-docs/README.md) | Methods for putting a grown harness to work, planted after seeding |
 | `prompts/seed.txt` | The prompt template, read at every agent start |
 | `lib/nano_agent.ex` | The harness: one agent, one GenServer |
 | `lib/nano/ops.ex` | Everything an operator can do; the dashboard and API are skins over it |
@@ -53,6 +54,16 @@ Start an agent with generous limits and send it a first message that asks it to 
 `/app/seeding-docs/guidance.md` and then the seeding docs to build, and to message you as things work.
 When the run is over: commit the clone to `seedling/<agent>-<what>` and push it, record the
 run in `RUNS.md` on the `runs` branch, and `bin/reset`.
+
+## Planting seedling docs
+
+Seedling docs come after seeding: they are planted in an agent running on a seedling. After
+`bin/reset`, put the agents' checkout on the seedling (`git fetch origin <branch>` and
+`git checkout -b <branch> FETCH_HEAD` in it), bring in `seedling-docs/` from `main` if the
+branch predates them (`git checkout origin/main -- seedling-docs`), and
+`docker compose restart nano`, which compiles and runs the checkout. Then start an agent as
+above, asking it to read `/app/seedling-docs/README.md` and the seedling docs to work by.
+When the run is over, commit to a new `seedling/<agent>-<what>` branch and carry on as above.
 
 ## Working on the code
 

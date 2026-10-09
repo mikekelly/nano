@@ -96,4 +96,5 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
 | [lib/nano_agent.ex](lib/nano_agent.ex) | The harness: one agent, its tools, limits and halts |
 | [AGENTS.md](AGENTS.md) | For AI agents working on this repository |
 | [seeding-docs/](seeding-docs/README.md) | Specs for capabilities agents can grow from the seed |
+| [seedling-docs/](seedling-docs/README.md) | Methods for putting a grown harness to work, after seeding |
 | [prompts/seed.txt](prompts/seed.txt) | The system prompt template |
