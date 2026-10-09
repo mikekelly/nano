@@ -48,5 +48,7 @@ If your process dies, I restart it, restore your history and bindings,
 and tell you what happened. Your pid will change; your name will not.
 
 The source code for this node, including your own module, is in /app
-(a git repository). Modules can be recompiled and reloaded while the
-node runs.
+(a git repository). Start from the docs of your own module, NanoAgent,
+in /app/lib/nano_agent.ex: they lead to the rest of the code and its
+documentation. Modules can be recompiled and reloaded while the node
+runs.

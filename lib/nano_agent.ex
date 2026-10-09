@@ -12,7 +12,28 @@ defmodule NanoAgent do
   from it. Nothing in state is a closure, so this module can be recompiled under running
   agents as long as new code accepts the same map. `init/1` cannot fail: if restoring
   crashes, the agent comes up halted, so a broken edit cannot loop the supervisor.
+
+  ## Where things are
+
+  The seed's prompt sends every agent here first, so this is the front page of the node's
+  code. Each entry leads further in.
+
+    * `Nano.Ops`: everything an operator can do with agents and users; the dashboard and the
+      HTTP API are skins over it.
+    * `Nano.Model`: which provider serves a model (`Nano.ChatGPT`, `Nano.OpenRouter`) and
+      what each model allows.
+    * `Nano.Settings`: the node's settings: keys, limits, what new agents' prompts state.
+    * `Nano.User`: named identities for people and outside agents.
+    * `Nano.Log` and `Nano.StateStore`: each agent's log and its saved state.
+    * `Nano.Application`: the supervision tree, and what comes back after a restart.
+    * `NanoWeb.Router`: every route: the dashboard and the JSON API.
+    * `/app/prompts/seed.txt`: the system prompt template, a truthful account of this module.
+    * `/app/seeding-docs` and `/app/seedling-docs`: specs for capabilities to grow, and
+      methods for putting a grown harness to work.
   """
+  # The front page of a wiki: keep "Where things are" a short list of entry points, each
+  # leading further in. Detail belongs in the modules and docs it names, which agents read
+  # only when they need them.
   use GenServer
   require Logger
 

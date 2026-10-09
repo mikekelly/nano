@@ -69,9 +69,10 @@ it does is read.
 ## Considerations
 
 - The seed's template (`prompts/seed.txt`) is a truthful account of `NanoAgent`, kept true
-  as the harness changes, which is why it is the obvious part for an agent on that harness.
-  A prompt and its harness change together: an agent given another tool or another harness
-  needs a prompt that says so.
+  as the harness changes, and it is what orients an agent in its harness: what reaches it
+  and how, how it acts, its limits, and where to start reading. An agent on `NanoAgent`
+  keeps it whole. A prompt and its harness change together: an agent given another tool or
+  another harness needs a prompt that says so.
 - Whatever a prompt asks an agent to do by rule on every turn (a message protocol, its
   tokens and retries) is something it can get wrong on any turn; what code can do for it
   instead is done right every time. An agent also writes in the voice of what it reads.

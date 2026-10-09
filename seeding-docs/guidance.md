@@ -96,15 +96,14 @@ for an orientation (below) first: on this node some rungs may already exist.
    What they share: every cut is announced in the result, together with the exact way to
    get the rest; every error says what to do next; and results are compact text that is
    cheap to read, not raw data structures.
-4. *Orientation*: a short partial, `orientation.md`, that goes into the system prompt of every
-   agent you compose, and whose only job is to give the entry points: what capabilities
-   exist, which module to start from for each, where the deeper documentation is (module
-   docs, the seeding docs, the guidance). Each entry point leads further in, like a wiki,
-   so the next agent (or you after a restart or a compaction) starts from the map instead of
-   from the source, and the map costs a few lines, not a manual. Put that design constraint
-   in the partial itself, as a template comment (in Mustache, `{{! … }}`), which is removed
-   when the prompt is rendered: whoever edits it sees why it must stay a short list of entry
-   points, and the agents it is rendered into pay nothing for it.
+4. *Orientation*: the seed's prompt sends every agent to the module docs of `NanoAgent`
+   first, and their "Where things are" section is the front page of the node's code: what
+   capabilities exist, which module to start from for each, where the deeper documentation
+   is (module docs, the seeding docs, the guidance). Add each capability you build to it as
+   an entry point that leads further in, like a wiki, so the next agent (or you after a
+   restart or a compaction) starts from the map instead of from the source. It costs an
+   agent nothing until it reads it, and a few lines when it does: keep it a short list of
+   entry points, as the comment beside it says, for whoever edits it next.
 5. *Delegation* ([delegation.md](delegation.md)): start a sub-agent with a composed prompt
    and pre-reading, give it a task, get its result as a message. From here on, anything
    large is a sub-agent's job and your context stays at the level of the plan. Build it
@@ -204,7 +203,7 @@ have to discover by luck.
 **Compose prompts from partials, fitted to each agent.** When you start an agent, you write
 its system prompt, and that is your chance to fit it to the kind of agent it is and the job
 it has. Build it from reusable parts rather than writing it whole: the node's facts (the
-seed's own template, which is true of every agent here), the operating principles, a part
+seed's own template, which is true of every agent here and orients it, so it goes in whole), the operating principles, a part
 for the agent's flavour (a builder, a reviewer, an auditor, a bot), and the job. Choose the
 parts for the agent: include what it will need and leave out what it will not, since every
 part costs context on every call it makes and a part that does not apply distracts it.
