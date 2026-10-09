@@ -167,7 +167,7 @@ defmodule NanoAgentTest do
     assert text(List.last(compaction["messages"])) =~ "Automatic compaction"
     resumed = request!(ctx.model)
     assert Enum.any?(resumed["messages"], &(text(&1) =~ "original_brief"))
-    assert text(Enum.at(resumed["messages"], -2)) =~ "Goal: test"
+    assert text(List.last(resumed["messages"])) =~ "Goal: test"
     request!(ctx.model)
     await(id, :turn_ended)
     assert NanoAgent.whereis(ctx.name) == pid

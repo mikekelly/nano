@@ -1149,7 +1149,7 @@ defmodule NanoAgent do
         |> Map.put(:transcript, c.base)
         |> apply_summary(text)
         |> check_budget()
-        |> request(true)
+        |> then(&request(&1, &1.pending != []))
 
       {:error, reason} when c.attempt < 3 ->
         s
