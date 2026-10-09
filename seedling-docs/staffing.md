@@ -50,6 +50,9 @@ speed, and what it beat.
 - Benchmarks age and new models arrive often, so make refreshing the matrix cheap. The
   node's own logs (tokens, turns and time per job, and how each job ended) show how a pair
   does on this node's work, and can correct what the benchmarks say.
+- The operators may already have staffed some levels ("Staff each job by its level" in
+  [../seeding-docs/guidance.md](../seeding-docs/guidance.md)); the matrix starts from their
+  choices and fills in the rest.
 - A short list is the point: a few pairs per stratum keep the choice quick and the
   reasons legible.
 

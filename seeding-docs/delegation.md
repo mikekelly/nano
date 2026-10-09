@@ -34,7 +34,9 @@ are expressed is yours):
   misreads, or breaks shared code), and a high effort on a simple one costs time and budget
   for nothing: start low, and raise the effort for a job that has shown it needs more. The
   flat-rate ChatGPT subscription and per-token OpenRouter price the same job differently,
-  and the operators may allow only some models and levels (the `allowed_models` setting);
+  and the operators may allow only some models and levels (the `allowed_models` setting),
+  and say which pair is for which level of work ("Staff each job by its level" in
+  [guidance.md](guidance.md));
 - the limits, which are the same for every sub-agent and so are set once, in the code: its
   model's whole context window (`Nano.Model.lookup/1` gives the model's `context_length`),
   and no turn or token budget, since a budget cuts a job off part-way, often just before it

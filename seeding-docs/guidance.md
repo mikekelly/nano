@@ -144,6 +144,18 @@ and so unlikely to turn into a yak shave, that the ceremony of delegating it wou
 more context than doing it. This is one of the operating principles every agent needs
 (below), not advice for one.
 
+**Staff each job by its level.** The operators decide which model, at which reasoning
+effort, does each level of work on this node, and the node's `allowed_models` setting holds
+every start to those pairs:
+
+| Level | The work | Model and effort |
+| --- | --- | --- |
+| Exec | Planning the whole of a piece of work, architecture, judging between plans, orchestrating the agents that carry it out | `openai-codex/gpt-6-astra`, `low` |
+| Engineering | Building, reviewing, testing, debugging, and the research a build needs | `anthropic/claude-opus-5.5`, `low` |
+
+Start each agent you delegate to on the pair for the level of its job. Low effort is
+enough for multi-step agentic work, which builds its own chain of thought across its turns.
+
 **When you fan out, put shared foundations on the critical path.** Agents working in
 parallel each start from the code that exists when they start, and cannot use what a
 sibling is still building until it is merged. If several tasks will need the same
