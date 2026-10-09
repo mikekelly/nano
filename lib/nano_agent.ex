@@ -18,6 +18,7 @@ defmodule NanoAgent do
   The seed's prompt sends every agent here first, so this is the front page of the node's
   code. Each entry leads further in.
 
+    * `Compaction`: automatic checkpoints and voluntary summaries.
     * `Nano.Ops`: everything an operator can do with agents and users; the dashboard and the
       HTTP API are skins over it.
     * `Nano.Model`: which provider serves a model (`Nano.ChatGPT`, `Nano.OpenRouter`) and
@@ -205,7 +206,7 @@ defmodule NanoAgent do
   `:waiting_retry` (a model call failed and the agent will call again at `retry_at`, an
   ISO 8601 time, else nil). `halted` is nil, `:budget`, `:context`, `:node_budget`,
   `:usage_limit`, `:provider_unavailable`, `:model_refused`, `:restart_brake`, `:start_failed`
-  or `:log_failed`; `context_window` is the model's, as its provider listed it at start (nil if
+  or `:log_failed` or `:compaction_failed`; `context_window` is the model's, as its provider listed it at start (nil if
   it could not be had for an agent saved before it was recorded); `cache_hit_rate` is nil until
   the first response.
   """
@@ -733,6 +734,14 @@ defmodule NanoAgent do
         pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
     }
 
+    if_child = child_report?(s.name, term)
+
+    s =
+      if if_child,
+        do:
+          Map.update(s, :child_reports, [List.last(s.pending)], &(&1 ++ [List.last(s.pending)])),
+        else: s
+
     # queue_length: events waiting for the next turn, this one included.
     queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
 
@@ -749,6 +758,15 @@ defmodule NanoAgent do
 
     maybe_start_turn(s)
   end
+
+  # Erlang messages have no sender. Only explicit attribution can identify child reports.
+  defp child_report?(parent, %{from: from}) do
+    Enum.any?(Nano.StateStore.all(), fn child ->
+      child[:started_by] == parent and (child[:name] == from or child[:pid] == from)
+    end)
+  end
+
+  defp child_report?(_, _), do: false
 
   # Harness notes queue up with events, in the order things happened.
   defp note(s, text) do
@@ -815,9 +833,16 @@ defmodule NanoAgent do
         estimate = estimate(next)
         room = b.max_context - estimate
 
-        if b.max_context > 0 and room < @reply_room,
-          do: s |> context_halt(estimate) |> end_turn("budget"),
-          else: call(next, new_turn? && line, estimate, room)
+        cond do
+          b.max_context > 0 and room < @reply_room ->
+            s |> context_halt(estimate) |> end_turn("budget")
+
+          b.max_context > 0 and room < min(Compaction.reserve(), div(b.max_context, 4)) ->
+            start_compaction(next)
+
+          true ->
+            call(next, new_turn? && line, estimate, room)
+        end
     end
   end
 
@@ -893,7 +918,8 @@ defmodule NanoAgent do
       # Map.get: state saved by an older version of this module has no :reasoning.
       how = {s.model, Map.get(s, :reasoning, "off"), output, raw}
       args = [self(), s.tag, how, messages, id]
-      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :call_model, args)
+      fun = if Map.has_key?(s, :compacting), do: :call_compaction_model, else: :call_model
+      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, fun, args)
       %{s | task: %{kind: :model, task: task}}
     else
       s |> halt(:log_failed, @log_failed) |> end_turn("error")
@@ -916,6 +942,11 @@ defmodule NanoAgent do
   # agent, which logs them; the last failure is returned with the number of attempts made.
   # With `raw` (Nano.RawLog), each attempt is recorded as "<raw>-<attempt>", and the response
   # and each failure name their attempt's files (`raw:`).
+  def call_compaction_model(agent, tag, how, messages, id) do
+    Process.put(:compaction_request, true)
+    call_model(agent, tag, how, messages, id)
+  end
+
   def call_model(
         agent,
         tag,
@@ -938,7 +969,11 @@ defmodule NanoAgent do
 
       {:error, error} ->
         error = if files != [], do: Map.put(error, :raw, files), else: error
-        pause = if attempt < @attempts and error.class == :transient, do: pause(error, attempt)
+
+        pause =
+          if attempt < @attempts and not Process.get(:compaction_request, false) and
+               error.class == :transient,
+             do: pause(error, attempt)
 
         send(
           agent,
@@ -1006,6 +1041,138 @@ defmodule NanoAgent do
 
   defp task_done(%{task: %{kind: :eval} = t} = s, result),
     do: eval_done(%{s | task: nil}, t, result)
+
+  defp start_compaction(s) do
+    compaction_call(Map.put(s, :compacting, %{base: s.transcript, attempt: 1, reason: nil}), nil)
+  end
+
+  defp compaction_call(s, reason) do
+    s = s |> check_budget() |> check_provider()
+
+    cond do
+      s.halted ->
+        end_turn(s, "budget")
+
+      reached?(
+        Nano.StateStore.node_tokens_last_hour(),
+        Nano.Settings.get(:node_max_tokens_per_hour)
+      ) ->
+        s
+        |> halt(:node_budget, "This node has reached its hourly token cap during compaction")
+        |> end_turn("budget")
+
+      true ->
+        do_compaction_call(s, reason)
+    end
+  end
+
+  defp do_compaction_call(s, reason) do
+    s = %{
+      s
+      | transcript:
+          s.compacting.base ++ [%{"role" => "user", "content" => Compaction.note(reason)}]
+    }
+
+    n = estimate(s)
+
+    if s.max_context - n < @reply_room do
+      s
+      |> Map.delete(:compacting)
+      |> halt(
+        :compaction_failed,
+        "Automatic compaction request cannot fit; full history remains in the log"
+      )
+      |> end_turn("error")
+    else
+      call(s, false, n, min(s.max_context - n, Compaction.reserve()))
+    end
+  end
+
+  defp model_done(%{compacting: c} = s, result) do
+    {s, parsed} =
+      case result do
+        {:ok, r} ->
+          p = r.usage["prompt_tokens"] || 0
+          o = r.usage["completion_tokens"] || 0
+          Nano.StateStore.add_node_tokens(p + o)
+
+          logged =
+            log(s, :model_response, %{
+              request_id: s.request_id,
+              compaction: true,
+              text: r.message["content"],
+              tool_calls: r.message["tool_calls"] || [],
+              prompt_tokens: p,
+              completion_tokens: o,
+              cached_tokens: get_in(r.usage, ["prompt_tokens_details", "cached_tokens"]) || 0,
+              cost: r.cost,
+              latency_ms: r.latency_ms,
+              provider: r.provider,
+              raw: r[:raw],
+              finish_reason: r.finish_reason
+            })
+
+          s = if logged == :error, do: halt(s, :log_failed, @log_failed), else: s
+
+          s = %{
+            s
+            | tokens_used: s.tokens_used + p + o,
+              cost: s.cost + (r.cost || 0),
+              responses: s.responses + 1,
+              cache_hits:
+                s.cache_hits +
+                  if((get_in(r.usage, ["prompt_tokens_details", "cached_tokens"]) || 0) > 0,
+                    do: 1,
+                    else: 0
+                  )
+          }
+
+          parsed =
+            with [call] <- r.message["tool_calls"],
+                 "eval" <- call["function"]["name"],
+                 {:ok, args} <- summary_args(call["function"]["arguments"]),
+                 code when is_binary(code) <- args["code"] do
+              Compaction.parse(code)
+            else
+              _ -> {:error, "Expected exactly one eval summary call."}
+            end
+
+          {s, parsed}
+
+        _ ->
+          {s, {:error, "Model call failed: #{inspect(result)}"}}
+      end
+
+    case parsed do
+      {:ok, text} ->
+        s
+        |> Map.put(:transcript, c.base)
+        |> apply_summary(text)
+        |> check_budget()
+        |> request(true)
+
+      {:error, reason} when c.attempt < 3 ->
+        s
+        |> Map.put(
+          :compacting,
+          Map.merge(c, %{
+            attempt: c.attempt + 1,
+            reason: if(match?({:ok, _}, result), do: reason, else: Map.get(c, :reason))
+          })
+        )
+        |> then(&compaction_call(&1, &1.compacting.reason))
+
+      {:error, reason} ->
+        s
+        |> Map.put(:transcript, c.base)
+        |> Map.delete(:compacting)
+        |> halt(
+          :compaction_failed,
+          "Automatic compaction failed after three attempts: #{reason}; full record remains in the log"
+        )
+        |> end_turn("error")
+    end
+  end
 
   defp model_done(s, {:exit, reason}) do
     body = "model request task exited: " <> brief(reason)
@@ -1088,6 +1255,32 @@ defmodule NanoAgent do
       |> save()
 
     if calls == [], do: end_turn(s, "no_tool_call"), else: run_calls(s)
+  end
+
+  defp summary_args(a) when is_map(a), do: {:ok, a}
+  defp summary_args(a) when is_binary(a), do: Jason.decode(a)
+  defp summary_args(_), do: :error
+
+  defp apply_summary(%{halted: halted} = s, _text) when not is_nil(halted), do: s
+
+  defp apply_summary(s, text) do
+    path = Path.join(Application.fetch_env!(:nano, :log_dir), s.id <> ".jsonl")
+
+    if log(s, :compaction_completed, %{summary: text, full_record: path}) == :error do
+      halt(s, :log_failed, @log_failed)
+    else
+      rebuild_summary(s, text, path)
+    end
+  end
+
+  defp rebuild_summary(s, text, path) do
+    t =
+      Compaction.rebuild(s.transcript, text, s.max_context, path, Map.get(s, :child_reports, []))
+
+    s
+    |> Map.delete(:compacting)
+    |> Map.merge(%{transcript: t, context_used: 0, measured_bytes: 0, child_reports: []})
+    |> save()
   end
 
   defp refused(s, %{class: :usage_limit, limit: text}), do: halt(s, :usage_limit, text)
@@ -1228,6 +1421,10 @@ defmodule NanoAgent do
   defp limit(max), do: max
 
   # Tool calls run in order; when they are done the model is called again, unless one was idle.
+  defp run_calls(%{calls: [], pending_summary: text} = s) do
+    s |> Map.delete(:pending_summary) |> apply_summary(text) |> run_calls()
+  end
+
   defp run_calls(%{calls: []} = s) do
     cond do
       not s.idle_called -> request(s, false)
@@ -1284,21 +1481,21 @@ defmodule NanoAgent do
         run_calls(tool_result(s, call, started, false, skip))
 
       {"eval", {:ok, %{"code" => code}}} when is_binary(code) ->
-        # The agent owns the capture device, so output and spawned processes survive a timeout.
-        {:ok, io} = StringIO.open("")
-
-        s =
-          save(%{
+        case Compaction.parse(code) do
+          {:ok, text} ->
             s
-            | status: :running_tool,
-              task: %{kind: :eval, n: s.call_seq, call: call, started: started, io: io}
-          })
+            |> tool_result(
+              call,
+              started,
+              true,
+              "Summary accepted; applied after this response's tools finish."
+            )
+            |> Map.put(:pending_summary, text)
+            |> run_calls()
 
-        args = [code, Keyword.put(s.bindings, :me, self()), io]
-        task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :eval, args)
-        timeout = Nano.Settings.get(:eval_timeout_ms)
-        Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, timeout)
-        %{s | task: Map.merge(s.task, %{task: task, timeout: timeout})}
+          _ ->
+            start_eval(s, call, started, code)
+        end
 
       {"idle", {:ok, %{}}} when is_nil(wakeup) or wakeup in 0..4_294_967_295 ->
         s = tool_result(s, call, started, true, "")
@@ -1321,6 +1518,24 @@ defmodule NanoAgent do
 
         run_calls(tool_result(s, call, started, false, error))
     end
+  end
+
+  defp start_eval(s, call, started, code) do
+    # The agent owns the capture device, so output and spawned processes survive a timeout.
+    {:ok, io} = StringIO.open("")
+
+    s =
+      save(%{
+        s
+        | status: :running_tool,
+          task: %{kind: :eval, n: s.call_seq, call: call, started: started, io: io}
+      })
+
+    args = [code, Keyword.put(s.bindings, :me, self()), io]
+    task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :eval, args)
+    timeout = Nano.Settings.get(:eval_timeout_ms)
+    Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, timeout)
+    %{s | task: Map.merge(s.task, %{task: task, timeout: timeout})}
   end
 
   defp arm_wakeup(s) do

@@ -102,6 +102,125 @@ defmodule NanoAgentTest do
     new
   end
 
+  test "completed compaction survives process restart with bindings and summary", ctx do
+    {pid, id} = start!(ctx)
+    Fake.push(ctx.model, calls: [eval: "durable = 23"])
+    Fake.push(ctx.model, calls: [eval: ~S|Compaction.provide_summary(~S"Goal: restart")|])
+    Fake.push(ctx.model, text: "done")
+    send(pid, :brief)
+    for _ <- 1..3, do: request!(ctx.model)
+    await(id, :turn_ended)
+    new_pid = kill(ctx, id)
+    state = :sys.get_state(new_pid)
+    assert state.bindings[:durable] == 23
+    assert Enum.any?(state.transcript, &String.contains?(&1["content"] || "", "Goal: restart"))
+    assert state.context_used < state.max_context
+  end
+
+  test "events arriving during compaction are delivered after the summary", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {45_100, 1, 0})
+    send(pid, :brief)
+    request!(ctx.model)
+    request!(ctx.model)
+    send(pid, :during_checkpoint)
+    :sys.get_state(pid)
+    Fake.push(ctx.model, calls: [eval: ~S|Compaction.provide_summary(~S"Goal: queued event")|])
+    Fake.push(ctx.model, text: "done")
+    body = request!(ctx.model)
+    assert text(Enum.at(body["messages"], -2)) =~ "Goal: queued event"
+    assert text(List.last(body["messages"])) =~ "during_checkpoint"
+    await(id, :turn_ended)
+  end
+
+  test "failed compaction request retries with byte-identical messages", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {45_100, 1, 0})
+    Fake.push(ctx.model, status: 500)
+    Fake.push(ctx.model, calls: [eval: ~S|Compaction.provide_summary(~S"Goal: retry")|])
+    Fake.push(ctx.model, text: "done")
+    send(pid, :brief)
+    request!(ctx.model)
+    before = request!(ctx.model)
+    after_failure = request!(ctx.model)
+    assert before["messages"] == after_failure["messages"]
+    request!(ctx.model)
+    await(id, :turn_ended)
+  end
+
+  test "automatic compaction preserves identity, events, bindings and queued arrivals", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "checkpoint_binding = 42"], usage: {45_100, 1, 0})
+
+    Fake.push(ctx.model,
+      calls: [
+        eval:
+          ~s|Compaction.provide_summary("Goal: test\\nProgress: Done\\nNext Steps: verify binding")|
+      ]
+    )
+
+    Fake.push(ctx.model, calls: [eval: "checkpoint_binding"])
+    Fake.push(ctx.model, text: "done")
+    send(pid, :original_brief)
+    request!(ctx.model)
+    compaction = request!(ctx.model)
+    assert text(List.last(compaction["messages"])) =~ "Automatic compaction"
+    resumed = request!(ctx.model)
+    assert Enum.any?(resumed["messages"], &(text(&1) =~ "original_brief"))
+    assert text(Enum.at(resumed["messages"], -2)) =~ "Goal: test"
+    request!(ctx.model)
+    await(id, :turn_ended)
+    assert NanoAgent.whereis(ctx.name) == pid
+    assert Enum.any?(entries(id, :tool_result), &(&1["result"] == "42"))
+    assert NanoAgent.info(ctx.name).halted == nil
+  end
+
+  test "compaction refuses other code without executing it and retries", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {45_100, 1, 0})
+    Fake.push(ctx.model, calls: [eval: "send(me, :must_not_run)"])
+    Fake.push(ctx.model, calls: [eval: ~s|Compaction.provide_summary("Goal: recovered")|])
+    Fake.push(ctx.model, text: "done")
+    send(pid, :brief)
+    request!(ctx.model)
+    first = request!(ctx.model)
+    retry = request!(ctx.model)
+    assert Enum.drop(first["messages"], -1) == Enum.drop(retry["messages"], -1)
+    assert text(List.last(retry["messages"])) =~ "Previous reply refused"
+    request!(ctx.model)
+    await(id, :turn_ended)
+    refute Enum.any?(entries(id, :event_received), &(&1["message"] =~ "must_not_run"))
+  end
+
+  test "three refused compaction replies halt with full original history", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {45_100, 1, 0})
+    for _ <- 1..3, do: Fake.push(ctx.model, text: "not a summary")
+    send(pid, :brief)
+    for _ <- 1..4, do: request!(ctx.model)
+    await(id, :turn_ended)
+    :sys.get_state(pid)
+    assert NanoAgent.info(ctx.name).halted == :compaction_failed
+    assert Enum.any?(:sys.get_state(pid).transcript, &(&1["role"] == "assistant"))
+  end
+
+  test "voluntary summary waits until all tools have results", ctx do
+    {pid, id} = start!(ctx)
+
+    Fake.push(ctx.model,
+      calls: [eval: ~s|Compaction.provide_summary("Goal: voluntary")|, eval: "kept = 9"]
+    )
+
+    Fake.push(ctx.model, text: "done")
+    send(pid, :brief)
+    request!(ctx.model)
+    body = request!(ctx.model)
+    refute Enum.any?(body["messages"], &(&1["role"] in ["tool", "assistant"]))
+    assert Enum.any?(body["messages"], &(text(&1) =~ "Goal: voluntary"))
+    await(id, :turn_ended)
+    assert :sys.get_state(pid).bindings[:kept] == 9
+  end
+
   test "an event starts a turn, tool results loop back, and a reply without tool calls ends it",
        ctx do
     {pid, id} = start!(ctx)
