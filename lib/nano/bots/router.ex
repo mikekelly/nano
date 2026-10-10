@@ -1,5 +1,10 @@
 defmodule Nano.Bots.Router do
-  @moduledoc "Contextual per-bot routing; human failures offer everyone a turn, bot-only failures stop."
+  @moduledoc """
+  Contextual group routing; human judgment failures offer everyone a turn and bot-only
+  failures stop. Sole-bot private human batches always get an opportunity: a cheap
+  classifier must not suppress an unaddressed remember/request in the only recipient's
+  conversation. The bot may still choose silence. Group decisions remain contextual.
+  """
   def select(bots, session, messages, opts \\ []) do
     human? = Keyword.get(opts, :human_batch, Enum.any?(messages, &(&1.actor == :human)))
 
@@ -16,32 +21,38 @@ defmodule Nano.Bots.Router do
          )}
       end)
 
-    if eligible == [] do
-      {:ok, []}
-    else
-      evaluator = Keyword.get(opts, :evaluate, &Nano.Decision.evaluate/3)
+    cond do
+      human? and length(bots) == 1 ->
+        {:ok, [hd(bots).id]}
 
-      state =
-        inspect(
-          %{
-            participants: Enum.map(bots, &Map.take(&1, [:id, :name, :description])),
-            conversation: messages,
-            exchanges: session.exchange_count
-          },
-          limit: :infinity
-        )
+      eligible == [] ->
+        {:ok, []}
 
-      case evaluator.(state, questions, Keyword.get(opts, :decision_opts, [])) do
-        {:ok, %{answers: answers}} ->
-          if Enum.all?(eligible, &match?(%{noul: n} when is_number(n), answers[&1.id])) do
-            {:ok, Enum.filter(eligible, &(answers[&1.id].noul >= threshold)) |> Enum.map(& &1.id)}
-          else
+      true ->
+        evaluator = Keyword.get(opts, :evaluate, &Nano.Decision.evaluate/3)
+
+        state =
+          inspect(
+            %{
+              participants: Enum.map(bots, &Map.take(&1, [:id, :name, :description])),
+              conversation: messages,
+              exchanges: session.exchange_count
+            },
+            limit: :infinity
+          )
+
+        case evaluator.(state, questions, Keyword.get(opts, :decision_opts, [])) do
+          {:ok, %{answers: answers}} ->
+            if Enum.all?(eligible, &match?(%{noul: n} when is_number(n), answers[&1.id])) do
+              {:ok,
+               Enum.filter(eligible, &(answers[&1.id].noul >= threshold)) |> Enum.map(& &1.id)}
+            else
+              fallback(human?, eligible)
+            end
+
+          _ ->
             fallback(human?, eligible)
-          end
-
-        _ ->
-          fallback(human?, eligible)
-      end
+        end
     end
   rescue
     _ ->
