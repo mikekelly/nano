@@ -32,6 +32,7 @@ defmodule NanoWeb.ImagesTest do
 
   defp upload(bytes) do
     build_conn()
+    |> put_req_header("x-nano-api-intent", "mutate")
     |> put_req_header("content-type", "application/json")
     |> post("/api/images", Jason.encode!(%{base64: Base.encode64(bytes)}))
   end
@@ -54,7 +55,11 @@ defmodule NanoWeb.ImagesTest do
     assert upload("not an image") |> json_response(422)
 
     for encoded <- ["not-base64!", String.duplicate("A", 5_000_001)] do
-      conn = build_conn() |> put_req_header("content-type", "application/json")
+      conn =
+        build_conn()
+        |> put_req_header("x-nano-api-intent", "mutate")
+        |> put_req_header("content-type", "application/json")
+
       assert conn |> post("/api/images", Jason.encode!(%{base64: encoded})) |> json_response(422)
     end
   end
@@ -64,7 +69,11 @@ defmodule NanoWeb.ImagesTest do
     name = "images_user_#{System.unique_integer([:positive])}"
     user = Nano.User.start(name)
     on_exit(fn -> DynamicSupervisor.terminate_child(Nano.UserSupervisor, user) end)
-    conn = build_conn() |> put_req_header("content-type", "application/json")
+
+    conn =
+      build_conn()
+      |> put_req_header("x-nano-api-intent", "mutate")
+      |> put_req_header("content-type", "application/json")
 
     conn
     |> post(

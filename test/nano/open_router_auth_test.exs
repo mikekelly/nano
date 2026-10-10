@@ -22,7 +22,16 @@ defmodule Nano.OpenRouterAuthTest do
   # Starts a login as the dashboard's Connect OpenRouter link does: the query of the address
   # on OpenRouter it sends the browser to.
   defp connect do
-    conn = get(build_conn(), "/openrouter/connect")
+    page = get(build_conn(), "/")
+    [_, token] = Regex.run(~r/name="csrf-token" content="([^"]+)"/, page.resp_body)
+
+    conn =
+      page
+      |> recycle()
+      |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+      |> Plug.Conn.put_req_header("content-type", "application/x-www-form-urlencoded")
+      |> post("/openrouter/connect", URI.encode_query(%{_csrf_token: token}))
+
     url = URI.parse(redirected_to(conn, 302))
     assert url.path == "/auth"
     URI.decode_query(url.query)
@@ -44,7 +53,7 @@ defmodule Nano.OpenRouterAuthTest do
         query = connect()
 
         assert %{
-                 "callback_url" => "http://www.example.com:80/openrouter/callback",
+                 "callback_url" => "http://localhost:4000/openrouter/callback",
                  "code_challenge_method" => "S256",
                  "code_challenge" => challenge,
                  "state" => state,
@@ -134,7 +143,13 @@ defmodule Nano.OpenRouterAuthTest do
     assert has_element?(view, "#providers .provider.disconnected", "ChatGPT")
     assert has_element?(view, "#providers .provider.on", "OpenRouter")
     assert html =~ "not connected"
-    assert has_element?(view, ~s|#openrouter a[href="/openrouter/connect"]|, "Connect OpenRouter")
+
+    assert has_element?(
+             view,
+             ~s|#openrouter form[action="/openrouter/connect"] button|,
+             "Connect OpenRouter"
+           )
+
     assert has_element?(view, "#openrouter-key input[type=password][name=key]")
     assert has_element?(view, "#start button.primary[disabled]")
     assert has_element?(view, "#start .actions", "connect OpenRouter first")
@@ -187,5 +202,97 @@ defmodule Nano.OpenRouterAuthTest do
     assert GenServer.call(Auth, :junk) == {:error, :unknown_call}
     assert Process.whereis(Auth) == pid
     assert Map.has_key?(:sys.get_state(Auth), state)
+  end
+
+  test "CSRF form is required before pending insertion; safe methods cannot initiate or exchange" do
+    Auth.invalidate_pending()
+
+    for token <- [nil, "invalid"] do
+      page = get(build_conn(), "/")
+      before = map_size(:sys.get_state(Auth))
+      body = if token, do: URI.encode_query(%{_csrf_token: token}), else: ""
+
+      assert_error_sent 403, fn ->
+        page
+        |> recycle()
+        |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+        |> Plug.Conn.put_req_header("content-type", "application/x-www-form-urlencoded")
+        |> post("/openrouter/connect", body)
+      end
+
+      assert map_size(:sys.get_state(Auth)) == before
+    end
+
+    for method <- [:get, :head] do
+      assert dispatch(build_conn(), @endpoint, method, "/openrouter/connect", nil).status == 404
+      assert map_size(:sys.get_state(Auth)) == 0
+    end
+
+    %{"state" => state} = connect()
+    Fake.keys([{200, %{"key" => @secret}}])
+    path = "/openrouter/callback?" <> URI.encode_query(%{state: state, code: "c"})
+
+    for method <- [:head, :options] do
+      assert dispatch(build_conn(), @endpoint, method, path, nil).status == 405
+      assert Map.has_key?(:sys.get_state(Auth), state)
+      refute_received {:openrouter_keys, _}
+      assert Nano.Settings.get(:openrouter_api_key) == nil
+    end
+
+    callback(%{"state" => state, "code" => "c"})
+    assert_received {:openrouter_keys, _}
+    assert Nano.Settings.get(:openrouter_api_key) == @secret
+  end
+
+  test "hot policy transition invalidates old pending attempts only, then new flow succeeds" do
+    Auth.invalidate_pending()
+    %{"state" => state} = connect()
+    # Representative old readable pending map lacks callback binding.
+    :sys.replace_state(Auth, fn map -> Map.update!(map, state, &Map.delete(&1, :callback_url)) end)
+
+    Nano.Settings.put(:openrouter_api_key, @secret)
+    assert Auth.invalidate_pending() == 1
+    assert Nano.Settings.get(:openrouter_api_key) == @secret
+    callback(%{"state" => state, "code" => "old"})
+    refute_received {:openrouter_keys, _}
+    %{"state" => fresh} = connect()
+    Fake.keys([{200, %{"key" => @secret}}])
+    callback(%{"state" => fresh, "code" => "fresh"})
+    assert_received {:openrouter_keys, _}
+  end
+
+  test "callback policy is fixed, host spoofing irrelevant, invalid policy cannot insert or exchange" do
+    Auth.invalidate_pending()
+    saved = Application.fetch_env!(:nano, :openrouter_callback_url)
+    on_exit(fn -> Application.put_env(:nano, :openrouter_callback_url, saved) end)
+    assert {:ok, url} = Auth.login(saved)
+    query = URI.parse(url).query |> URI.decode_query()
+    assert query["callback_url"] == saved
+    assert {:error, _} = Auth.login("http://evil.example/openrouter/callback")
+    count = map_size(:sys.get_state(Auth))
+
+    for invalid <- [
+          "http://evil.example/openrouter/callback",
+          saved <> "?x",
+          "http://localhost:4000/wrong"
+        ] do
+      Application.put_env(:nano, :openrouter_callback_url, invalid)
+      page = get(build_conn(), "/")
+      [_, token] = Regex.run(~r/name="csrf-token" content="([^"]+)"/, page.resp_body)
+
+      conn =
+        page
+        |> recycle()
+        |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+        |> Plug.Conn.put_req_header("content-type", "application/x-www-form-urlencoded")
+        |> post("/openrouter/connect", URI.encode_query(%{_csrf_token: token}))
+
+      assert conn.status == 503
+      assert map_size(:sys.get_state(Auth)) == count
+    end
+
+    callback(%{"state" => query["state"], "code" => "invalid-policy"})
+    refute_received {:openrouter_keys, _}
+    assert Nano.Settings.get(:openrouter_api_key) == nil
   end
 end

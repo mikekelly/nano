@@ -19,9 +19,11 @@ defmodule NanoWeb.Endpoint do
     from: {:phoenix_live_view, "priv/static"},
     only: ~w(phoenix_live_view.min.js)
 
-  # JSON bodies only. A form posted by some other web page is therefore never parsed into
-  # params, which keeps a stray browser tab from driving the unauthenticated API.
-  plug Plug.Parsers, parsers: [:json], pass: ["*/*"], json_decoder: Jason
+  # The guard sees raw method, headers and body before normalization or parameter merge.
+  plug NanoWeb.ApiGuard
+  # Browser OAuth forms must be parsed before the router's CSRF check. API bodies have
+  # already been validated and installed by the guard. LiveView keeps its own protocol.
+  plug Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason
   plug Plug.Head
   plug Plug.Session, @session_options
   plug NanoWeb.Router

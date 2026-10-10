@@ -88,8 +88,10 @@ defmodule NanoWeb.ApiController do
      "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text, optional images (list of stored image reference maps from POST /api/images)."},
     {"POST", "/api/users/:name/send_raw",
      "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
-    {"GET", "/api/users/:name/inbox?clear=true",
-     "Messages the user has received, oldest first: at, term."},
+    {"GET", "/api/users/:name/inbox",
+     "Read-only received messages, oldest first: at, term. clear is rejected."},
+    {"POST", "/api/users/:name/inbox/consume",
+     "Consume received messages; protected bodyless mutation."},
     {"GET", "/api/users/:name/threads",
      "The user's conversations, one per agent, most recently active first: agent (* for " <>
        "messages that name no agent), messages, unread, last_at, last (the latest, inspected). " <>
@@ -132,7 +134,7 @@ defmodule NanoWeb.ApiController do
   @conventions "Pids are strings such as \"#PID<0.231.0>\". Wherever a target is expected (to), " <>
                  "give an agent name, a user name, a registered process name, or a pid string. " <>
                  "Terms are sent as Elixir source strings and returned as inspect/2 output. " <>
-                 "Request bodies are JSON. Errors are JSON with an error field and, for parse or " <>
+                 "Unsafe requests require exactly one X-Nano-API-Intent: mutate header, trusted configured Origin if present, no query, and one JSON object (bodyless actions: absent or {}). GET inbox is read-only; POST inbox/consume consumes. Request bodies are JSON. Errors are JSON with an error field and, for parse or " <>
                  "eval failures, the exception in message. Unknown agents, users and processes give 404."
 
   def index(conn, _params) do
@@ -338,8 +340,14 @@ defmodule NanoWeb.ApiController do
           "mailbox and will be carried out if it resumes, so retrying would repeat it"
       )
 
-  def inbox(conn, %{"name" => name} = params) do
-    case User.inbox(name, clear: params["clear"] == "true") do
+  def inbox(conn, %{"name" => _name, "clear" => _}),
+    do: error(conn, 400, "api_query_forbidden")
+
+  def inbox(conn, %{"name" => name}), do: inbox_result(conn, name, false)
+  def consume_inbox(conn, %{"name" => name}), do: inbox_result(conn, name, true)
+
+  defp inbox_result(conn, name, clear) do
+    case User.inbox(name, clear: clear) do
       {:error, :unknown_user} ->
         error(conn, 404, "no such user: #{name}")
 

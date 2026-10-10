@@ -32,11 +32,11 @@ checked against the model's provider and the node's `allowed_models` setting; a 
 what to give instead.
 
 ```bash
-curl -s -XPOST localhost:4000/api/agents -H 'content-type: application/json' -d '{"name": "alice",
+curl -s -XPOST localhost:4000/api/agents -H 'X-Nano-API-Intent: mutate' -H 'content-type: application/json' -d '{"name": "alice",
   "model": "openai-codex/gpt-6.1-sol", "reasoning": "low", "max_turns": 0, "max_tokens": 0,
   "max_context": 272000, "start_idle": true}'
-curl -s -XPOST localhost:4000/api/users -H 'content-type: application/json' -d '{"name": "me"}'
-curl -s -XPOST localhost:4000/api/users/me/say -H 'content-type: application/json' \
+curl -s -XPOST localhost:4000/api/users -H 'X-Nano-API-Intent: mutate' -H 'content-type: application/json' -d '{"name": "me"}'
+curl -s -XPOST localhost:4000/api/users/me/say -H 'X-Nano-API-Intent: mutate' -H 'content-type: application/json' \
   -d '{"to": "alice", "text": "are you there?"}'
 curl -s localhost:4000/api/users/me/inbox                 # what alice sends back
 curl -s localhost:4000/api/users/me/threads/alice         # both directions, in order
@@ -77,3 +77,27 @@ When the run is over, commit to a new `seedling/<agent>-<what>` branch and carry
 - The code and `prompts/seed.txt` are the source of truth; the module docs describe
   them, and `GET /api` the API. The prompt must stay true of the running system.
 - Prefer removing code to adding it.
+
+### Trusted-local API compatibility change
+All unsafe `/api` requests, even bodyless POST and DELETE, require exactly one
+`X-Nano-API-Intent: mutate` header. Without it the server returns HTTP 403
+`api_intent_required`. An Origin, when present, must match configured trust;
+Host and forwarded headers never establish trust. Payloads must be one JSON object;
+queries, method overrides, duplicate JSON keys and path-key collisions are refused.
+Bodyless actions accept no body or `{}`. There is no legacy grace path.
+
+```sh
+curl -s -X POST localhost:4000/api/users/me/inbox/consume -H 'X-Nano-API-Intent: mutate'
+curl -s -X DELETE localhost:4000/api/settings/EXAMPLE -H 'X-Nano-API-Intent: mutate'
+```
+
+GET/HEAD inbox is read-only, and `?clear` is rejected. OAuth initiation is a
+CSRF-protected browser POST; only the one-use PKCE GET callback may exchange.
+This is an intent barrier, not authentication: authorized same-origin JavaScript,
+local root clients and trusted proxies retain node authority. Keep loopback exposure.
+Deployment trust is `NANO_API_PUBLIC_PORT` (default 4000),
+`NANO_API_TRUSTED_ORIGINS` (JSON array; default localhost/127.0.0.1/[::1] HTTP at
+that port) and `NANO_OPENROUTER_CALLBACK_URL` (fixed `/openrouter/callback`, default
+http://localhost:4000/openrouter/callback). Proxies require explicit external trust
+and callback configuration. Invalid policy blocks mutations/initiation with 503;
+read-only repair remains available. Explicit empty origins trusts no Origin.

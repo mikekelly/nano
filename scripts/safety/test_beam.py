@@ -74,7 +74,7 @@ class RealBeamRecovery(unittest.TestCase):
             def status(): return read_json(root / 'status.json', {})
             def ready(): return wait_for(lambda: status().get('state') == 'watching', 100)
             def evaluate(code):
-                req = urllib.request.Request(f'http://127.0.0.1:{port}/api/eval', data=json.dumps(dict(code=code)).encode(), headers={'Content-Type': 'application/json'})
+                req = urllib.request.Request(f'http://127.0.0.1:{port}/api/eval', data=json.dumps(dict(code=code)).encode(), headers={'Content-Type': 'application/json', 'X-Nano-API-Intent': 'mutate'})
                 with urllib.request.urlopen(req, timeout=10) as reply: return json.load(reply)
             try:
                 proc = start(); ready()

@@ -28,7 +28,8 @@ defmodule Nano.OpenRouter.Auth do
     {state, verifier} = {random(16), random(32)}
     challenge = Base.url_encode64(:crypto.hash(:sha256, verifier), padding: false)
 
-    with :ok <- call({:put, state, verifier}) do
+    with {:ok, ^callback_url} <- NanoWeb.ApiGuard.callback_url(),
+         :ok <- call({:put, state, verifier, callback_url}) do
       query = [
         callback_url: callback_url,
         code_challenge: challenge,
@@ -38,6 +39,8 @@ defmodule Nano.OpenRouter.Auth do
       ]
 
       {:ok, authorize_url() <> "?" <> URI.encode_query(query)}
+    else
+      _ -> {:error, "OpenRouter callback policy unavailable or mismatched"}
     end
   end
 
@@ -109,14 +112,21 @@ defmodule Nano.OpenRouter.Auth do
   def init(nil), do: {:ok, %{}}
 
   @impl true
-  def handle_call({:put, state, verifier}, _from, logins) do
-    login = %{verifier: verifier, expires_at: now() + @login_ms}
+  def handle_call(:invalidate_pending, _from, logins), do: {:reply, map_size(logins), %{}}
+
+  def handle_call({:put, state, verifier, callback_url}, _from, logins) do
+    login = %{verifier: verifier, expires_at: now() + @login_ms, callback_url: callback_url}
     {:reply, :ok, logins |> current() |> Map.put(state, login)}
   end
 
   def handle_call({:take, state}, _from, logins) do
     {login, logins} = logins |> current() |> Map.pop(state)
-    {:reply, if(login, do: {:ok, login.verifier}, else: :error), logins}
+
+    valid =
+      login && is_binary(Map.get(login, :callback_url)) &&
+        login.callback_url == configured_callback()
+
+    {:reply, if(valid, do: {:ok, login.verifier}, else: :error), logins}
   end
 
   # Anyone may call, cast or send this process anything; what it does not know is refused or
@@ -138,9 +148,20 @@ defmodule Nano.OpenRouter.Auth do
       other -> other
     end)
     |> Map.update(:message, nil, fn
+      {:put, state, _, _} -> {:put, state, :redacted}
       {:put, state, _} -> {:put, state, :redacted}
       message -> message
     end)
+  end
+
+  @doc "Clear only ephemeral attempts during policy activation; retain credentials. Returns count."
+  def invalidate_pending, do: call(:invalidate_pending)
+
+  defp configured_callback do
+    case NanoWeb.ApiGuard.callback_url() do
+      {:ok, url} -> url
+      _ -> nil
+    end
   end
 
   defp current(logins), do: Map.reject(logins, fn {_, l} -> l.expires_at <= now() end)

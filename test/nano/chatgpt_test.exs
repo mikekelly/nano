@@ -574,10 +574,18 @@ defmodule Nano.ChatGPTTest do
              build_conn() |> get("/api/chatgpt") |> json_response(200)
 
     assert %{"status" => "pending", "user_code" => "FAKE-CODE", "verification_url" => url} =
-             build_conn() |> post("/api/chatgpt/login") |> json_response(200)
+             build_conn()
+             |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
+             |> post("/api/chatgpt/login")
+             |> json_response(200)
 
     assert url =~ "/codex/device"
-    assert %{"ok" => true} = build_conn() |> post("/api/chatgpt/logout") |> json_response(200)
+
+    assert %{"ok" => true} =
+             build_conn()
+             |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
+             |> post("/api/chatgpt/logout")
+             |> json_response(200)
 
     connect!(tokens)
     body = build_conn() |> get("/api/chatgpt") |> json_response(200)
@@ -589,7 +597,12 @@ defmodule Nano.ChatGPTTest do
 
     Fake.auth(:usercode, [{500, %{}}])
     :ok = Auth.logout()
-    assert %{"error" => _} = build_conn() |> post("/api/chatgpt/login") |> json_response(502)
+
+    assert %{"error" => _} =
+             build_conn()
+             |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
+             |> post("/api/chatgpt/login")
+             |> json_response(502)
   end
 
   test "the dashboard: with ChatGPT chosen, connect shows the code and link, then who is connected" do
@@ -756,6 +769,7 @@ defmodule Nano.ChatGPTTest do
 
     assert %{"error" => "could not start agent: " <> ^refused} =
              build_conn()
+             |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
              |> Plug.Conn.put_req_header("content-type", "application/json")
              |> post("/api/agents", Jason.encode!(body))
              |> json_response(422)

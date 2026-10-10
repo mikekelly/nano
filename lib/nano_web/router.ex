@@ -24,7 +24,7 @@ defmodule NanoWeb.Router do
     live "/bots", BotsLive
     live "/bots/:id", BotsLive
     get "/bots/attachments/:id", BotAttachmentController, :show
-    get "/openrouter/connect", OpenRouterController, :connect
+    post "/openrouter/connect", OpenRouterController, :connect
     get "/openrouter/callback", OpenRouterController, :callback
   end
 
@@ -56,6 +56,7 @@ defmodule NanoWeb.Router do
     post "/users/:name/say", ApiController, :say
     post "/users/:name/send_raw", ApiController, :send_raw
     get "/users/:name/inbox", ApiController, :inbox
+    post "/users/:name/inbox/consume", ApiController, :consume_inbox
     get "/users/:name/threads", ApiController, :threads
     get "/users/:name/threads/:agent", ApiController, :thread
 
