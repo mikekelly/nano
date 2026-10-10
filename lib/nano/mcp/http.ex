@@ -1,6 +1,10 @@
 defmodule Nano.MCP.HTTP do
   @moduledoc """
-  Streamable HTTP MCP transport, researched against the 2025-11-25 specification.
+  Streamable HTTP MCP transport, researched against 2026-07-28 and 2025-11-25.
+  Modern streams use POST subscriptions/listen and are not resumable. The client
+  supplies per-request metadata; standard method/name headers are mirrored here.
+  send_message/3 accepts extra prevalidated custom parameter headers.
+  Modern cancellation notifications close the matching request stream locally.
   POST responses support JSON and SSE; after initialization GET listens for push.
   Each SSE stream resumes separately using Last-Event-ID and the server retry delay.
   Session expiration is reported so the owner can initialize a new transport.
@@ -10,7 +14,20 @@ defmodule Nano.MCP.HTTP do
   use GenServer
   @limit 4 * 1024 * 1024
   def start_link(owner, config), do: GenServer.start_link(__MODULE__, {owner, config})
-  def send_message(pid, message) when is_map(message), do: GenServer.cast(pid, {:send, message})
+  def send_message(pid, message) when is_map(message), do: send_message(pid, message, %{})
+  def send_message(pid, message, headers), do: GenServer.cast(pid, {:send, message, headers})
+  def set_protocol(pid, version), do: GenServer.call(pid, {:set_protocol, version})
+  defp modern?(version), do: version >= "2026-07-28"
+
+  def encode_header(value) do
+    value = to_string(value)
+
+    if value =~ ~r/^[\x20-\x7e\x09]*$/ and String.trim(value) == value and
+         not (String.starts_with?(value, "=?base64?") and String.ends_with?(value, "?=")),
+       do: value,
+       else: "=?base64?" <> Base.encode64(value) <> "?="
+  end
+
   def stop(pid), do: GenServer.stop(pid, :normal)
   @impl true
   def init({owner, config}) do
@@ -23,7 +40,7 @@ defmodule Nano.MCP.HTTP do
          owner_ref: Process.monitor(owner),
          config: config,
          session: nil,
-         version: config["protocol_version"] || "2025-11-25",
+         version: config["protocol_version"] || "2026-07-28",
          jobs: %{},
          listening: false
        }}
@@ -33,15 +50,34 @@ defmodule Nano.MCP.HTTP do
   end
 
   @impl true
-  def handle_cast({:send, message}, s) do
-    if map_size(s.jobs) >= 64,
-      do: down(s, :too_many_requests),
-      else: {:noreply, launch(s, new_job(:post, message))}
+  def handle_cast({:send, message, headers}, s) do
+    if modern?(s.version) and message["method"] == "notifications/cancelled" do
+      {:noreply, cancel(s, get_in(message, ["params", "requestId"]))}
+    else
+      if map_size(s.jobs) >= 64,
+        do: down(s, :too_many_requests),
+        else: {:noreply, launch(s, %{new_job(:post, message) | extra_headers: headers})}
+    end
+  end
+
+  defp cancel(s, id) do
+    {cancelled, retained} =
+      Enum.split_with(s.jobs, fn {_, job} -> job.message && job.message["id"] == id end)
+
+    for {_, job} <- cancelled do
+      if job.ref, do: Process.demonitor(job.ref, [:flush])
+      if job.pid, do: Process.exit(job.pid, :kill)
+    end
+
+    %{s | jobs: Map.new(retained)}
   end
 
   defp new_job(method, message) do
     %{
       key: make_ref(),
+      extra_headers: %{},
+      version: nil,
+      status: nil,
       method: method,
       message: message,
       buffer: "",
@@ -61,23 +97,57 @@ defmodule Nano.MCP.HTTP do
 
   defp launch(s, job) do
     parent = self()
+    job = %{job | version: s.version}
+
+    version =
+      get_in(job.message || %{}, ["params", "_meta", "io.modelcontextprotocol/protocolVersion"]) ||
+        s.version
 
     headers =
       Map.new(s.config["headers"] || %{}, fn {k, v} -> {String.downcase(k), v} end)
       |> Map.merge(%{
         "accept" => "application/json, text/event-stream",
-        "mcp-protocol-version" => s.version
+        "mcp-protocol-version" => version
       })
 
     headers =
-      if s.session,
+      if s.session && not modern?(job.version),
         do: Map.put(headers, "mcp-session-id", s.session),
         else: Map.delete(headers, "mcp-session-id")
 
     headers =
-      if job.cursor && job.cursor != "",
+      if job.cursor && job.cursor != "" && not modern?(job.version),
         do: Map.put(headers, "last-event-id", job.cursor),
         else: Map.delete(headers, "last-event-id")
+
+    headers =
+      Map.merge(
+        headers,
+        Map.new(job.extra_headers, fn {k, v} -> {String.downcase(k), encode_header(v)} end)
+      )
+
+    headers =
+      if modern?(job.version) and job.message do
+        headers = Map.put(headers, "mcp-method", job.message["method"] || "")
+
+        name =
+          case job.message["method"] do
+            "resources/read" ->
+              get_in(job.message, ["params", "uri"])
+
+            method when method in ["tools/call", "prompts/get"] ->
+              get_in(job.message, ["params", "name"])
+
+            _ ->
+              nil
+          end
+
+        if name,
+          do: Map.put(headers, "mcp-name", encode_header(name)),
+          else: Map.delete(headers, "mcp-name")
+      else
+        headers
+      end
 
     {pid, ref} =
       spawn_monitor(fn ->
@@ -105,17 +175,24 @@ defmodule Nano.MCP.HTTP do
   end
 
   @impl true
-  def handle_call({:chunk, key, resp, bytes}, _from, s) do
-    try do
-      {s, job} = headers(s, s.jobs[key], resp)
-      {s, job} = consume(s, job, bytes)
+  def handle_call({:set_protocol, version}, _, s),
+    do: {:reply, :ok, %{s | version: version, session: nil}}
 
-      {:reply, if(job.complete and job.type == :sse, do: :halt, else: :ok),
-       put_in(s.jobs[key], job)}
-    catch
-      {:transport_error, reason} ->
-        notify(s, {:down, reason})
-        {:stop, :normal, :halt, s}
+  def handle_call({:chunk, key, resp, bytes}, _from, s) do
+    if not Map.has_key?(s.jobs, key) do
+      {:reply, :halt, s}
+    else
+      try do
+        {s, job} = headers(s, s.jobs[key], resp)
+        {s, job} = consume(s, job, bytes)
+
+        {:reply, if(job.complete and job.type == :sse, do: :halt, else: :ok),
+         put_in(s.jobs[key], job)}
+      catch
+        {:transport_error, reason} ->
+          notify(s, {:down, reason})
+          {:stop, :normal, :halt, s}
+      end
     end
   end
 
@@ -128,6 +205,9 @@ defmodule Nano.MCP.HTTP do
 
       resp.status == 404 and s.session != nil ->
         throw({:transport_error, :session_expired})
+
+      resp.status in [400, 404, 405] and modern?(job.version) ->
+        {s, %{job | headers: true, type: :http_error, status: resp.status}}
 
       resp.status not in [200, 202, 204] ->
         throw({:transport_error, {:http_status, resp.status}})
@@ -146,7 +226,11 @@ defmodule Nano.MCP.HTTP do
         if session && initializing && not Regex.match?(~r/^[\x21-\x7e]+$/, session),
           do: throw({:transport_error, :invalid_session_id})
 
-        s = if session && initializing, do: %{s | session: session}, else: s
+        s =
+          if session && initializing && not modern?(job.version),
+            do: %{s | session: session},
+            else: s
+
         {s, %{job | headers: true, type: type}}
     end
   end
@@ -235,7 +319,8 @@ defmodule Nano.MCP.HTTP do
         notify(s, {:message, message})
 
         initialized =
-          job.message && job.message["method"] == "initialize" && Map.has_key?(message, "result")
+          not modern?(job.version) && job.message && job.message["method"] == "initialize" &&
+            Map.has_key?(message, "result")
 
         s =
           if initialized,
@@ -261,53 +346,87 @@ defmodule Nano.MCP.HTTP do
   @impl true
   def handle_info({:finished, key, result}, s) do
     job = s.jobs[key]
-    Process.demonitor(job.ref, [:flush])
+    if job, do: Process.demonitor(job.ref, [:flush])
 
-    try do
-      {s, job} =
-        case result do
-          {:ok, resp} ->
-            headers(s, job, resp)
+    if is_nil(job) do
+      {:noreply, s}
+    else
+      try do
+        {s, job} =
+          case result do
+            {:ok, resp} ->
+              headers(s, job, resp)
 
-          {:error, reason} ->
-            if job.type == :sse,
-              do: {s, job},
-              else: throw({:transport_error, {:http_error, reason}})
+            {:error, reason} ->
+              if job.type == :sse,
+                do: {s, job},
+                else: throw({:transport_error, {:http_error, reason}})
+          end
+
+        {s, job} =
+          if job.type == :http_error do
+            message =
+              case Jason.decode(job.buffer) do
+                {:ok, %{} = message} ->
+                  message
+
+                _ ->
+                  %{
+                    "jsonrpc" => "2.0",
+                    "id" => job.message["id"],
+                    "error" => %{
+                      "code" => -32000,
+                      "message" => "HTTP error",
+                      "data" => %{"http_status" => job.status}
+                    }
+                  }
+              end
+
+            notify(s, {:message, message})
+            {s, %{job | complete: true}}
+          else
+            {s, job}
+          end
+
+        {s, job} = if job.type == :json, do: deliver(s, job, job.buffer), else: {s, job}
+
+        if job.type == :empty and job.buffer != "",
+          do: throw({:transport_error, :unexpected_content_type})
+
+        if modern?(job.version) and job.type == :sse and not job.complete,
+          do: throw({:transport_error, :stream_closed})
+
+        s = %{s | jobs: Map.delete(s.jobs, key)}
+
+        if not modern?(job.version) and job.type == :sse and not job.complete and
+             (job.method == :get or job.cursor not in [nil, ""]) do
+          resumed = %{
+            job
+            | method: :get,
+              buffer: "",
+              data: [],
+              size: 0,
+              event: "",
+              first_line: true,
+              headers: false,
+              pid: nil,
+              ref: nil
+          }
+
+          Process.send_after(self(), {:resume, resumed}, min(job.retry, 4_294_967_295))
+          {:noreply, put_in(s.jobs[key], resumed)}
+        else
+          {:noreply, s}
         end
-
-      {s, job} = if job.type == :json, do: deliver(s, job, job.buffer), else: {s, job}
-
-      if job.type == :empty and job.buffer != "",
-        do: throw({:transport_error, :unexpected_content_type})
-
-      s = %{s | jobs: Map.delete(s.jobs, key)}
-
-      if job.type == :sse and not job.complete and
-           (job.method == :get or job.cursor not in [nil, ""]) do
-        resumed = %{
-          job
-          | method: :get,
-            buffer: "",
-            data: [],
-            size: 0,
-            event: "",
-            first_line: true,
-            headers: false,
-            pid: nil,
-            ref: nil
-        }
-
-        Process.send_after(self(), {:resume, resumed}, min(job.retry, 4_294_967_295))
-        {:noreply, put_in(s.jobs[key], resumed)}
-      else
-        {:noreply, s}
+      catch
+        {:transport_error, reason} -> down(s, reason)
       end
-    catch
-      {:transport_error, reason} -> down(s, reason)
     end
   end
 
-  def handle_info({:resume, job}, s), do: {:noreply, launch(s, job)}
+  def handle_info({:resume, job}, s) do
+    if Map.has_key?(s.jobs, job.key), do: {:noreply, launch(s, job)}, else: {:noreply, s}
+  end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, s) do
     if ref == s.owner_ref, do: {:stop, :normal, s}, else: down(s, {:worker_down, reason})
