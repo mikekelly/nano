@@ -35,4 +35,35 @@ defmodule CompactionTest do
 
     refute Enum.any?(excluded, &(&1["content"] == event.(10)))
   end
+
+  test "multimodal event bundles retain refs once, budget images, and remain stable across rebuilds" do
+    ref = %{"type" => "image_ref", "image_ref" => %{image_ref: String.duplicate("a", 64)}}
+    event = fn n -> "<event seq=\"#{n}\">event #{n}</event>" end
+
+    image = %{
+      "role" => "user",
+      "content" => [
+        %{"type" => "text", "text" => event.(2)},
+        %{"type" => "text", "text" => event.(3) <> "\n<harness>budget</harness>"},
+        ref
+      ]
+    }
+
+    transcript = [%{"role" => "user", "content" => event.(1)}, image]
+    kept = Compaction.rebuild(transcript, "Goal: image", 60_000, "log")
+    assert [_, %{"content" => [text, ^ref]}, _] = kept
+    assert text["text"] == event.(2) <> "\n" <> event.(3)
+    refute text["text"] =~ "budget"
+    assert Enum.at(Compaction.rebuild(kept, "Goal: twice", 60_000, "log"), 1) == Enum.at(kept, 1)
+    small = Compaction.rebuild(transcript, "Goal: image summarized", 20_000, "log")
+    assert length(small) == 2
+    refute inspect(small) =~ "image_ref"
+    # Entirely excluded deliveries drop refs, mixed ones retain attribution atomically.
+    assert length(
+             Compaction.rebuild(transcript, "Goal: reports", 60_000, "log", [event.(2), event.(3)])
+           ) == 2
+
+    assert Enum.at(Compaction.rebuild(transcript, "Goal: mixed", 60_000, "log", [event.(2)]), 1) ==
+             Enum.at(kept, 1)
+  end
 end

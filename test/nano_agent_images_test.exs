@@ -34,7 +34,7 @@ defmodule NanoAgentImagesTest do
     %{ref: ref, bytes: bytes, path: path}
   end
 
-  defp start!(vision) do
+  defp start!(vision, opts \\ []) do
     model =
       Fake.model(%{
         "architecture" => %{
@@ -44,7 +44,7 @@ defmodule NanoAgentImagesTest do
 
     name = "image-agent-#{System.unique_integer([:positive])}"
     Fake.listen(model)
-    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model))
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model, opts))
 
     on_exit(fn ->
       if p = NanoAgent.whereis(name) do
@@ -167,5 +167,69 @@ defmodule NanoAgentImagesTest do
     assert :ok = Nano.User.say(user, name, %{text: "describe", images: [c.ref]})
     assert_receive {:openrouter_request, ^model, body}, 3000
     assert Enum.any?(List.last(body["messages"])["content"], &(&1["type"] == "image_url"))
+  end
+
+  test "voluntary compaction preserves actual image attachment and repeated checkpoints do not duplicate it",
+       c do
+    {model, name, pid} = start!(true, max_context: 60_000)
+    Fake.push(model, calls: [eval: ~S|Compaction.provide_summary("Goal: retain image")|])
+    Fake.push(model, calls: [eval: ~S|Compaction.provide_summary("Goal: retained twice")|])
+    Fake.push(model, text: "done")
+    send(pid, %{text: "image brief", images: [c.ref]})
+    assert_receive {:openrouter_request, ^model, _}, 3000
+    assert_receive {:openrouter_request, ^model, after_first}, 3000
+    assert_receive {:openrouter_request, ^model, after_second}, 3000
+    assert wire_images(after_first) == 1
+    assert wire_images(after_second) == 1
+    refute Enum.any?(after_second["messages"], &(&1["role"] == "tool"))
+    wait_idle(pid, 200)
+    assert NanoAgent.info(name).halted == nil
+    refute inspect(:sys.get_state(pid).transcript) =~ "base64"
+  end
+
+  test "automatic compaction keeps image brief and pending image arrivals in their own user deliveries",
+       c do
+    {model, name, pid} = start!(true, max_context: 60_000)
+    Fake.push(model, calls: [eval: "1"], usage: {45_100, 1, 0})
+    send(pid, %{text: "first image", images: [c.ref]})
+    assert_receive {:openrouter_request, ^model, _}, 3000
+    assert_receive {:openrouter_request, ^model, checkpoint}, 3000
+    assert Jason.encode!(checkpoint) =~ "Automatic compaction"
+    send(pid, %{text: "queued image", images: [c.ref]})
+    :sys.get_state(pid)
+
+    Fake.push(model,
+      calls: [eval: ~S|Compaction.provide_summary("Goal: after automatic checkpoint")|]
+    )
+
+    Fake.push(model, text: "done")
+    assert_receive {:openrouter_request, ^model, resumed}, 3000
+    assert wire_images(resumed) == 2
+    assert Jason.encode!(List.last(resumed["messages"])) =~ "queued image"
+    wait_idle(pid, 200)
+    assert NanoAgent.info(name).halted == nil
+    refute inspect(:sys.get_state(pid).transcript) =~ "base64"
+  end
+
+  test "nonvision image notices survive voluntary compaction as text", c do
+    {model, name, pid} = start!(false)
+    Fake.push(model, calls: [eval: ~S|Compaction.provide_summary("Goal: unavailable image")|])
+    Fake.push(model, text: "done")
+    send(pid, %{text: "cannot see", images: [c.ref]})
+    assert_receive {:openrouter_request, ^model, _}, 3000
+    assert_receive {:openrouter_request, ^model, resumed}, 3000
+    assert wire_images(resumed) == 0
+    assert Jason.encode!(resumed) =~ "cannot see the 1 image attachment"
+    wait_idle(pid, 200)
+    assert NanoAgent.info(name).halted == nil
+  end
+
+  defp wire_images(body) do
+    for %{"content" => parts} <- body["messages"],
+        is_list(parts),
+        %{"type" => "image_url"} <- parts,
+        reduce: 0 do
+      n -> n + 1
+    end
   end
 end
