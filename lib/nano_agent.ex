@@ -21,6 +21,8 @@ defmodule NanoAgent do
     * `Nano.Tools`: bounded file read/write/edit/list/find/search and synchronous shell.
     * `Nano.Background`: independent shell jobs, durable results, completion events.
     * `Compaction`: automatic checkpoints and voluntary summaries.
+    * `Nano.Web`: cached readable pages, exact evidence and Lightpanda JavaScript/CDP wrappers.
+    * `Nano.Search`: bounded Exa search, cited answers and durable named-owner Agent research.
     * `Goals`: durable goal trees, reasons, status and cheap review; dashboard goals.
     * `FrontMind`: own short durable note; `Nano.ContextBob` re-shows sources by token distance.
     * `Nano.Decision`: reusable typed Jev decisions and probabilities (optional credentials).
