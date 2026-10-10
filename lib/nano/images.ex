@@ -71,6 +71,13 @@ defmodule Nano.Images do
   defp valid_ref(_), do: {:error, :invalid_ref}
 
   defp bounded_read(path) do
+    with {:ok, stat} <- File.stat(path),
+         true <- stat.type == :regular or {:error, :not_regular_file} do
+      read_regular(path)
+    end
+  end
+
+  defp read_regular(path) do
     case File.open(path, [:read, :binary], &IO.binread(&1, @max_raw + 1)) do
       {:ok, data} when is_binary(data) and byte_size(data) <= @max_raw -> {:ok, data}
       {:ok, data} when is_binary(data) -> {:error, :image_too_large}
