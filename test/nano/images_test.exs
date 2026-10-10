@@ -46,6 +46,15 @@ defmodule Nano.ImagesTest do
     assert_receive {:"$gen_cast", {:notify, %{text: "Image opened from file", images: [^ref]}}}
   end
 
+  test "non-regular files are rejected before opening", %{opts: opts} do
+    File.mkdir_p!(opts[:store_dir])
+    assert {:error, :not_regular_file} = Nano.Images.import_file(opts[:store_dir], opts)
+    fifo = Path.join(opts[:store_dir], "pipe")
+    assert {_, 0} = System.cmd("mkfifo", [fifo])
+    assert {:error, :not_regular_file} = Nano.Images.import_file(fifo, opts)
+    assert {:error, :not_regular_file} = Nano.Images.import_file("/dev/zero", opts)
+  end
+
   test "GIF JPEG WebP headers", %{opts: opts} do
     gif = Base.decode64!("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
 
