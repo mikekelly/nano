@@ -121,7 +121,9 @@ defmodule Nano.Bots.RuntimeImagesTest do
           text: "consumer image brief",
           attachments: ["image:" <> c.image.image_ref],
           idempotency_key: "compacted"
-        }, server: c.store)
+        },
+        server: c.store
+      )
 
     Nano.Bots.Runtime.reconcile(server: c.runtime)
 
@@ -173,6 +175,8 @@ defmodule Nano.Bots.RuntimeImagesTest do
 
     event = Nano.Bots.Agent.event(%{messages: [message], delivery_id: "d"})
     assert event.images == [c.image]
+    minimal = Nano.Bots.Agent.event(%{messages: [Map.drop(message, [:id, :sequence])]})
+    assert minimal.images == [c.image]
     assert event.bots_turn.unavailable_images == [String.duplicate("0", 64)]
     continuation = Nano.Bots.Agent.event(%{messages: [Map.put(message, :text_offset, 3000)]})
     refute Map.has_key?(continuation, :images)

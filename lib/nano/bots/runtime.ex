@@ -15,8 +15,11 @@ defmodule Nano.Bots.Runtime do
   use GenServer
   alias Nano.Bots
 
-  def start_link(opts \\ []),
-    do:
+  def start_link(opts \\ []) do
+    if (opts[:adapter] || Nano.Bots.Agent) == Nano.Bots.Agent and Keyword.has_key?(opts, :name) and
+         is_nil(opts[:name]) do
+      {:error, :stable_runtime_name_required}
+    else
       GenServer.start_link(
         __MODULE__,
         opts,
@@ -25,6 +28,8 @@ defmodule Nano.Bots.Runtime do
           else: [name: opts[:name] || __MODULE__]
         )
       )
+    end
+  end
 
   def post(session, bot, text, opts), do: call({:post, session, bot, text, opts}, opts)
   def ask_human(bot, text, opts), do: call({:ask, bot, text, opts}, opts)
@@ -39,6 +44,11 @@ defmodule Nano.Bots.Runtime do
   defp call(msg, opts), do: GenServer.call(Keyword.get(opts, :server, __MODULE__), msg, 30_000)
 
   def init(opts) do
+    adapter = opts[:adapter] || Nano.Bots.Agent
+
+    if adapter == Nano.Bots.Agent and Keyword.has_key?(opts, :name) and is_nil(opts[:name]),
+      do: raise(ArgumentError, "production bot adapter requires a stable registered runtime name")
+
     dir = opts[:state_dir] || Path.join(Application.fetch_env!(:nano, :state_dir), "bots-runtime")
     File.mkdir_p!(dir)
     path = Path.join(dir, "runtime.term")
@@ -64,6 +74,7 @@ defmodule Nano.Bots.Runtime do
       |> Map.put_new(:turns, %{})
       |> Map.put_new(:routing_batches, %{})
       |> Map.put_new(:stop_intents, %{})
+      |> Map.put_new(:agents, %{})
 
     state = %{
       data: data,
@@ -92,7 +103,8 @@ defmodule Nano.Bots.Runtime do
           actor: {:bot, bot},
           text: text,
           epoch: opts[:epoch],
-          idempotency_key: opts[:idempotency_key]
+          idempotency_key: opts[:idempotency_key],
+          attachments: Keyword.get(opts, :attachments, [])
         },
         server: s.store
       )
@@ -269,6 +281,42 @@ defmodule Nano.Bots.Runtime do
         status(s, sid, bid, if(st in [:thinking, :idle, :error], do: st, else: :error))
       else
         _ -> status(s, sid, bid, :error)
+      end
+    end)
+
+    Enum.each(s.data.agents, fn {{sid, bid}, name} ->
+      if function_exported?(s.adapter, :lifecycle, 1) and
+           function_exported?(s.adapter, :ack_lifecycle, 1) do
+        case safe(fn -> s.adapter.lifecycle(name) end) do
+          events when is_list(events) ->
+            Enum.each(events, fn event ->
+              case event.delegation do
+                :halted ->
+                  broadcast(s, :runtime_status, %{
+                    session_id: sid,
+                    bot_id: bid,
+                    status: :error,
+                    error: :agent_halted
+                  })
+
+                :death ->
+                  broadcast(s, :runtime_status, %{
+                    session_id: sid,
+                    bot_id: bid,
+                    status: :error,
+                    error: :agent_died
+                  })
+
+                _ ->
+                  :ok
+              end
+
+              safe(fn -> s.adapter.ack_lifecycle(event.event_id) end)
+            end)
+
+          _ ->
+            :ok
+        end
       end
     end)
 
@@ -463,7 +511,15 @@ defmodule Nano.Bots.Runtime do
               end
             end
 
-          batch = Map.put(batch, :memories, memories)
+          identity = Map.take(bot, [:id, :name, :face, :color, :voice, :description])
+
+          identity = %{
+            bot: identity,
+            version:
+              Base.encode16(:crypto.hash(:sha256, :erlang.term_to_binary(identity)), case: :lower)
+          }
+
+          batch = batch |> Map.put(:memories, memories) |> Map.put(:identity, identity)
           p = %{key: key, name: name, batch: batch}
 
           s =
@@ -472,7 +528,8 @@ defmodule Nano.Bots.Runtime do
               | data: %{
                   s.data
                   | pending: Map.put(s.data.pending, id, p),
-                    turns: Map.put(s.data.turns, key, id)
+                    turns: Map.put(s.data.turns, key, id),
+                    agents: Map.put(s.data.agents, key, name)
                 }
             })
 

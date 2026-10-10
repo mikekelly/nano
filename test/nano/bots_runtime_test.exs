@@ -4,7 +4,7 @@ defmodule Nano.Bots.RuntimeTest do
   alias Nano.Bots.Runtime
 
   defmodule Adapter do
-    def ensure(bot, session, _opts), do: {:ok, Enum.join([bot.name, bot.id, session.id], "/")}
+    def ensure(bot, session, _opts), do: {:ok, Enum.join([bot.face, bot.id, session.id], "/")}
 
     def deliver(name, batch) do
       [requester, bot, session] = String.split(name, "/")
@@ -24,6 +24,8 @@ defmodule Nano.Bots.RuntimeTest do
     end
 
     def status(_), do: :thinking
+    def lifecycle(name), do: Delegation.events(name)
+    def ack_lifecycle(id), do: Delegation.ack(id)
   end
 
   setup do
@@ -35,8 +37,12 @@ defmodule Nano.Bots.RuntimeTest do
     store =
       start_supervised!({Nano.Bots.Store, name: nil, store_dir: dir <> "/store", pubsub: nil})
 
-    {:ok, a} = Bots.create_bot(%{name: Atom.to_string(name)}, server: store)
-    {:ok, b} = Bots.create_bot(%{name: Atom.to_string(name)}, server: store)
+    {:ok, a} =
+      Bots.create_bot(%{name: Atom.to_string(name), face: Atom.to_string(name)}, server: store)
+
+    {:ok, b} =
+      Bots.create_bot(%{name: Atom.to_string(name), face: Atom.to_string(name)}, server: store)
+
     {:ok, session} = Bots.create_session(%{participant_ids: [a.id, b.id]}, server: store)
 
     runtime_opts = [
@@ -413,6 +419,115 @@ defmodule Nano.Bots.RuntimeTest do
 
     assert Nano.Bots.Agent.name(c.a.id, c.session.id) !=
              Nano.Bots.Agent.name(c.a.id, "different-session")
+  end
+
+  test "publication preserves validated attachment references and exact retry", c do
+    ref = "attachment:" <> String.duplicate("a", 64)
+
+    assert {:ok, message} =
+             Runtime.post(c.session.id, c.a.id, "report",
+               epoch: 0,
+               idempotency_key: "report",
+               attachments: [ref],
+               server: c.runtime
+             )
+
+    assert message.attachments == [ref]
+
+    assert {:ok, ^message} =
+             Runtime.post(c.session.id, c.a.id, "report",
+               epoch: 0,
+               idempotency_key: "report",
+               attachments: [ref],
+               server: c.runtime
+             )
+  end
+
+  test "persisted identity edits apply on next delivered final batch", c do
+    Bots.post_human(c.session.id, %{text: "first", idempotency_key: "identity-first"},
+      server: c.store
+    )
+
+    Runtime.reconcile(server: c.runtime)
+    assert_receive {:delivery, _, bot_id, first}
+    old = first.identity
+
+    Bots.update_bot(
+      bot_id,
+      %{name: "Renamed", voice: "Brief and precise", description: "New description"},
+      server: c.store
+    )
+
+    Bots.post_human(c.session.id, %{text: "next", idempotency_key: "identity-next"},
+      server: c.store
+    )
+
+    Runtime.reconcile(server: c.runtime)
+    assert_receive {:delivery, _, ^bot_id, next} when next.epoch > first.epoch
+    assert next.identity.bot.name == "Renamed"
+    assert next.identity.bot.voice == "Brief and precise"
+    assert next.identity.bot.id == bot_id
+    refute next.identity.version == old.version
+    assert first.identity == old
+  end
+
+  test "production runtime rejects unnamed routing and custom name reaches publication protocol",
+       c do
+    assert {:error, :stable_runtime_name_required} =
+             Runtime.start_link(
+               name: nil,
+               adapter: Nano.Bots.Agent,
+               store: c.store,
+               state_dir: c.opts[:state_dir] <> "/invalid",
+               pubsub: nil
+             )
+
+    name = String.to_atom("production_named_#{System.unique_integer([:positive])}")
+
+    child =
+      Supervisor.child_spec(
+        {Runtime,
+         name: name,
+         store: c.store,
+         state_dir: c.opts[:state_dir] <> "/named",
+         pubsub: nil,
+         retry_ms: 60_000}, id: {:runtime_named, name})
+
+    runtime = start_supervised!(child)
+    assert :sys.get_state(runtime).runtime == name
+    opts = Nano.Bots.Agent.prompt_options(c.a, c.session, runtime: name)
+    assert opts[:job] =~ "server: #{inspect(name)}"
+    assert opts[:parent] == "bots-runtime-owner"
+  end
+
+  test "finished agents' lifecycle events are reflected cleanly then acknowledged", c do
+    pubsub = String.to_atom("runtime_pubsub_#{System.unique_integer([:positive])}")
+    start_supervised!({Phoenix.PubSub, name: pubsub})
+    Phoenix.PubSub.subscribe(pubsub, "bots:session:" <> c.session.id)
+    stop_supervised!(Runtime)
+    runtime = start_supervised!({Runtime, Keyword.put(c.opts, :pubsub, pubsub)})
+
+    Bots.post_human(c.session.id, %{text: "finish", idempotency_key: "lifecycle"},
+      server: c.store
+    )
+
+    Runtime.reconcile(server: runtime)
+    assert_receive {:delivery, _, bid, page}
+    Runtime.ack_delivery(page.delivery_id, server: runtime)
+
+    Runtime.finished(c.session.id, bid,
+      epoch: page.epoch,
+      delivery_id: page.delivery_id,
+      server: runtime
+    )
+
+    name = :sys.get_state(runtime).data.agents[{c.session.id, bid}]
+    assert :ok = Delegation.Monitor.reserve(name, "bots-runtime-owner")
+    on_exit(fn -> Delegation.Monitor.cancel(name) end)
+    assert :ok = Delegation.Monitor.emit(name, :halted, %{reason: :fixture})
+    Runtime.reconcile(server: runtime)
+    assert_receive {:bots, :runtime_status, %{bot_id: ^bid, status: :error, error: :agent_halted}}
+    assert Delegation.events(name) == []
   end
 
   defp collect_chunks(runtime, bot, page, acc) do
