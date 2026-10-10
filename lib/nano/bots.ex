@@ -16,9 +16,9 @@ defmodule Nano.Bots do
   `{:ok, %{messages: ascending_list, next_cursor: sequence, has_more: boolean}}`.
 
   request_human takes bot_id/session_id/requester (stable name, not pid)/text.
-  Requests: status :pending/:answered/:acked, answer, delivery_attempts, message_id.
-  Creation atomically appends a visible message with request_id and bot actor, without
-  consuming exchange budget or changing epoch. Answer message also has request_id.
+  Requests: status :pending/:answered/:acked, answer, delivery_attempts.
+  Requests are separate answerable items (list_requests and :request_created), not
+  synthetic bot messages. Answer human message has request_id.
   Keys prefixed request-answer: or request-question: are internal; public posts
   using them return :reserved_key.
   answer_request atomically posts human answer and stores durable outbox answer.
