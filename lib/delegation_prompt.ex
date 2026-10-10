@@ -3,6 +3,10 @@ defmodule Delegation.Prompt do
   Compose the whole seed template plus reusable partials in `prompts/delegation`.
   NanoAgent renders the seed placeholders. Returned provenance hashes identify original seed
   and partial bytes and the unrendered composed template (not the rendered process prompt). Comments in partials are stripped.
+  `mode: :consumer` replaces worker reporting/read-only suffix with persistent chat
+  publication instructions. Optional `workspace:` must name an existing absolute
+  directory with no symlink ancestors; it is not an OS sandbox. Publication protocol
+  belongs in `job:`. Default worker composition is unchanged.
   Pre-reading is UTF-8, capped at 32 KiB/file and 96 KiB total; oversized files error,
   never silently truncate. SHA-256 covers exactly the included bytes.
   """
@@ -13,7 +17,8 @@ defmodule Delegation.Prompt do
     with {:ok, seed} <- File.read(Path.join(root, "prompts/seed.txt")),
          {:ok, parts} <-
            parts(root, ["principles" | List.wrap(opts[:flavours] || default(opts[:level]))]),
-         {:ok, pre} <- preread(opts[:pre] || [], opts[:cwd] || root) do
+         {:ok, pre} <- preread(opts[:pre] || [], opts[:cwd] || root),
+         {:ok, consumer_suffix} <- consumer_suffix(opts) do
       job = "\nYour level is #{opts[:level]}. Your job:\n#{opts[:job]}\n"
 
       report =
@@ -29,6 +34,9 @@ defmodule Delegation.Prompt do
             "Your isolated working copy is #{w.path}, branch #{w.branch}, starting revision #{w.revision}. " <>
               "Edit only owned files there. Use MIX_ENV=test for tests and MIX_BUILD_ROOT=#{w.path}/_build for other builds. Do not hot-load harness code.\n"
         end
+
+      {report, isolation} =
+        if consumer_suffix, do: consumer_suffix, else: {report, isolation}
 
       reading =
         Enum.map_join(pre, "\n", fn p ->
@@ -49,7 +57,53 @@ defmodule Delegation.Prompt do
     end
   end
 
-  defp hash(text), do: Base.encode16(:crypto.hash(:sha256, text), case: :lower)
+  # Consumer mode changes only the fitted suffix; seed, principles and flavours stay whole.
+  defp consumer_suffix(opts) do
+    case Keyword.get(opts, :mode, :worker) do
+      :worker ->
+        {:ok, nil}
+
+      :consumer ->
+        with {:ok, workspace} <- workspace(opts[:workspace]) do
+          {:ok,
+           {"\nYou are a persistent conversational bot, not a worker reporting completion to a parent. " <>
+              "Plain responses only enter your log. To speak to the person, explicitly use the runtime publication protocol in your job or turn event. " <>
+              "Do not invent a publication API; stay quiet when appropriate and idle between turns.\n",
+            workspace}}
+        end
+
+      _ ->
+        {:error, "mode must be :worker or :consumer"}
+    end
+  end
+
+  defp workspace(nil), do: {:ok, "No workspace directory was assigned. Do not edit /app.\n"}
+
+  defp workspace(path) when is_binary(path) do
+    if Path.type(path) == :absolute and path == Path.expand(path) and path != "/" and
+         not Regex.match?(~r/[\x00-\x1f\x7f]/, path) and safe_directory?(path) do
+      {:ok,
+       "Your persistent bot/session workspace directory is #{inspect(path)}. " <>
+         "Keep your files there; this directory is not an OS sandbox or security boundary. " <>
+         "Do not edit /app or hot-load shared harness code.\n"}
+    else
+      {:error,
+       "workspace must be an existing absolute directory without symlinks or control characters"}
+    end
+  end
+
+  defp workspace(_), do: {:error, "workspace must be an absolute directory path"}
+  defp safe_directory?("/"), do: true
+
+  defp safe_directory?(path) do
+    case File.lstat(path) do
+      {:ok, %{type: :directory}} -> safe_directory?(Path.dirname(path))
+      _ -> false
+    end
+  end
+
+  defp hash(text),
+    do: Base.encode16(:crypto.hash(:sha256, text), case: :lower)
 
   defp default(:exec), do: ["exec"]
   defp default(_), do: ["builder"]
