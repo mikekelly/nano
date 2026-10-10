@@ -75,7 +75,9 @@ defmodule Nano.Bots.Runtime do
       page_size: opts[:page_size] || 50,
       router_opts: opts[:router_opts] || [],
       retry_ms: opts[:retry_ms] || 1000,
-      memory_opts: opts[:memory_opts] || []
+      memory_opts: opts[:memory_opts] || [],
+      agent_parent: opts[:agent_parent] || "bots-runtime-owner",
+      sent: %{}
     }
 
     send(self(), :tick)
@@ -208,9 +210,19 @@ defmodule Nano.Bots.Runtime do
     s = Enum.reduce(Map.values(s.data.stop_intents), s, &complete_stop(&2, &1))
     {:ok, sessions} = Bots.list_sessions(server: s.store)
     s = Enum.reduce(sessions, s, &route/2)
+    retry_ids = MapSet.new(Map.keys(s.data.pending))
+    now = System.monotonic_time(:millisecond)
     s = Enum.reduce(Map.keys(s.data.selected), s, &continue_delivery(&2, &1))
 
-    Enum.each(s.data.pending, fn {_, p} ->
+    attempts =
+      Map.filter(s.data.pending, fn {id, p} ->
+        MapSet.member?(retry_ids, id) and
+          (not Map.has_key?(s.sent, id) or
+             (now - s.sent[id] >= s.retry_ms and
+                safe(fn -> s.adapter.status(p.name) end) != :thinking))
+      end)
+
+    Enum.each(attempts, fn {_, p} ->
       with {:ok, session} <- Bots.get_session(elem(p.key, 0), server: s.store),
            false <- session.stopped,
            true <- session.epoch == p.batch.epoch,
@@ -220,7 +232,8 @@ defmodule Nano.Bots.Runtime do
                s.adapter.ensure(bot, session,
                  store: s.store,
                  runtime: s.runtime,
-                 workspace_root: Path.join(Path.dirname(s.path), "workspaces")
+                 workspace_root: Path.join(Path.dirname(s.path), "workspaces"),
+                 parent: s.agent_parent
                )
              end) do
         safe(fn -> s.adapter.deliver(p.name, p.batch) end)
@@ -236,6 +249,10 @@ defmodule Nano.Bots.Runtime do
       )
     end)
 
+    sent = Map.filter(s.sent, fn {id, _} -> Map.has_key?(s.data.pending, id) end)
+    sent = Enum.reduce(attempts, sent, fn {id, _}, sent -> Map.put(sent, id, now) end)
+    s = %{s | sent: sent}
+
     Enum.each(s.data.selected, fn {{sid, bid}, _} ->
       with {:ok, session} <- Bots.get_session(sid, server: s.store),
            {:ok, bot} <- Bots.get_bot(bid, server: s.store),
@@ -244,7 +261,8 @@ defmodule Nano.Bots.Runtime do
                s.adapter.ensure(bot, session,
                  store: s.store,
                  runtime: s.runtime,
-                 workspace_root: Path.join(Path.dirname(s.path), "workspaces")
+                 workspace_root: Path.join(Path.dirname(s.path), "workspaces"),
+                 parent: s.agent_parent
                )
              end) do
         st = safe(fn -> s.adapter.status(name) end)
@@ -407,7 +425,8 @@ defmodule Nano.Bots.Runtime do
                  s.adapter.ensure(bot, session,
                    store: s.store,
                    runtime: s.runtime,
-                   workspace_root: Path.join(Path.dirname(s.path), "workspaces")
+                   workspace_root: Path.join(Path.dirname(s.path), "workspaces"),
+                   parent: s.agent_parent
                  )
                end),
              true <- is_binary(name) do
@@ -459,7 +478,7 @@ defmodule Nano.Bots.Runtime do
 
           status(s, sid, bid, :thinking)
           safe(fn -> s.adapter.deliver(name, batch) end)
-          s
+          %{s | sent: Map.put(s.sent, id, System.monotonic_time(:millisecond))}
         else
           {:error, _} ->
             status(s, sid, bid, :error)
@@ -492,7 +511,12 @@ defmodule Nano.Bots.Runtime do
         Enum.reduce_while(page.messages, {[], 0}, fn m, {acc, bytes} ->
           size = byte_size(inspect(m, limit: :infinity, printable_limit: :infinity))
 
-          if bytes + size > 16_000 and acc != [],
+          image_count =
+            Enum.reduce(acc ++ [m], 0, fn message, n ->
+              n + Enum.count(message.attachments, &String.starts_with?(&1, "image:"))
+            end)
+
+          if (bytes + size > 16_000 or image_count > 10) and acc != [],
             do: {:halt, {acc, bytes}},
             else: {:cont, {acc ++ [m], bytes + size}}
         end)
