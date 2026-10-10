@@ -1,3 +1,9 @@
+# Capability entry point
+
+`Nano.Flywheel` implements the minimal durable owner. See [API v1](../docs/flywheel/u03/api.md) and its owner-only amendment policy. Parent alone starts/imports/integrates/deploys/closes. Compose fresh workers through Delegation with whole seed, principles, builder + worker partial, common brief and exactly one resolved unit. No caller may guess an API or dispatch until U03 truly done.
+
+---
+
 # Seedling doc: the flywheel
 
 Builds on [../seeding-docs/delegation.md](../seeding-docs/delegation.md),

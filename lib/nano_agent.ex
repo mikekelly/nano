@@ -18,6 +18,7 @@ defmodule NanoAgent do
   The seed's prompt sends every agent here first, so this is the front page of the node's
   code. Each entry leads further in.
 
+    * `Nano.Flywheel`: explicit durable graph owner, fenced claims/staged done; `seedling-docs/flywheel.md`.
     * `Nano.Tools`: bounded file read/write/edit/list/find/search and synchronous shell.
     * `Nano.Background`: independent shell jobs, durable results, completion events.
     * `Compaction`: automatic checkpoints and voluntary summaries.
