@@ -94,6 +94,10 @@ defmodule Nano.Flywheel.U05.HotUpgrade do
     assert_receive {:openrouter_request, ^busy_model, _}, 5000
     assert_receive :upgrade_eval_started, 5000
     task = :sys.get_state(b.pid).task.task.pid
+    send(a.pid, :model_in_flight)
+    idle_model = a.model
+    assert_receive {:openrouter_request, ^idle_model, _}, 5000
+    model_task = :sys.get_state(a.pid).task.task.pid
     for actor <- agents, do: :ok = :sys.suspend(actor.pid, 5000)
     :ok = :sys.suspend(store_pid, 5000)
     Code.compile_file("lib/nano/state_store.ex")
@@ -104,6 +108,14 @@ defmodule Nano.Flywheel.U05.HotUpgrade do
              :sys.change_code(store_pid, Store, :pre_u05, {:u05_upgrade, 10})
 
     :ok = :sys.suspend(a.pid, 5000)
+
+    assert {:error, {:error, :model_tasks_not_quiescent}} =
+             :sys.change_code(store_pid, Store, :pre_u05, {:u05_upgrade, 10})
+
+    assert :erlang.suspend_process(model_task)
+    Fake.push(a.model, status: 503)
+    Fake.push(a.model, text: "retried_after_registration")
+    refute_receive {:openrouter_request, ^idle_model, _}, 100
     # The old eval completes while callbacks are quiescent; result stays queued.
     send(task, :finish)
     send(a.pid, :queued_during_upgrade)
@@ -142,6 +154,9 @@ defmodule Nano.Flywheel.U05.HotUpgrade do
         Store.binding_status(a.name) != :unavailable and
         Store.binding_status(b.name) != :unavailable
     end)
+
+    assert :erlang.resume_process(model_task)
+    assert_receive {:openrouter_request, ^idle_model, _}, 5000
 
     for actor <- agents do
       state = :sys.get_state(actor.pid)

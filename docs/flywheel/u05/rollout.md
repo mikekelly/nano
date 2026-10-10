@@ -46,7 +46,8 @@ The bounded hot conversion seam is:
 
 Only use it on the legacy watched-map process state, after fresh exact-revision review.
 Its bound counts both live named agents and saved metadata entries (1..10000 allowed).
-It refuses nonquiescent agents, unavailable/malformed identities, invalid old process
+It refuses nonquiescent agents or unpaused live model-request outer Tasks,
+unavailable/malformed identities, invalid old process
 state, unsupported/corrupt authority, or conflicts with newer lifecycles. It syncs the
 whole lifecycle candidate before replacing legacy agent rows. Existing newer authority
 is read and preserved, never regenerated from old bytes. It retains legacy files, log
@@ -66,20 +67,31 @@ recovery outcomes require owner disposition; fixtures cannot make them current.
    may complete while callbacks are suspended; their messages remain queued. Never
    kill/restart those agents or tasks. A coordinating eval Task can continue while its
    own parent agent is suspended, but must resume that parent before returning.
-3. Suspend StateStore, verify the named live set has not changed and all actors are
+3. While agent callbacks are suspended, inventory their current model-request outer
+   Task pids (never arbitrary service processes). Existing old code can retry a provider
+   locally even while its agent callback is suspended: suspend those still-live outer
+   Tasks with `:erlang.suspend_process(task_pid)`, record which leases this coordinator
+   acquired, and do not resume tasks already suspended by someone else. Existing inner
+   provider requests may finish; their results queue, but outer Tasks cannot launch a
+   new retry during conversion. Eval Tasks, including the coordinating eval, continue
+   and may finish normally; no cancellation/purge is allowed. The seam verifies model
+   outer Tasks are dead/completed or actually suspended.
+4. Suspend StateStore, verify the named live set has not changed and all actors are
    actually quiescent. Load the exact reviewed StateStore and NanoAgent modules once;
    do not purge the old NanoAgent code while old eval tasks may still execute it.
    New NanoAgent.start/1 now refuses launches until store availability is restored.
-4. Invoke the exact change_code seam above. Failure means keep the lane suspended and
+5. Invoke the exact change_code seam above. Failure means keep the lane suspended and
    preserve bytes; persistence uncertainty is not permission to resume incompatible
    old state or downgrade. Re-read latest authority and retry the same compatible
    conversion only after resolving the failure (the disposable test exercises an
    authority commit-before-ack error and safe retry). Never reset newer generations.
-5. Resume Store **before** agents, then resume agents. Their lazy registration and
+6. Resume Store **before** agents, then resume agents. Their lazy registration and
    coherent full resaves preserve identity/bindings and completed evidence irrespective
    of whether task-result or resave messages arrive first. Registration/store loss
-   holds new launches; disk-only failures expose memory_only warnings.
-6. With deadlines, verify each exact live pid/id has current store epoch/incarnation,
+   holds new launches; disk-only failures expose memory_only warnings. Resume only the
+   model outer Task leases this coordinator acquired, **after** the owning agents have
+   current registration/coherent resave acknowledgments. A dead Task needs no resume.
+7. With deadlines, verify each exact live pid/id has current store epoch/incarnation,
    expected lifecycle, coherent binding availability and accepted/durable revisions;
    inspect queued/completed evidence without printing bindings. Only then reopen
    launchers and record deployment/live evidence. Timeout/unavailable/degraded remains
@@ -91,7 +103,9 @@ agents, reproduces the old store-kill metadata-only resave losing its binding ro
 the live agent still retains bindings (baseline failure), then keeps an old eval in flight across module load, rejects unquiescent/count-bound
 conversion, completes that eval while agents are suspended, queues events and a store
 caller, injects authority commit-before-ack failure/retries preserving exact bytes,
-converts without changing Store/agent pids, verifies bindings/pending evidence, then
+rejects an unpaused old model Task and proves a queued transient provider result cannot
+launch its old-code retry until that Task resumes after registration, converts without
+changing Store/agent pids, verifies bindings/pending evidence, then
 rehearses disposable Store and agent restart recovery. This is two-actor upgrade proof,
 not measured proof for every live actor on this harness. Parent alone executes live gates.
 

@@ -88,6 +88,8 @@ defmodule NanoWeb.AgentLiveTest do
     script_turn(ctx)
     NanoAgent.notify(ctx.name, {:question, 6, 7})
     await(:turn_ended)
+    # Log publication precedes the callback's final coherent checkpoint.
+    :sys.get_state(pid)
 
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert has_entry?(view, "started", "started")

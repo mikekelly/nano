@@ -852,6 +852,9 @@ defmodule Nano.StateStore do
       end) ->
         {:error, :live_identity_unavailable}
 
+      not Enum.all?(live, fn {name, _} -> model_task_quiescent?(get(name)) end) ->
+        {:error, :model_tasks_not_quiescent}
+
       true ->
         candidate =
           Enum.reduce_while(entries, {:ok, authority}, fn entry, {:ok, acc} ->
@@ -911,6 +914,13 @@ defmodule Nano.StateStore do
 
   def code_change(_old, %{authority: _, registrations: _} = s, _extra), do: {:ok, s}
   def code_change(_, _, _), do: {:error, :unsupported_state_upgrade}
+
+  defp model_task_quiescent?(%{task: %{kind: :model, task: %Task{pid: pid}}}) do
+    Process.info(pid, :status) in [nil, {:status, :suspended}]
+  end
+
+  defp model_task_quiescent?(%{task: %{kind: :model}}), do: false
+  defp model_task_quiescent?(_), do: true
 
   @impl true
   def format_status(status) do
