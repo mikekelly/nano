@@ -23,20 +23,24 @@ defmodule Nano.Images do
          do: {:ok, ref}
   end
 
+  @doc "Read by full or hash-only ref; any supplied metadata must match stored bytes."
   def read(ref, opts \\ []) do
     with :ok <- valid_ref(ref),
          {:ok, data} <- bounded_read(Path.join(dir(opts), ref.image_ref)),
          true <- hash(data) == ref.image_ref or {:error, :hash_mismatch},
          {:ok, actual} <- describe(data),
          true <-
-           actual == Map.take(ref, [:image_ref, :mime, :width, :height, :bytes]) or
+           Enum.all?(Map.take(ref, [:image_ref, :mime, :width, :height, :bytes]), fn {key, value} ->
+             Map.get(actual, key) == value
+           end) or
              {:error, :metadata_mismatch},
          do: {:ok, data}
   end
 
   def data_url(ref, opts \\ []) do
     with {:ok, data} <- read(ref, opts),
-         do: {:ok, "data:" <> ref.mime <> ";base64," <> Base.encode64(data)}
+         {:ok, actual} <- describe(data),
+         do: {:ok, "data:" <> actual.mime <> ";base64," <> Base.encode64(data)}
   end
 
   @doc "Conservative constant budget for each image."
