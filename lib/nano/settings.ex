@@ -191,7 +191,7 @@ defmodule Nano.Settings do
     GenServer.call(__MODULE__, msg, 30_000)
   catch
     :exit, reason ->
-      {:error, "the settings process did not answer (#{inspect(reason, limit: 5)})"}
+      {:error, "the settings process did not answer (#{diagnostic_reason(reason)})"}
   end
 
   defp default(key), do: elem(List.keyfind(@specs, key, 0), 1)
@@ -400,20 +400,65 @@ defmodule Nano.Settings do
   def handle_cast(_msg, values), do: {:noreply, values}
 
   @impl true
-  # Crash reports and :sys.get_status print the state and the last message: never a secret.
+  # OTP passes state, last message, reason and the sys debug log here. Treat all
+  # payloads as credentials, including unexpected envelopes and future fields.
   def format_status(status) do
-    status
-    |> Map.update(:state, nil, &redact/1)
-    |> Map.update(:message, nil, fn
-      {:put, key, _} -> {:put, key, :redacted}
-      message -> message
+    Map.new(status, fn
+      {:reason, reason} -> {:reason, diagnostic_reason(reason)}
+      {:log, _} -> {:log, []}
+      {key, _} -> {key, :redacted}
     end)
   end
 
-  defp redact(%{} = values),
-    do: Map.new(values, fn {k, v} -> {k, if(secret?(k), do: :redacted, else: v)} end)
+  @impl true
+  def terminate(reason, _state) when reason in [:normal, :shutdown], do: :ok
+  def terminate({:shutdown, _}, _state), do: :ok
 
-  defp redact(other), do: other
+  def terminate(reason, _state) do
+    # OTP appends the original stack after format_status and proc_lib separately
+    # reports queued messages, even for sensitive processes at finite log depth.
+    # A tagged shutdown suppresses that second report while gen_server retains a
+    # safe failure class/MFA. Production children are permanent and still restart.
+    :erlang.raise(
+      :exit,
+      {:shutdown, {:credential_diagnostic, diagnostic_reason(reason)}},
+      diagnostic_stack(reason)
+    )
+  end
+
+  defp diagnostic_stack({_, stack}) when is_list(stack) do
+    for {__MODULE__, callback, arguments, _} <- stack,
+        callback in [:handle_call, :handle_cast, :handle_info],
+        arity = if(is_list(arguments), do: length(arguments), else: arguments),
+        is_integer(arity),
+        do: {__MODULE__, callback, arity, []}
+  end
+
+  defp diagnostic_stack(_), do: [{__MODULE__, :terminate, 2, []}]
+
+  # Retain only a fixed failure class, never exception arguments or arbitrary atoms.
+  defp diagnostic_reason({:shutdown, {:credential_diagnostic, reason}}),
+    do: diagnostic_reason(reason)
+
+  defp diagnostic_reason({reason, _}), do: diagnostic_reason(reason)
+
+  defp diagnostic_reason(reason)
+       when reason in [
+              :badmap,
+              :badarg,
+              :badarith,
+              :badmatch,
+              :function_clause,
+              :case_clause,
+              :undef,
+              :timeout,
+              :noproc,
+              :normal,
+              :shutdown
+            ],
+       do: reason
+
+  defp diagnostic_reason(_), do: :redacted
 
   # Saved before it is used: a change that only lived in memory would be lost at a restart.
   defp save(old, old), do: {:reply, :ok, old}
