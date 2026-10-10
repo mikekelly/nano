@@ -21,6 +21,9 @@ defmodule NanoAgent do
     * `Nano.Tools`: bounded file read/write/edit/list/find/search and synchronous shell.
     * `Nano.Background`: independent shell jobs, durable results, completion events.
     * `Compaction`: automatic checkpoints and voluntary summaries.
+    * `Goals`: durable goal trees, reasons, status and cheap review; dashboard goals.
+    * `FrontMind`: own short durable note; `Nano.ContextBob` re-shows sources by token distance.
+    * `Nano.Decision`: reusable typed Jev decisions and probabilities (optional credentials).
     * `Delegation`: composed prompts, isolated sub-agents, and durable lifecycle/result events.
     * `Nano.Ops`: everything an operator can do with agents and users; the dashboard and the
       HTTP API are skins over it.
@@ -886,6 +889,7 @@ defmodule NanoAgent do
             },
             else: s
 
+        next = Nano.Attention.before_request(next)
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -1337,6 +1341,7 @@ defmodule NanoAgent do
     s
     |> Map.delete(:compacting)
     |> Map.merge(%{transcript: t, context_used: 0, measured_bytes: 0, child_reports: []})
+    |> Nano.Attention.after_compaction()
     |> save()
   end
 
