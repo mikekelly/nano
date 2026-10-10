@@ -26,6 +26,7 @@ defmodule Nano.StateStoreTest do
     pid = spawn(fn -> receive do: (:stop -> exit(:boom)) end)
     StateStore.put(name, %{name: name, pid: pid})
     :ok = StateStore.watch(name, pid)
+    await_monitor_attachment(pid)
     send(pid, :stop)
 
     # The next watch for the same name waits for the earlier :DOWN, so the reason is there.
@@ -41,8 +42,10 @@ defmodule Nano.StateStoreTest do
     stand_in = spawn(fn -> receive do: (:stop -> exit(:second)) end)
     StateStore.put(name, %{name: name, pid: owner})
     :ok = StateStore.watch(name, owner)
+    await_monitor_attachment(owner)
     send(owner, :stop)
     :ok = StateStore.watch(name, stand_in)
+    await_monitor_attachment(stand_in)
     send(stand_in, :stop)
     :ok = StateStore.watch(name, self())
     assert StateStore.exit_reason(name, owner) == :first
@@ -67,5 +70,29 @@ defmodule Nano.StateStoreTest do
 
     assert Process.whereis(StateStore) == store
     assert StateStore.get(name) == %{name: name}
+  end
+
+  # These tests require the exact named exit, not just a death observation.
+  # Establish observable attachment before allowing exit from another sender,
+  # instead of depending on registration and cross-sender signal timing.
+  defp await_monitor_attachment(pid) do
+    store = Process.whereis(StateStore)
+    await_monitor_attachment(pid, store, System.monotonic_time(:millisecond) + 10_000)
+  end
+
+  defp await_monitor_attachment(pid, store, deadline) do
+    case Process.info(pid, :monitored_by) do
+      {:monitored_by, monitors} ->
+        unless store in monitors do
+          if System.monotonic_time(:millisecond) >= deadline,
+            do: flunk("StateStore monitor did not attach to #{inspect(pid)} within 10 seconds")
+
+          Process.sleep(10)
+          await_monitor_attachment(pid, store, deadline)
+        end
+
+      nil ->
+        flunk("watched process #{inspect(pid)} exited before stop was sent")
+    end
   end
 end
