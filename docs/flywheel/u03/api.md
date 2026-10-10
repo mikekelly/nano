@@ -168,3 +168,18 @@ implicit file release. Reconcile applies the same full semantic validator as sta
 any mutation; corrupt snapshots remain byte-for-byte untouched and authority becomes degraded.
 The explicit original-bootstrap reconciliation seam remains separate, binds captured original
 bytes and owner stage proof, and does not fabricate a graph-era prepared attempt.
+
+## Commit-before-land recovery
+
+`integration(server, owner_authority, current_reservation,
+{:recover_land, candidate, evidence})` -> `:integrated` is a narrow reconciliation action.
+Adoption retains the prior accepted pin plus original proposal and source reservation as
+immutable recovery evidence, but clears active acceptance and advances integration generation.
+Recovery requires current authority, unchanged proposal, no conflicting recorded integrated
+identity, and no new active acceptance. It validates clean canonical HEAD=candidate, one parent
+=historical accepted base, scoped actual delta, and exact successful explicit-base merge-tree
+result. It records new owner/reservation generation and prior-pin provenance without resetting
+Git or cherry-picking again. A new normal accept cancels recovery eligibility; prior history
+remains. This is not a general old-pin acceptance or arbitrary merge recovery. Already-recorded
+same-candidate stages can resume/close normally after reconcile/adoption; recovery is not required
+to repeat already-durable land. Conflicts require a reviewed new proposal, never invented success.
