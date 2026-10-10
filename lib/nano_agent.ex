@@ -18,6 +18,8 @@ defmodule NanoAgent do
   The seed's prompt sends every agent here first, so this is the front page of the node's
   code. Each entry leads further in.
 
+    * `Nano.Tools`: bounded file read/write/edit/list/find/search and synchronous shell.
+    * `Nano.Background`: independent shell jobs, durable results, completion events.
     * `Compaction`: automatic checkpoints and voluntary summaries.
     * `Nano.Ops`: everything an operator can do with agents and users; the dashboard and the
       HTTP API are skins over it.

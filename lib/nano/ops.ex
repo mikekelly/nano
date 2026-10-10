@@ -307,7 +307,7 @@ defmodule Nano.Ops do
   def owner(pid), do: owner(pid, context())
 
   defp owner(pid, ctx) when node(pid) == node(),
-    do: Enum.find_value([pid | chain(pid)], &ctx.owned[&1])
+    do: background_owner(pid) || Enum.find_value([pid | chain(pid)], &ctx.owned[&1])
 
   defp owner(_pid, _ctx), do: nil
 
@@ -358,11 +358,27 @@ defmodule Nano.Ops do
     chain = [pid | chain(pid)]
 
     cond do
-      MapSet.member?(ctx.boot, pid) or pid in ctx.model_requests -> :standard
-      agent = Enum.find_value(chain, &ctx.owned[&1]) -> {:spawned_by, agent}
-      ctx.endpoint in chain -> :standard
-      :application.get_application(pid) not in [:undefined, {:ok, :nano}] -> :standard
-      true -> :other
+      MapSet.member?(ctx.boot, pid) or pid in ctx.model_requests ->
+        :standard
+
+      agent = background_owner(pid) || Enum.find_value(chain, &ctx.owned[&1]) ->
+        {:spawned_by, agent}
+
+      ctx.endpoint in chain ->
+        :standard
+
+      :application.get_application(pid) not in [:undefined, {:ok, :nano}] ->
+        :standard
+
+      true ->
+        :other
+    end
+  end
+
+  defp background_owner(pid) do
+    case Process.info(pid, {:dictionary, :nano_background_owner}) do
+      {{:dictionary, :nano_background_owner}, name} when is_binary(name) -> name
+      _ -> nil
     end
   end
 
