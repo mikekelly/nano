@@ -9,6 +9,8 @@ defmodule Nano.MCP.Config do
   `priv/mcp_servers.example.json` is documentation only, not auto-loaded. Its stdio
   example requires Node/npx installed separately; the HTTP URL is a placeholder.
   Authorization references resolve the complete header value (including Bearer).
+  Optional `subscription_timeout_ms` controls automatic restore/ack request timeout
+  (default 10 seconds, clamped at 120 seconds). Restoration retries back off separately.
   """
   def path,
     do:
