@@ -32,6 +32,13 @@ defmodule NanoWeb.BotsLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   @endpoint NanoWeb.BotsTestEndpoint
+  defmodule NoticeAdapter do
+    def ensure(bot, session, _), do: {:ok, "ui-test-#{bot.id}-#{session.id}"}
+    def deliver(_, _), do: :ok
+    def notify(_, _), do: :ok
+    def status(_), do: :idle
+  end
+
   setup do
     dir = Path.join(System.tmp_dir!(), "altair-bots-ui-#{System.unique_integer([:positive])}")
     store = start_supervised!({Nano.Bots.Store, name: nil, store_dir: dir, pubsub: Nano.PubSub})
@@ -230,7 +237,12 @@ defmodule NanoWeb.BotsLiveTest do
     runtime =
       start_supervised!(
         {Nano.Bots.Runtime,
-         name: nil, store: store, state_dir: dir, pubsub: nil, retry_ms: 60_000}
+         adapter: NoticeAdapter,
+         name: nil,
+         store: store,
+         state_dir: dir,
+         pubsub: nil,
+         retry_ms: 60_000}
       )
 
     on_exit(fn -> File.rm_rf!(dir) end)
@@ -241,7 +253,12 @@ defmodule NanoWeb.BotsLiveTest do
     runtime =
       start_supervised!(
         {Nano.Bots.Runtime,
-         name: nil, store: store, state_dir: dir, pubsub: nil, retry_ms: 60_000}
+         adapter: NoticeAdapter,
+         name: nil,
+         store: store,
+         state_dir: dir,
+         pubsub: nil,
+         retry_ms: 60_000}
       )
 
     assert {:ok, [^notice]} = Nano.Bots.Runtime.notices(server: runtime)
