@@ -50,6 +50,24 @@ class RecoveryTest(unittest.TestCase):
                            max_attempts=3, stable_seconds=100)
         self.save_config()
         self.proc = None
+        # Explicit v1 provisioning for the synthetic child at its fixture boundary.
+        self.intent()
+
+    def intent(self, auth=None, settings=None, invalidated=()):
+        entries = {}
+        values = [('chatgpt_auth.json', auth)] if auth else []
+        values += [('settings/' + key, value) for key, value in (settings or {}).items()]
+        for key, value in values:
+            v = len(entries) + 1
+            entries[key] = dict(state='enabled', version=v, generation=v, value=value)
+        for key in invalidated:
+            entries[key] = dict(state='invalidated', version=len(entries) + 1)
+        atomic(self.root / 'credentials' / 'intent-v1.json', json.dumps(dict(schema_version=1, revision=len(entries), entries=entries)).encode())
+        # This synthetic watchdog child is not BEAM; capability fixture is explicit.
+        for file, content in [('safety.ex', '@credential_intent_schema 1\ndef credential_intent_lock_schema, do: 1\n@noncredential_settings_schema 1'), ('chatgpt/auth.ex', 'Nano.Safety.credential_write'), ('settings.ex', 'Nano.Safety.credential_read')]:
+            path = self.app / 'lib/nano' / file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
 
     def save_config(self):
         atomic(self.root / 'config.json', json.dumps(self.config).encode())
@@ -101,7 +119,7 @@ class RecoveryTest(unittest.TestCase):
         self.assertTrue(list((self.root / 'evidence').glob('*-boot.log')))
 
     def test_deleted_empty_and_rotated_credentials(self):
-        settings = b'{"key":"fake-only"}'
+        settings = b'{"KEY":"fake-only"}'
         latest = b'{"access_token":"fake-access","refresh_token":"latest-fake"}'
         atomic(self.state / 'settings.json', settings)
         atomic(self.state / 'chatgpt_auth.json', b'{"access_token":"old","refresh_token":"old"}')
@@ -109,24 +127,111 @@ class RecoveryTest(unittest.TestCase):
         # Simulates the synchronous write-through hook, not a credential-polling promise.
         atomic(self.root / 'credentials' / 'chatgpt_auth.json', latest)
         atomic(self.state / 'chatgpt_auth.json', latest)
+        self.intent(auth=json.loads(latest), settings={'KEY': 'fake-only'})
         self.start(); self.good()
         (self.state / 'settings.json').unlink()
         atomic(self.state / 'chatgpt_auth.json', b'{}')
-        wait_for(lambda: (self.state / 'settings.json').exists() and (self.state / 'chatgpt_auth.json').read_bytes() == latest)
-        self.assertEqual((self.state / 'settings.json').read_bytes(), settings)
+        wait_for(lambda: (self.state / 'settings.json').exists() and read_json(self.state / 'chatgpt_auth.json') == json.loads(latest))
+        self.assertEqual(read_json(self.state / 'settings.json'), json.loads(settings))
         wait_for(lambda: len([n for n in self.notices() if n['kind'] == 'credentials_restored']) == 2)
         for path in (self.root / 'credentials').iterdir():
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600 if path.is_file() else 0o700)
         evidence = list((self.root / 'evidence').glob('*-chatgpt_auth.json'))
         self.assertEqual(evidence[0].read_bytes(), b'{}')
         self.assertEqual(evidence[0].stat().st_mode & 0o777, 0o600)
         self.assertNotIn('latest-fake', (self.root / 'notices.jsonl').read_text())
 
+    def test_net_snapshot_serializes_refresh_invalidation_and_login_before_kill(self):
+        import fcntl
+        import threading
+        import runner
+        from unittest.mock import patch
+        for action in ('refresh', 'invalidate', 'login'):
+            with self.subTest(action=action):
+                old = {'access_token': 'old', 'refresh_token': 'old-refresh'}
+                new = {'access_token': 'new', 'refresh_token': 'new-refresh'}
+                self.intent(auth=old)
+                atomic(self.state / 'chatgpt_auth.json', json.dumps(old).encode())
+                net = runner.Net(self.root)
+                class Child:
+                    def poll(self): return None
+                net.child = Child()
+                stops = []
+                net.stop_child = lambda: stops.append('stop')
+                net.notice = lambda *a, **kw: None
+                attempted, done = threading.Event(), threading.Event()
+                threads = []
+                original = runner.read_json
+                def writer():
+                    fd = os.open(self.root / 'credentials/intent-v1.lock', os.O_RDWR)
+                    try:
+                        attempted.set()
+                        fcntl.flock(fd, fcntl.LOCK_EX)
+                        atomic(self.root / 'credentials/intent-blocked-v1.json', b'{}')
+                        prior = original(self.root / 'credentials/intent-v1.json')
+                        revision = prior['revision'] + 1
+                        entry = dict(state='invalidated', version=revision) if action == 'invalidate' else dict(
+                            state='enabled', version=revision,
+                            generation=prior['entries']['chatgpt_auth.json']['generation'] if action == 'refresh' else revision,
+                            value=new)
+                        prior['revision'] = revision
+                        prior['entries']['chatgpt_auth.json'] = entry
+                        atomic(self.root / 'credentials/intent-v1.json', json.dumps(prior).encode())
+                        if action == 'invalidate':
+                            (self.state / 'chatgpt_auth.json').unlink()
+                        else:
+                            atomic(self.state / 'chatgpt_auth.json', json.dumps(new).encode())
+                        (self.root / 'credentials/intent-blocked-v1.json').unlink()
+                    finally:
+                        os.close(fd)
+                        done.set()
+                def interleave(path, default=None):
+                    if Path(path) == self.state / 'chatgpt_auth.json' and not threads:
+                        thread = threading.Thread(target=writer)
+                        threads.append(thread)
+                        thread.start()
+                        self.assertTrue(attempted.wait(2))
+                        self.assertFalse(done.is_set(), 'writer crossed the snapshot lock')
+                    return original(path, default)
+                with patch.object(runner, 'read_json', interleave):
+                    self.assertFalse(net.credentials())
+                self.assertTrue(done.wait(2))
+                threads[0].join(2)
+                self.assertFalse(net.credentials())
+                self.assertEqual(stops, [])
+                self.assertEqual(original(self.state / 'chatgpt_auth.json', {}), {} if action == 'invalidate' else new)
+                # A partial publish holding the OS lock is never considered damage.
+                fd = os.open(self.root / 'credentials/intent-v1.lock', os.O_RDWR)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    self.assertFalse(net.credentials())
+                    self.assertEqual(stops, [])
+                finally:
+                    os.close(fd)
+
+    def test_nonsecret_sidecar_changes_never_become_credential_repair(self):
+        from runner import Net
+        self.intent(settings={'openrouter_api_key': 'fixture'})
+        mixed = b'{"openrouter_api_key":"fixture","eval_timeout_ms":9}'
+        atomic(self.state / 'settings.json', mixed)
+        net = Net(self.root)
+        class Child:
+            def poll(self): return None
+        net.child = Child()
+        stops = []
+        net.stop_child = lambda: stops.append('stop')
+        for values in ({'eval_timeout_ms': 12345}, {}):
+            atomic(self.state / 'settings-noncredentials-v1.json', json.dumps({'schema_version': 1, 'values': values}).encode())
+            self.assertFalse(net.credentials())
+            self.assertEqual((self.state / 'settings.json').read_bytes(), mixed)
+            self.assertEqual(stops, [])
+
     def test_valid_newer_credentials_are_not_replaced(self):
-        atomic(self.state / 'settings.json', b'{"new":"valid"}')
-        atomic(self.root / 'credentials' / 'settings.json', b'{"old":"valid"}')
+        self.intent(settings={'NEW': 'valid'})
+        atomic(self.state / 'settings.json', b'{"NEW":"valid"}')
+        atomic(self.root / 'credentials' / 'settings.json', b'{"OLD":"valid"}')
         self.start(); self.good()
-        self.assertEqual((self.state / 'settings.json').read_bytes(), b'{"new":"valid"}')
+        self.assertEqual((self.state / 'settings.json').read_bytes(), b'{"NEW":"valid"}')
         self.assertFalse(any(n['kind'] == 'credentials_restored' for n in self.notices()))
 
     def test_brake_persists_across_runner_restarts(self):
@@ -177,6 +282,7 @@ class RecoveryTest(unittest.TestCase):
     def test_lost_secret_merge_preserves_newer_valid_settings(self):
         atomic(self.state / 'settings.json', b'{"openrouter_api_key":"fake-old","node_max_tokens_per_hour":1}')
         atomic(self.root / 'credentials' / 'settings.json', (self.state / 'settings.json').read_bytes())
+        self.intent(settings={'openrouter_api_key': 'fake-old', 'OTHER_KEY': 'fake-new'})
         self.start(); self.good()
         atomic(self.state / 'settings.json', b'{"node_max_tokens_per_hour":999,"OTHER_KEY":"fake-new"}')
         wait_for(lambda: read_json(self.state / 'settings.json').get('openrouter_api_key') == 'fake-old')
@@ -222,7 +328,23 @@ class RecoveryTest(unittest.TestCase):
         refused = subprocess.run(command, capture_output=True)
         self.assertNotEqual(refused.returncode, 0)
         self.assertFalse((install_root / 'config.json').exists())
-        installed = subprocess.run(command + ['--offline'], capture_output=True)
+        # Offline acknowledgement is not a bypass of a live publisher's lock.
+        import fcntl
+        (install_root / 'credentials').mkdir(parents=True)
+        lock_path = install_root / 'credentials/intent-v1.lock'
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            refused_busy = subprocess.run(command + ['--offline', '--legacy-installation'], capture_output=True)
+            self.assertNotEqual(refused_busy.returncode, 0)
+            self.assertFalse((install_root / 'credentials/intent-v1.json').exists())
+            self.assertFalse((install_root / 'config.json').exists())
+            self.assertNotIn(b'fake-latest', refused_busy.stdout + refused_busy.stderr)
+        finally:
+            os.close(fd)
+        inode = lock_path.stat().st_ino
+        installed = subprocess.run(command + ['--offline', '--legacy-installation'], capture_output=True)
+        self.assertEqual(lock_path.stat().st_ino, inode)
         self.assertEqual(installed.returncode, 0)
         self.assertFalse((install_root / 'status.json').exists())
         self.assertEqual(read_json(install_root / 'credentials' / 'chatgpt_auth.json')['refresh_token'], 'fake-latest')
@@ -257,6 +379,65 @@ class RecoveryTest(unittest.TestCase):
         wait_for(lambda: self.status().get('state') == 'watching')
         self.assertTrue(self.status()['fallback'])
         self.assertEqual(self.status()['evidence_source'], good['source'])
+
+    def test_revocation_and_barrier_never_restart_healthy_child_or_restore_old_copy(self):
+        from runner import Net, compatible_credentials
+        self.intent(invalidated=('chatgpt_auth.json', 'settings/openrouter_api_key'))
+        atomic(self.root / 'credentials/chatgpt_auth.json', b'{"access_token":"revoked","refresh_token":"revoked"}')
+        atomic(self.root / 'credentials/settings.json', b'{"openrouter_api_key":"revoked"}')
+        self.start(); self.good(); pid = self.status()['child_pid']
+        time.sleep(.3)
+        self.assertEqual(self.status()['child_pid'], pid)
+        self.assertFalse((self.state / 'chatgpt_auth.json').exists())
+        self.assertNotIn('openrouter_api_key', read_json(self.state / 'settings.json', {}))
+        atomic(self.root / 'credentials/intent-blocked-v1.json', b'{}')
+        atomic(self.state / 'chatgpt_auth.json', b'{"access_token":"stale","refresh_token":"stale"}')
+        self.assertFalse(Net(self.root).credentials())
+        self.assertFalse(compatible_credentials(self.base, self.root))
+        self.assertTrue(compatible_credentials(self.app, self.root))
+        self.assertEqual(self.status()['child_pid'], pid)
+
+    def test_actual_fallback_and_disabled_boot_refuse_pre_intent_source(self):
+        # Inject a retained legacy known-good evidence candidate at this fixture
+        # boundary. The actual Net fallback path must refuse to execute it.
+        self.start(); good = self.good(); self.stop()
+        from runner import bounded_digest
+        (Path(good['source']) / 'lib/nano/safety.ex').write_text('legacy source')
+        good['digest'] = bounded_digest(Path(good['source']))
+        atomic(self.root / 'good.json', json.dumps(good).encode())
+        self.intent(invalidated=('chatgpt_auth.json',))
+        atomic(self.root / 'budget.json', b'{"attempts":0}')
+        (self.app / 'node.py').write_text('this cannot compile (')
+        self.start(); self.proc.wait(timeout=15)
+        self.assertEqual(self.status()['state'], 'maintenance_blocked')
+        self.assertTrue(any(n['kind'] == 'incompatible_credential_authority' for n in self.notices()))
+        self.assertEqual(len(list((self.root / 'evidence').glob('*-boot.log'))), 2,
+                         'incompatible fallback must never be launched')
+        # Loss of every protected file is not new-installation permission for
+        # disabled direct-exec (nor for fallback source unaware of missing intent).
+        for name in ('intent-v1.json', 'intent-blocked-v1.json', 'intent-required-v1'):
+            (self.root / 'credentials' / name).unlink(missing_ok=True)
+        self.assertFalse((self.root / 'credentials/intent-v1.json').exists())
+        (self.root / 'disabled').touch()
+        (self.app / 'lib/nano/safety.ex').write_text('legacy source')
+        self.start(); self.proc.wait(timeout=5)
+        self.assertEqual(self.status()['state'], 'maintenance_blocked')
+        self.assertEqual(len(list((self.root / 'evidence').glob('*-boot.log'))), 2)
+
+    def test_settings_aliases_cannot_bypass_invalidation(self):
+        from runner import Net
+        self.intent(settings={'OTHER_KEY': 'enabled'}, invalidated=('settings/openrouter_api_key',))
+        atomic(self.state / 'settings.json', b'{"OPENROUTER_API_KEY":"revoked","other_key":"stale","eval_timeout_ms":777}')
+        self.assertTrue(Net(self.root).credentials())
+        self.assertEqual(read_json(self.state / 'settings.json'), {'OTHER_KEY': 'enabled', 'eval_timeout_ms': 777})
+
+    def test_missing_and_corrupt_authority_never_enables_legacy_backup(self):
+        from runner import Net
+        atomic(self.root / 'credentials/chatgpt_auth.json', b'{"access_token":"old","refresh_token":"old"}')
+        self.assertFalse(Net(self.root).credentials())
+        atomic(self.root / 'credentials/intent-v1.json', b'{broken')
+        self.assertFalse(Net(self.root).credentials())
+        self.assertFalse((self.state / 'chatgpt_auth.json').exists())
 
     def test_single_owner(self):
         self.start(); self.good()

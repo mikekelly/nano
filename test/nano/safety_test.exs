@@ -58,7 +58,7 @@ defmodule Nano.SafetyTest do
     assert File.ls!(Path.dirname(target)) == ["chatgpt_auth.json"]
   end
 
-  test "deleting a secret cannot erase its recovery copy", %{root: root} do
+  test "raw copies no longer silently preserve intentionally removed secrets", %{root: root} do
     File.write!(Path.join(root, "config.json"), "{}")
 
     assert :ok =
@@ -76,7 +76,7 @@ defmodule Nano.SafetyTest do
              )
 
     saved = Jason.decode!(File.read!(Path.join([root, "credentials", "settings.json"])))
-    assert saved["openrouter_api_key"] == "fake-old"
+    refute Map.has_key?(saved, "openrouter_api_key")
     assert saved["node_max_tokens_per_hour"] == 999
     assert saved["OTHER_KEY"] == "fake-new"
   end

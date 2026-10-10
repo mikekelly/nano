@@ -432,8 +432,10 @@ defmodule NanoWeb.ApiController do
   end
 
   def chatgpt_logout(conn, _params) do
-    :ok = Ops.chatgpt_logout()
-    json(conn, %{ok: true})
+    case Ops.chatgpt_logout() do
+      :ok -> json(conn, %{ok: true})
+      {:error, message} -> error(conn, 422, message)
+    end
   end
 
   ## Raw model requests and responses

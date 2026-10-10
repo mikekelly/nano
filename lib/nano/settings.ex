@@ -343,10 +343,9 @@ defmodule Nano.Settings do
   def init(nil) do
     values =
       try do
-        case File.read(path()) do
-          {:error, :enoent} -> %{}
-          {:ok, json} -> load(Jason.decode!(json))
-          {:error, e} -> raise File.Error, reason: e, action: "read", path: path()
+        case Nano.Safety.credential_read("settings.json") do
+          {:ok, values, _} -> load(values)
+          {:error, _} -> load_nonsecrets()
         end
       rescue
         # Not the content: it may hold keys.
@@ -363,6 +362,16 @@ defmodule Nano.Settings do
       end
 
     {:ok, publish(values)}
+  end
+
+  @impl true
+  def code_change(_old, values, _extra) do
+    with {:ok, _} <- Nano.Safety.prepare_noncredential_upgrade(values),
+         {:ok, current, _} <- Nano.Safety.credential_read("settings.json") do
+      {:ok, current |> load() |> publish()}
+    else
+      _ -> {:error, :settings_maintenance_required}
+    end
   end
 
   # Each value is checked as a change would be (a file setting only for its type), so a bad
@@ -387,9 +396,11 @@ defmodule Nano.Settings do
 
   @impl true
   def handle_call({:put, key, value}, _from, values),
-    do: save(values, Map.put(values, key, value))
+    do: save(values, Map.put(values, key, value), if(secret?(key), do: key, else: false))
 
-  def handle_call({:delete, key}, _from, values), do: save(values, Map.delete(values, key))
+  def handle_call({:delete, key}, _from, values),
+    do: save(values, Map.delete(values, key), if(secret?(key), do: key, else: false))
+
   def handle_call(_msg, _from, values), do: {:reply, {:error, :unknown_call}, values}
 
   # Anyone may send this process anything.
@@ -461,28 +472,28 @@ defmodule Nano.Settings do
   defp diagnostic_reason(_), do: :redacted
 
   # Saved before it is used: a change that only lived in memory would be lost at a restart.
-  defp save(old, old), do: {:reply, :ok, old}
+  defp save(old, old, false), do: {:reply, :ok, old}
 
-  defp save(old, new) do
-    case write(new) do
+  defp save(old, new, credential?) do
+    result =
+      if credential?,
+        do: write(new, credential?),
+        else: Nano.Safety.noncredential_settings_write(new)
+
+    case result do
       :ok -> {:reply, :ok, publish(new)}
       {:error, reason} -> {:reply, {:error, "could not save #{path()}: #{inspect(reason)}"}, old}
     end
   end
 
-  # Readable by its owner only, and never half-written: the content goes into a 0600 temp file
-  # that then replaces the old one.
-  defp write(values) do
-    tmp = path() <> ".tmp"
-
-    with :ok <- File.mkdir_p(Path.dirname(tmp)),
-         :ok <- File.write(tmp, ""),
-         :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.write(tmp, Jason.encode!(values, pretty: true)),
-         :ok <- Nano.Safety.backup(path(), Jason.encode!(values, pretty: true)) do
-      File.rename(tmp, path())
+  defp write(values, key) do
+    case Nano.Safety.credential_write("settings.json", values, {:setting, to_string(key)}) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  defp load_nonsecrets, do: Nano.Safety.noncredential_settings_read() |> load()
 
   defp publish(values) do
     if :persistent_term.get(@values, nil) != values, do: :persistent_term.put(@values, values)

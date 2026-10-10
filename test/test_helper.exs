@@ -7,6 +7,14 @@ File.mkdir_p!(run)
 System.put_env("ERL_CRASH_DUMP", Path.join(run, "erl_crash.dump"))
 ExUnit.after_suite(fn _ -> File.rm_rf(run) end)
 
+# U07: explicit provisioning belongs to this disposable fixture, never production boot.
+for key <- [:state_dir, :safety_dir, :log_dir, :spill_dir, :image_dir, :web_cache_dir] do
+  path = Application.fetch_env!(:nano, key) |> Path.expand()
+  unless String.starts_with?(path, Path.expand(run) <> "/"), do: raise("unsafe test path: #{key}")
+end
+
+:ok = Nano.Safety.provision_new_credentials(:new_installation)
+
 # The node's settings start at their defaults, in that directory too. Tests reach providers
 # only through scripted fakes (test/support), so their addresses default to a port that
 # refuses connections, and OpenRouter has a key that is not one.

@@ -8,16 +8,18 @@ anything on module load. Only the integration owner installs it after review.
 
 1. Merge and compile the safety changes, including credential persistence hooks,
    model success hook and HTTP routes. Do not run the installer from an agent's
-   worktree against live data. Verify `python3` is in the container image (this
-   machine has it; the integration owner must add `python3` to Dockerfile's apt
-   installation before image recreation: the original Dockerfile does not guarantee it).
+   worktree against live data. Verify `python3`, `elixir`, and util-linux `flock` are available at every
+   container start. The image must explicitly include Python and util-linux. Missing
+   flock or bounded acquisition timeout fails credential operations closed. The
+   BEAM port and Python share the stable `credentials/intent-v1.lock` inode; never
+   unlink/replace it, including during maintenance or atomic publication.
 2. Approve maintenance quiescence first: all credential writers must be stopped
    so bootstrap cannot race a single-use token refresh. Either stop the node, or
    have the integration owner synchronously `:sys.suspend/1` Nano.Settings and
    Nano.ChatGPT.Auth, run installation, and resume both in a `try/after` block
    in the same eval. Suspension waits for current callbacks, including refresh,
    to finish. Prevent other direct file writers during this brief window. From the merged
-   checkout run `python3 scripts/safety/install.py --offline --app /app
+   checkout run `python3 scripts/safety/install.py --offline --legacy-installation --app /app
    --root /data/safety --state-dir /data/state --port 4000`. It copies the runner
    outside the checkout and initializes private credential copies, but does not
    start it. Review `/data/safety/config.json`, root-owned, mode 0600. Root is 0700.
@@ -64,22 +66,44 @@ may still relaunch the runner, but the persisted brake refuses every further chi
 Private `notices.jsonl`, secret-free stderr and `/api/safety` describe each recovery,
 when it happened, its evidence path and action. Stale status is not protected.
 
-Settings and refreshed ChatGPT tokens are synchronously copied *before* publishing
-new values (including directory fsync). This closes the ordinary polling window for single-use refresh tokens.
-The independent watcher detects missing, empty or invalid JSON files, stops the
-child to quiesce publishers, rechecks and restores only from valid copies, then
-restarts to reload them. Backup renames are directory-fsynced before publishing. A valid newer file is left
-alone; invalid replaced files are preserved mode 0600. All copies and boot logs
-are private; none of their content is included in notices/status. There is still
-an unavoidable crash window between upstream token rotation and receiving/writing
-the result, and simultaneous arbitrary external writers can race restoration.
-External writers must use the same write-through discipline; valid external
-updates are not polled into backups because that can overwrite newer refreshes.
-Lost individual provider/opaque secret settings are merged back from the protected
-copy while preserving newer nonempty values and unrelated settings. Intentional
-logout/deletion is therefore a maintenance operation: disable, stop writers, remove
-the matching protected copy (or edit its secret names), then change the originals
-and re-enable. Disabling alone does not erase protected recovery copies.
+Credential intent v1 is protected outside checkout in
+`<safety_dir>/credentials/intent-v1.json`; the state-directory
+`credential-intent-v1.json` is only a mirror. Per-credential enabled versions contain
+private values and login/set generations; invalidations contain no value and always
+win over older primary/backup/fallback copies. Refresh is generation-conditional.
+Intent commits before primary removal, and refresh commits before publication.
+A durable mutation barrier blocks recovery and rotation after uncertain writes/crashes
+until compatible offline reconciliation. `intent-required-v1` permanently records
+that this installation used protected history; deleting authority is not a reset.
+
+Explicit logout/Settings removal now persist invalidation (or return a truthful
+maintenance error), not a silent backup merge. Accidental deletion of enabled
+credentials still recovers from authoritative enabled values; unrelated valid
+settings survive repair. The watcher stops publishers, rereads protected intent and
+barrier, then repairs; stale copies alone never enable anything. Private original
+legacy bytes and replaced damaged files remain evidence. The upstream rotation
+window before receipt is unavoidable; arbitrary external writers remain unsupported.
+
+Provision brand-new empty installations with explicit `--new-installation` instead
+of `--legacy-installation`. Existing installations that never used v1 require
+explicit offline legacy reconciliation; missing/conflicting legacy copies block it.
+For an existing safety installation, reviewed v1 BEAM maintenance API
+`Nano.Safety.reconcile_legacy_credentials(:legacy_installation)` preserves originals;
+`Nano.Safety.reconcile_credentials/0` resumes *existing* coherent authority after a
+barrier. Neither API reconstructs lost invalidation history. Lost authority needs
+roll-forward repair from the newest preserved protected authority, never its mirror.
+Do not call these against live data from an unreviewed worker. The sole integration
+owner must quiesce both old Auth/Settings owners and all external writers, update
+both BEAM lifecycle code and outside-checkout runner, migrate, then resume compatible
+owners using the rehearsed upgrade. A running old Python watchdog cannot be made
+safe by merely loading BEAM modules: external maintenance is required if it cannot
+be safely quiesced/replaced. Legacy runner/source fallbacks unable to honor intent
+are ineligible, including disabled-mode direct boot. Never discard newer authority,
+barriers, required marker or evidence for a source downgrade.
+
+Full protocol and disposable restoration/upgrade drivers:
+[`docs/flywheel/u07/protocol.md`](../../docs/flywheel/u07/protocol.md),
+`test/flywheel/u07/{run,hot_upgrade}.exs`. Host activation remains operator-owned.
 
 ## Controls
 
