@@ -3,9 +3,10 @@
   "dated": "2026-10-10",
   "pairs": [
     {
-      "billing": "Subscription: no marginal API charge within plan limits; allocation, limits and speed still constrain work.",
+      "billing": "Subscription: no marginal API charge within plan usage limits; plan subscription cost is real and not allocated here. Rate/usage limits and speed constrain work; actual node task cost remains unknown.",
       "effort": "low",
       "family": "OpenAI GPT-6",
+      "identity_limit": "Public label and effort match provider-listed display name and effort; no independently documented equivalence between subscription endpoint and AA-tested API deployment. Reference only, never transferred into node_metrics.",
       "model": "openai-codex/gpt-6-astra",
       "node_metrics": {
         "cost_per_task": null,
@@ -15,6 +16,7 @@
       "reference_metrics": {
         "aa_briefcase_v1.1_elo": 1257,
         "cost_per_index_task_usd": 0.82,
+        "cost_to_run_intelligence_index_usd": 1537,
         "gdpval_aa_v2.1_elo": 1389,
         "intelligence_index_v4.3.2": 46,
         "output_tokens_per_second": 42,
@@ -27,9 +29,10 @@
       "unknown_reason": "Exact ChatGPT-provider pair has no public measured task/cost/speed data; reference is same model name and effort on public API, not an alias or node performance claim."
     },
     {
-      "billing": "Subscription: no marginal API charge within plan limits; allocation, limits and speed still constrain work.",
+      "billing": "Subscription: no marginal API charge within plan usage limits; plan subscription cost is real and not allocated here. Rate/usage limits and speed constrain work; actual node task cost remains unknown.",
       "effort": "low",
       "family": "OpenAI GPT-6",
+      "identity_limit": "Public label and effort match provider-listed display name and effort; no independently documented equivalence between subscription endpoint and AA-tested API deployment. Reference only, never transferred into node_metrics.",
       "model": "openai-codex/gpt-6.1-sol",
       "node_metrics": {
         "cost_per_task": null,
@@ -39,6 +42,7 @@
       "reference_metrics": {
         "aa_briefcase_v1.1_elo": 1116,
         "cost_per_index_task_usd": 0.13,
+        "cost_to_run_intelligence_index_usd": 250,
         "gdpval_aa_v2.1_elo": 1317,
         "intelligence_index_v4.3.2": 42,
         "output_tokens_per_second": 51,
