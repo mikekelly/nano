@@ -62,7 +62,7 @@ class RecoveryTest(unittest.TestCase):
             entries[key] = dict(state='invalidated', version=len(entries) + 1)
         atomic(self.root / 'credentials' / 'intent-v1.json', json.dumps(dict(schema_version=1, revision=len(entries), entries=entries)).encode())
         # This synthetic watchdog child is not BEAM; capability fixture is explicit.
-        for file, content in [('safety.ex', '@credential_intent_schema 1'), ('chatgpt/auth.ex', 'Nano.Safety.credential_write'), ('settings.ex', 'Nano.Safety.credential_read')]:
+        for file, content in [('safety.ex', '@credential_intent_schema 1\n@credential_intent_lock 1'), ('chatgpt/auth.ex', 'Nano.Safety.credential_write'), ('settings.ex', 'Nano.Safety.credential_read')]:
             path = self.app / 'lib/nano' / file
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
@@ -138,6 +138,66 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(evidence[0].read_bytes(), b'{}')
         self.assertEqual(evidence[0].stat().st_mode & 0o777, 0o600)
         self.assertNotIn('latest-fake', (self.root / 'notices.jsonl').read_text())
+
+    def test_net_snapshot_serializes_refresh_invalidation_and_login_before_kill(self):
+        import fcntl
+        import threading
+        import runner
+        from unittest.mock import patch
+        for action in ('refresh', 'invalidate', 'login'):
+            with self.subTest(action=action):
+                old = {'access_token': 'old', 'refresh_token': 'old-refresh'}
+                new = {'access_token': 'new', 'refresh_token': 'new-refresh'}
+                self.intent(auth=old)
+                atomic(self.state / 'chatgpt_auth.json', json.dumps(old).encode())
+                net = runner.Net(self.root)
+                class Child:
+                    def poll(self): return None
+                net.child = Child()
+                stops = []
+                net.stop_child = lambda: stops.append('stop')
+                net.notice = lambda *a, **kw: None
+                attempted, done = threading.Event(), threading.Event()
+                threads = []
+                original = runner.read_json
+                def writer():
+                    fd = os.open(self.root / 'credentials/intent-v1.lock', os.O_RDWR)
+                    try:
+                        attempted.set()
+                        fcntl.flock(fd, fcntl.LOCK_EX)
+                        atomic(self.root / 'credentials/intent-blocked-v1.json', b'{}')
+                        self.intent(auth={} if action == 'invalidate' else new)
+                        if action == 'invalidate':
+                            (self.state / 'chatgpt_auth.json').unlink()
+                        else:
+                            atomic(self.state / 'chatgpt_auth.json', json.dumps(new).encode())
+                        (self.root / 'credentials/intent-blocked-v1.json').unlink()
+                    finally:
+                        os.close(fd)
+                        done.set()
+                def interleave(path, default=None):
+                    if Path(path) == self.state / 'chatgpt_auth.json' and not threads:
+                        thread = threading.Thread(target=writer)
+                        threads.append(thread)
+                        thread.start()
+                        self.assertTrue(attempted.wait(2))
+                        self.assertFalse(done.is_set(), 'writer crossed the snapshot lock')
+                    return original(path, default)
+                with patch.object(runner, 'read_json', interleave):
+                    self.assertFalse(net.credentials())
+                self.assertTrue(done.wait(2))
+                threads[0].join(2)
+                self.assertFalse(net.credentials())
+                self.assertEqual(stops, [])
+                self.assertEqual(original(self.state / 'chatgpt_auth.json', {}), {} if action == 'invalidate' else new)
+                # A partial publish holding the OS lock is never considered damage.
+                fd = os.open(self.root / 'credentials/intent-v1.lock', os.O_RDWR)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    self.assertFalse(net.credentials())
+                    self.assertEqual(stops, [])
+                finally:
+                    os.close(fd)
 
     def test_valid_newer_credentials_are_not_replaced(self):
         atomic(self.state / 'settings.json', b'{"new":"valid"}')

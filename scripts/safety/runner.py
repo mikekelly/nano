@@ -143,6 +143,7 @@ def compatible_credentials(source, root):
         return True
     try:
         return '@credential_intent_schema 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
+            '@credential_intent_lock 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
             'Nano.Safety.credential_write' in (Path(source) / 'lib/nano/chatgpt/auth.ex').read_text() and \
             'Nano.Safety.credential_read' in (Path(source) / 'lib/nano/settings.ex').read_text()
     except OSError:
@@ -202,20 +203,30 @@ class Net:
         return metadata
 
     def credentials(self):
+        # Share one stable flock inode with every BEAM credential transaction.
+        # A busy writer is not damage. Hold through snapshot, decision, stop and
+        # repair; rechecking only after killing cannot prevent spurious restarts.
+        lock = self.root / 'credentials' / 'intent-v1.lock'
+        lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            return self._credentials_locked()
+        finally:
+            os.close(fd)
+
+    def _credentials_locked(self):
         restored = False
         for name in ('settings.json', 'chatgpt_auth.json'):
             current = self.state_dir / name
             backup = self.root / 'credentials' / name
-            # No polling backup writes: they could regress a single-use refresh token.
-            if credential_repair(current, backup, self.root) is not None:
-                # Stop publishers before rechecking/restoring. An ordinary in-process
-                # refresh can no longer race restoration of the latest copy.
+            repair = credential_repair(current, backup, self.root)
+            if repair is not None:
                 if self.child and self.child.poll() is None:
                     self.stop_child()
-                    restored = True
-                repair = credential_repair(current, backup, self.root)
-                if repair is None:
-                    continue
                 evidence = self.root / 'evidence' / (uuid.uuid4().hex + '-' + name)
                 if current.exists():
                     atomic(evidence, current.read_bytes())

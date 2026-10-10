@@ -97,6 +97,7 @@ defmodule Nano.Safety do
 
   # Capability checked by the outside-checkout runner before any fallback launch.
   @credential_intent_schema 1
+  @credential_intent_lock 1
   @maintenance "credential authority unavailable or blocked; stop credential writers and reconcile in maintenance"
 
   @doc "Read protected credential authority. Never log the returned private values."
@@ -209,7 +210,52 @@ defmodule Nano.Safety do
     end)
   end
 
-  defp serialized(fun), do: :global.trans({{__MODULE__, :credential_intent}, self()}, fun)
+  # The stable lock inode is shared with the external Python watchdog. A port
+  # holder releases the OS lock on stdin EOF, including owner/VM death.
+  defp serialized(fun) do
+    :global.trans({{__MODULE__, :credential_intent}, self()}, fn ->
+      with :ok <- ensure_credentials_dir(),
+           flock when is_binary(flock) <- System.find_executable("flock") do
+        port =
+          Port.open({:spawn_executable, flock}, [
+            :binary,
+            :exit_status,
+            :use_stdio,
+            {:args,
+             [
+               "-x",
+               "-w",
+               "5",
+               Path.join([root(), "credentials", "intent-v1.lock"]),
+               "/bin/sh",
+               "-c",
+               "printf 'locked\\n'; read release"
+             ]}
+          ])
+
+        try do
+          receive do
+            {^port, {:data, "locked\n"}} -> fun.()
+            {^port, {:exit_status, _}} -> {:error, @maintenance}
+          after
+            6_000 -> {:error, @maintenance}
+          end
+        after
+          # Sending a newline lets the holder exit normally; close also supplies
+          # EOF if the caller exits while holding it. Never unlink the lock inode.
+          if Port.info(port) do
+            Port.command(port, "release\n")
+            Port.close(port)
+          end
+        end
+      else
+        _ -> {:error, @maintenance}
+      end
+    end)
+  rescue
+    _ -> {:error, @maintenance}
+  end
+
   defp intent_path, do: Path.join([root(), "credentials", "intent-v1.json"])
   defp history_marker, do: Path.join([root(), "credentials", "intent-required-v1"])
   defp barrier, do: Path.join([root(), "credentials", "intent-blocked-v1.json"])

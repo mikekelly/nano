@@ -11,8 +11,14 @@ never logged. Refresh increments version but retains generation; explicit login/
 creates a newer generation. An invalidation has no value. Protected records are the
 only winner, never a timestamp/mtime or an older backup. Mirrors cannot overrule them.
 
-All BEAM lifecycle operations serialize under one node-local lock. The watchdog
-never mutates intent and stops its child before repairing, then rereads authority.
+All BEAM lifecycle operations serialize under one node-local lock plus an OS
+flock on the stable `credentials/intent-v1.lock` inode shared with the Python
+watchdog. Never unlink/replace that inode. BEAM's bounded util-linux flock port
+holder releases on caller/VM death (stdin EOF); missing flock or timeout fails
+closed. Python skips busy writers and holds this lock across the coherent
+intent/primary snapshot, pre-kill decision, child stop and repair. A post-kill
+recheck alone is insufficient: a completed refresh must not kill a healthy child.
+The watchdog never mutates intent.
 Offline installer/reconciliation requires all credential writers stopped. This is
 cooperative serialization, not a distributed lock or filesystem sandbox.
 

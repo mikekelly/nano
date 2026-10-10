@@ -38,6 +38,80 @@ defmodule Nano.CredentialIntentTest do
       "account_id" => "fixture-account"
     }
 
+  test "BEAM publishers and actual Python Net share lock; owner death releases it", ctx do
+    assert :ok = Safety.provision_new_credentials(:new_installation)
+    assert {:ok, g} = Safety.credential_write("chatgpt_auth.json", auth())
+    config = %{app: File.cwd!(), state_dir: ctx.state, command: ["true"]}
+    File.write!(Path.join(ctx.safety, "config.json"), Jason.encode!(config))
+    parent = self()
+
+    Application.put_env(:nano, :credential_intent_checkpoint, fn stage ->
+      if stage == :after_primary do
+        send(parent, {:publisher_locked, self()})
+
+        receive do
+          :continue -> :ok
+        end
+      else
+        :ok
+      end
+    end)
+
+    on_exit(fn -> Application.delete_env(:nano, :credential_intent_checkpoint) end)
+
+    script = """
+    import sys
+    sys.path.insert(0, 'scripts/safety')
+    from runner import Net
+    net = Net(sys.argv[1])
+    class Child:
+        def poll(self): return None
+    net.child = Child()
+    net.stop_child = lambda: (_ for _ in ()).throw(AssertionError('healthy child killed'))
+    assert net.credentials() is False
+    print('coherent-no-restart')
+    """
+
+    for action <- [:refresh, :invalidate, :login] do
+      writer =
+        spawn(fn ->
+          result =
+            case action do
+              :refresh ->
+                Safety.credential_write(
+                  "chatgpt_auth.json",
+                  Map.put(auth(), "refresh_token", "new"),
+                  g
+                )
+
+              :invalidate ->
+                Safety.credential_invalidate("chatgpt_auth.json")
+
+              :login ->
+                Safety.credential_write("chatgpt_auth.json", auth())
+            end
+
+          send(parent, {:published, result})
+        end)
+
+      assert_receive {:publisher_locked, ^writer}, 2_000
+      assert {"coherent-no-restart\n", 0} = System.cmd("python3", ["-c", script, ctx.safety])
+      send(writer, :continue)
+      assert_receive {:published, {:ok, _}}, 2_000
+      assert {"coherent-no-restart\n", 0} = System.cmd("python3", ["-c", script, ctx.safety])
+    end
+
+    writer = spawn(fn -> Safety.credential_invalidate("chatgpt_auth.json") end)
+    assert_receive {:publisher_locked, ^writer}, 2_000
+    monitor = Process.monitor(writer)
+    Process.exit(writer, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^writer, :killed}
+    Application.delete_env(:nano, :credential_intent_checkpoint)
+    assert :ok = Safety.reconcile_credentials()
+    assert {:ok, %{}, nil} = Safety.credential_read("chatgpt_auth.json")
+    assert {"coherent-no-restart\n", 0} = System.cmd("python3", ["-c", script, ctx.safety])
+  end
+
   test "explicit provision; revoked generation loses to login and stale refresh", ctx do
     assert {:error, _} = Safety.credential_write("chatgpt_auth.json", auth())
     assert :ok = Safety.provision_new_credentials(:new_installation)
