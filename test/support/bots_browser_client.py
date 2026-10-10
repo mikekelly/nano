@@ -3,9 +3,10 @@ import sys,json,time,os
 sys.path.insert(0,os.environ.get('BOTS_BROWSER_PYTHON','/tmp/altair-bots-ui-browser/python'))
 import websocket
 class CDP:
- def __init__(self):
+ def __init__(self,context=None):
   self.ws=websocket.create_connection(os.environ.get('BOTS_CDP_WS','ws://127.0.0.1:19343/'),timeout=15,suppress_origin=True);self.seq=0;self.events=[];self.sid=None
-  t=self.call('Target.createTarget',{'url':'about:blank'})['targetId']
+  t=self.call('Target.createTarget',{'url':'about:blank',**({'browserContextId':context} if context else {})})['targetId']
+  self.context=self.call('Target.getTargetInfo',{'targetId':t})['targetInfo'].get('browserContextId')
   self.sid=self.call('Target.attachToTarget',{'targetId':t,'flatten':True})['sessionId']
   self.call('Runtime.enable');self.call('Page.enable')
  def call(self,m,p={}):
@@ -89,23 +90,4 @@ try:
  print('After another target activation',c.js('JSON.stringify({hidden:document.hidden,visibility:document.visibilityState})'))
 except Exception as e:print('Target background unsupported',e)
 print('Real Notification construct',c.js('(()=>{try{const n=new Notification("Browser acceptance probe");n.close();return "construct returned"}catch(e){return String(e)}})()'))
-policy=c.js('''(()=>{
- const savedN=window.Notification, savedNow=Date.now, savedHidden=Object.getOwnPropertyDescriptor(document,"hidden");
- let hidden=false, permission="granted", now=1000000, calls=[]; const handlers={};
- function FakeNotification(title,opts){calls.push({title,opts});this.close=()=>{}};
- Object.defineProperty(FakeNotification,"permission",{get:()=>permission}); FakeNotification.requestPermission=()=>Promise.resolve("denied");
- window.Notification=FakeNotification; Date.now=()=>now; Object.defineProperty(document,"hidden",{configurable:true,get:()=>hidden});
- const hook={...window.BotsUI,el:document.querySelector("#bots-ui"),handleEvent:(name,fn)=>handlers[name]=fn,pushEvent:()=>{}};
- try{
- hook.mounted();const notify=handlers["bots:notify"], d={id:"policy1",title:"Probe",session_id:"safe",min_interval_ms:60000,max_per_hour:2};
- notify(d);const foreground=calls.length===0;
- hidden=true;permission="denied";notify(d);const denied=calls.length===0;
- permission="granted";notify(d);notify(d);const dedup=calls.length===1;
- notify({...d,id:"policy2"});const interval=calls.length===1;
- now+=61000;notify({...d,id:"policy2"});const second=calls.length===2;
- now+=61000;notify({...d,id:"policy3"});const cap=calls.length===2;
- return JSON.stringify({foreground,denied,dedup,interval,second,cap,allPassed:foreground&&denied&&dedup&&interval&&second&&cap});
- }finally{hook.destroyed();window.Notification=savedN;Date.now=savedNow;if(savedHidden)Object.defineProperty(document,"hidden",savedHidden);else delete document.hidden;}
-})()''')
-assert json.loads(policy)['allPassed'],policy
-print('MOCKED notification policy only',policy)
+print('Notification persistence policy: run bots_notification_browser.py; no OS delivery claim.')
