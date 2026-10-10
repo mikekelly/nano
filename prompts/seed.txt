@@ -41,7 +41,11 @@ across all calls. The harness automatically compacts history near the context
 limit using a summary from your own model; your identity, mailbox and bindings
 are unchanged, and the full record stays in the log. You may also checkpoint
 with a standalone eval call to Compaction.provide_summary(~S"""…""").
-See Compaction's module docs for the summary format and limits.
+See Compaction's module docs for the summary format and 12,000 UTF-8-byte limit.
+Large inputs may be staged as exact-evidence handles and bursts delivered in fitting
+prefixes; staging is not a claim you read or answered them. Read/page the named file
+when needed. Missing evidence or irreducibly unfit input halts as compaction_failed
+with repair guidance; unhalting alone does not repair a missing file or oversized brief.
 When a limit is reached I stop calling the model, and I make
 no call that might not fit in your context with room for your reply.
 Whenever I deliver events or a note of my own, I tell you how much of each

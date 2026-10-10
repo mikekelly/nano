@@ -104,6 +104,351 @@ defmodule NanoAgentTest do
     new
   end
 
+  test "U06 coherent spool authority rejects same-size valid corruption before provider and across restart",
+       ctx do
+    {pid, id} = start!(ctx, max_context: 60_000, system_prompt: "brief")
+    :sys.replace_state(pid, &Map.put(&1, :halted, :compaction_failed))
+    for n <- 1..257, do: send(pid, {:original, n})
+    before = :sys.get_state(pid)
+    assert before.pending_backlog.count == 1
+    q = before.pending_backlog
+
+    path =
+      Path.join([
+        Application.fetch_env!(:nano, :spill_dir),
+        before.id,
+        "pending-v2",
+        "#{q.lifecycle_generation}-1.term"
+      ])
+
+    exact = File.read!(path)
+    changed = :binary.replace(exact, "original", "tampered")
+    assert byte_size(changed) == byte_size(exact)
+    assert :erlang.binary_to_term(changed).record.text =~ ":tampered"
+    File.write!(path, changed)
+    NanoAgent.unhalt(ctx.name)
+    # Known-good RAM prefix is allowed; corrupt spool bytes never enter any request.
+    body = request!(ctx.model)
+    refute Jason.encode!(body) =~ "tampered"
+    Fake.push(ctx.model, text: "done")
+    await(id, :harness_note, &(&1["text"] =~ "unavailable_pending_backlog"))
+    refute_receive {:openrouter_request, _, _}, 50
+    failed = :sys.get_state(pid)
+    assert failed.halted == :compaction_failed
+    assert failed.pending_backlog.items[1] == q.items[1]
+    assert failed.pending_backlog.read_index == 1
+    new = kill(ctx, id)
+    restored = :sys.get_state(new)
+    assert restored.pending_backlog.items[1] == q.items[1]
+    assert restored.pending_backlog.read_index == 1
+    assert restored.pending_unavailable != nil
+    NanoAgent.unhalt(ctx.name)
+    refute_receive {:openrouter_request, _, _}, 50
+    assert :sys.get_state(new).halted == :compaction_failed
+  end
+
+  test "U06 malformed registry gives one bounded recovery diagnostic per attempt", ctx do
+    {pid, id} = start!(ctx, max_context: 20_000, system_prompt: "brief")
+
+    :sys.replace_state(
+      pid,
+      &Map.merge(&1, %{
+        halted: :compaction_failed,
+        admission_evidence: Map.new(1..100, fn n -> {Integer.to_string(n), %{}} end)
+      })
+    )
+
+    NanoAgent.unhalt(ctx.name)
+    state = :sys.get_state(pid)
+    assert state.halted == :compaction_failed
+    assert Enum.count(state.pending, &String.contains?(&1, "malformed_evidence")) == 1
+    assert map_size(state.admission_evidence) == 100
+    refute_receive {:openrouter_request, _, _}, 50
+    assert length(entries(id, :model_request)) == 0
+  end
+
+  test "U06 finite spool saturation fences requests and records undelivered identity without growing RAM",
+       ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    send(pid, :first)
+    request!(ctx.model)
+    for n <- 1..256, do: send(pid, {:buffered, n})
+    state = :sys.get_state(pid)
+    assert length(state.pending) == 256
+
+    saturated =
+      Nano.ContextAdmission.empty_queue(state.id, state.store_token.lifecycle_generation)
+      |> Map.merge(%{
+        read_index: 1,
+        write_index: 10_000,
+        count: 10_000,
+        bytes: 100_000,
+        items: Map.new(1..10_000, &{&1, %{sha256: String.duplicate("0", 64), bytes: 10}})
+      })
+
+    :sys.replace_state(pid, &Map.put(&1, :pending_backlog, saturated))
+    for n <- 1..4, do: send(pid, {:undelivered, n})
+    state = :sys.get_state(pid)
+    assert length(state.pending) == 256
+    assert state.pending_backlog == saturated
+    assert state.pending_unavailable.first_event == 258
+    assert state.pending_unavailable.last_event == 261
+    assert state.pending_unavailable.count == 4
+    assert state.halted == :compaction_failed
+
+    assert Enum.map(Enum.take(entries(id, :event_received), -4), & &1["event_seq"]) ==
+             Enum.to_list(258..261)
+
+    Fake.push(ctx.model, text: "done")
+    await(id, :turn_ended)
+    NanoAgent.unhalt(ctx.name)
+    state = :sys.get_state(pid)
+    assert state.halted == :compaction_failed
+    assert length(state.pending) == 256
+    refute_receive {:openrouter_request, _, _}, 50
+  end
+
+  test "U06 oversized voluntary standalone summary returns measured feedback, not module fallback",
+       ctx do
+    {_, id} = start!(ctx, max_context: 60_000)
+
+    code =
+      "Compaction.provide_summary(" <>
+        inspect(String.duplicate("é", 6001), limit: :infinity, printable_limit: :infinity) <> ")"
+
+    Fake.push(ctx.model, calls: [eval: code])
+    Fake.push(ctx.model, text: "done")
+    send(NanoAgent.whereis(ctx.name), :summary)
+    request!(ctx.model)
+    body = request!(ctx.model)
+    feedback = body["messages"] |> Enum.find(&(&1["role"] == "tool")) |> text()
+    assert feedback =~ "12002 UTF-8 bytes"
+    assert feedback =~ "8,000 UTF-8 bytes"
+    refute feedback =~ "Use a standalone"
+    await(id, :turn_ended)
+    assert entries(id, :eval_started) == []
+  end
+
+  test "U06 burst is delivered as fitting ordered prefixes without queue overflow loss",
+       ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    send(pid, :first)
+    request!(ctx.model)
+    for n <- 1..1100, do: send(pid, {n, String.duplicate("b", 100)})
+    # Each spill record is synchronously published; allow the durable burst to finish.
+    state = :sys.get_state(pid, 60_000)
+    assert length(state.pending) <= 256
+    assert length(state.pending) + state.pending_backlog.count == 1100
+    assert state.pending_backlog.count > 0
+    assert Nano.ImageInput.estimated_bytes([state.pending, state.pending_images]) <= 1_048_576
+    assert length(entries(id, :event_received)) == 1101
+    Fake.push(ctx.model, text: "done")
+
+    drain = fn drain, remaining ->
+      assert remaining > 0
+      body = request!(ctx.model)
+
+      if text(List.last(body["messages"])) =~ "Automatic compaction" do
+        Fake.push(ctx.model, calls: [eval: ~S|Compaction.provide_summary(~S"Goal: drain burst")|])
+        drain.(drain, remaining - 1)
+      else
+        state = :sys.get_state(pid)
+        Fake.push(ctx.model, text: "done", usage: {div(byte_size(Jason.encode!(body)), 2), 10, 0})
+
+        if state.pending != [] or Map.get(state, :pending_backlog, %{count: 0}).count > 0,
+          do: drain.(drain, remaining - 1)
+      end
+    end
+
+    drain.(drain, 30)
+
+    await(id, :turn_ended, fn _ ->
+      state = :sys.get_state(pid)
+      state.pending == [] and Map.get(state, :pending_backlog, %{count: 0}).count == 0
+    end)
+
+    admitted = Enum.flat_map(entries(id, :input_admitted), & &1["event_ids"])
+    assert admitted == Enum.map(2..1101, &Integer.to_string/1)
+    assert entries(id, :input_overflow) == []
+    assert NanoAgent.info(ctx.name).halted == nil
+  end
+
+  test "U06 missing exact evidence fences provider calls across restart and repairs forward",
+       ctx do
+    {pid, id} = start!(ctx, max_context: 20_000)
+    send(pid, String.duplicate("é", 5000))
+    request!(ctx.model)
+    state = :sys.get_state(pid)
+    assert [handle] = Map.values(state.admission_evidence)
+    exact = File.read!(handle.path)
+    File.rm!(handle.path)
+    Fake.push(ctx.model, text: "done")
+    await(id, :turn_ended)
+    send(pid, :next)
+    await(id, :harness_note, &(&1["text"] =~ "unavailable_evidence"))
+    refute_receive {:openrouter_request, _, _}, 50
+    before = :sys.get_state(pid)
+    new = kill(ctx, id)
+    after_restart = :sys.get_state(new)
+    assert after_restart.admission_evidence == before.admission_evidence
+    assert Enum.take(after_restart.pending, length(before.pending)) == before.pending
+    assert handle.position == 0
+    File.write!(handle.path, exact)
+    Fake.push(ctx.model, text: "recovered")
+    NanoAgent.unhalt(ctx.name)
+    body = request!(ctx.model)
+    assert text(List.last(body["messages"])) =~ ":next"
+    await(id, :turn_ended, &(&1["reason"] == "no_tool_call"))
+    assert NanoAgent.info(ctx.name).halted == nil
+  end
+
+  test "U06 restart during checkpoint preserves pending identity and exact handles", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {45_100, 1, 0})
+    send(pid, :brief)
+    request!(ctx.model)
+    request!(ctx.model)
+    send(pid, String.duplicate("q", 20_000))
+    :sys.get_state(pid)
+    old = :sys.get_state(pid)
+    assert old.compacting.base != []
+    assert [handle] = Map.values(old.admission_evidence)
+    new = kill(ctx, id)
+    # The HTTP fake retains the abandoned old waiter: discharge it explicitly.
+    Fake.push(ctx.model, text: "abandoned old checkpoint")
+    restarted_request = request!(ctx.model)
+    assert :sys.get_state(new).admission_evidence == old.admission_evidence
+    assert File.stat!(handle.path).size == handle.bytes
+    # Restart can fit the restored short actual transcript without another checkpoint;
+    # regardless of choice, the pending staged event must not disappear.
+    if text(List.last(restarted_request["messages"])) =~ "Automatic compaction" do
+      Fake.push(ctx.model, calls: [eval: ~S|Compaction.provide_summary(~S"Goal: restart")|])
+      body = request!(ctx.model)
+      assert text(List.last(body["messages"])) =~ handle.sha256
+    else
+      assert text(List.last(restarted_request["messages"])) =~ handle.sha256
+    end
+
+    Fake.push(ctx.model, text: "done")
+    await(id, :turn_ended)
+    assert :sys.get_state(new).pending == []
+  end
+
+  test "U06 tiny window and oversized system prompt halt actionably without model requests",
+       ctx do
+    for {suffix, opts} <- [
+          {"tiny", [max_context: 1000]},
+          {"system", [max_context: 20_000, system_prompt: String.duplicate("s", 50_000)]}
+        ] do
+      local = %{ctx | name: ctx.name <> suffix}
+      {pid, id} = start!(local, opts)
+      send(pid, :brief)
+      await(id, :turn_ended)
+      :sys.get_state(pid)
+      assert NanoAgent.info(local.name).halted == :compaction_failed
+      assert length(:sys.get_state(pid).pending) >= 1
+      assert List.last(entries(id, :harness_note))["text"] =~ "Reduce the brief/system prompt"
+      refute_receive {:openrouter_request, _, _}, 50
+    end
+  end
+
+  test "U06 malformed and oversized handles fail before a provider request", ctx do
+    for {suffix, handle} <- [
+          {"malformed", %{version: 999}},
+          {"oversized",
+           %{
+             version: 1,
+             sha256: String.duplicate("a", 64),
+             path: "/untrusted",
+             bytes: 8_388_609,
+             position: 0
+           }}
+        ] do
+      local = %{ctx | name: ctx.name <> suffix}
+      {pid, id} = start!(local)
+      :sys.replace_state(pid, &Map.put(&1, :admission_evidence, %{bad: handle}))
+      send(pid, :brief)
+      await(id, :turn_ended)
+      state = :sys.get_state(pid)
+      assert state.halted == :compaction_failed
+      assert Enum.any?(state.pending, &String.contains?(&1, ":brief"))
+      assert List.last(entries(id, :harness_note))["text"] =~ "exact evidence"
+      refute_receive {:openrouter_request, _, _}, 50
+    end
+  end
+
+  test "U06 oversized multibyte summaries have measured feedback and exactly three attempts",
+       ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {45_100, 1, 0})
+
+    for _ <- 1..3,
+        do:
+          Fake.push(ctx.model,
+            calls: [
+              eval:
+                "Compaction.provide_summary(" <>
+                  inspect(String.duplicate("é", 6001), printable_limit: :infinity) <> ")"
+            ]
+          )
+
+    send(pid, :brief)
+    request!(ctx.model)
+    request!(ctx.model)
+
+    for _ <- 1..2 do
+      body = request!(ctx.model)
+      assert text(List.last(body["messages"])) =~ "12002 UTF-8 bytes"
+      assert text(List.last(body["messages"])) =~ "8,000 UTF-8 bytes"
+    end
+
+    await(id, :turn_ended)
+    assert :sys.get_state(pid).halted == :compaction_failed
+    assert length(entries(id, :model_request)) == 4
+    refute_receive {:openrouter_request, _, _}, 50
+  end
+
+  test "U06 provider refusal during checkpoint is bounded and retains queued arrivals", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    Fake.push(ctx.model, calls: [eval: "1"], usage: {45_100, 1, 0})
+    send(pid, :brief)
+    request!(ctx.model)
+    request!(ctx.model)
+    send(pid, :pending_after_refusal)
+    :sys.get_state(pid)
+    for _ <- 1..3, do: Fake.push(ctx.model, status: 400)
+    for _ <- 1..2, do: request!(ctx.model)
+    await(id, :turn_ended)
+    state = :sys.get_state(pid)
+    assert state.halted == :compaction_failed
+    assert Enum.any?(state.pending, &String.contains?(&1, "pending_after_refusal"))
+    assert length(entries(id, :model_request)) == 4
+    refute_receive {:openrouter_request, _, _}, 50
+  end
+
+  test "U06 checkpoint prefix preserves an unfit measured suffix's complete tool pairs", ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+
+    Fake.push(ctx.model,
+      calls: List.duplicate({:eval, ~s|String.duplicate("r", 200)|}, 20),
+      usage: {58_000, 500, 0}
+    )
+
+    Fake.push(ctx.model, calls: [eval: ~S|Compaction.provide_summary(~S"Goal: paired prefix")|])
+    Fake.push(ctx.model, text: "done")
+    send(pid, :brief)
+    request!(ctx.model)
+    checkpoint = request!(ctx.model)
+    refute Enum.any?(checkpoint["messages"], &(&1["role"] == "tool"))
+    resumed = request!(ctx.model)
+    assert length(tool_texts(resumed)) == 20
+    call_ids = for m <- resumed["messages"], c <- m["tool_calls"] || [], do: c["id"]
+    result_ids = for %{"role" => "tool", "tool_call_id" => id} <- resumed["messages"], do: id
+    assert call_ids == result_ids
+    await(id, :turn_ended)
+    assert :sys.get_state(pid).halted == nil
+  end
+
   test "completed compaction survives process restart with bindings and summary", ctx do
     {pid, id} = start!(ctx)
     Fake.push(ctx.model, calls: [eval: "durable = 23"])
@@ -1831,46 +2176,31 @@ defmodule NanoAgentTest do
     assert request!(small.model)["max_tokens"] == 8_000
   end
 
-  test "a request that might not fit in the context is never sent: the agent halts", ctx do
+  test "U06 bounded result overshoot stages exact evidence before checkpoint headroom", ctx do
     {pid, id} = start!(ctx, max_context: 20_000)
-    # A result of 30,000 bytes may be 15,000 tokens: with the 4,000 measured that leaves
-    # less than 4,096 for the reply.
     Fake.push(ctx.model, calls: [eval: ~s|String.duplicate("x", 30_000)|], usage: {3_900, 100, 0})
+    Fake.push(ctx.model, text: "done")
     send(pid, :go)
     request!(ctx.model)
+    body = request!(ctx.model)
+    [result] = tool_texts(body)
+    assert result =~ "Staged exact evidence, not read or answered"
+    assert result =~ "continuation position 0"
+    assert await(id, :turn_ended)["reason"] == "no_tool_call"
+    assert NanoAgent.info(ctx.name).halted == nil
+    state = :sys.get_state(pid)
+    assert [handle] = Map.values(state.admission_evidence)
 
-    assert %{
-             "scope" => "context",
-             "context_used" => 4_000,
-             "max_context" => 20_000,
-             "estimate" => estimate
-           } =
-             await(id, :budget_exhausted)
+    assert File.read!(handle.path) ==
+             inspect(String.duplicate("x", 30_000), printable_limit: :infinity)
 
-    assert estimate > 20_000 - 4_096
-    assert await(id, :turn_ended, &(&1["reason"] == "budget"))
-    refute_receive {:openrouter_request, _, _}, 100
-    :sys.get_state(pid)
-    assert %{halted: :context, budget: %{context_used: 4_000}} = NanoAgent.info(ctx.name)
-    assert length(entries(id, :model_request)) == 1
+    assert handle.position == 0
+    assert entries(id, :budget_exhausted) == []
+    assert [%{"tool_call_id" => call_id}] = Enum.filter(state.transcript, &(&1["role"] == "tool"))
 
-    assert List.last(entries(id, :harness_note))["text"] ==
-             "Your next call to the model might not fit in your context of 20000 tokens: with " <>
-               "what has arrived since your last response, this conversation could now be up " <>
-               "to about #{estimate} tokens, which leaves less than 4096 for your reply, so I " <>
-               "have halted you: I will not call the model until an operator un-halts you."
-
-    # Un-halting does not shrink it: halted again, still without a call.
-    NanoAgent.unhalt(ctx.name)
-    await_nth(id, :budget_exhausted, 2)
-    refute_receive {:openrouter_request, _, _}, 100
-    :sys.get_state(pid)
-    assert NanoAgent.info(ctx.name).halted == :context
-
-    assert Enum.at(entries(id, :harness_note), -2)["text"] =~
-             "An operator un-halted you. This conversation does not shrink: its context is " <>
-               "still 4000 of 20000 tokens, so unless your limit has been raised I will halt " <>
-               "you again before my next call to the model, without making it."
+    assert Enum.any?(state.transcript, fn m ->
+             Enum.any?(m["tool_calls"] || [], &(&1["id"] == call_id))
+           end)
   end
 
   test "a response that takes the context past its limit halts the agent", ctx do

@@ -58,6 +58,81 @@ defmodule NanoAgentImagesTest do
     {model, name, pid}
   end
 
+  test "U06 image event burst admits fitting prefixes without losing reference attribution", c do
+    {model, name, pid} = start!(true, max_context: 60_000)
+    send(pid, :first)
+    assert_receive {:openrouter_request, ^model, _}, 3000
+    for n <- 1..12, do: send(pid, %{text: "image event #{n}", images: [c.ref]})
+    :sys.get_state(pid)
+    Fake.push(model, text: "first done")
+
+    drain = fn drain, count ->
+      assert count > 0
+      assert_receive {:openrouter_request, ^model, body}, 3000
+      last = List.last(body["messages"])["content"]
+      text = if is_list(last), do: Enum.map_join(last, "", &(&1["text"] || "")), else: last
+
+      if text =~ "Automatic compaction" do
+        Fake.push(model,
+          calls: [
+            eval: ~S|Compaction.provide_summary(~S"Goal: retain only actual image observations")|
+          ]
+        )
+
+        drain.(drain, count - 1)
+      else
+        refs =
+          for message <- body["messages"],
+              is_list(message["content"]),
+              part <- message["content"],
+              part["type"] == "image_url",
+              do: part
+
+        assert length(refs) <= 10
+        state = :sys.get_state(pid)
+
+        Fake.push(model,
+          text: "seen",
+          usage: {div(byte_size(Jason.encode!(body)), 2) + length(refs) * 4800, 10, 0}
+        )
+
+        if state.pending != [], do: drain.(drain, count - 1)
+      end
+    end
+
+    drain.(drain, 20)
+    wait_idle(pid, 200)
+    state = :sys.get_state(pid)
+    assert state.pending == []
+    assert state.pending_images == []
+    assert NanoAgent.info(name).halted == nil
+    log = Nano.Log.read(state.id)
+    ids = for entry <- log, entry["type"] == "input_admitted", id <- entry["event_ids"], do: id
+    assert ids == Enum.map(2..13, &Integer.to_string/1)
+    assert Enum.count(log, &(&1["type"] == "event_received")) == 13
+    assert {:ok, c.bytes} == Nano.Images.read(c.ref)
+  end
+
+  test "U06 new arrival cannot discard a legacy unattributed pending image bundle", c do
+    {model, _name, pid} = start!(true)
+    send(pid, :first)
+    assert_receive {:openrouter_request, ^model, _}, 3000
+    send(pid, %{text: "legacy queued", images: [c.ref]})
+    :sys.get_state(pid)
+    :sys.replace_state(pid, &Map.delete(&1, :image_deliveries))
+    send(pid, %{text: "new queued", images: [c.ref]})
+    :sys.get_state(pid)
+    Fake.push(model, text: "first done")
+    assert_receive {:openrouter_request, ^model, body}, 3000
+    parts = List.last(body["messages"])["content"]
+    assert Enum.count(parts, &(&1["type"] == "image_url")) == 2
+    assert hd(parts)["text"] =~ "legacy queued"
+    assert hd(parts)["text"] =~ "new queued"
+    Fake.push(model, text: "done")
+    wait_idle(pid, 200)
+    assert :sys.get_state(pid).pending_images == []
+  end
+
   test "vision refs persist and hydrate; original changes cannot change image", c do
     {model, name, pid} = start!(true)
     Fake.push(model, text: "done")

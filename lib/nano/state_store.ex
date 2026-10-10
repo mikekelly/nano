@@ -3,7 +3,8 @@ defmodule Nano.StateStore do
   Serialized lifecycle authority and coherent agent checkpoints. A live agent registers
   its logical identity and process incarnation, then checkpoints metadata and bindings
   together with a monotonically increasing revision. Store recovery invalidates tokens
-  and asynchronously requests live resaves; missing bindings are `:unavailable`, not empty.
+  and fences known live-owner disk rows before publishing readiness, then asynchronously
+  requests live resaves; missing bindings are `:unavailable`, not empty.
 
   Durable v1 envelopes reference immutable identity-bound binding blobs. Lifecycle
   tombstones survive restart. A checkpoint returns `{:ok, acknowledgment}` with
@@ -136,15 +137,30 @@ defmodule Nano.StateStore do
     end
   end
 
-  defp publish(path, term) do
-    tmp = path <> ".next-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  @doc "Atomic synced raw evidence publication; same durability protocol as term envelopes."
+  def write_bytes(name, path, bytes) when is_binary(bytes) do
+    case publish_bytes(path, bytes) do
+      :ok ->
+        :ok
+
+      error ->
+        Logger.error("#{name}: could not durably save evidence #{path}: #{inspect(error)}")
+        error
+    end
+  end
+
+  defp publish(path, term), do: publish_bytes(path, :erlang.term_to_binary(term))
+
+  defp publish_bytes(path, bytes) do
+    tmp =
+      path <> ".next-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
     result =
       with :ok <- fault(:before_write, path),
            :ok <- File.mkdir_p(Path.dirname(path)),
            {:ok, io} <- :file.open(String.to_charlist(tmp), [:write, :binary, :raw]) do
         written =
-          with :ok <- :file.write(io, :erlang.term_to_binary(term)),
+          with :ok <- :file.write(io, bytes),
                :ok <- fault(:before_fsync, path),
                do: :file.sync(io)
 
@@ -201,7 +217,9 @@ defmodule Nano.StateStore do
       binding_refs: %{}
     }
 
-    s = restore_disk(s)
+    # Fence known live owners synchronously before any public readiness/ETS read.
+    # The continuation still discovers late/preinit owners and requests fresh resaves.
+    s = s |> restore_disk() |> recover_live(false)
     :ets.insert(@table, {:availability, if(s.degraded, do: :degraded, else: :ready)})
     {:ok, s, {:continue, :resave}}
   end
@@ -250,6 +268,12 @@ defmodule Nano.StateStore do
 
   @impl true
   def handle_continue(:resave, s) do
+    {:noreply, recover_live(s, true)}
+  catch
+    _, _ -> {:noreply, s}
+  end
+
+  defp recover_live(s, resave?) do
     live = for {{:agent, name}, pid} <- Nano.Names.all(), do: {name, pid}
 
     s =
@@ -264,7 +288,7 @@ defmodule Nano.StateStore do
             else: %{status: :recovering}
 
         :ets.insert(@table, {{:durability, name}, recovering})
-        GenServer.cast(pid, {:resave, acc.epoch})
+        if resave?, do: GenServer.cast(pid, {:resave, acc.epoch})
 
         watched =
           case acc.watched[name] do
@@ -275,9 +299,7 @@ defmodule Nano.StateStore do
         %{acc | recovering: MapSet.put(acc.recovering, name), watched: watched}
       end)
 
-    {:noreply, s}
-  catch
-    _, _ -> {:noreply, s}
+    s
   end
 
   @impl true
@@ -858,14 +880,27 @@ defmodule Nano.StateStore do
             lifecycle_generation: ^generation,
             kept: kept,
             dropped: dropped
-          } = b} <- read_term(Path.join(dir(), file)),
-         true <- valid_bindings?(kept) and is_list(dropped) and Enum.all?(dropped, &is_atom/1),
-         digest = :crypto.hash(:sha256, :erlang.term_to_binary(b)) |> Base.encode16(case: :lower),
-         true <- file == name <> "." <> digest <> ".bindings-v1" do
+          } = b} <- read_binding_blob(name, file),
+         true <- valid_bindings?(kept) and is_list(dropped) and Enum.all?(dropped, &is_atom/1) do
       {:ok, e, b}
     else
       _ -> {:error, :incoherent}
     end
+  end
+
+  # Digest names identify the immutable persisted bytes, not a fresh serialization of
+  # the decoded map. Small-map external-term order can change with VM atom layout.
+  # Verify before decoding; envelope identity/schema/generation checks remain above.
+  defp read_binding_blob(name, file) do
+    with {:ok, bytes} <- File.read(Path.join(dir(), file)),
+         digest = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower),
+         true <- file == name <> "." <> digest <> ".bindings-v1" do
+      {:ok, :erlang.binary_to_term(bytes)}
+    else
+      _ -> {:error, :incoherent}
+    end
+  rescue
+    _ -> {:error, :incoherent}
   end
 
   defp migrate_legacy(s) do
