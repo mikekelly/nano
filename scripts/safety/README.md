@@ -9,7 +9,8 @@ anything on module load. Only the integration owner installs it after review.
 1. Merge and compile the safety changes, including credential persistence hooks,
    model success hook and HTTP routes. Do not run the installer from an agent's
    worktree against live data. Verify `python3` is in the container image (this
-   machine has it; the operators must retain it on recreation).
+   machine has it; the integration owner must add `python3` to Dockerfile's apt
+   installation before image recreation: the original Dockerfile does not guarantee it).
 2. Approve maintenance quiescence first: all credential writers must be stopped
    so bootstrap cannot race a single-use token refresh. Either stop the node, or
    have the integration owner synchronously `:sys.suspend/1` Nano.Settings and
@@ -38,7 +39,11 @@ anything on module load. Only the integration owner installs it after review.
 ## Behaviour and evidence
 
 Every boot captures source (including uncommitted/untracked files and dependencies,
-excluding `.git`, `_build`, `tmp`); a source digest must still match that capture when a model success promotes it.
+excluding `.git`, `_build`, `tmp`); installed config records `deps_path` from
+`MIX_DEPS_PATH` (the image uses /opt/nano/deps) and captures those dependency
+sources inside each evidence snapshot. Both normal and fallback launches override
+MIX_DEPS_PATH to a private writable /data dependency copy, never the original /opt
+or immutable evidence. Fallback thus needs no intact /app or /opt dependency source; a source digest must still match that capture when a model success promotes it.
 Loaded Nano modules must also match their compiled BEAM files and cwd source
 location; external hot-loads do not attest a boot. The digest excludes dependency
 contents (which are captured, but dependency-change attestation is not certified). Normal cwd remains /app.
@@ -92,6 +97,33 @@ Do not edit or replace installed config while running. Durable runner upgrades
 require review, an atomic replacement, and maintenance restart. Snapshots/evidence
 are deliberately not automatically deleted; monitor volume capacity and archive
 old evidence securely. Disk exhaustion fails closed with a visible watchdog error.
+
+## Activation and rollback on this node
+
+Read-only inspection found PID 1 is `docker-init -- bin/start`, with the current
+BEAM directly beneath it, not beneath a safety runner. Installing does not adopt
+that BEAM. `pending_restart` means installed but unprotected. Stopping the current
+BEAM ends the container; this node has no Docker CLI/engine socket with which to
+verify or trigger host restart policy. Do not restart from inside an eval merely
+to test installation. Finish/idle engineers and background work, verify saved
+agent names/states are on disk, then have the container owner perform a reviewed
+restart with verified policy. The seed restores agents by saved stable names;
+nonpersistent OS subprocesses cannot survive container exit.
+
+The runner always overrides `MIX_BUILD_ROOT` to `/data/safety/build`, never the
+shared image `/opt/nano/_build`, and isolates dependency compilation as above.
+Startup command defaults to named node `nano@127.0.0.1`, reads NODE_COOKIE or the
+image's `/opt/nano/cookie` without storing its value, uses production MIX_ENV and
+configured PORT. Retain the existing LISTEN_IP/log/spill environment as appropriate.
+Do not log raw BEAM process argv: it contains the node cookie.
+
+For rollback without deleting evidence, stop during maintenance and create the
+`disabled` marker to select direct unprotected boot. If the durable runner/config
+itself is broken, rename `runner.py` to a dated private evidence file (do not
+remove it); the tiny shim then uses its original Elixir command. Preserve all
+other safety/state files. This rollback explicitly forfeits protection, and
+requires an intact editable checkout to boot. Never reset the recovery brake or
+remove a known-good snapshot as part of an unattended rollback.
 
 ## Verification
 

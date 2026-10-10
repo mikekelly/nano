@@ -77,6 +77,7 @@ class Net:
             raise ValueError('missing safety config')
         self.app = Path(self.config['app']).resolve()
         self.state_dir = Path(self.config['state_dir']).resolve()
+        self.deps = Path(self.config.get('deps_path') or os.environ.get('MIX_DEPS_PATH') or self.app / 'deps').resolve()
         if self.root == self.app or self.root.is_relative_to(self.app):
             raise ValueError('safety root must be outside checkout')
         for name, default in [('interval', 5), ('probe_timeout', 2), ('lockup_timeout', 60), ('boot_timeout', 120), ('backoff', 10), ('stable_seconds', 300), ('max_attempts', 3)]:
@@ -112,7 +113,7 @@ class Net:
     def snapshot(self):
         destination = self.root / 'revisions' / uuid.uuid4().hex
         # Copy before boot: a later edit cannot falsely become the revision that served.
-        subprocess.run([sys.executable, __file__, '--snapshot', str(self.app), str(destination)],
+        subprocess.run([sys.executable, __file__, '--snapshot', str(self.app), str(destination), str(self.deps)],
                        timeout=self.config.get('snapshot_timeout', 120), check=True)
         revision = subprocess.run(['git', '-C', str(self.app), 'rev-parse', 'HEAD'],
                                   capture_output=True, text=True, timeout=5).stdout.strip()
@@ -168,12 +169,13 @@ class Net:
             pass
         return None
 
-    def launch(self, source):
+    def launch(self, source, deps):
         env = os.environ.copy()
         env.update(self.config.get('env', {}))
         env['NANO_SAFETY_DIR'] = str(self.root)
         env['STATE_DIR'] = str(self.state_dir)
         env['MIX_BUILD_ROOT'] = str(self.root / 'build')
+        env['MIX_DEPS_PATH'] = str(deps)
         log = self.root / 'evidence' / (uuid.uuid4().hex + '-boot.log')
         log.parent.mkdir(exist_ok=True, mode=0o700)
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -225,7 +227,13 @@ class Net:
                 source = self.root / 'runtime' / uuid.uuid4().hex
                 subprocess.run([sys.executable, __file__, '--snapshot', active['source'], str(source)],
                                timeout=self.config.get('snapshot_timeout', 120), check=True)
-            log = self.launch(source)
+            deps = source / 'deps'
+            if use_primary:
+                deps = self.root / 'runtime-deps' / uuid.uuid4().hex
+                if (Path(active['source']) / 'deps').exists():
+                    subprocess.run([sys.executable, __file__, '--snapshot', str(Path(active['source']) / 'deps'), str(deps)],
+                                   timeout=self.config.get('snapshot_timeout', 120), check=True)
+            log = self.launch(source, deps)
             self.update('booting', evidence_source=active['source'], fallback=not use_primary)
             started = last_response = time.monotonic()
             promoted = False
@@ -358,7 +366,12 @@ if __name__ == '__main__':
     elif len(sys.argv) > 1 and sys.argv[1] == '--digest':
         print(source_digest(sys.argv[2]))
     elif len(sys.argv) > 1 and sys.argv[1] == '--snapshot':
-        shutil.copytree(sys.argv[2], sys.argv[3],
-                        ignore=shutil.ignore_patterns('.git', '_build', 'tmp', '__pycache__'))
+        ignored = ['.git', '_build', 'tmp', '__pycache__']
+        if len(sys.argv) > 4:
+            ignored.append('deps')
+        shutil.copytree(sys.argv[2], sys.argv[3], ignore=shutil.ignore_patterns(*ignored))
+        if len(sys.argv) > 4 and Path(sys.argv[4]).is_dir():
+            shutil.copytree(sys.argv[4], Path(sys.argv[3]) / 'deps',
+                            ignore=shutil.ignore_patterns('_build', '__pycache__'))
     else:
         sys.exit(main())

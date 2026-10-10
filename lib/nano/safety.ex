@@ -68,7 +68,9 @@ defmodule Nano.Safety do
         end
 
       _ ->
-        %{protected: false, state: "not_installed"}
+        if File.exists?(Path.join(root, "config.json")),
+          do: %{protected: false, state: "pending_restart"},
+          else: %{protected: false, state: "not_installed"}
     end
   end
 
