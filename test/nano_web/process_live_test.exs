@@ -104,11 +104,10 @@ defmodule NanoWeb.ProcessLiveTest do
     Fake.push(ctx.model, text: "spawned")
     NanoAgent.notify(agent, :go)
 
-    eventually(fn ->
-      Enum.any?(Nano.Ops.processes(), &(&1.kind == {:spawned_by, agent}))
-    end)
-
-    %{pid: spawned} = Enum.find(Nano.Ops.processes(), &(&1.kind == {:spawned_by, agent}))
+    # Running eval tasks are also owned; wait for the adopted persistent survivor.
+    eventually(fn -> Nano.StateStore.get(agent).spawned != [] end)
+    [spawned] = Nano.StateStore.get(agent).spawned
+    assert Process.alive?(spawned)
     on_exit(fn -> Process.exit(spawned, :kill) end)
 
     {:ok, view, _} = live(ctx.conn, "/?view=debug")
