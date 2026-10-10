@@ -238,7 +238,7 @@ defmodule NanoAgentTest do
     assert [system, user] = body["messages"]
     assert [%{"text" => prompt, "cache_control" => %{"type" => "ephemeral"}}] = system["content"]
     assert prompt =~ ~s(You are process #{inspect(pid)}, named "#{ctx.name}")
-    assert [%{"text" => event, "cache_control" => %{"type" => "ephemeral"}}] = user["content"]
+    assert [%{"text" => _event, "cache_control" => %{"type" => "ephemeral"}}] = user["content"]
     me = inspect(self())
 
     assert [%{"text" => event}] = user["content"]
