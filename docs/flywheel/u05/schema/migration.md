@@ -33,3 +33,8 @@ Pre-v1 code downgrade is forbidden. A failed checkpoint can leave newer memory-o
 state; simultaneous loss of agent/store/node can lose it. Deployment requires parent
 bounded registration/resave of live agents; absent proof, block deployment rather than
 restart this shared node. Arbitrary eval effects are not transactional.
+
+### Missing lifecycle authority quarantine (R1-F2)
+If lifecycle-v1.term is missing while v1 envelopes, binding blobs or authority temporary remnants remain, startup is degraded. No legacy import, registration or checkpoint is allowed and original bytes remain untouched. Repair requires the preserved latest coherent whole authority/checkpoint directory using compatible v1 code; do not infer tombstones/generations from surviving active envelopes or remigrate legacy predecessors. Loss of every initialization artifact cannot be distinguished from a genuinely fresh directory; external backups/operational authority must resolve that case.
+
+During live Store recovery, hidden metadata/binding rows are noncurrent, but restored last-durable revision evidence is retained in the recovering acknowledgment and any subsequent memory_only acknowledgment (R1-F3).

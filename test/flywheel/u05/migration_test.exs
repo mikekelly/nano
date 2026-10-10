@@ -142,4 +142,34 @@ defmodule Nano.Flywheel.U05.MigrationTest do
     assert Store.bindings("pair") == :unavailable
     assert {:error, :recovery_unavailable} = Store.register("pair", "pair-id", self())
   end
+
+  test "R1 F2 missing authority after v1 cutover never resurrects preserved legacy", c do
+    legacy = %{
+      name: "victim",
+      id: "old-id",
+      pid: self(),
+      pending: [:evidence],
+      bindings: [secret: 41]
+    }
+
+    write(Path.join(c.dir, "victim.term"), legacy)
+    {:ok, _} = start_store()
+    assert Store.bindings("victim") == {[secret: 41], []}
+    assert :ok = Store.delete("victim")
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+    authority = Path.join(c.dir, "lifecycle-v1.term")
+    preserved = File.read!(authority)
+    File.rm!(authority)
+    before = Map.new(File.ls!(c.dir), fn f -> {f, File.read!(Path.join(c.dir, f))} end)
+    {:ok, _} = start_store()
+    assert Store.availability() != :ok
+    assert Store.get("victim") == nil
+    assert {:error, _} = Store.register("victim", "old-id", self())
+    assert before == Map.new(File.ls!(c.dir), fn f -> {f, File.read!(Path.join(c.dir, f))} end)
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+    File.write!(authority, preserved)
+    {:ok, _} = start_store()
+    assert {:error, :deleted} = Store.register("victim", "old-id", self())
+    assert Store.get("victim") == nil
+  end
 end

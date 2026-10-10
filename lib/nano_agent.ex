@@ -1690,8 +1690,8 @@ defmodule NanoAgent do
       })
 
     if store_available?(s) do
-      args = [code, Keyword.put(s.bindings, :me, self()), io]
-      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :eval, args)
+      args = [self(), code, Keyword.put(s.bindings, :me, self()), io]
+      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :registered_eval, args)
       timeout = Nano.Settings.get(:eval_timeout_ms)
       Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, timeout)
       %{s | task: Map.merge(s.task, %{task: task, timeout: timeout})}
@@ -1742,6 +1742,14 @@ defmodule NanoAgent do
 
   @doc false
   # {:ok, inspected, bindings, warnings} | {:error, formatted}, with io as the group leader.
+  def registered_eval(agent, code, bindings, io) do
+    # Admission must occur in the actual effect task, after supervisor scheduling.
+    # Existing admitted evals may finish during Store loss; new ones wait for resave.
+    await_store_registration(agent)
+    eval(code, bindings, io)
+  end
+
+  @doc false
   def eval(code, bindings, io) do
     Process.group_leader(self(), io)
 

@@ -302,4 +302,86 @@ defmodule Nano.Flywheel.U05.RecoveryTest do
     assert Store.bindings(name) == {[], []}
     Store.delete(name)
   end
+
+  test "new eval does not run while registration is unavailable at task-spawn boundary" do
+    Fake.start()
+    model = Fake.model()
+    Fake.listen(model)
+    name = "u05-review-launch-race"
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model))
+
+    on_exit(fn ->
+      if Process.alive?(Process.whereis(Nano.EvalSupervisor)),
+        do: :sys.resume(Nano.EvalSupervisor)
+
+      if p = NanoAgent.whereis(name),
+        do: DynamicSupervisor.terminate_child(Nano.AgentSupervisor, p)
+
+      if Process.whereis(Nano.StateStore) == nil,
+        do: Supervisor.restart_child(Nano.Supervisor, Nano.StateStore)
+
+      Nano.StateStore.delete(name)
+    end)
+
+    send(pid, :go)
+    assert_receive {:openrouter_request, ^model, _}, 5000
+    :ok = :sys.suspend(Nano.EvalSupervisor)
+    target = self() |> :erlang.pid_to_list() |> List.to_string()
+
+    Fake.push(model,
+      calls: [
+        eval:
+          "send(:erlang.list_to_pid(~c\"#{target}\"), {:eval_effect, Nano.StateStore.availability()})"
+      ]
+    )
+
+    eventually(fn ->
+      {:messages, messages} = Process.info(Process.whereis(Nano.EvalSupervisor), :messages)
+      Enum.any?(messages, fn msg -> match?({:"$gen_call", _, _}, msg) end)
+    end)
+
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Nano.StateStore)
+    assert Nano.StateStore.availability() == {:error, :unavailable}
+    :ok = :sys.resume(Nano.EvalSupervisor)
+    refute_receive {:eval_effect, _}, 200
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Nano.StateStore)
+    assert_receive {:eval_effect, :ok}, 5000
+  end
+
+  test "store recovery memory_only acknowledgment retains exact last durable revision" do
+    Fake.start()
+    model = Fake.model()
+    name = "u05-review-last-durable"
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model))
+    :ok = :sys.suspend(pid)
+    # Suspension is the observation barrier: startup resave may commit another revision.
+    before = Nano.StateStore.durability(name).durable_revision
+    assert before > 0
+
+    on_exit(fn ->
+      Application.delete_env(:nano, :state_store_fault)
+
+      if p = NanoAgent.whereis(name) do
+        :sys.resume(p)
+        DynamicSupervisor.terminate_child(Nano.AgentSupervisor, p)
+      end
+
+      Nano.StateStore.delete(name)
+    end)
+
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Nano.StateStore)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Nano.StateStore)
+    assert %{status: :recovering} = Nano.StateStore.durability(name)
+
+    Application.put_env(:nano, :state_store_fault, fn stage, path ->
+      if stage == :before_write and String.ends_with?(path, ".envelope-v1"),
+        do: {:error, :injected},
+        else: :ok
+    end)
+
+    :ok = :sys.resume(pid)
+    eventually(fn -> match?(%{status: :memory_only}, Nano.StateStore.durability(name)) end)
+    ack = Nano.StateStore.durability(name)
+    assert ack.durable_revision == before
+  end
 end

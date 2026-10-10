@@ -210,7 +210,25 @@ defmodule Nano.StateStore do
            end), do: {agents, false}, else: {%{}, true}
 
       {:error, :enoent} ->
-        {%{}, false}
+        # Missing authority in a v1-bearing directory is lost fencing evidence,
+        # not permission to recreate identities or remigrate preserved legacy bytes.
+        prior_v1 =
+          case File.ls(dir()) do
+            {:ok, files} ->
+              Enum.any?(
+                files,
+                &(String.ends_with?(&1, [".envelope-v1", ".bindings-v1"]) or
+                    String.starts_with?(&1, "lifecycle-v1.term"))
+              )
+
+            {:error, :enoent} ->
+              false
+
+            _ ->
+              true
+          end
+
+        {%{}, prior_v1}
 
       _ ->
         {%{}, true}
@@ -231,7 +249,14 @@ defmodule Nano.StateStore do
       Enum.reduce(live, s, fn {name, pid}, acc ->
         :ets.delete(@table, name)
         :ets.delete(@table, {:bindings, name})
-        :ets.insert(@table, {{:durability, name}, %{status: :recovering}})
+        previous = durability(name)
+
+        recovering =
+          if is_map(previous),
+            do: Map.put(previous, :status, :recovering),
+            else: %{status: :recovering}
+
+        :ets.insert(@table, {{:durability, name}, recovering})
         GenServer.cast(pid, {:resave, acc.epoch})
         %{acc | recovering: MapSet.put(acc.recovering, name)}
       end)
