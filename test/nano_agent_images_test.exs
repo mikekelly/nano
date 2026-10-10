@@ -232,4 +232,28 @@ defmodule NanoAgentImagesTest do
       n -> n + 1
     end
   end
+
+  test "automatic checkpoint drops oversized pinned image burst honestly and leaves room to continue",
+       c do
+    {model, name, pid} = start!(true, max_context: 40_000)
+    Fake.push(model, calls: [eval: "1"], usage: {30_100, 1, 0})
+
+    Fake.push(model,
+      calls: [eval: ~S|Compaction.provide_summary("Goal: semantic observations of three images")|]
+    )
+
+    Fake.push(model, text: "continued")
+    send(pid, %{text: "image burst brief", images: List.duplicate(c.ref, 3)})
+    assert_receive {:openrouter_request, ^model, original}, 3000
+    assert wire_images(original) == 3
+    assert_receive {:openrouter_request, ^model, checkpoint}, 3000
+    assert Jason.encode!(checkpoint) =~ "Automatic compaction"
+    assert_receive {:openrouter_request, ^model, resumed}, 3000
+    assert wire_images(resumed) == 0
+    assert Jason.encode!(resumed) =~ "Pixels are no longer available"
+    assert Jason.encode!(resumed) =~ c.ref.image_ref
+    wait_idle(pid, 200)
+    assert NanoAgent.info(name).halted == nil
+    assert NanoAgent.info(name).budget.context_used < 40_000 - Compaction.reserve()
+  end
 end
