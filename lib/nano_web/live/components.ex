@@ -19,6 +19,11 @@ defmodule NanoWeb.Components do
 
     socket
     |> assign(draft: %{"text" => "", "term" => ""}, sent: nil)
+    |> Phoenix.LiveView.allow_upload(:images,
+      accept: ~w(.png .jpg .jpeg .gif .webp),
+      max_entries: 20,
+      max_file_size: 3_750_000
+    )
     |> refresh_unread()
   end
 
@@ -36,7 +41,29 @@ defmodule NanoWeb.Components do
 
   def handle_shared("send", %{"to" => to, "text" => text} = params, socket) do
     user = params["from"] || @user
-    sent = result(Nano.User.say(user, to, text), "said #{inspect(text)} to #{to}", user)
+
+    {_, pending} = Phoenix.LiveView.uploaded_entries(socket, :images)
+
+    uploads =
+      if pending == [] and Phoenix.Component.upload_errors(socket.assigns.uploads.images) == [] do
+        Phoenix.LiveView.consume_uploaded_entries(socket, :images, fn %{path: path}, _entry ->
+          {:ok, Nano.Images.import_file(path)}
+        end)
+      else
+        [{:error, :upload_not_ready}]
+      end
+
+    outcome =
+      if Enum.all?(uploads, &match?({:ok, _}, &1)) do
+        refs = Enum.map(uploads, &elem(&1, 1))
+        payload = if refs == [], do: text, else: %{text: text, images: refs}
+        Nano.User.say(user, to, payload)
+      else
+        {:error, :invalid_image}
+      end
+
+    sent = result(outcome, "said #{inspect(text)} to #{to}", user)
+
     sent(socket, sent, "text")
   end
 
@@ -130,6 +157,7 @@ defmodule NanoWeb.Components do
   attr :draft, :map, required: true
   attr :sent, :any, required: true
   attr :boxes, :list, default: ~w(text term), doc: "which boxes to show"
+  attr :uploads, :any, default: nil
   attr :from, :string, default: @user, doc: "the user who sends"
 
   @doc "The send form: a plain-text box (`say/3`) and an Elixir term box (`send_raw/3`)."
@@ -146,6 +174,13 @@ defmodule NanoWeb.Components do
           placeholder={"plain text, sent as %{sender_pid: #{@from}, message: text}"}
           autocomplete="off"
         />
+        <Phoenix.Component.live_file_input :if={@uploads} upload={@uploads.images} />
+        <span :for={entry <- if(@uploads, do: @uploads.images.entries, else: [])} :if={@uploads}>{entry.client_name}</span>
+        <span
+          :for={err <- if(@uploads, do: Phoenix.Component.upload_errors(@uploads.images), else: [])}
+          :if={@uploads}
+          class="error"
+        >{inspect(err)}</span>
         <button><.icon name="send" /> send</button>
       </form>
       <form :if={"term" in @boxes} id={@id <> "-term"} phx-change="draft" phx-submit="send">
@@ -180,6 +215,33 @@ defmodule NanoWeb.Components do
     """
   end
 
+  attr :images, :list, default: []
+  @doc "Thumbnails link to immutable bytes, using only safe store hashes."
+  def image_thumbnails(assigns) do
+    hashes =
+      for ref <- assigns.images,
+          is_map(ref),
+          hash = ref[:image_ref] || ref["image_ref"],
+          is_binary(hash),
+          hash =~ ~r/\A[a-f0-9]{64}\z/,
+          do: hash
+
+    assigns = assign(assigns, :hashes, hashes)
+
+    ~H"""
+    <div :if={@hashes != []} class="image-thumbnails">
+      <a :for={hash <- @hashes} href={"/api/images/" <> hash} target="_blank" rel="noopener">
+        <img
+          src={"/api/images/" <> hash}
+          alt="Message attachment"
+          loading="lazy"
+          style="max-width:240px;max-height:180px"
+        />
+      </a>
+    </div>
+    """
+  end
+
   attr :term, :any, required: true
 
   @doc """
@@ -188,11 +250,17 @@ defmodule NanoWeb.Components do
   is just a string is shown as text.
   """
   def message(assigns) do
-    assigns = assign(assigns, summary: summary(assigns.term), texts: texts(assigns.term))
+    assigns =
+      assign(assigns,
+        summary: summary(assigns.term),
+        texts: texts(assigns.term),
+        images: message_images(assigns.term)
+      )
 
     ~H"""
     <div class="msg">
       <code :if={@summary} class="summary">{@summary}</code>
+      <.image_thumbnails images={@images} />
       <div :for={{where, text} <- @texts} class="text">
         <span :if={where} class="where">{where}</span>
         <div class="body">{text}</div>
@@ -200,6 +268,10 @@ defmodule NanoWeb.Components do
     </div>
     """
   end
+
+  defp message_images(%{message: %{images: images}}) when is_list(images), do: images
+  defp message_images(%{images: images}) when is_list(images), do: images
+  defp message_images(_), do: []
 
   defp summary(term) when is_binary(term) and byte_size(term) < 4096 do
     if String.valid?(term),

@@ -350,6 +350,7 @@ defmodule NanoWeb.ProcessLive do
                   to={inspect(row.pid)}
                   draft={@draft}
                   sent={@sent}
+                  uploads={@uploads}
                 />
               </td>
             </tr>
