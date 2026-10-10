@@ -62,6 +62,71 @@ defmodule Nano.OpsTest do
     assert_receive {:DOWN, ^ref, _, _, _}
   end
 
+  test "restarted harness children stay standard without hiding agent-owned processes" do
+    {name, agent} = start_agent()
+    store = Process.whereis(Nano.StateStore)
+    ref = Process.monitor(store)
+    Process.exit(store, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^store, :killed}, 10_000
+
+    restarted =
+      eventually_value(fn ->
+        case Process.whereis(Nano.StateStore) do
+          nil -> nil
+          ^store -> nil
+          pid -> pid
+        end
+      end)
+
+    eventually_value(fn -> Nano.StateStore.get(name) end)
+    refute MapSet.member?(Nano.Application.boot_set(), restarted)
+
+    assert %{pid: ^restarted, kind: :standard, registered_name: Nano.StateStore} =
+             Ops.process(restarted)
+
+    refute Map.has_key?(kinds(), restarted)
+    assert %{kind: :agent, pid: ^agent} = Ops.process(agent)
+
+    # Agent ownership wins even when a process also has harness ancestry.
+    parent = self()
+
+    child =
+      spawn(fn ->
+        Process.put(:"$ancestors", [Nano.Supervisor])
+        Process.put(:"$callers", [agent])
+        send(parent, :child_ready)
+        Process.sleep(:infinity)
+      end)
+
+    on_exit(fn -> Process.exit(child, :kill) end)
+    assert_receive :child_ready, 10_000
+    assert %{kind: {:spawned_by, ^name}} = Ops.process(child)
+    assert kinds()[child] == {:spawned_by, name}
+
+    {:ok, background} = Nano.Background.start("sleep 30", owner: name)
+    on_exit(fn -> Process.exit(background.pid, :kill) end)
+    assert %{kind: {:spawned_by, ^name}} = Ops.process(background.pid)
+    assert kinds()[background.pid] == {:spawned_by, name}
+  end
+
+  defp eventually_value(fun) do
+    eventually_value(fun, System.monotonic_time(:millisecond) + 10_000)
+  end
+
+  defp eventually_value(fun, deadline) do
+    case fun.() do
+      value when value not in [nil, false] ->
+        value
+
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline,
+          do: flunk("condition did not become true within 10 seconds")
+
+        Process.sleep(10)
+        eventually_value(fun, deadline)
+    end
+  end
+
   describe "resolve/1" do
     test "pids, names and pid strings" do
       {user, user_pid} = start_user()
