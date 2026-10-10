@@ -258,7 +258,14 @@ defmodule Nano.StateStore do
 
         :ets.insert(@table, {{:durability, name}, recovering})
         GenServer.cast(pid, {:resave, acc.epoch})
-        %{acc | recovering: MapSet.put(acc.recovering, name)}
+
+        watched =
+          case acc.watched[name] do
+            {_, ^pid} -> acc.watched
+            _ -> Map.put(acc.watched, name, {Process.monitor(pid), pid})
+          end
+
+        %{acc | recovering: MapSet.put(acc.recovering, name), watched: watched}
       end)
 
     {:noreply, s}
@@ -427,6 +434,9 @@ defmodule Nano.StateStore do
   def handle_call(_, _from, s), do: {:reply, {:error, :unknown_call}, s}
 
   defp register_identity(s, name, id, pid, epoch) do
+    # A dead resaver cannot provide its live map. Recover only its last coherent
+    # identity/generation-bound pair; never expose another still-live resaver's row.
+    s = restore_dead_resaver(s, name)
     current = s.authority[name]
     registered = s.registrations[name]
 
@@ -733,6 +743,49 @@ defmodule Nano.StateStore do
     end)
 
     s
+  end
+
+  defp restore_dead_resaver(s, name) do
+    alive =
+      case s.watched[name] do
+        {_, pid} -> Process.alive?(pid)
+        _ -> false
+      end
+
+    if not s.degraded and MapSet.member?(s.recovering, name) and not alive do
+      case s.authority[name] do
+        %{status: :active} = a ->
+          case coherent_disk(name, a) do
+            {:ok, envelope, blob} ->
+              :ets.insert(@table, [
+                {name, envelope.metadata},
+                {{:bindings, name}, {:ok, blob.kept, blob.dropped}},
+                {{:durability, name},
+                 %{
+                   status: :durable,
+                   accepted_revision: envelope.revision,
+                   durable_revision: envelope.revision,
+                   dropped: blob.dropped,
+                   warning: nil
+                 }}
+              ])
+
+              %{
+                s
+                | recovering: MapSet.delete(s.recovering, name),
+                  binding_refs: Map.delete(s.binding_refs, name)
+              }
+
+            _ ->
+              s
+          end
+
+        _ ->
+          s
+      end
+    else
+      s
+    end
   end
 
   defp coherent_disk(name, a) do

@@ -384,4 +384,70 @@ defmodule Nano.Flywheel.U05.RecoveryTest do
     ack = Nano.StateStore.durability(name)
     assert ack.durable_revision == before
   end
+
+  test "dead live-resave actor recovers last coherent durable pair" do
+    Fake.start()
+    model = Fake.model()
+    name = "r2-death-during-recovery"
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model))
+
+    :sys.replace_state(pid, fn s ->
+      Map.put(%{s | bindings: [retained: 321]}, :bindings_dirty, true)
+    end)
+
+    GenServer.cast(pid, :resave)
+    state = :sys.get_state(pid)
+    assert Store.bindings(name) == {[retained: 321], []}
+    assert Store.durability(name).status == :durable
+    old_token = :sys.get_state(pid).id
+
+    on_exit(fn ->
+      if p = NanoAgent.whereis(name),
+        do: DynamicSupervisor.terminate_child(Nano.AgentSupervisor, p)
+
+      Store.delete(name)
+    end)
+
+    :ok = :sys.suspend(pid)
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Store)
+    assert Store.get(name) == nil
+    assert Store.durability(name).status == :recovering
+    Process.exit(pid, :kill)
+
+    eventually(fn ->
+      p = NanoAgent.whereis(name)
+      is_pid(p) and p != pid
+    end)
+
+    observed = NanoAgent.whereis(name)
+
+    IO.puts(
+      "R2_DEAD_RESAVER " <>
+        inspect(%{
+          pid: observed,
+          store: Store.durability(name),
+          coherent_envelope:
+            File.exists?(
+              Path.join(Application.fetch_env!(:nano, :state_dir), name <> ".envelope-v1")
+            )
+        })
+    )
+
+    assert :ok == NanoAgent.revive(Nano.AgentSupervisor)
+    assert NanoAgent.whereis(name) == observed
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Store)
+    eventually(fn -> Store.bindings(name) == {[retained: 321], []} end)
+    :ok = NanoAgent.revive(Nano.AgentSupervisor)
+    recovered = NanoAgent.whereis(name)
+    assert is_pid(recovered)
+    assert :sys.get_state(recovered).id == state.id
+    assert :sys.get_state(recovered).bindings[:retained] == 321
+    IO.puts("R2_SECOND_STORE_RESTART_RESTORES_ORIGINAL_ID_AND_BINDINGS")
+    assert is_pid(observed)
+    assert :sys.get_state(observed).id == old_token
+    assert :sys.get_state(observed).id == state.id
+    assert :sys.get_state(observed).bindings[:retained] == 321
+  end
 end
