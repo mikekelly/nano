@@ -38,6 +38,8 @@ defmodule Nano.ImagesTest do
   test "canonical references and agent look", %{opts: opts} do
     assert {:ok, ref} = Nano.Images.import_bytes(png(), opts)
     assert {:ok, ^ref} = Nano.Images.canonicalize(Map.put(ref, :base64, "unsafe"), opts)
+    assert {:ok, ^ref} = Nano.Images.canonicalize(%{image_ref: ref.image_ref}, opts)
+    assert {:ok, _url} = Nano.Images.data_url(%{image_ref: ref.image_ref}, opts)
     path = Path.join(opts[:store_dir], "look.png")
     File.write!(path, png())
     assert {:ok, ^ref} = Nano.Images.look(path, self(), opts)
