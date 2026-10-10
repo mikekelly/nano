@@ -41,7 +41,12 @@ defmodule Nano.MCP.Connection do
       waiters: %{},
       retry: 250,
       stream: nil,
-      acknowledged: false
+      acknowledged: false,
+      generation: 0,
+      active_uris: MapSet.new(),
+      restore_backoff: %{},
+      listen_backoff: 250,
+      restore_timeout: 10000
     }
 
     send(self(), :connect)
@@ -65,7 +70,8 @@ defmodule Nano.MCP.Connection do
           status: s.phase,
           protocol: s.version,
           capabilities: s.capabilities,
-          catalog: s.catalog
+          catalog: s.catalog,
+          subscriptions: %{desired: s.uris, active: MapSet.to_list(s.active_uris)}
         })}, s}
 
   def handle_call({:request, method, params, timeout}, from, %{phase: :ready} = s) do
@@ -102,7 +108,8 @@ defmodule Nano.MCP.Connection do
 
   def handle_call({:subscriptions, uris, timeout}, from, %{phase: :ready} = s) do
     if Enum.any?(s.pending, fn {_, p} ->
-         match?({:subscription, _, _}, p.kind) or match?({:legacy_subscriptions, _, _, _}, p.kind)
+         match?({:subscription, _, _}, p.kind) or match?({:legacy_subscriptions, _, _, _}, p.kind) or
+           match?({:restore, _}, p.kind)
        end) do
       {:reply, {:error, :subscription_busy}, s}
     else
@@ -113,7 +120,7 @@ defmodule Nano.MCP.Connection do
           s = cancel_stream(s)
           {:noreply, listen(%{s | uris: uris}, {:subscription, from, s.uris}, timeout)}
         else
-          added = uris -- s.uris
+          added = uris -- MapSet.to_list(s.active_uris)
           removed = s.uris -- uris
 
           operations =
@@ -149,7 +156,12 @@ defmodule Nano.MCP.Connection do
                 phase: :discovering,
                 version: @modern,
                 stream: nil,
-                acknowledged: false
+                acknowledged: false,
+                generation: s.generation + 1,
+                active_uris: MapSet.new(),
+                restore_backoff: %{},
+                listen_backoff: 250,
+                restore_timeout: subscription_timeout(config)
             }
 
             {:noreply, rpc(s, "server/discover", %{}, :discover, 5000)}
@@ -210,10 +222,29 @@ defmodule Nano.MCP.Connection do
     end
   end
 
-  def handle_info(:relisten, %{phase: :ready, version: @modern, stream: nil} = s),
-    do: {:noreply, listen(s, :listen, 10000)}
+  def handle_info(
+        {:relisten, generation},
+        %{phase: :ready, version: @modern, stream: nil, generation: generation} = s
+      ),
+      do: {:noreply, listen(s, :listen, s.restore_timeout)}
+
+  def handle_info({:restore_retry, generation, uri}, %{phase: :ready, generation: generation} = s) do
+    pending? =
+      Enum.any?(s.pending, fn {_, p} ->
+        p.kind == {:restore, uri} or match?({:legacy_subscriptions, _, _, _}, p.kind)
+      end)
+
+    if s.version != @modern and uri in s.uris and not MapSet.member?(s.active_uris, uri) and
+         not pending? do
+      {:noreply,
+       legacy_subscribe(s, {"resources/subscribe", uri}, {:restore, uri}, s.restore_timeout)}
+    else
+      {:noreply, s}
+    end
+  end
 
   def handle_info(_, s), do: {:noreply, s}
+
   @impl true
   def terminate(_, s) do
     if s.transport && Process.alive?(s.transport), do: s.module.stop(s.transport)
@@ -260,13 +291,20 @@ defmodule Nano.MCP.Connection do
         {:subscription, from, old} ->
           if Enum.all?(s.uris, &(&1 in honored)) do
             GenServer.reply(from, :ok)
-            s
+            %{s | active_uris: MapSet.new(s.uris), listen_backoff: 250}
           else
             GenServer.reply(from, {:error, :subscription_not_honored})
             s = cancel_stream(s)
-            Process.send_after(self(), :relisten, 250)
+            Process.send_after(self(), {:relisten, s.generation}, 250)
             %{s | uris: old}
           end
+
+        :listen ->
+          missing = s.uris -- honored
+
+          if missing == [],
+            do: %{s | active_uris: MapSet.new(s.uris), listen_backoff: 250},
+            else: listen_failed(s, "not_honored", missing)
 
         _ ->
           s
@@ -315,8 +353,7 @@ defmodule Nano.MCP.Connection do
     case Map.pop(s.pending, id) do
       {nil, _} when id == s.stream ->
         event(s, "subscription_closed", %{})
-        Process.send_after(self(), :relisten, 250)
-        %{s | stream: nil, acknowledged: false}
+        listen_failed(s, "stream_closed", s.uris)
 
       {nil, _} ->
         s
@@ -412,7 +449,7 @@ defmodule Nano.MCP.Connection do
 
   defp complete(s, {:legacy_subscriptions, from, [], uris}, {:ok, _}) do
     GenServer.reply(from, :ok)
-    %{s | uris: uris}
+    %{s | uris: uris, active_uris: MapSet.new(uris), restore_backoff: %{}}
   end
 
   defp complete(s, {:legacy_subscriptions, from, [op | rest], uris}, {:ok, _}),
@@ -426,14 +463,54 @@ defmodule Nano.MCP.Connection do
   defp complete(s, {:subscription, from, old}, _) do
     GenServer.reply(from, {:error, :subscription_failed})
     s = cancel_stream(s)
-    Process.send_after(self(), :relisten, 250)
+    Process.send_after(self(), {:relisten, s.generation}, 250)
     %{s | uris: old}
   end
 
-  defp complete(s, :listen, _) do
-    event(s, "subscription_failed", %{})
-    Process.send_after(self(), :relisten, 1000)
-    %{s | stream: nil, acknowledged: false}
+  defp complete(s, {:restore, uri}, {:ok, _}) do
+    if uri in s.uris do
+      event(s, "subscription_restored", %{"uri" => uri})
+
+      %{
+        s
+        | active_uris: MapSet.put(s.active_uris, uri),
+          restore_backoff: Map.delete(s.restore_backoff, uri)
+      }
+    else
+      s
+    end
+  end
+
+  defp complete(s, {:restore, uri}, {:error, reason}) do
+    if uri in s.uris do
+      delay = Map.get(s.restore_backoff, uri, 250)
+
+      event(s, "subscription_restore_failed", %{
+        "uri" => uri,
+        "reason" => failure_reason(reason),
+        "retryMs" => delay
+      })
+
+      Process.send_after(self(), {:restore_retry, s.generation, uri}, delay)
+
+      %{
+        s
+        | active_uris: MapSet.delete(s.active_uris, uri),
+          restore_backoff: Map.put(s.restore_backoff, uri, min(delay * 2, 30000))
+      }
+    else
+      s
+    end
+  end
+
+  defp complete(s, :listen, result) do
+    reason =
+      case result do
+        {:error, reason} -> failure_reason(reason)
+        _ -> "closed_before_ack"
+      end
+
+    listen_failed(s, reason, s.uris)
   end
 
   defp complete(s, _, _), do: s
@@ -450,12 +527,36 @@ defmodule Nano.MCP.Connection do
         else: s
 
     if s.version == @modern do
-      listen(s, :listen, 10000)
+      listen(s, :listen, s.restore_timeout)
     else
       Enum.reduce(s.uris, s, fn uri, acc ->
-        legacy_subscribe(acc, {"resources/subscribe", uri}, :restore, 10000)
+        legacy_subscribe(acc, {"resources/subscribe", uri}, {:restore, uri}, s.restore_timeout)
       end)
     end
+  end
+
+  defp subscription_timeout(config) do
+    case Map.get(config, "subscription_timeout_ms", 10000) do
+      n when is_integer(n) and n > 0 -> min(n, 120_000)
+      _ -> 10000
+    end
+  end
+
+  defp failure_reason(:timeout), do: "timeout"
+  defp failure_reason(_), do: "server_error"
+
+  defp listen_failed(s, reason, missing) do
+    delay = s.listen_backoff
+
+    event(s, "subscription_restore_failed", %{
+      "uris" => missing,
+      "reason" => reason,
+      "retryMs" => delay
+    })
+
+    s = cancel_stream(s)
+    Process.send_after(self(), {:relisten, s.generation}, delay)
+    %{s | active_uris: MapSet.new(), listen_backoff: min(delay * 2, 30000)}
   end
 
   defp refresh(s, kind) do
@@ -508,7 +609,13 @@ defmodule Nano.MCP.Connection do
         end
     end
 
-    %{s | stream: nil, acknowledged: false, pending: Map.delete(s.pending, s.stream)}
+    %{
+      s
+      | stream: nil,
+        acknowledged: false,
+        active_uris: MapSet.new(),
+        pending: Map.delete(s.pending, s.stream)
+    }
   end
 
   defp legacy_subscribe(s, {method, uri}, kind, timeout),
@@ -658,6 +765,7 @@ defmodule Nano.MCP.Connection do
       s
       | transport: nil,
         phase: :offline,
+        active_uris: MapSet.new(),
         pending: %{},
         stream: nil,
         acknowledged: false,
