@@ -14,6 +14,147 @@ defmodule Nano.SearchTest do
     %{dir: dir}
   end
 
+  test "unusable remote IDs leave checkpoints untouched", %{dir: dir} do
+    caller = self()
+
+    trap = fn _, _, _ ->
+      send(caller, :unexpected_cancel)
+      {:ok, 200, %{}, %{"status" => "cancelled"}}
+    end
+
+    for {status, id} <- [
+          {:starting, nil},
+          {:interrupted, nil},
+          {:error, nil},
+          {:error, ""},
+          {:error, 42},
+          {:error, false},
+          {:error, {:error, :forged}},
+          {:error, ["id"]}
+        ] do
+      bytes =
+        :erlang.term_to_binary(%{
+          status: status,
+          remote_id: id,
+          pid: nil,
+          owner: "absent-search-owner"
+        })
+
+      File.write!(dir <> "/status.term", bytes)
+
+      assert Search.cancel(%{dir: dir}, transport: trap, dir: dir) ==
+               {:error, %{kind: :not_cancellable}}
+
+      assert File.read!(dir <> "/status.term") == bytes
+      assert File.ls!(dir) == ["status.term"]
+    end
+
+    refute_receive :unexpected_cancel
+    File.write!(dir <> "/status.term", "unreadable")
+
+    assert {:error, %{kind: :invalid_argument_or_storage}} =
+             Search.cancel(%{dir: dir}, transport: trap)
+
+    File.rm!(dir <> "/status.term")
+    assert {:error, :enoent} = Search.cancel(%{dir: dir}, transport: trap)
+    refute_receive :unexpected_cancel
+  end
+
+  test "live creation without ID cannot be cancelled or mutated", %{dir: dir} do
+    caller = self()
+
+    transport = fn :post, "/agent/runs", _ ->
+      send(caller, {:create_barrier, self()})
+
+      receive do
+        :release -> {:ok, 200, %{}, %{"id" => "released", "status" => "completed"}}
+      end
+    end
+
+    {:ok, h} =
+      Search.research("fixture",
+        owner: "absent-search-owner",
+        dir: dir,
+        transport: transport,
+        timeout: 2000,
+        delivery_timeout: 10
+      )
+
+    on_exit(fn -> if Process.alive?(h.pid), do: Process.exit(h.pid, :kill) end)
+    assert_receive {:create_barrier, task}, 1000
+    assert {:ok, %{status: :starting, remote_id: nil, pid: pid}} = Search.status(h)
+    assert pid == h.pid
+    bytes = File.read!(h.dir <> "/status.term")
+
+    trap = fn _, _, _ ->
+      send(caller, :unexpected_cancel)
+      {:ok, 200, %{}, %{}}
+    end
+
+    assert Search.cancel(h, transport: trap, dir: dir) == {:error, %{kind: :not_cancellable}}
+    assert Process.alive?(h.pid)
+    assert Process.alive?(task)
+    assert File.read!(h.dir <> "/status.term") == bytes
+    assert {:ok, %{status: :starting, pid: ^pid}} = Search.status(h)
+    refute_receive :unexpected_cancel
+    ref = Process.monitor(h.pid)
+    send(task, :release)
+    assert_receive {:DOWN, ^ref, :process, _, :normal}, 1000
+  end
+
+  test "known ID keeps errors and noncancelled outcomes; confirmed cancel stops poller", %{
+    dir: dir
+  } do
+    worker =
+      spawn(fn ->
+        receive do
+          :release -> :ok
+        end
+      end)
+
+    on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+
+    bytes =
+      :erlang.term_to_binary(%{
+        status: :running,
+        remote_id: "known/id ?",
+        pid: worker,
+        owner: "absent-search-owner"
+      })
+
+    File.write!(dir <> "/status.term", bytes)
+
+    for {response, expected} <- [
+          {{:ok, 401, %{}, %{}}, {:error, %{kind: :http, status: 401}}},
+          {{:error, :closed}, {:error, %{kind: :transport}}}
+        ] do
+      fake = fn :post, "/agent/runs/known%2Fid%20%3F/cancel", %{} -> response end
+      assert Search.cancel(%{dir: dir}, transport: fake, retries: 0, dir: dir) == expected
+      assert File.read!(dir <> "/status.term") == bytes
+      assert Process.alive?(worker)
+    end
+
+    for status <- ["completed", "failed", "running"] do
+      fake = fn :post, "/agent/runs/known%2Fid%20%3F/cancel", %{} ->
+        {:ok, 200, %{}, %{"id" => "known/id ?", "status" => status}}
+      end
+
+      assert {:ok, result} = Search.cancel(%{dir: dir}, transport: fake, dir: dir)
+      assert Jason.decode!(result.text)["status"] == status
+      assert File.read!(dir <> "/status.term") == bytes
+      assert Process.alive?(worker)
+    end
+
+    fake = fn :post, "/agent/runs/known%2Fid%20%3F/cancel", %{} ->
+      {:ok, 200, %{}, %{"id" => "known/id ?", "status" => "cancelled"}}
+    end
+
+    ref = Process.monitor(worker)
+    assert {:ok, _} = Search.cancel(%{dir: dir}, transport: fake, dir: dir)
+    assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+    assert {:ok, %{status: "cancelled", remote_id: "known/id ?"}} = Search.status(%{dir: dir})
+  end
+
   test "search defaults compact highlights, no full text", %{dir: dir} do
     caller = self()
 

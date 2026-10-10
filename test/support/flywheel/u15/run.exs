@@ -96,14 +96,16 @@ defmodule U15Investigation do
     stop(handle.pid)
     assert {:ok, %{status: :interrupted, remote_id: nil}} = Search.status(handle)
     assert {:error, %{kind: :not_resumable}} = Search.resume(handle, opts(dir, transport))
-    assert {:ok, %{remote_id: nil}} = Search.cancel(handle, opts(dir, transport))
+    bytes = File.read!(handle.dir <> "/status.term")
+    assert {:error, %{kind: :not_cancellable}} = Search.cancel(handle, opts(dir, transport))
+    assert File.read!(handle.dir <> "/status.term") == bytes
     refute_receive {:created, _}, 50
 
     record("crash-before-id", %{
       remote_acceptances: 1,
       remote_cancel_requests: 0,
       local_id: nil,
-      outcome: "orphan window confirmed; cancel returns status without cancellation"
+      outcome: "orphan window remains; U22 explicitly rejects cancellation without a remote ID"
     })
   end
 
@@ -132,7 +134,9 @@ defmodule U15Investigation do
     File.write!(handle.dir <> "/status.term", status)
     assert {:ok, %{remote_id: nil, status: :interrupted}} = Search.status(handle)
     assert {:error, %{kind: :not_resumable}} = Search.resume(handle, opts(dir, transport))
-    assert {:ok, %{remote_id: nil}} = Search.cancel(handle, opts(dir, transport))
+    bytes = File.read!(handle.dir <> "/status.term")
+    assert {:error, %{kind: :not_cancellable}} = Search.cancel(handle, opts(dir, transport))
+    assert File.read!(handle.dir <> "/status.term") == bytes
 
     record("persistence-after-create", %{
       remote_acceptances: 1,

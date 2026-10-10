@@ -111,3 +111,13 @@ never delete production Search records or newer graph authority. Disposable obst
 reset to its preserved bytes only for inspection and cleaned under private root; production
 recovery from lost remote ID is **not** available/proven. A future durable tracking repair
 must have its own forward-mutation-restoration proof.
+
+## U22 repair linkage — appended 2026-10-10
+
+The preceding report is historical U15 evidence at its stated base, not rewritten.
+U22 corrects U15-R1-F1: readable checkpoints lacking a nonempty binary remote ID
+now return `{:error, %{kind: :not_cancellable}}`, not false success. The opt-in
+driver assertions now pin this repaired return and unchanged checkpoint bytes.
+See [U22 report](../u22/report.md) for repair validation and compatibility.
+The orphan window and U15-REMOTE-SEMANTICS remain unresolved; this return correction
+does not reconcile jobs, verify provider billing, cancel unknown work or imply refund.

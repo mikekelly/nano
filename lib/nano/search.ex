@@ -260,13 +260,21 @@ defmodule Nano.Search do
     end)
   end
 
+  @doc """
+  Request remote cancellation using a saved nonempty binary remote ID.
+  Readable checkpoints without a usable ID return `{:error, %{kind: :not_cancellable}}`
+  without requests, checkpoint changes or stopping the worker. Status read errors propagate.
+  Success returns the remote result; only confirmed `cancelled` stops local polling.
+  Already-terminal remote results are returned unchanged, not claimed as cancellation.
+  """
   def cancel(%{dir: dir} = handle, opts \\ []) do
     safe(fn ->
       :global.trans(
         {{__MODULE__, :state, Path.expand(dir)}, self()},
         fn ->
-          with {:ok, %{remote_id: id} = s} when is_binary(id) <- status(handle),
-               {:ok, run} <- request(:post, run_path(id) <> "/cancel", %{}, opts),
+          with {:ok, s} <- status(handle),
+               true <- is_binary(s[:remote_id]) and s.remote_id != "",
+               {:ok, run} <- request(:post, run_path(s.remote_id) <> "/cancel", %{}, opts),
                {:ok, result} <- compact(run, opts) do
             if run["status"] == "cancelled" do
               # The service confirmed terminal cancellation; stop local polling too.
@@ -275,6 +283,9 @@ defmodule Nano.Search do
             end
 
             {:ok, result}
+          else
+            {:error, _} = error -> error
+            _ -> {:error, %{kind: :not_cancellable}}
           end
         end,
         [node()]
