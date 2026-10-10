@@ -7,6 +7,8 @@ defmodule Nano.Safety do
   NANO_SAFETY_DIR so disposable test VMs cannot inherit production stores.
   See `scripts/safety/README.md`. Loading this module starts no watchdog.
   """
+  require Logger
+
   def root,
     do:
       Application.get_env(:nano, :safety_dir) || System.get_env("NANO_SAFETY_DIR") ||
@@ -83,7 +85,6 @@ defmodule Nano.Safety do
   def backup(path, bytes, root \\ root()) do
     if File.exists?(Path.join(root, "config.json")) and valid_copy?(bytes) do
       target = Path.join([root, "credentials", Path.basename(path)])
-      bytes = preserve_missing_secrets(target, bytes)
 
       with :ok <- File.mkdir_p(Path.dirname(target)),
            :ok <- File.chmod(Path.dirname(target), 0o700),
@@ -94,27 +95,460 @@ defmodule Nano.Safety do
     end
   end
 
-  # Removing one provider key must not erase the only recovery copy. A watcher
-  # merges only lost secrets back, never overwriting newer unrelated settings.
-  defp preserve_missing_secrets(target, bytes) do
-    if Path.basename(target) == "settings.json" do
-      with {:ok, old_bytes} <- File.read(target),
-           {:ok, old} when is_map(old) <- Jason.decode(old_bytes),
-           {:ok, new} when is_map(new) <- Jason.decode(bytes) do
-        old
-        |> Enum.reduce(new, fn {key, value}, acc ->
-          secret = key == "openrouter_api_key" or String.upcase(key) == key
+  # Capability checked by the outside-checkout runner before any fallback launch.
+  @credential_intent_schema 1
+  @maintenance "credential authority unavailable or blocked; stop credential writers and reconcile in maintenance"
 
-          if secret and is_binary(value) and value != "" and Map.get(acc, key) in [nil, ""],
-            do: Map.put(acc, key, value),
-            else: acc
-        end)
-        |> Jason.encode!()
+  @doc "Read protected credential authority. Never log the returned private values."
+  def credential_read(file) do
+    serialized(fn ->
+      with {:ok, intent} <- authority(),
+           false <- File.exists?(barrier()) do
+        {:ok, materialize(file, read_primary(file), intent), generation(intent, file)}
       else
-        _ -> bytes
+        _ -> {:error, @maintenance}
       end
+    end)
+  end
+
+  @doc "Explicit login/set or generation-conditional refresh; persisted before publication."
+  def credential_write(file, values, expected \\ :explicit) when is_map(values) do
+    serialized(fn ->
+      with {:ok, intent} <- authority(),
+           false <- File.exists?(barrier()),
+           :ok <- eligible(intent, file, expected),
+           {:ok, next} <- mutate_intent(intent, file, values, expected),
+           :ok <- commit_credentials(file, values, next) do
+        {:ok, generation(next, file)}
+      else
+        {:error, :stale} -> {:error, :stale}
+        _ -> {:error, @maintenance}
+      end
+    end)
+  end
+
+  @doc "Commit invalidation before removing the primary or clearing a backup."
+  def credential_invalidate(file, expected \\ :explicit),
+    do: credential_write(file, %{}, expected)
+
+  @doc "Offline only: complete latest existing protected intent; never reconstruct lost authority. No values returned."
+  def reconcile_credentials do
+    serialized(fn ->
+      result =
+        case authority() do
+          {:ok, intent} -> {:ok, intent}
+          {:error, :enoent} -> {:error, @maintenance}
+          _ -> {:error, @maintenance}
+        end
+
+      with {:ok, intent} <- result,
+           :ok <- ensure_credentials_dir(),
+           :ok <- atomic(history_marker(), "1\n"),
+           :ok <- atomic(barrier(), ~s({"schema_version":1})),
+           :ok <- atomic(intent_path(), Jason.encode!(intent)),
+           :ok <- reconcile_files(intent),
+           :ok <- clear_barrier() do
+        :ok
+      else
+        _ -> {:error, @maintenance}
+      end
+    end)
+  end
+
+  @doc "Explicit brand-new installation provisioning; operator must attest no prior authority existed."
+  def provision_new_credentials(:new_installation) do
+    serialized(fn ->
+      paths = [
+        history_marker(),
+        intent_path(),
+        barrier(),
+        mirror(),
+        primary("settings.json"),
+        primary("chatgpt_auth.json"),
+        copy("settings.json"),
+        copy("chatgpt_auth.json")
+      ]
+
+      if Enum.any?(paths, &File.exists?/1),
+        do: {:error, @maintenance},
+        else: establish(%{"schema_version" => 1, "revision" => 0, "entries" => %{}})
+    end)
+  end
+
+  def provision_new_credentials(_), do: {:error, @maintenance}
+
+  @doc "Offline legacy migration only, not lost-authority repair; requires explicit legacy attestation."
+  def reconcile_legacy_credentials(:legacy_installation) do
+    serialized(fn ->
+      if Enum.any?([history_marker(), intent_path(), barrier(), mirror()], &File.exists?/1) do
+        {:error, @maintenance}
+      else
+        with {:ok, intent} <- legacy_intent(), do: establish(intent)
+      end
+    end)
+  end
+
+  def reconcile_legacy_credentials(_), do: {:error, @maintenance}
+
+  defp establish(intent) do
+    with :ok <- ensure_credentials_dir(),
+         :ok <- atomic(history_marker(), "1\n"),
+         :ok <- atomic(barrier(), ~s({"schema_version":1})),
+         :ok <- atomic(intent_path(), Jason.encode!(intent)),
+         :ok <- reconcile_files(intent),
+         :ok <- clear_barrier(),
+         do: :ok
+  end
+
+  @doc false
+  def noncredential_settings_write(values) do
+    serialized(fn ->
+      with :ok <- File.mkdir_p(Path.dirname(primary("settings.json"))),
+           :ok <- atomic(primary("settings.json"), Jason.encode!(values)),
+           do: :ok
+    end)
+  end
+
+  defp serialized(fun), do: :global.trans({{__MODULE__, :credential_intent}, self()}, fun)
+  defp intent_path, do: Path.join([root(), "credentials", "intent-v1.json"])
+  defp history_marker, do: Path.join([root(), "credentials", "intent-required-v1"])
+  defp barrier, do: Path.join([root(), "credentials", "intent-blocked-v1.json"])
+  defp primary(file), do: Path.join(Application.fetch_env!(:nano, :state_dir), file)
+  defp copy(file), do: Path.join([root(), "credentials", file])
+  defp mirror, do: primary("credential-intent-v1.json")
+
+  defp authority do
+    with {:ok, bytes} <- File.read(intent_path()),
+         {:ok,
+          %{
+            "schema_version" => @credential_intent_schema,
+            "revision" => revision,
+            "entries" => entries
+          } = intent} <- Jason.decode(bytes),
+         true <- is_integer(revision) and revision >= 0 and is_map(entries),
+         true <- Enum.all?(entries, fn {key, entry} -> valid_entry?(key, entry, revision) end) do
+      {:ok, intent}
     else
-      bytes
+      {:error, :enoent} -> {:error, :enoent}
+      _ -> {:error, @maintenance}
+    end
+  end
+
+  defp valid_entry?(key, %{"state" => "invalidated", "version" => v} = e, rev),
+    do: valid_id?(key) and is_integer(v) and v > 0 and v <= rev and not Map.has_key?(e, "value")
+
+  defp valid_entry?(
+         key,
+         %{"state" => "enabled", "version" => v, "generation" => g, "value" => value},
+         rev
+       ),
+       do:
+         valid_id?(key) and is_integer(v) and is_integer(g) and g > 0 and g <= v and v <= rev and
+           if(key == "chatgpt_auth.json",
+             do: valid_auth?(value),
+             else: is_binary(value)
+           )
+
+  defp valid_entry?(_, _, _), do: false
+  defp valid_id?("chatgpt_auth.json"), do: true
+
+  defp valid_id?("settings/" <> key),
+    do: secret_key?(key) and (key == "openrouter_api_key" or key == String.upcase(key))
+
+  defp valid_id?(_), do: false
+
+  defp valid_auth?(%{"access_token" => a, "refresh_token" => r}),
+    do: is_binary(a) and a != "" and is_binary(r) and r != ""
+
+  defp valid_auth?(_), do: false
+
+  defp secret_key?(key) do
+    case Nano.Settings.key(key) do
+      {:ok, :openrouter_api_key} -> true
+      {:ok, canonical} when is_binary(canonical) -> true
+      _ -> false
+    end
+  end
+
+  defp normalize_settings(values) do
+    Map.new(values, fn {key, value} ->
+      case Nano.Settings.key(key) do
+        {:ok, canonical} -> {to_string(canonical), value}
+        _ -> {to_string(key), value}
+      end
+    end)
+  end
+
+  defp read_primary("settings.json" = file) do
+    case File.read(primary(file)) do
+      {:error, :enoent} ->
+        %{}
+
+      {:ok, bytes} ->
+        case Jason.decode(bytes) do
+          {:ok, map} when is_map(map) ->
+            map
+
+          _ ->
+            Logger.warning("ignoring damaged primary settings; protected credentials retained")
+            %{}
+        end
+
+      _ ->
+        Logger.warning("ignoring unreadable primary settings; protected credentials retained")
+        %{}
+    end
+  end
+
+  defp read_primary(file), do: read_map(primary(file))
+
+  defp read_map(path) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, map} when is_map(map) <- Jason.decode(bytes),
+         do: map,
+         else: (_ -> %{})
+  end
+
+  defp generation(intent, file), do: get_in(intent, ["entries", file, "generation"])
+  defp eligible(_, _, :explicit), do: :ok
+
+  defp eligible(_, "settings.json", {:setting, key}),
+    do: if(secret_key?(key), do: :ok, else: {:error, :stale})
+
+  defp eligible(intent, file, expected) when is_integer(expected) do
+    if get_in(intent, ["entries", file, "state"]) == "enabled" and
+         generation(intent, file) == expected, do: :ok, else: {:error, :stale}
+  end
+
+  defp eligible(_, _, _), do: {:error, :stale}
+
+  defp mutate_intent(intent, "chatgpt_auth.json" = file, values, expected) do
+    if values == %{} or valid_auth?(values) do
+      {:ok, put_entry(intent, file, if(values == %{}, do: nil, else: values), expected)}
+    else
+      {:error, :invalid_credentials}
+    end
+  end
+
+  defp mutate_intent(intent, "settings.json", values, {:setting, key}) do
+    values = normalize_settings(values)
+    value = Map.get(values, key)
+
+    if value == nil or is_binary(value),
+      do: {:ok, put_entry(intent, "settings/" <> key, value, :explicit)},
+      else: {:error, :invalid_credentials}
+  end
+
+  defp mutate_intent(intent, "settings.json", values, :explicit) do
+    values = normalize_settings(values)
+
+    keys =
+      (Map.keys(values) ++ for("settings/" <> key <- Map.keys(intent["entries"]), do: key))
+      |> Enum.uniq()
+
+    if Enum.any?(values, fn {key, value} -> secret_key?(key) and not is_binary(value) end) do
+      {:error, :invalid_credentials}
+    else
+      {:ok,
+       Enum.reduce(keys, intent, fn key, acc ->
+         if secret_key?(key) do
+           value = Map.get(values, key)
+           old = get_in(acc, ["entries", "settings/" <> key, "value"])
+           if old == value, do: acc, else: put_entry(acc, "settings/" <> key, value, :explicit)
+         else
+           acc
+         end
+       end)}
+    end
+  end
+
+  defp mutate_intent(_, _, _, _), do: {:error, :invalid_credentials}
+
+  defp put_entry(intent, key, value, expected) do
+    v = intent["revision"] + 1
+
+    entry =
+      if value == nil,
+        do: %{"state" => "invalidated", "version" => v},
+        else: %{
+          "state" => "enabled",
+          "version" => v,
+          "generation" => if(expected == :explicit, do: v, else: expected),
+          "value" => value
+        }
+
+    intent |> Map.put("revision", v) |> put_in(["entries", key], entry)
+  end
+
+  defp materialize("chatgpt_auth.json", _, intent),
+    do: get_in(intent, ["entries", "chatgpt_auth.json", "value"]) || %{}
+
+  defp materialize("settings.json", values, intent) do
+    values = normalize_settings(values)
+    values = Map.reject(values, fn {key, _} -> secret_key?(key) end)
+
+    Enum.reduce(intent["entries"], values, fn
+      {"settings/" <> key, %{"state" => "enabled", "value" => value}}, acc ->
+        Map.put(acc, key, value)
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  # Disposable fault-rehearsal seam: stages only, never credentials or paths.
+  defp checkpoint(stage) do
+    case Application.get_env(:nano, :credential_intent_checkpoint) do
+      fun when is_function(fun, 1) -> fun.(stage)
+      _ -> :ok
+    end
+  end
+
+  defp commit_credentials(file, values, intent) do
+    with :ok <- ensure_credentials_dir(),
+         :ok <- atomic(history_marker(), "1\n"),
+         :ok <- atomic(barrier(), ~s({"schema_version":1})),
+         :ok <- checkpoint(:before_intent),
+         :ok <- atomic(intent_path(), Jason.encode!(intent)),
+         :ok <- checkpoint(:after_intent),
+         :ok <-
+           write_materialized(file, Map.new(values, fn {k, v} -> {to_string(k), v} end), intent),
+         :ok <- write_mirror(intent),
+         :ok <- clear_barrier(),
+         do: :ok
+  end
+
+  defp ensure_credentials_dir do
+    with :ok <- File.mkdir_p(Path.dirname(intent_path())),
+         :ok <- File.chmod(Path.dirname(intent_path()), 0o700),
+         :ok <- sync_directory(Path.dirname(root())),
+         :ok <- sync_directory(root()),
+         do: :ok
+  end
+
+  defp write_mirror(intent) do
+    with :ok <- File.mkdir_p(Path.dirname(mirror())), do: atomic(mirror(), Jason.encode!(intent))
+  end
+
+  defp write_materialized(file, values, intent) do
+    map = materialize(file, values, intent)
+
+    with :ok <- File.mkdir_p(Path.dirname(primary(file))),
+         :ok <- atomic(copy(file), Jason.encode!(map)),
+         :ok <- checkpoint(:after_backup),
+         :ok <-
+           if(file == "chatgpt_auth.json" and map == %{},
+             do: remove_primary(file),
+             else: atomic(primary(file), Jason.encode!(map))
+           ),
+         :ok <- checkpoint(:after_primary),
+         do: :ok
+  end
+
+  defp remove_primary(file) do
+    case File.rm(primary(file)) do
+      :ok -> sync_directory(Path.dirname(primary(file)))
+      {:error, :enoent} -> :ok
+      error -> error
+    end
+  end
+
+  defp clear_barrier do
+    with :ok <- File.rm(barrier()), do: sync_directory(Path.dirname(barrier()))
+  end
+
+  defp reconcile_files(intent) do
+    with :ok <- write_materialized("settings.json", read_map(primary("settings.json")), intent),
+         :ok <- write_materialized("chatgpt_auth.json", %{}, intent),
+         :ok <- write_mirror(intent),
+         do: :ok
+  end
+
+  defp legacy_map(path) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, map} when is_map(map) <- Jason.decode(bytes),
+         do: {:ok, map},
+         else: (
+           {:error, :enoent} -> {:ok, %{}}
+           _ -> {:error, :invalid_legacy}
+         )
+  end
+
+  defp unambiguous_settings?(values) do
+    values
+    |> Enum.group_by(
+      fn {key, _} ->
+        case Nano.Settings.key(key) do
+          {:ok, canonical} -> to_string(canonical)
+          _ -> key
+        end
+      end,
+      fn {_, value} -> value end
+    )
+    |> Enum.all?(fn {_, values} -> length(Enum.uniq(values)) == 1 end)
+  end
+
+  defp legacy_intent do
+    # No backup-only enablement. Preserve all original bytes before committing authority.
+    files = ["settings.json", "chatgpt_auth.json"]
+
+    with true <-
+           Enum.all?(files, fn file ->
+             current = legacy_map(primary(file))
+             backup = legacy_map(copy(file))
+
+             match?({:ok, _}, current) and match?({:ok, _}, backup) and
+               (backup == {:ok, %{}} or (current != {:ok, %{}} and current == backup))
+           end),
+         true <- unambiguous_settings?(read_map(primary("settings.json"))),
+         :ok <- preserve_legacy(files) do
+      empty = %{"schema_version" => 1, "revision" => 0, "entries" => %{}}
+
+      with {:ok, settings} <-
+             mutate_intent(empty, "settings.json", read_map(primary("settings.json")), :explicit),
+           {:ok, auth} <-
+             mutate_intent(
+               settings,
+               "chatgpt_auth.json",
+               read_map(primary("chatgpt_auth.json")),
+               :explicit
+             ),
+           do: {:ok, auth}
+    else
+      _ -> {:error, @maintenance}
+    end
+  end
+
+  defp preserve_legacy(files) do
+    evidence =
+      Path.join([
+        root(),
+        "credentials",
+        "legacy-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      ])
+
+    with :ok <- File.mkdir_p(evidence), :ok <- File.chmod(evidence, 0o700) do
+      Enum.reduce_while(
+        for(file <- files, location <- [:primary, :backup], do: {file, location}),
+        :ok,
+        fn {file, location}, _ ->
+          path = if location == :primary, do: primary(file), else: copy(file)
+
+          case File.read(path) do
+            {:ok, bytes} ->
+              case atomic(Path.join(evidence, "#{location}-#{file}"), bytes) do
+                :ok -> {:cont, :ok}
+                error -> {:halt, error}
+              end
+
+            {:error, :enoent} ->
+              {:cont, :ok}
+
+            error ->
+              {:halt, error}
+          end
+        end
+      )
     end
   end
 

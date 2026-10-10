@@ -45,8 +45,10 @@ class RealBeamRecovery(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='altair-safety-beam-') as temp:
             base = Path(temp); app = base / 'app'; root = base / 'safety'; state = base / 'state'
             root.mkdir(mode=0o700); state.mkdir()
-            shutil.copytree(SOURCE, app, ignore=shutil.ignore_patterns('.git', '_build', 'tmp', '__pycache__'))
-            self.assertTrue((app / 'deps' / 'phoenix').is_dir(), 'copy dependencies into assigned worktree first')
+            shutil.copytree(SOURCE, app, ignore=shutil.ignore_patterns('.git', '_build', 'deps', 'tmp', '__pycache__'))
+            deps = Path(os.environ['MIX_DEPS_PATH'])
+            shutil.copytree(deps, app / 'deps', symlinks=False)
+            self.assertTrue((app / 'deps' / 'phoenix').is_dir(), 'private dependency sources required')
             subprocess.run(['git', 'init', '-q', str(app)], check=True)
             provider = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
             provider.rotations = 0
@@ -59,12 +61,35 @@ class RealBeamRecovery(unittest.TestCase):
             for name, data in [('settings.json', settings), ('chatgpt_auth.json', tokens)]:
                 atomic(state / name, json.dumps(data).encode())
                 atomic(root / 'credentials' / name, json.dumps(data).encode())
+            (app / 'u07_boot.exs').write_text('''
+private = System.fetch_env!("U07_PRIVATE_BASE")
+Application.put_env(:nano, :image_dir, Path.join(private, "images"))
+paths = Map.new([:state_dir, :log_dir, :spill_dir, :image_dir], fn key -> {key, Application.fetch_env!(:nano, key)} end)
+paths = Map.merge(paths, %{safety: Nano.Safety.root(), web: System.fetch_env!("NANO_WEB_CACHE_DIR"),
+  build: Mix.Project.build_path(), deps: Mix.Project.deps_path(), home: System.fetch_env!("HOME"),
+  mix_home: System.fetch_env!("MIX_HOME"), hex_home: System.fetch_env!("HEX_HOME"), tmp: System.tmp_dir!(),
+  crash: System.fetch_env!("ERL_CRASH_DUMP")})
+for {key, path} <- paths do
+  unless String.starts_with?(Path.expand(path), private <> "/"), do: raise("unsafe mutable path: #{key}")
+end
+File.write!(Path.join(private, "effective-paths.json"), Jason.encode!(paths))
+{:ok, _} = Application.ensure_all_started(:nano)
+''')
             config = dict(app=str(app), deps_path=str(app / 'deps'), state_dir=str(state), health_url=f'http://127.0.0.1:{port}/api/safety/health',
-                          command=['elixir', '-S', 'mix', 'run', '--no-halt'],
+                          command=['elixir', '-S', 'mix', 'run', '--no-start', '--no-halt', 'u07_boot.exs'],
                           env=dict(MIX_ENV='dev', ERL_FLAGS='+S 2:2', PORT=str(port), LISTEN_IP='127.0.0.1',
                                    LOG_DIR=str(base / 'logs'), SPILL_DIR=str(base / 'spill'), ERL_CRASH_DUMP=str(base / 'crash.dump')),
                           interval=.2, probe_timeout=.3, lockup_timeout=1, boot_timeout=90,
                           backoff=.3, max_attempts=20, stable_seconds=1000)
+            # Explicit offline legacy fixture migration through the production installer.
+            subprocess.run([sys.executable, str(Path(__file__).with_name('install.py')), '--offline', '--legacy-installation',
+                            '--app', str(app), '--root', str(root), '--state-dir', str(state)], check=True, capture_output=True)
+            config['env'].update(U07_PRIVATE_BASE=str(base), MIX_BUILD_PATH=str(root / 'build/dev'), NANO_WEB_CACHE_DIR=str(base / 'web'), NANO_SAFETY_DIR=str(root),
+                                 HOME=str(base / 'home'), MIX_HOME=str(base / 'mix'), HEX_HOME=str(base / 'hex'), TMPDIR=str(base / 'tmp'))
+            for key in ('HOME', 'MIX_HOME', 'HEX_HOME', 'TMPDIR'):
+                Path(config['env'][key]).mkdir(parents=True, exist_ok=True)
+            shutil.copytree(os.environ['MIX_HOME'], base / 'mix', dirs_exist_ok=True, symlinks=False)
+            shutil.copytree(os.environ['HEX_HOME'], base / 'hex', dirs_exist_ok=True, symlinks=False)
             atomic(root / 'config.json', json.dumps(config).encode())
             runner = Path(__file__).with_name('runner.py')
             proc = None
@@ -126,12 +151,20 @@ class RealBeamRecovery(unittest.TestCase):
                 self.assertTrue(status()['fallback'])
                 self.assertFalse((app / 'deps').exists())
                 self.assertEqual(evaluate('NanoAgent.info("safety-fixture") != nil')['result'], 'true')
+                previous = status()['child_pid']
+                self.assertEqual(evaluate('Nano.ChatGPT.Auth.logout()')['result'], ':ok')
+                self.assertEqual(evaluate('Nano.Settings.delete(:openrouter_api_key)')['result'], ':ok')
+                time.sleep(.6)
+                self.assertEqual(status()['child_pid'], previous, 'revocation must not cycle healthy node')
+                self.assertFalse((state / 'chatgpt_auth.json').exists())
+                self.assertNotIn('openrouter_api_key', read_json(state / 'settings.json'))
                 notices = (root / 'notices.jsonl').read_text()
                 for kind in ['lockup', 'credentials_restored', 'boot_or_runtime_exit']:
                     self.assertIn(kind, notices)
                 self.assertNotIn('fake-refresh-1', notices)
                 for path in (root / 'credentials').iterdir():
-                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600 if path.is_file() else 0o700)
+                print('U07 real BEAM effective mutable paths: ' + json.dumps(read_json(base / 'effective-paths.json')))
                 print('Real BEAM copy: model-gated promotion, SIGSTOP kill/restart, actual OAuth refresh write-through, deleted/empty credential restore/reload, real compile-error fallback and preserved source passed.')
             finally:
                 if proc and proc.poll() is None:

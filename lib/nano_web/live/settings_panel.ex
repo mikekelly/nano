@@ -16,6 +16,7 @@ defmodule NanoWeb.SettingsPanel do
 
   attr :settings, :list, required: true, doc: "Nano.Ops.settings/0"
   attr :providers, :list, required: true, doc: "Nano.Ops.providers/0"
+  attr :provider_errors, :map, default: %{}, doc: "provider lifecycle failures"
   attr :errors, :map, required: true, doc: "refusals, by setting name (\"\" for a new one)"
   attr :saves, :integer, required: true, doc: "counts changes, so inputs start over after one"
 
@@ -52,6 +53,7 @@ defmodule NanoWeb.SettingsPanel do
             {if p.status == :pending, do: "cancel", else: "disconnect"}
           </button>
         </div>
+        <p :if={@provider_errors[p.id]} class="error">{@provider_errors[p.id]}</p>
       </div>
       <form
         :for={s <- @settings}

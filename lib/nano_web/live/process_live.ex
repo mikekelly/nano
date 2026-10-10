@@ -111,8 +111,13 @@ defmodule NanoWeb.ProcessLive do
   end
 
   def handle_event("chatgpt_logout", _params, socket) do
-    Nano.Ops.chatgpt_logout()
-    {:noreply, refresh(socket)}
+    case Nano.Ops.chatgpt_logout() do
+      :ok ->
+        {:noreply, refresh(socket)}
+
+      {:error, message} ->
+        {:noreply, assign(socket, chatgpt: %{Nano.Ops.chatgpt() | error: message})}
+    end
   end
 
   # A pasted key: kept only as the setting, never in assigns.
@@ -124,8 +129,10 @@ defmodule NanoWeb.ProcessLive do
   end
 
   def handle_event("openrouter_logout", _params, socket) do
-    Nano.Ops.openrouter_logout()
-    {:noreply, socket |> assign(openrouter_error: nil) |> refresh()}
+    case Nano.Ops.openrouter_logout() do
+      :ok -> {:noreply, socket |> assign(openrouter_error: nil) |> refresh()}
+      {:error, message} -> {:noreply, assign(socket, openrouter_error: message)}
+    end
   end
 
   def handle_event("save_setting", %{"key" => key, "value" => value}, socket),
@@ -285,6 +292,7 @@ defmodule NanoWeb.ProcessLive do
           :if={@view == "settings"}
           settings={@settings}
           providers={@providers}
+          provider_errors={%{"chatgpt" => @chatgpt.error, "openrouter" => @openrouter_error}}
           errors={@setting_errors}
           saves={@saves}
         />

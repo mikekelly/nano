@@ -51,6 +51,44 @@ defmodule Nano.SettingsTest do
     %{name: name, model: model, pid: pid, id: NanoAgent.info(name).id}
   end
 
+  test "secret removal persists revocation, while authority failure is truthful and ordinary settings still work" do
+    TestSettings.put(:eval_timeout_ms, 30000)
+    TestSettings.put(:openrouter_api_key, "fixture-revoke")
+    assert :ok = Nano.Ops.delete_setting(:openrouter_api_key)
+    intent = Path.join([Nano.Safety.root(), "credentials", "intent-v1.json"])
+
+    assert Jason.decode!(File.read!(intent))["entries"]["settings/openrouter_api_key"]["state"] ==
+             "invalidated"
+
+    File.write!(path(), ~s({"openrouter_api_key":"stale-fixture","eval_timeout_ms":30000}))
+    restart_settings()
+    assert Nano.Settings.get(:openrouter_api_key) == nil
+    assert :ok = Nano.Safety.reconcile_credentials()
+    TestSettings.put(:openrouter_api_key, "fixture-new")
+    protected = File.read!(intent)
+    File.rm!(intent)
+
+    on_exit(fn ->
+      File.write!(intent, protected)
+      Nano.Safety.reconcile_credentials()
+    end)
+
+    assert {:error, message} = Nano.Ops.delete_setting(:openrouter_api_key)
+    assert message =~ "maintenance"
+    assert Nano.Settings.get(:openrouter_api_key) == "fixture-new"
+    TestSettings.put(:eval_timeout_ms, 45000)
+    assert Nano.Settings.get(:eval_timeout_ms) == 45000
+    on_exit(fn -> Nano.Settings.delete(:eval_timeout_ms) end)
+    conn = build_conn() |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
+
+    assert %{"error" => _} =
+             conn |> delete("/api/settings/openrouter_api_key") |> json_response(422)
+
+    {:ok, view, _} = live(build_conn(), "/?view=settings")
+    view |> element("#setting-openrouter_api_key button", "clear") |> render_click()
+    assert has_element?(view, "#setting-openrouter_api_key .error", "maintenance")
+  end
+
   test "defaults, and a change saved 0600 that survives a restart of the process" do
     assert Nano.Settings.get(:eval_timeout_ms) == 30_000
     assert Nano.Settings.get(:network_policy) == "unrestricted outbound internet access"
@@ -73,6 +111,7 @@ defmodule Nano.SettingsTest do
 
   test "an unreadable file comes up with the defaults, logged once without its content" do
     good = File.read!(path())
+    protected_key = Nano.Settings.get(:openrouter_api_key)
 
     on_exit(fn ->
       File.write!(path(), good)
@@ -82,9 +121,9 @@ defmodule Nano.SettingsTest do
     File.write!(path(), ~s|{"openrouter_api_key": "#{@secret}", oops|)
 
     log = capture_log(fn -> restart_settings() end)
-    assert log =~ "ignoring #{path()}, using the defaults: not a settings file"
+    assert log =~ "ignoring damaged primary settings; protected credentials retained"
     refute log =~ @secret
-    assert Nano.Settings.get(:openrouter_api_key) == nil
+    assert Nano.Settings.get(:openrouter_api_key) == protected_key
     assert Nano.Settings.get(:openrouter_base_url) == "https://openrouter.ai/api/v1"
 
     # A bad value in a good file goes back to its default; the rest are kept.
@@ -150,6 +189,9 @@ defmodule Nano.SettingsTest do
   end
 
   test "values of the operators' own: any string under a name, the node's own by env name" do
+    TestSettings.put("EMPTY_TOKEN", "")
+    restart_settings()
+    assert Nano.Settings.get("EMPTY_TOKEN") == ""
     TestSettings.put("SOME_TOKEN", "abc")
     assert Nano.Settings.get("SOME_TOKEN") == "abc"
     assert Nano.Settings.get("OTHER") == nil

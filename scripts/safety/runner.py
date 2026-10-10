@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -46,27 +47,106 @@ def valid_credentials(path):
     if not isinstance(data, dict) or not data:
         return False
     if Path(path).name == 'chatgpt_auth.json':
-        return bool(data.get('refresh_token') and data.get('access_token'))
+        return all(isinstance(data.get(key), str) and data[key] for key in ('refresh_token', 'access_token'))
     return True
 
 
-def credential_repair(current, backup):
-    if not valid_credentials(backup):
+# Must match Nano.Settings.specs/key: operator-owned names are case-insensitive secrets.
+NONSECRET_SETTINGS = frozenset(('node_max_tokens_per_hour', 'allowed_models', 'eval_timeout_ms',
+    'model_call_max_ms', 'result_max_bytes', 'max_bindings_bytes', 'network_policy',
+    'system_prompt_file', 'openrouter_base_url', 'chatgpt_base_url', 'chatgpt_auth_url',
+    'chatgpt_client_version', 'raw_model_log', 'raw_model_log_max_bytes'))
+
+
+def canonical_setting(key):
+    if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,99}', key):
+        return key, False
+    lower = key.lower()
+    if lower in NONSECRET_SETTINGS or lower == 'openrouter_api_key':
+        return lower, lower == 'openrouter_api_key'
+    return key.upper(), True
+
+
+def canonical_settings(values):
+    result = {}
+    for key, value in values.items():
+        canonical, _ = canonical_setting(key)
+        if canonical in result and result[canonical] != value:
+            raise ValueError('conflicting credential aliases')
+        result[canonical] = value
+    return result
+
+def credential_intent(root):
+    root = Path(root)
+    if (root / 'credentials' / 'intent-blocked-v1.json').exists():
         return None
-    if not valid_credentials(current):
-        return Path(backup).read_bytes()
-    if Path(current).name == 'settings.json':
-        new = read_json(current)
-        old = read_json(backup)
-        repaired = dict(new)
-        for key, value in old.items():
-            # Seed provider key and opaque operator-owned settings are secrets.
-            secret = key == 'openrouter_api_key' or (isinstance(key, str) and key.upper() == key)
-            if secret and isinstance(value, str) and value and not new.get(key):
-                repaired[key] = value
-        if repaired != new:
-            return json.dumps(repaired).encode()
-    return None
+    intent = read_json(root / 'credentials' / 'intent-v1.json')
+    if not isinstance(intent, dict) or type(intent.get('schema_version')) is not int or intent.get('schema_version') != 1:
+        return None
+    rev, entries = intent.get('revision'), intent.get('entries')
+    if type(rev) is not int or rev < 0 or not isinstance(entries, dict):
+        return None
+    for key, entry in entries.items():
+        if not isinstance(key, str) or not (key == 'chatgpt_auth.json' or key.startswith('settings/')) or not isinstance(entry, dict):
+            return None
+        if key.startswith('settings/') and (canonical_setting(key[9:]) != (key[9:], True)):
+            return None
+        v = entry.get('version')
+        if type(v) is not int or not 0 < v <= rev:
+            return None
+        if entry.get('state') == 'invalidated':
+            if 'value' in entry:
+                return None
+        elif entry.get('state') == 'enabled':
+            g, value = entry.get('generation'), entry.get('value')
+            if type(g) is not int or not 0 < g <= v:
+                return None
+            if key == 'chatgpt_auth.json':
+                if not isinstance(value, dict) or not isinstance(value.get('access_token'), str) or not value.get('access_token') or not isinstance(value.get('refresh_token'), str) or not value.get('refresh_token'):
+                    return None
+            elif not isinstance(value, str):
+                return None
+        else:
+            return None
+    return intent
+
+
+def credential_repair(current, backup, root=None):
+    # Legacy backup absence/presence is never enablement authority.
+    root = Path(root) if root is not None else Path(backup).parent.parent
+    intent = credential_intent(root)
+    if intent is None:
+        return None
+    current = Path(current)
+    old = read_json(current, {})
+    old = old if isinstance(old, dict) else {}
+    if current.name == 'chatgpt_auth.json':
+        repaired = intent['entries'].get('chatgpt_auth.json', {}).get('value', {})
+    else:
+        # Noncredential settings may be recovered, but no legacy secret may bypass intent.
+        base = old or read_json(backup, {})
+        base = base if isinstance(base, dict) else {}
+        try:
+            base = canonical_settings(base)
+        except ValueError:
+            return None
+        repaired = {key: value for key, value in base.items() if not canonical_setting(key)[1]}
+        for key, entry in intent['entries'].items():
+            if key.startswith('settings/') and entry['state'] == 'enabled':
+                repaired[key[9:]] = entry['value']
+    return json.dumps(repaired).encode() if repaired != old else None
+
+
+def compatible_credentials(source, root):
+    # A protected authority (including a blocked mutation) forbids pre-v1 fallback.
+    if not any((Path(root) / 'credentials' / name).exists() for name in ('intent-v1.json', 'intent-blocked-v1.json', 'intent-required-v1')):
+        return True
+    try:
+        return '@credential_intent_schema 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
+            'Nano.Safety.credential_write' in (Path(source) / 'lib/nano/chatgpt/auth.ex').read_text() and \
+            'Nano.Safety.credential_read' in (Path(source) / 'lib/nano/settings.ex').read_text()
+    except OSError:
+        return False
 
 
 class Net:
@@ -127,13 +207,13 @@ class Net:
             current = self.state_dir / name
             backup = self.root / 'credentials' / name
             # No polling backup writes: they could regress a single-use refresh token.
-            if credential_repair(current, backup) is not None:
+            if credential_repair(current, backup, self.root) is not None:
                 # Stop publishers before rechecking/restoring. An ordinary in-process
                 # refresh can no longer race restoration of the latest copy.
                 if self.child and self.child.poll() is None:
                     self.stop_child()
                     restored = True
-                repair = credential_repair(current, backup)
+                repair = credential_repair(current, backup, self.root)
                 if repair is None:
                     continue
                 evidence = self.root / 'evidence' / (uuid.uuid4().hex + '-' + name)
@@ -189,6 +269,10 @@ class Net:
         signal.signal(signal.SIGTERM, self.signal_stop)
         signal.signal(signal.SIGINT, self.signal_stop)
         if (self.root / 'disabled').exists():
+            if not compatible_credentials(self.app, self.root):
+                self.update('maintenance_blocked')
+                self.notice('incompatible_credential_authority', action='disabled watchdog cannot bypass intent authority')
+                return 0
             self.update('disabled')
             self.notice('disabled', action='unprotected direct boot')
             os.chdir(self.app)
@@ -233,6 +317,10 @@ class Net:
                 if (Path(active['source']) / 'deps').exists():
                     subprocess.run([sys.executable, __file__, '--snapshot', str(Path(active['source']) / 'deps'), str(deps)],
                                    timeout=self.config.get('snapshot_timeout', 120), check=True)
+            if not compatible_credentials(source, self.root):
+                self.update('maintenance_blocked')
+                self.notice('incompatible_credential_authority', action='roll forward to intent-v1 code; downgrade forbidden')
+                return 0
             log = self.launch(source, deps)
             self.update('booting', evidence_source=active['source'], fallback=not use_primary)
             started = last_response = time.monotonic()

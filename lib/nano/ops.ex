@@ -203,7 +203,7 @@ defmodule Nano.Ops do
   """
   def chatgpt_login, do: Nano.ChatGPT.Auth.login()
 
-  @doc "Forgets the subscription's tokens (memory and file), or a pending login. Returns `:ok`."
+  @doc "Durably invalidates subscription credentials before removal. :ok or {:error, maintenance_message}."
   def chatgpt_logout, do: Nano.ChatGPT.Auth.logout()
 
   ## Settings

@@ -62,6 +62,93 @@ defmodule Nano.ChatGPTTest do
     eventually(fn -> (pid = Process.whereis(Auth)) && pid != old end)
   end
 
+  test "permanent rejection commits revocation, stays healthy and cannot restore stale refresh copies" do
+    first = connect!()
+    pid = Process.whereis(Auth)
+    old = saved()
+    generation = :sys.get_state(Auth).generation
+    Fake.auth(:token, [{401, %{"error" => "invalid_grant"}}])
+    assert {:error, _} = Auth.refresh(first["access_token"])
+    assert Process.whereis(Auth) == pid
+    assert %{responsive: true} = Nano.Safety.health()
+    assert Auth.status().status == :disconnected
+    assert {:error, _} = Auth.token()
+    refute File.exists?(path())
+    assert {:error, :stale} = Nano.Safety.credential_write("chatgpt_auth.json", old, generation)
+    # Simulate a stale fallback primary, not permission to resurrect it at boot.
+    File.write!(path(), Jason.encode!(old))
+    restart_auth()
+    assert {:error, _} = Auth.token()
+    assert Auth.status().status == :disconnected
+    assert :ok = Nano.Safety.reconcile_credentials()
+    refute File.exists?(path())
+    connect!()
+    assert :sys.get_state(Auth).generation > generation
+  end
+
+  test "missing protected authority reports failed logout through actual API and UI" do
+    connect!()
+    authority = Path.join([Nano.Safety.root(), "credentials", "intent-v1.json"])
+    bytes = File.read!(authority)
+    File.rm!(authority)
+
+    on_exit(fn ->
+      File.write!(authority, bytes)
+      Nano.Safety.reconcile_credentials()
+    end)
+
+    {:ok, view, _} = live(build_conn(), "/?view=settings")
+    view |> element("button[phx-click=chatgpt_logout]") |> render_click()
+    assert render(view) =~ "maintenance"
+    conn = build_conn() |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
+    assert %{"error" => _} = conn |> post("/api/chatgpt/logout") |> json_response(422)
+    assert Auth.status().error =~ "maintenance"
+    # UI keeps the maintenance error; no false success acknowledgement.
+    assert render(view) =~ "maintenance"
+    assert %{responsive: true} = Nano.Safety.health()
+  end
+
+  test "crash at durable lifecycle boundaries fences restart and retains newest authority" do
+    parent = self()
+    on_exit(fn -> Application.delete_env(:nano, :credential_intent_checkpoint) end)
+
+    for stage <- [:before_intent, :after_intent, :after_backup, :after_primary] do
+      connect!()
+      old = Process.whereis(Auth)
+
+      Application.put_env(:nano, :credential_intent_checkpoint, fn reached ->
+        if reached == stage do
+          send(parent, {:credential_checkpoint, stage})
+
+          receive do
+            :resume -> :ok
+          end
+        else
+          :ok
+        end
+      end)
+
+      task = Task.async(fn -> Auth.logout() end)
+      assert_receive {:credential_checkpoint, ^stage}, 2000
+      Process.exit(old, :kill)
+      assert {:error, _} = Task.await(task)
+      eventually(fn -> (pid = Process.whereis(Auth)) && pid != old end)
+      assert {:error, _} = Auth.token()
+      assert Auth.status().error =~ "maintenance"
+      Application.delete_env(:nano, :credential_intent_checkpoint)
+      assert :ok = Nano.Safety.reconcile_credentials()
+      # Before intent commit, the failed request did not durably revoke. All later
+      # checkpoints must keep the committed tombstone through reconciliation.
+      if stage != :before_intent do
+        restart_auth()
+        assert {:error, _} = Auth.token()
+        refute File.exists?(path())
+      end
+
+      assert :ok = Auth.logout()
+    end
+  end
+
   ## Device-code login
 
   test "device flow: a code to enter, polling while pending, then tokens saved 0600" do

@@ -1,5 +1,13 @@
 # Seeding doc: a safety net
 
+## Current credential lifecycle
+
+The shipped intent-v1 contract distinguishes accidental loss from intentional
+logout/removal. Only enabled protected authority may restore credentials; durable
+invalidation beats stale backups/fallbacks. Missing/ambiguous authority requires
+explicit maintenance, never guessed enablement. See `scripts/safety/README.md` and
+`docs/flywheel/u07/protocol.md`; pre-intent source downgrade is forbidden.
+
 ## Outcome
 
 The node recovers by itself from the worst things that can happen to it, including ones its

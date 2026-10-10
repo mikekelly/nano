@@ -37,7 +37,7 @@ defmodule Nano.ChatGPT.Auth do
   @doc "Starts a device-code login: the pending status, or `{:error, message}`."
   def login, do: call(:login, 30_000)
 
-  @doc "Forgets the tokens and any pending login. `:ok`."
+  @doc "Commits protected invalidation before forgetting tokens/login; :ok or truthful maintenance error."
   def logout, do: call(:logout, 30_000)
 
   @doc """
@@ -67,23 +67,39 @@ defmodule Nano.ChatGPT.Auth do
     # A login that was pending when the process stopped is gone with it: its code is unknown now.
     s = %{tokens: nil, login: nil, error: nil, timer: nil}
 
-    tokens =
-      try do
-        with {:ok, json} <- File.read(path()),
-             {:ok, %{"access_token" => _, "refresh_token" => _} = tokens} <- Jason.decode(json) do
-          tokens
-        else
-          {:error, :enoent} -> nil
-          # Not the content: it may hold tokens.
-          _ -> raise "not a token file"
-        end
-      rescue
-        e ->
-          Logger.error("Nano.ChatGPT.Auth: ignoring the token file: #{Exception.message(e)}")
-          nil
+    {tokens, generation, error} =
+      case Nano.Safety.credential_read("chatgpt_auth.json") do
+        {:ok, tokens, generation} when map_size(tokens) > 0 -> {tokens, generation, nil}
+        {:ok, _, _} -> {nil, nil, nil}
+        {:error, error} -> {nil, nil, error}
       end
 
-    {:ok, publish(schedule(%{s | tokens: tokens}))}
+    {:ok,
+     publish(schedule(Map.merge(s, %{tokens: tokens, generation: generation, error: error})))}
+  end
+
+  @impl true
+  def code_change(_old, s, _extra) do
+    case Nano.Safety.credential_read("chatgpt_auth.json") do
+      {:ok, tokens, generation} when tokens == s.tokens ->
+        {:ok, Map.put(s, :generation, generation)}
+
+      {:ok, tokens, generation} when map_size(tokens) == 0 ->
+        {:ok, publish(schedule(Map.merge(s, %{tokens: nil, generation: generation, login: nil})))}
+
+      _ ->
+        {:ok,
+         publish(
+           schedule(
+             Map.merge(s, %{
+               tokens: nil,
+               generation: nil,
+               login: nil,
+               error: "credential migration requires maintenance reconciliation"
+             })
+           )
+         )}
+    end
   end
 
   @impl true
@@ -151,6 +167,44 @@ defmodule Nano.ChatGPT.Auth do
   def handle_call(:login, _from, %{login: %{}} = s), do: {:reply, public(s), s}
 
   def handle_call(:login, _from, s) do
+    case Nano.Safety.credential_read("chatgpt_auth.json") do
+      {:ok, _, _} -> begin_login(s)
+      {:error, error} -> fail(s, error)
+    end
+  end
+
+  def handle_call(:logout, _from, s) do
+    case Nano.Safety.credential_invalidate("chatgpt_auth.json") do
+      {:ok, _} ->
+        {:reply, :ok,
+         publish(schedule(%{s | tokens: nil, login: nil, error: nil, generation: nil}))}
+
+      {:error, error} ->
+        {:reply, {:error, error},
+         publish(schedule(%{s | tokens: nil, login: nil, error: error, generation: nil}))}
+    end
+  end
+
+  def handle_call(:token, _from, %{tokens: nil} = s),
+    do: {:reply, {:error, "no ChatGPT subscription is connected to this node"}, s}
+
+  def handle_call(:token, _from, s) do
+    s = if expires_in(s.tokens) < @margin_s, do: do_refresh(s), else: s
+    {:reply, credentials(s), s}
+  end
+
+  def handle_call({:refresh, stale}, _from, %{tokens: %{"access_token" => stale}} = s) do
+    s = do_refresh(s)
+    {:reply, credentials(s), s}
+  end
+
+  def handle_call({:refresh, _}, _from, s), do: {:reply, credentials(s), s}
+
+  # Anyone may call or cast this process anything (an agent's eval, say); what it does not
+  # know is refused or ignored, never a crash that would lose a login in progress.
+  def handle_call(_msg, _from, s), do: {:reply, {:error, :unknown_call}, s}
+
+  defp begin_login(s) do
     case post(auth_url() <> "/api/accounts/deviceauth/usercode", json: %{client_id: @client_id}) do
       {:ok, 200, %{"device_auth_id" => id} = body} ->
         code = body["user_code"] || body["usercode"]
@@ -175,30 +229,6 @@ defmodule Nano.ChatGPT.Auth do
         fail(s, "could not get a login code: #{why(other)}")
     end
   end
-
-  def handle_call(:logout, _from, s) do
-    File.rm(path())
-    {:reply, :ok, publish(schedule(%{s | tokens: nil, login: nil, error: nil}))}
-  end
-
-  def handle_call(:token, _from, %{tokens: nil} = s),
-    do: {:reply, {:error, "no ChatGPT subscription is connected to this node"}, s}
-
-  def handle_call(:token, _from, s) do
-    s = if expires_in(s.tokens) < @margin_s, do: do_refresh(s), else: s
-    {:reply, credentials(s), s}
-  end
-
-  def handle_call({:refresh, stale}, _from, %{tokens: %{"access_token" => stale}} = s) do
-    s = do_refresh(s)
-    {:reply, credentials(s), s}
-  end
-
-  def handle_call({:refresh, _}, _from, s), do: {:reply, credentials(s), s}
-
-  # Anyone may call or cast this process anything (an agent's eval, say); what it does not
-  # know is refused or ignored, never a crash that would lose a login in progress.
-  def handle_call(_msg, _from, s), do: {:reply, {:error, :unknown_call}, s}
 
   @impl true
   def handle_cast(_msg, s), do: {:noreply, s}
@@ -261,7 +291,7 @@ defmodule Nano.ChatGPT.Auth do
 
     case post(auth_url() <> "/oauth/token", form: form) do
       {:ok, 200, %{"access_token" => _, "refresh_token" => _} = body} ->
-        store(s, body)
+        store(s, body, :explicit)
 
       other ->
         publish(%{
@@ -282,21 +312,23 @@ defmodule Nano.ChatGPT.Auth do
 
     case if(permanent?(result), do: :permanent, else: result) do
       {:ok, 200, %{"access_token" => _} = new} ->
-        store(s, new)
+        store(s, new, s.generation)
 
       # The refresh token is expired, revoked or already used: only a new login helps.
       :permanent ->
         Logger.warning("Nano.ChatGPT.Auth: refresh refused (#{why(result)}); signing out")
-        File.rm(path())
+        invalidation = Nano.Safety.credential_invalidate("chatgpt_auth.json", s.generation)
 
-        publish(
-          schedule(%{
-            s
-            | tokens: nil,
-              error:
-                "the ChatGPT sign-in has expired or was revoked (#{why(result)}); connect again"
-          })
-        )
+        error =
+          case invalidation do
+            {:ok, _} ->
+              "the ChatGPT sign-in has expired or was revoked (#{why(result)}); connect again"
+
+            {:error, reason} ->
+              reason
+          end
+
+        publish(schedule(%{s | tokens: nil, login: nil, generation: nil, error: error}))
 
       # Transient: keep the tokens (the access token may still be good) and try again soon.
       other ->
@@ -319,8 +351,8 @@ defmodule Nano.ChatGPT.Auth do
   defp permanent?(_), do: false
 
   # New tokens (a refresh may omit what did not change) are written to disk before they are used.
-  defp store(s, new) do
-    claims = claims(new["id_token"] || s.tokens["id_token"])
+  defp store(s, new, expected) do
+    claims = claims(new["id_token"] || (s.tokens || %{})["id_token"])
     access = claims(new["access_token"])
     auth = claims["https://api.openai.com/auth"] || access["https://api.openai.com/auth"] || %{}
 
@@ -333,31 +365,21 @@ defmodule Nano.ChatGPT.Auth do
         "expires_at" => access["exp"] || System.system_time(:second) + (new["expires_in"] || 3600)
       })
 
-    case write(tokens) do
-      :ok ->
-        publish(schedule(%{s | tokens: tokens, error: nil}))
+    case Nano.Safety.credential_write("chatgpt_auth.json", tokens, expected) do
+      {:ok, generation} ->
+        publish(schedule(%{s | tokens: tokens, generation: generation, error: nil}))
 
       {:error, reason} ->
+        cancel(s.timer)
         # Not saved, so not used: a rotated refresh token that only lived in memory would be
         # lost at the next restart.
         publish(%{
           s
-          | error: "could not save the ChatGPT tokens to #{path()}: #{inspect(reason)}"
+          | tokens: nil,
+            generation: nil,
+            timer: nil,
+            error: "could not save ChatGPT tokens: #{inspect(reason)}"
         })
-    end
-  end
-
-  # Readable by its owner only, and never half-written: the content goes into a 0600 temp file
-  # that then replaces the old one.
-  defp write(tokens) do
-    tmp = path() <> ".tmp"
-
-    with :ok <- File.mkdir_p(Path.dirname(tmp)),
-         :ok <- File.write(tmp, ""),
-         :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.write(tmp, Jason.encode!(tokens)),
-         :ok <- Nano.Safety.backup(path(), Jason.encode!(tokens)) do
-      File.rename(tmp, path())
     end
   end
 
@@ -457,14 +479,17 @@ defmodule Nano.ChatGPT.Auth do
   defp why({:ok, 200, _}), do: "HTTP 200 without the expected fields"
 
   defp why({:ok, status, body}) do
-    case code(body) || (is_map(body) && body["error_description"]) do
-      detail when is_binary(detail) -> "HTTP #{status}: #{String.slice(detail, 0, 200)}"
-      _ -> "HTTP #{status}"
+    case code(body) do
+      detail
+      when detail in ~w(access_denied invalid_grant invalid_request invalid_client unauthorized_client unsupported_grant_type slow_down deviceauth_authorization_pending refresh_token_expired refresh_token_reused refresh_token_invalidated) ->
+        "HTTP #{status}: #{detail}"
+
+      _ ->
+        "HTTP #{status}"
     end
   end
 
-  defp why({:error, message}), do: message
+  defp why({:error, _message}), do: "transport failure"
 
-  defp path, do: Path.join(Application.fetch_env!(:nano, :state_dir), "chatgpt_auth.json")
   defp auth_url, do: Nano.Settings.get(:chatgpt_auth_url)
 end

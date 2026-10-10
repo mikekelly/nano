@@ -1,0 +1,166 @@
+defmodule Nano.CredentialIntentTest do
+  use ExUnit.Case, async: false
+  alias Nano.Safety
+
+  setup do
+    root =
+      Path.join(
+        Application.fetch_env!(:nano, :test_dir),
+        "u07-" <> Base.encode16(:crypto.strong_rand_bytes(8))
+      )
+
+    state = Path.join(root, "state")
+    safety = Path.join(root, "safety")
+
+    saved =
+      for key <- [:state_dir, :safety_dir],
+          into: %{},
+          do: {key, Application.fetch_env!(:nano, key)}
+
+    Application.put_env(:nano, :state_dir, state)
+    Application.put_env(:nano, :safety_dir, safety)
+
+    on_exit(fn ->
+      Enum.each(saved, fn {key, value} -> Application.put_env(:nano, key, value) end)
+      File.rm_rf!(root)
+    end)
+
+    %{state: state, safety: safety}
+  end
+
+  defp intent(safety), do: Path.join([safety, "credentials", "intent-v1.json"])
+  defp barrier(safety), do: Path.join([safety, "credentials", "intent-blocked-v1.json"])
+
+  defp auth,
+    do: %{
+      "access_token" => "fixture-access",
+      "refresh_token" => "fixture-refresh",
+      "account_id" => "fixture-account"
+    }
+
+  test "explicit provision; revoked generation loses to login and stale refresh", ctx do
+    assert {:error, _} = Safety.credential_write("chatgpt_auth.json", auth())
+    assert :ok = Safety.provision_new_credentials(:new_installation)
+    assert {:ok, g1} = Safety.credential_write("chatgpt_auth.json", auth())
+
+    assert {:ok, ^g1} =
+             Safety.credential_write(
+               "chatgpt_auth.json",
+               Map.put(auth(), "refresh_token", "rotated"),
+               g1
+             )
+
+    assert {:ok, nil} = Safety.credential_invalidate("chatgpt_auth.json", g1)
+    refute File.exists?(Path.join(ctx.state, "chatgpt_auth.json"))
+    assert {:error, :stale} = Safety.credential_write("chatgpt_auth.json", auth(), g1)
+    assert :ok = Safety.reconcile_credentials()
+    assert {:ok, %{}, nil} = Safety.credential_read("chatgpt_auth.json")
+    assert {:ok, g2} = Safety.credential_write("chatgpt_auth.json", auth())
+    assert g2 > g1
+    assert {:error, :stale} = Safety.credential_invalidate("chatgpt_auth.json", g1)
+
+    assert get_in(Jason.decode!(File.read!(intent(ctx.safety))), [
+             "entries",
+             "chatgpt_auth.json",
+             "generation"
+           ]) == g2
+  end
+
+  test "failures after intent/backup/primary commit preserve invalidation and block until reconciliation",
+       ctx do
+    for boundary <- [:backup, :primary, :mirror] do
+      File.rm_rf!(ctx.state)
+      File.rm_rf!(ctx.safety)
+      assert :ok = Safety.provision_new_credentials(:new_installation)
+      assert {:ok, generation} = Safety.credential_write("chatgpt_auth.json", auth())
+
+      target =
+        case boundary do
+          :backup -> Path.join([ctx.safety, "credentials", "chatgpt_auth.json"])
+          :primary -> Path.join(ctx.state, "chatgpt_auth.json")
+          :mirror -> Path.join(ctx.state, "credential-intent-v1.json")
+        end
+
+      File.rm!(target)
+      File.mkdir!(target)
+      assert {:error, _} = Safety.credential_invalidate("chatgpt_auth.json", generation)
+      assert File.exists?(barrier(ctx.safety))
+      durable = Jason.decode!(File.read!(intent(ctx.safety)))
+      assert durable["entries"]["chatgpt_auth.json"]["state"] == "invalidated"
+      assert {:error, _} = Safety.credential_write("chatgpt_auth.json", auth())
+      assert {:error, _} = Safety.credential_read("chatgpt_auth.json")
+      # Compatible restoration retains the newest authority, not an old checkpoint.
+      File.rmdir!(target)
+      assert :ok = Safety.reconcile_credentials()
+      assert {:ok, %{}, nil} = Safety.credential_read("chatgpt_auth.json")
+      assert {:error, :stale} = Safety.credential_write("chatgpt_auth.json", auth(), generation)
+    end
+  end
+
+  test "lost protected authority cannot be recreated from mirror or backup", ctx do
+    assert :ok = Safety.provision_new_credentials(:new_installation)
+    assert {:ok, _} = Safety.credential_write("chatgpt_auth.json", auth())
+    File.rm!(intent(ctx.safety))
+    assert {:error, _} = Safety.reconcile_credentials()
+    assert {:error, _} = Safety.reconcile_legacy_credentials(:legacy_installation)
+    assert {:error, _} = Safety.provision_new_credentials(:new_installation)
+    assert {:error, _} = Safety.credential_invalidate("chatgpt_auth.json")
+    refute File.exists?(intent(ctx.safety))
+  end
+
+  test "legacy reconciliation rejects stale backup-only and conflicting copies, preserves originals",
+       ctx do
+    File.mkdir_p!(Path.join(ctx.safety, "credentials"))
+    File.mkdir_p!(ctx.state)
+    backup = Path.join([ctx.safety, "credentials", "chatgpt_auth.json"])
+    File.write!(backup, Jason.encode!(auth()))
+    assert {:error, _} = Safety.reconcile_legacy_credentials(:legacy_installation)
+
+    File.write!(
+      Path.join(ctx.state, "chatgpt_auth.json"),
+      Jason.encode!(Map.put(auth(), "refresh_token", "different"))
+    )
+
+    assert {:error, _} = Safety.reconcile_legacy_credentials(:legacy_installation)
+    File.write!(Path.join(ctx.state, "chatgpt_auth.json"), Jason.encode!(auth()))
+    assert :ok = Safety.reconcile_legacy_credentials(:legacy_installation)
+    assert {:ok, tokens, _} = Safety.credential_read("chatgpt_auth.json")
+    assert tokens == auth()
+
+    [evidence] =
+      Path.wildcard(
+        Path.join([ctx.safety, "credentials", "legacy-*", "primary-chatgpt_auth.json"])
+      )
+
+    assert Jason.decode!(File.read!(evidence)) == auth()
+  end
+
+  test "Settings secrets removed by intent never survive older primary and backups", ctx do
+    assert :ok = Safety.provision_new_credentials(:new_installation)
+
+    assert {:ok, _} =
+             Safety.credential_write("settings.json", %{
+               "openrouter_api_key" => "fixture",
+               "OTHER_KEY" => "other",
+               "eval_timeout_ms" => 1
+             })
+
+    assert {:ok, _} =
+             Safety.credential_write("settings.json", %{
+               "OTHER_KEY" => "other",
+               "eval_timeout_ms" => 999
+             })
+
+    File.write!(
+      Path.join(ctx.state, "settings.json"),
+      ~s({"OPENROUTER_API_KEY":"obsolete","other_key":"obsolete-alias","eval_timeout_ms":777})
+    )
+
+    assert {:ok, values, _} = Safety.credential_read("settings.json")
+    refute Map.has_key?(values, "openrouter_api_key")
+    assert values["OTHER_KEY"] == "other"
+    assert values["eval_timeout_ms"] == 777
+    assert :ok = Safety.reconcile_credentials()
+    refute File.read!(Path.join(ctx.state, "settings.json")) =~ "obsolete"
+  end
+end
