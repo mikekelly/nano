@@ -6,6 +6,9 @@ defmodule Nano.Model do
   change at any time). Both take and return the same
   shapes, so the agent need not know which. The model lists of both are checked here, in one place, before an agent starts (`check/3`).
   The start form picks a provider, then a model there, and joins them back into a slug.
+  Entries retain `input_modalities` from each provider; absent capability data is text-only.
+  `NanoAgent` persists that list at start, so restored agents do not depend on a model-list
+  refresh. Image parts contain immutable `Nano.Images` refs until providers build requests.
   """
 
   @prefix "openai-codex/"
