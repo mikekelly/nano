@@ -29,7 +29,8 @@ unchanged: those are historical evidence, not portable parallel launch commands.
 ## Two-VM write-path evidence
 
 `run_pair.sh` takes an exact 40-character `NANO_TEST_REVISION` from the current Git
-repository and archives it into two private source trees. Supply absolute,
+repository and clones it without local hardlinks/shared object metadata into two
+private source trees, preserving ancestry needed by bootstrap reconciliation tests. Supply absolute,
 canonical caller-owned `NANO_TEST_PAIR_ROOT` (must not exist),
 `NANO_TEST_PAIR_TMP`, `NANO_TEST_DEPS_SOURCE`, `NANO_TEST_MIX_SOURCE`,
 `NANO_TEST_HEX_SOURCE`, and `NANO_TEST_STRACE` (strace executable). Set

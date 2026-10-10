@@ -40,6 +40,41 @@ defmodule Nano.Flywheel.U02.IsolationTest do
     assert File.exists?(Path.join([root, "web", page.id <> ".json"]))
   end
 
+  test "production environment fallback remains available when optional routing keys are absent" do
+    root = Application.fetch_env!(:nano, :test_dir)
+
+    saved =
+      for {key, env} <- [web_cache_dir: "NANO_WEB_CACHE_DIR", safety_dir: "NANO_SAFETY_DIR"],
+          do: {key, env, Application.fetch_env!(:nano, key), System.fetch_env!(env)}
+
+    on_exit(fn ->
+      for {key, env, value, inherited} <- saved do
+        Application.put_env(:nano, key, value)
+        System.put_env(env, inherited)
+      end
+    end)
+
+    for {key, env, _, _} <- saved do
+      Application.delete_env(:nano, key)
+      System.put_env(env, Path.join(root, "fallback-" <> Atom.to_string(key)))
+    end
+
+    safety = Path.join(root, "fallback-safety_dir")
+    assert Nano.Safety.root() == safety
+    File.mkdir_p!(safety)
+    File.write!(Path.join(safety, "config.json"), "{}")
+    assert :ok = Nano.Safety.backup("u02-fallback.json", ~s({"fake":"fallback"}))
+    assert File.exists?(Path.join([safety, "credentials", "u02-fallback.json"]))
+    {:ok, server} = Bandit.start_link(plug: Nano.WebTest.Page, port: 0, ip: {127, 0, 0, 1})
+    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+    assert {:ok, page} = Nano.Web.fetch("http://127.0.0.1:#{port}/article", js: false)
+    assert {:ok, _} = Nano.Web.read(page.id)
+    assert File.exists?(Path.join([root, "fallback-web_cache_dir", page.id <> ".json"]))
+    System.delete_env("NANO_SAFETY_DIR")
+    # pure path selection, no shared-store access
+    assert Nano.Safety.root() == "/data/safety"
+  end
+
   test "default safety backup uses private configured root before publishing credentials" do
     root = Nano.Safety.root()
     File.mkdir_p!(root)

@@ -18,7 +18,24 @@ class AuditWritesTest(unittest.TestCase):
         self.assertIn('/private/b/new', result['paths'])
         self.assertEqual(result['parse_errors'], [])
 
+    def test_shared_thread_cwd_and_fd_aliases_are_resolved(self):
+        result = audit([
+            '1 clone(child_stack=NULL, flags=CLONE_FS) = 2',
+            '2 chdir("/private/new") = 0',
+            '1 mkdir("relative", 0700) = 0',
+            '1 openat(AT_FDCWD</private/new>, "/proc/self/fd/2", O_WRONLY) = 4</private/log>',
+            '1 openat(AT_FDCWD</private/new>, "/dev/null", O_WRONLY) = 5</dev/null<char 1:3>>',
+        ], '/other', ['/private'])
+        self.assertTrue(result['passed'])
+        self.assertIn('/private/new/relative', result['paths'])
+        self.assertIn('/private/log', result['paths'])
+        self.assertNotIn('/proc/self/fd/2', result['paths'])
+
+    def test_unparsed_mutation_fails_closed(self):
+        self.assertFalse(audit(['1 mkdir("/private/new", 0700) = ?'], '/private', ['/private'])['passed'])
+
     def test_read_and_failed_writes_do_not_claim_mutation(self):
+
         result = audit(['1 openat(AT_FDCWD</outside>, "file", O_RDONLY) = 3</outside/file>',
                         '1 unlink("/outside/missing") = -1 ENOENT (No such file)',
                         '1 openat(AT_FDCWD</outside>, "/dev/null", O_WRONLY) = 4</dev/null>'], '/cwd', ['/private'])

@@ -74,15 +74,20 @@ def audit(lines, cwd, roots):
                 errors.append({'line': number, 'reason': 'unmatched resumed syscall'}); continue
             text = pending.pop(pid) + resumed.group(2)
         m = re.match(r'(\w+)\((.*)\)\s+=\s+(-?\d+)(.*)', text)
-        if not m: continue
+        if not m:
+            call = text.split('(')[0]
+            if call in MUTATIONS or (call in ['open', 'openat'] and re.search(r'O_(WRONLY|RDWR|CREAT|TRUNC|APPEND)', text)):
+                errors.append({'line': number, 'reason': 'unparsed mutation'})
+            continue
         call, argstr, result, suffix = m.groups()
         result = int(result)
         args = split_args(argstr)
-        current = directories.get(pid, cwd)
+        directory = directories.setdefault(pid, {'cwd': cwd})
+        current = directory['cwd']
         if call in ['clone', 'clone3', 'fork', 'vfork'] and result > 0:
-            directories[str(result)] = current
+            directories[str(result)] = directory if 'CLONE_FS' in argstr else dict(directory)
         elif call in ['chdir', 'fchdir'] and result == 0:
-            directories[pid] = operand(args, 0, current)
+            directory['cwd'] = operand(args, 0, current)
         indices = MUTATIONS.get(call)
         if call in ['open', 'openat']:
             if not re.search(r'\bO_(WRONLY|RDWR|CREAT|TRUNC|APPEND)\b', argstr): continue

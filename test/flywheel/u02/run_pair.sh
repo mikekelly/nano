@@ -14,7 +14,9 @@ run_one() (
   root="$NANO_TEST_PAIR_ROOT/$name"
   tmp=$(mktemp -d "$NANO_TEST_PAIR_TMP/$name-XXXXXXXX")
   mkdir -p "$root/tree" "$root/home" "$root/mix" "$root/hex"
-  git -C "$source" archive "$NANO_TEST_REVISION" | tar -x -C "$root/tree"
+  # Keep ancestry for bootstrap reconciliation tests, without shared objects/worktree metadata.
+  git clone --quiet --no-local --no-hardlinks "$source" "$root/tree"
+  git -C "$root/tree" -c advice.detachedHead=false checkout --quiet --detach "$NANO_TEST_REVISION"
   cp -RL "$NANO_TEST_DEPS_SOURCE" "$root/tree/deps"
   cp -RL "$NANO_TEST_MIX_SOURCE/." "$root/mix/"
   cp -RL "$NANO_TEST_HEX_SOURCE/." "$root/hex/"
@@ -29,10 +31,14 @@ run_one() (
   printf '%s\n' "$NANO_TEST_REVISION" > "$root/revision.txt"
   printf '%s\n' "$tmp" > "$root/tmp.txt"
   # Include compilation/dependency outputs, application boot, all children and both suites.
-  "$NANO_TEST_STRACE" -f -qq -yy -s 4096 -e "trace=$calls" -o "$root/writes.strace" \
+  status=0
+  audit_status=0
+  "$NANO_TEST_STRACE" --seccomp-bpf -f -qq -yy -s 4096 -e "trace=$calls" -o "$root/writes.strace" \
     sh -c 'mix deps.compile && mix run --no-start test/flywheel/u02/run.exs --full && mix test --seed 17 && unset MIX_BUILD_PATH && NANO_SAFETY_BEAM_TEST=1 python3 -m unittest discover -s scripts/safety -p "test_*.py" -v' \
-    > "$root/tests.log" 2>&1
-  python3 test/flywheel/u02/audit_writes.py "$root/writes.strace" "$root/tree" "$root/writes.json" "$root" "$tmp" > "$root/audit.log"
+    > "$root/tests.log" 2>&1 || status=$?
+  python3 test/flywheel/u02/audit_writes.py "$root/writes.strace" "$root/tree" "$root/writes.json" "$root" "$tmp" > "$root/audit.log" || audit_status=$?
+  printf 'tests=%s audit=%s\n' "$status" "$audit_status" > "$root/exits.txt"
+  [ "$status" -eq 0 ] && [ "$audit_status" -eq 0 ]
 )
 run_one a & a=$!
 run_one b & b=$!

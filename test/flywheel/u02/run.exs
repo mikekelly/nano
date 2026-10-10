@@ -37,7 +37,10 @@ for {key, path} <- external do
     do: raise("unsafe tool path: #{key}")
 end
 
-for {key, path} <- Map.merge(paths, external) do
+report = System.fetch_env!("NANO_TEST_PATH_REPORT") |> Path.expand()
+unless String.starts_with?(report, private <> "/"), do: raise("unsafe report path")
+
+for {key, path} <- Map.merge(paths, external) |> Map.put("report", report) do
   Enum.reduce(Path.split(Path.expand(path)), "", fn part, acc ->
     current = if acc == "" and part == "/", do: "/", else: Path.join(acc, part)
 
@@ -50,7 +53,6 @@ for {key, path} <- Map.merge(paths, external) do
   end)
 end
 
-report = System.fetch_env!("NANO_TEST_PATH_REPORT")
 File.write!(report, Jason.encode!(Map.merge(paths, external)))
 IO.puts("U02 effective private path audit: " <> Jason.encode!(Map.merge(paths, external)))
 {:ok, _} = Application.ensure_all_started(:nano)
