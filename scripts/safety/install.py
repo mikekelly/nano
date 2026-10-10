@@ -32,7 +32,7 @@ def main():
     if not shutil.which('python3') or not shutil.which('elixir'):
         parser.error('python3 and elixir are required at every container start')
     config = {
-        'app': str(app), 'state_dir': str(Path(args.state_dir).resolve()),
+        'app': str(app), 'deps_path': str(Path(os.environ.get('MIX_DEPS_PATH') or app / 'deps').resolve()), 'state_dir': str(Path(args.state_dir).resolve()),
         'health_url': 'http://127.0.0.1:%d/api/safety/health' % args.port,
         'command': ['sh', '-c', 'exec elixir --name nano@127.0.0.1 --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" -S mix run --no-halt'],
         'env': {'MIX_ENV': 'prod', 'PORT': str(args.port)},

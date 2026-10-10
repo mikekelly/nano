@@ -15,6 +15,8 @@ defmodule Nano.SafetyTest do
 
   test "status distinguishes absent, stale, disabled and protected", %{root: root} do
     assert %{protected: false, state: "not_installed"} = Nano.Safety.status(root)
+    File.write!(Path.join(root, "config.json"), "{}")
+    assert %{protected: false, state: "pending_restart"} = Nano.Safety.status(root)
     path = Path.join(root, "status.json")
     File.write!(path, Jason.encode!(%{state: "watching", updated: 0}))
     refute Nano.Safety.status(root)["protected"]

@@ -47,6 +47,7 @@ class RealBeamRecovery(unittest.TestCase):
             root.mkdir(mode=0o700); state.mkdir()
             shutil.copytree(SOURCE, app, ignore=shutil.ignore_patterns('.git', '_build', 'tmp', '__pycache__'))
             self.assertTrue((app / 'deps' / 'phoenix').is_dir(), 'copy dependencies into assigned worktree first')
+            subprocess.run(['git', 'init', '-q', str(app)], check=True)
             provider = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
             provider.rotations = 0
             thread = threading.Thread(target=provider.serve_forever, daemon=True); thread.start()
@@ -58,7 +59,7 @@ class RealBeamRecovery(unittest.TestCase):
             for name, data in [('settings.json', settings), ('chatgpt_auth.json', tokens)]:
                 atomic(state / name, json.dumps(data).encode())
                 atomic(root / 'credentials' / name, json.dumps(data).encode())
-            config = dict(app=str(app), state_dir=str(state), health_url=f'http://127.0.0.1:{port}/api/safety/health',
+            config = dict(app=str(app), deps_path=str(app / 'deps'), state_dir=str(state), health_url=f'http://127.0.0.1:{port}/api/safety/health',
                           command=['elixir', '-S', 'mix', 'run', '--no-halt'],
                           env=dict(MIX_ENV='dev', ERL_FLAGS='+S 2:2', PORT=str(port), LISTEN_IP='127.0.0.1',
                                    LOG_DIR=str(base / 'logs'), SPILL_DIR=str(base / 'spill'), ERL_CRASH_DUMP=str(base / 'crash.dump')),
@@ -78,6 +79,8 @@ class RealBeamRecovery(unittest.TestCase):
             try:
                 proc = start(); ready()
                 self.assertFalse((root / 'good.json').exists(), 'HTTP alone must not qualify')
+                self.assertEqual(evaluate('File.cwd!() == ' + json.dumps(str(app)))['result'], 'true')
+                self.assertEqual(evaluate('case System.cmd("git", ["rev-parse", "--show-toplevel"]) do {path, 0} -> String.trim(path) == File.cwd!(); _ -> false end')['result'], 'true')
                 result = evaluate('case NanoAgent.start(name: "safety-fixture", model: "fixture/model", reasoning: "off", max_turns: 0, max_tokens: 0, max_context: 100000, system_prompt: "Disposable safety test; reply briefly.") do {:ok, _} -> NanoAgent.notify("safety-fixture", :fixture); :ok; _ -> :error end')
                 self.assertEqual(result['result'], ':ok')
                 wait_for(lambda: read_json(root / 'good.json'), 10)
@@ -113,6 +116,16 @@ class RealBeamRecovery(unittest.TestCase):
                 self.assertEqual((app / 'lib' / 'broken.ex').read_text(), broken)
                 candidate = read_json(root / 'candidate.json')
                 self.assertEqual((Path(candidate['source']) / 'lib' / 'broken.ex').read_text(), broken)
+                # Independently remove the original dependency tree. Served fallback
+                # must still compile/boot from captured private /data sources.
+                proc.terminate(); proc.wait(timeout=15)
+                shutil.rmtree(app / 'deps')
+                atomic(root / 'budget.json', b'{"attempts":0}')
+                proc = start(); ready()
+                self.assertEqual(status()['evidence_source'], good['source'])
+                self.assertTrue(status()['fallback'])
+                self.assertFalse((app / 'deps').exists())
+                self.assertEqual(evaluate('NanoAgent.info("safety-fixture") != nil')['result'], 'true')
                 notices = (root / 'notices.jsonl').read_text()
                 for kind in ['lockup', 'credentials_restored', 'boot_or_runtime_exit']:
                     self.assertIn(kind, notices)

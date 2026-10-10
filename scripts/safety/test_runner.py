@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -43,7 +44,7 @@ class RecoveryTest(unittest.TestCase):
         self.state = self.base / 'state'; self.state.mkdir()
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
-        self.config = dict(app=str(self.app), state_dir=str(self.state), health_url=f'http://127.0.0.1:{port}/api/safety/health',
+        self.config = dict(app=str(self.app), deps_path=str(self.app / 'deps'), state_dir=str(self.state), health_url=f'http://127.0.0.1:{port}/api/safety/health',
                            command=[sys.executable, 'node.py'], env={'PORT': str(port)}, interval=.05,
                            probe_timeout=.1, lockup_timeout=.3, boot_timeout=1, backoff=.1,
                            max_attempts=3, stable_seconds=100)
@@ -241,6 +242,21 @@ class RecoveryTest(unittest.TestCase):
         os.kill(pid, 0)
         self.assertEqual(self.status()['state'], 'watching')
         self.assertFalse((self.root / 'good.json').exists())
+
+    def test_external_dependency_capture_survives_original_loss(self):
+        external = self.base / 'image-deps'; external.mkdir()
+        (external / 'fixture_dep.py').write_text('VALUE = "captured"')
+        self.config['deps_path'] = str(external); self.save_config()
+        (self.app / 'node.py').write_text('import os, sys\nsys.path.insert(0, os.environ["MIX_DEPS_PATH"])\nimport fixture_dep\nassert fixture_dep.VALUE == "captured"\n' + FIXTURE)
+        self.start(); good = self.good(); self.stop()
+        self.assertEqual((Path(good['source']) / 'deps' / 'fixture_dep.py').read_text(), 'VALUE = "captured"')
+        self.assertFalse((Path(good['source']) / 'deps' / '__pycache__').exists())
+        shutil.rmtree(external)
+        atomic(self.root / 'budget.json', b'{"attempts":0}')
+        self.start()
+        wait_for(lambda: self.status().get('state') == 'watching')
+        self.assertTrue(self.status()['fallback'])
+        self.assertEqual(self.status()['evidence_source'], good['source'])
 
     def test_single_owner(self):
         self.start(); self.good()
