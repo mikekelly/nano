@@ -40,7 +40,8 @@ defmodule Nano.RawLog do
   still there; each is written whole (a temp file, renamed).
 
   Headers that carry credentials (authorization, chatgpt-account-id, cookies, anything named
-  like a key, token or secret) are written as `[redacted]`. The bodies are not: a request
+  like a key, token or secret) are written as `[redacted]`. Inline image data URLs in
+  request and response bodies are redacted as well. Otherwise a request
   holds the agent's whole conversation.
 
   Recording never fails or holds up a model call: a file that cannot be written is skipped,
@@ -223,7 +224,17 @@ defmodule Nano.RawLog do
   defp body(body) when is_binary(body) or is_list(body), do: body
   defp body(other), do: inspect(other)
 
+  @doc "Removes inline image payloads from logged wire bytes and provider errors."
+  def redact(value) when is_binary(value) do
+    Regex.replace(~r/data:image(?:\\\/|\/)[^\s"'<>]+/i, value, "[redacted image data URL]")
+  end
+
+  def redact(value) when is_list(value), do: Enum.map(value, &redact/1)
+  def redact(value) when is_map(value), do: Map.new(value, fn {k, v} -> {k, redact(v)} end)
+  def redact(value), do: value
+
   # Whole or not at all; never raises.
+
   defp write(name, content) do
     path = Path.join(dir(), name)
     tmp = path <> ".tmp"
@@ -231,7 +242,7 @@ defmodule Nano.RawLog do
     result =
       try do
         with :ok <- File.mkdir_p(Path.dirname(path)),
-             :ok <- File.write(tmp, content.()),
+             :ok <- File.write(tmp, content.() |> IO.iodata_to_binary() |> redact()),
              do: File.rename(tmp, path)
       rescue
         e -> {:error, Exception.message(e)}

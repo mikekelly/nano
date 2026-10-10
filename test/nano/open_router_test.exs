@@ -14,6 +14,7 @@ defmodule Nano.OpenRouterTest do
     Fake.models([
       %{
         "id" => "b/two",
+        "architecture" => %{"input_modalities" => ["text", "image"]},
         "name" => "Two",
         "context_length" => 1000,
         "top_provider" => %{"context_length" => 1000, "max_completion_tokens" => 400},
@@ -25,6 +26,7 @@ defmodule Nano.OpenRouterTest do
     assert [
              %{
                id: "a/one",
+               input_modalities: ["text"],
                name: "One",
                context_length: 2000,
                max_output: nil,
@@ -33,6 +35,7 @@ defmodule Nano.OpenRouterTest do
              },
              %{
                id: "b/two",
+               input_modalities: ["text", "image"],
                name: "Two",
                context_length: 1000,
                max_output: 400,
