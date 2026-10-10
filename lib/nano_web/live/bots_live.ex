@@ -8,6 +8,8 @@ defmodule NanoWeb.BotsLive do
 
     {:ok,
      assign(s,
+       runtime_server: session["bots_runtime_server"] || Nano.Bots.Runtime,
+       notices: [],
        composer_key: new_key(),
        server: session["bots_server"] || Nano.Bots.Store,
        bots: [],
@@ -48,7 +50,7 @@ defmodule NanoWeb.BotsLive do
     previews =
       Map.new(s.assigns.sessions, fn c ->
         preview =
-          case Bots.list_messages(c.id, opts(s) ++ [limit: 200]) do
+          case Bots.list_messages(c.id, opts(s) ++ [tail: true, limit: 1]) do
             {:ok, %{messages: messages}} ->
               case List.last(messages) do
                 nil -> "No messages yet"
@@ -62,7 +64,7 @@ defmodule NanoWeb.BotsLive do
         {c.id, preview}
       end)
 
-    s = assign(s, previews: Map.merge(previews, s.assigns.previews))
+    s = assign(s, previews: previews, notices: runtime_notices(s))
     s = if s.assigns.current, do: select(s, s.assigns.current.id), else: s
 
     if s.assigns.memory_bot,
@@ -78,15 +80,7 @@ defmodule NanoWeb.BotsLive do
          {:ok, page} <-
            Bots.list_messages(
              id,
-             opts(s) ++
-               [
-                 after:
-                   if(s.assigns.current && s.assigns.current.id == id,
-                     do: max(s.assigns.cursor - 150, 0),
-                     else: 0
-                   ),
-                 limit: 200
-               ]
+             opts(s) ++ [tail: true, limit: 50]
            ) do
       assign(s,
         current: chat,
@@ -226,12 +220,14 @@ defmodule NanoWeb.BotsLive do
   def handle_event("stop", _, s), do: mutate(s, Bots.stop_session(s.assigns.current.id, opts(s)))
 
   def handle_event("more", _, s) do
-    case Bots.list_messages(s.assigns.current.id, opts(s) ++ [after: s.assigns.cursor, limit: 50]) do
+    case Bots.list_messages(
+           s.assigns.current.id,
+           opts(s) ++ [tail: true, before: hd(s.assigns.messages).sequence, limit: 50]
+         ) do
       {:ok, p} ->
         {:noreply,
          assign(s,
-           messages: Enum.take(s.assigns.messages ++ p.messages, -200),
-           cursor: p.next_cursor,
+           messages: Enum.take(p.messages ++ s.assigns.messages, 200),
            has_more: p.has_more
          )}
 
@@ -265,13 +261,6 @@ defmodule NanoWeb.BotsLive do
     mutate(s, Bots.update_session(s.assigns.current.id, %{notification_prefs: prefs}, opts(s)))
   end
 
-  defp parse_limit(value, low, high) do
-    case Integer.parse(value || "") do
-      {n, ""} -> max(low, min(n, high))
-      _ -> low
-    end
-  end
-
   def handle_event("memory", %{"id" => id}, s),
     do: {:noreply, reload(assign(s, memory_bot: id))}
 
@@ -298,6 +287,9 @@ defmodule NanoWeb.BotsLive do
         {:noreply, assign(s, error: "Change could not be saved")}
     end
   end
+
+  def handle_info({:bots, :runtime_notice, _}, s),
+    do: {:noreply, assign(s, notices: runtime_notices(s))}
 
   def handle_info({:bots, :runtime_status, %{session_id: sid, bot_id: bid, status: status}}, s) do
     if status in [:thinking, :idle, :error, :stopped] do
@@ -335,6 +327,29 @@ defmodule NanoWeb.BotsLive do
   end
 
   def handle_info(_, s), do: {:noreply, s}
+
+  defp parse_limit(value, low, high) do
+    case Integer.parse(value || "") do
+      {n, ""} -> max(low, min(n, high))
+      _ -> low
+    end
+  end
+
+  defp runtime_notices(s) do
+    if Code.ensure_loaded?(Nano.Bots.Runtime) &&
+         function_exported?(Nano.Bots.Runtime, :notices, 1) do
+      try do
+        case apply(Nano.Bots.Runtime, :notices, [[server: s.assigns.runtime_server]]) do
+          {:ok, records} when is_list(records) -> Enum.take(records, -200)
+          _ -> []
+        end
+      catch
+        :exit, _ -> []
+      end
+    else
+      []
+    end
+  end
 
   defp candidates(a),
     do:
@@ -497,10 +512,10 @@ defmodule NanoWeb.BotsLive do
               id={"message-" <> m.id}
               class={if m.actor == :human, do: "message human", else: "message bot"}
             >
-              <strong>{actor(assigns, m.actor)}</strong><div class="message-text">
+              <strong>{actor(assigns, m.actor)}</strong><small :if={Map.get(m, :request_id)}>Answer to human request</small><div class="message-text">
                 {Nano.Bots.Render.markdown(m.text)}
               </div><.attachment :for={ref <- m.attachments} ref={ref} />
-            </article><button :if={@has_more} phx-click="more">Load next messages</button>
+            </article><button :if={@has_more} phx-click="more">Load older messages</button>
           </div>
           <section
             :for={r <- @requests}

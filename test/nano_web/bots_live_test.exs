@@ -131,4 +131,28 @@ defmodule NanoWeb.BotsLiveTest do
     assert {:ok, %{notification_prefs: %{min_interval_ms: 600_000, max_per_hour: 2}}} =
              Nano.Bots.get_session(c.id, o)
   end
+
+  test "opens newest history and pages older within a bounded window", %{conn: conn, store: store} do
+    o = [server: store]
+    {:ok, b} = Nano.Bots.create_bot(%{name: "History"}, o)
+    {:ok, c} = Nano.Bots.create_session(%{participant_ids: [b.id]}, o)
+
+    for i <- 1..260 do
+      {:ok, _} =
+        Nano.Bots.post_human(c.id, %{text: "Line #{i} end", idempotency_key: "history-#{i}"}, o)
+    end
+
+    {:ok, v, _} = live(conn, "/bots/" <> c.id)
+    assert has_element?(v, ".message", "Line 260 end")
+    refute has_element?(v, ".message", "Line 1 end")
+    assert has_element?(v, ".chat-row", "Line 260 end")
+    v |> element("button[phx-click=more]") |> render_click()
+    assert has_element?(v, ".message", "Line 161 end")
+
+    assert length(
+             LazyHTML.from_fragment(render(v))
+             |> LazyHTML.query(".message")
+             |> LazyHTML.to_tree()
+           ) <= 200
+  end
 end
