@@ -60,6 +60,70 @@ defmodule Nano.ContextAdmission do
 
   def validate(_, _, _), do: {:error, :malformed_evidence}
 
+  @queue_max_count 10_000
+  @queue_max_bytes 67_108_864
+  @record_max_bytes 1_048_576
+  def empty_queue, do: %{version: 1, read_index: 1, write_index: 0, count: 0, bytes: 0}
+
+  def queue_push(q, record, root, id) do
+    encoded = :erlang.term_to_binary(record)
+    bytes = byte_size(encoded)
+
+    if valid_queue?(q) and q.count < @queue_max_count and q.bytes + bytes <= @queue_max_bytes and
+         bytes <= @record_max_bytes do
+      index = q.write_index + 1
+      path = queue_path(root, id, index)
+
+      with :ok <- File.mkdir_p(Path.dirname(path)),
+           :ok <- keep(path, encoded) do
+        {:ok, %{q | write_index: index, count: q.count + 1, bytes: q.bytes + bytes}}
+      end
+    else
+      {:error, :pending_backlog_limit_or_malformed}
+    end
+  end
+
+  def queue_peek(q, root, id) do
+    if valid_queue?(q) and q.count > 0 do
+      path = queue_path(root, id, q.read_index)
+
+      with {:ok, %{type: :regular, size: size}} when size <= @record_max_bytes and size <= q.bytes <-
+             File.lstat(path),
+           {:ok, bytes} <- File.read(path),
+           %{text: text, images: images, evidence: evidence} = record <-
+             :erlang.binary_to_term(bytes, [:safe]),
+           true <- is_binary(text) and is_list(images) and is_map(evidence) do
+        {:ok, record,
+         %{q | read_index: q.read_index + 1, count: q.count - 1, bytes: q.bytes - size}}
+      else
+        _ -> {:error, :unavailable_pending_backlog}
+      end
+    else
+      {:error, :empty_or_malformed_pending_backlog}
+    end
+  rescue
+    _ -> {:error, :malformed_pending_backlog}
+  end
+
+  @doc false
+  def valid_queue?(%{
+        version: 1,
+        read_index: read,
+        write_index: write,
+        count: count,
+        bytes: bytes
+      }) do
+    is_integer(read) and is_integer(write) and is_integer(count) and is_integer(bytes) and
+      read > 0 and write >= 0 and count >= 0 and count <= @queue_max_count and
+      write - read + 1 == count and bytes >= 0 and bytes <= @queue_max_bytes and
+      ((count == 0 and bytes == 0) or (count > 0 and bytes > 0))
+  end
+
+  def valid_queue?(_), do: false
+
+  defp queue_path(root, id, index),
+    do: Path.join([root, id, "pending-v1", Integer.to_string(index) <> ".term"])
+
   def notice(h) do
     "<harness>Staged exact evidence, not read or answered: #{h.path}; " <>
       "SHA-256 #{h.sha256}; #{h.bytes} UTF-8 bytes; continuation position #{h.position}. " <>

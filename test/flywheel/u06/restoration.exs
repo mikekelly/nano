@@ -57,7 +57,10 @@ case mode do
     {:ok, ref} = Nano.Images.import_file(path)
     send(pid, %{text: String.duplicate("é", 5000), images: [ref]})
     send(pid, :still_pending)
-    state = :sys.get_state(pid)
+    for n <- 1..300, do: send(pid, {:backlog, n})
+    state = :sys.get_state(pid, 60_000)
+    true = length(state.pending) <= 256
+    true = state.pending_backlog.count > 0
     GenServer.cast(pid, :resave)
     :sys.get_state(pid)
 
@@ -68,27 +71,73 @@ case mode do
         :pending_images,
         :image_deliveries,
         :admission_evidence,
-        :event_seq
+        :event_seq,
+        :pending_backlog
       ])
 
     File.write!(Path.join(root, "expected.term"), :erlang.term_to_binary(expected))
     %{status: :durable} = Nano.StateStore.durability(name)
 
     IO.puts(
-      "U06 forward mutation durable; pending IDs 1,2; position zero; immutable image references, no transcript pixels"
+      "U06 forward mutation durable; pending IDs 1..302 in RAM+durable FIFO; position zero; immutable image references, no transcript pixels"
     )
 
   "restore" ->
     expected = root |> Path.join("expected.term") |> File.read!() |> :erlang.binary_to_term()
     pid = NanoAgent.whereis(name)
+    IO.inspect(Nano.StateStore.status(), label: "restoration status")
+    IO.inspect(Nano.StateStore.get(name) != nil, label: "restoration row present")
+
+    if not is_pid(pid) do
+      envelope =
+        Application.fetch_env!(:nano, :state_dir)
+        |> Path.join(name <> ".envelope-v1")
+        |> File.read!()
+        |> :erlang.binary_to_term()
+
+      blob_bytes =
+        Application.fetch_env!(:nano, :state_dir) |> Path.join(envelope.blob) |> File.read!()
+
+      blob = :erlang.binary_to_term(blob_bytes)
+
+      IO.inspect(
+        {envelope.blob, Base.encode16(:crypto.hash(:sha256, blob_bytes), case: :lower),
+         Base.encode16(:crypto.hash(:sha256, :erlang.term_to_binary(blob)), case: :lower)},
+        label: "binding digest diagnostic"
+      )
+    end
+
     true = is_pid(pid)
     state = :sys.get_state(pid)
     true = Enum.take(state.pending, length(expected.pending)) == expected.pending
 
-    for key <- [:pending_images, :image_deliveries, :admission_evidence, :event_seq],
+    for key <- [:pending_images, :admission_evidence, :event_seq],
         do: true = Map.fetch!(state, key) == Map.fetch!(expected, key)
 
+    # Restart appends its own harness notice, with an empty image attribution.
+    for {text, refs} <- expected.image_deliveries,
+        do: true = state.image_deliveries[text] == refs
+
+    true = state.pending_backlog.read_index == expected.pending_backlog.read_index
+    true = state.pending_backlog.count == expected.pending_backlog.count + 1
+    true = state.pending_backlog.write_index == expected.pending_backlog.write_index + 1
+    true = length(state.pending) == length(expected.pending)
+
+    queue_record = fn index ->
+      Application.fetch_env!(:nano, :spill_dir)
+      |> Path.join(state.id)
+      |> Path.join("pending-v1/#{index}.term")
+      |> File.read!()
+      |> :erlang.binary_to_term([:safe])
+    end
+
+    for index <- expected.pending_backlog.read_index..expected.pending_backlog.write_index do
+      record = queue_record.(index)
+      true = String.contains?(record.text, "<event seq=")
+    end
+
     true = state.bindings[:durable] == 23
+
     true = state.halted == :compaction_failed
 
     for {_hash, handle} <- state.admission_evidence do

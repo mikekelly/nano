@@ -380,6 +380,7 @@ defmodule NanoAgent do
       transcript: [],
       bindings: [],
       status: :idle,
+      admission_version: 1,
       pending: [],
       pending_images: [],
       pending_image_delivery: false,
@@ -516,6 +517,7 @@ defmodule NanoAgent do
     stub = "No result: your process exited before this call completed."
     now = System.monotonic_time(:millisecond)
     s = Enum.reduce(unanswered(saved.transcript), s, &tool_result(&2, &1, now, false, stub))
+    s = migrate_pending_admission(s)
 
     s =
       note(
@@ -717,6 +719,7 @@ defmodule NanoAgent do
   end
 
   def handle_cast(:unhalt, s) do
+    s = s |> upgrade() |> migrate_pending_admission()
     b = budget(s)
 
     {s, more} =
@@ -806,15 +809,9 @@ defmodule NanoAgent do
   end
 
   defp event_unbounded(s, term) do
-    s = upgrade(s)
+    s = s |> upgrade() |> migrate_pending_admission()
     {term, images, image_notice} = Nano.ImageInput.event(term, s.input_modalities)
     visible = if "image" in s.input_modalities, do: images, else: []
-
-    s = %{
-      s
-      | pending_images: s.pending_images ++ visible,
-        pending_image_delivery: s.pending_image_delivery or images != [] or image_notice != ""
-    }
 
     seq = s.event_seq + 1
 
@@ -830,29 +827,18 @@ defmodule NanoAgent do
     event = ~s(<event seq="#{seq}" at="#{at}">#{text}</event>)
     {s, event} = admission_text(s, event)
 
-    s = %{
-      s
-      | event_seq: seq,
-        wakeup: nil,
-        pending: s.pending ++ [event]
-    }
-
-    s =
-      if Map.has_key?(s, :image_deliveries) or length(s.pending_images) == length(visible),
-        do: Map.update(s, :image_deliveries, %{event => visible}, &Map.put(&1, event, visible)),
-        # Legacy pending images have no event attribution; preserve the entire bundle.
-        else: s
+    s = %{s | event_seq: seq, wakeup: nil}
+    s = enqueue_pending(s, event, visible)
 
     if_child = child_report?(s.name, term)
 
     s =
       if if_child,
-        do:
-          Map.update(s, :child_reports, [List.last(s.pending)], &(&1 ++ [List.last(s.pending)])),
+        do: Map.update(s, :child_reports, [event], &Enum.take(&1 ++ [event], -256)),
         else: s
 
     # queue_length: events waiting for the next turn, this one included.
-    queued = Enum.count(s.pending, &String.starts_with?(&1, "<event"))
+    queued = Enum.count(s.pending, &String.starts_with?(&1, "<event")) + backlog_count(s)
 
     log(
       s,
@@ -881,7 +867,7 @@ defmodule NanoAgent do
   # Harness notes queue up with events, in the order things happened.
   defp note(s, text) do
     log(s, :harness_note, %{text: text})
-    %{s | pending: s.pending ++ ["<harness>#{text}</harness>"]}
+    enqueue_pending(s, "<harness>#{text}</harness>", [])
   end
 
   # A halt also ends a wait to call the model again (an operator turned the provider off).
@@ -902,6 +888,9 @@ defmodule NanoAgent do
        when status in [:idle, :waiting_retry],
        do: request(s, true)
 
+  defp maybe_start_turn(%{status: status, halted: nil, pending_backlog: %{count: count}} = s)
+       when status in [:idle, :waiting_retry] and count > 0, do: request(s, true)
+
   defp maybe_start_turn(s), do: s
 
   defp request(s, new_turn?) do
@@ -911,7 +900,7 @@ defmodule NanoAgent do
 
   defp request_registered(s, new_turn?) do
     # State from an older version of this module, still running after a reload.
-    s = s |> upgrade() |> check_provider()
+    s = s |> upgrade() |> migrate_pending_admission() |> check_provider() |> refill_pending()
     node_used = Nano.StateStore.node_tokens_last_hour()
     cap = Nano.Settings.get(:node_max_tokens_per_hour)
 
@@ -978,11 +967,14 @@ defmodule NanoAgent do
             end
 
           true ->
-            if admitted > 0 and (next.pending != [] or Map.get(s, :admission_split, false)) do
+            if admitted > 0 and
+                 (next.pending != [] or backlog_count(next) > 0 or
+                    Map.get(s, :admission_split, false)) do
               ids =
                 Enum.take(s.pending, admitted)
                 |> Enum.flat_map(fn text ->
-                  for [_, id] <- Regex.scan(~r/<event seq="(\d+)"/, text), do: id
+                  Map.get(Map.get(s, :pending_item_ids, %{}), text) ||
+                    for [_, id] <- Regex.scan(~r/<event seq="(\d+)"/, text), do: id
                 end)
 
               log(next, :input_admitted, %{
@@ -1014,7 +1006,209 @@ defmodule NanoAgent do
 
   defp check_provider(s), do: s
 
+  @pending_memory_count 256
+  @pending_memory_bytes 1_048_576
+
+  # An old live text-only queue has no attribution map. It is not an atomic image
+  # bundle: stage its large text items and retain the original event wrappers/order.
+  defp migrate_pending_admission(s) do
+    if not Map.has_key?(s, :admission_version) and backlog_count(s) == 0 do
+      original = s.pending
+      old_images = s.pending_images
+      attributed = Map.get(s, :image_deliveries)
+
+      if old_images != [] and not is_map(attributed) and
+           (length(original) > @pending_memory_count or
+              Nano.ImageInput.estimated_bytes([original, old_images]) > @pending_memory_bytes) do
+        migrate_legacy_bundle(s, original, old_images)
+      else
+        s = %{s | pending: [], pending_images: [], pending_image_delivery: false}
+        s = if old_images == [], do: Map.put(s, :image_deliveries, %{}), else: s
+
+        s =
+          Enum.reduce(original, s, fn text, state ->
+            {state, staged} = admission_text(state, text)
+            images = if is_map(attributed), do: Map.get(attributed, text, []), else: []
+            enqueue_pending(state, staged, images)
+          end)
+
+        s =
+          if old_images != [] and not is_map(attributed),
+            do:
+              Map.delete(
+                %{s | pending_images: old_images, pending_image_delivery: true},
+                :image_deliveries
+              ),
+            else: s
+
+        Map.put(s, :admission_version, 1)
+      end
+    else
+      s
+    end
+  end
+
+  defp migrate_legacy_bundle(s, original, images) do
+    ids =
+      Enum.flat_map(original, fn text ->
+        for [_, id] <- Regex.scan(~r/<event seq="(\d+)"/, text), do: id
+      end)
+
+    exact = Enum.join(original, "\n")
+
+    case Nano.ContextAdmission.stage(exact, env(:spill_dir), s.id) do
+      {:ok, handle} ->
+        notice =
+          "<harness>Legacy atomic image delivery bundle, pending event IDs in original order: " <>
+            Enum.join(ids, ",") <> ". " <> Nano.ContextAdmission.notice(handle) <> "</harness>"
+
+        log(s, :evidence_staged, %{handle: handle, event_ids: ids, read: false, answered: false})
+        s = %{s | pending: [], pending_images: [], pending_image_delivery: false}
+        s = s |> Map.put(:image_deliveries, %{}) |> Map.put(:admission_version, 1)
+
+        s =
+          Map.update(
+            s,
+            :admission_evidence,
+            %{handle.sha256 => handle},
+            &Map.put(&1, handle.sha256, handle)
+          )
+
+        s = Map.put(s, :pending_item_ids, %{notice => ids})
+        enqueue_pending(s, notice, images)
+
+      {:error, reason} ->
+        # Existing legacy state remains exact and atomic; do not partially spill/drop it.
+        pending_unavailable(s, {:legacy_bundle_unavailable, reason})
+    end
+  end
+
+  defp backlog_count(s) do
+    if Map.has_key?(s, :pending_backlog) do
+      q = s.pending_backlog
+      # Malformed present metadata is not the same as known absent/empty queue.
+      if Nano.ContextAdmission.valid_queue?(q), do: q.count, else: 1
+    else
+      0
+    end
+  end
+
+  defp pending_fits?(s, text, images) do
+    length(s.pending) < @pending_memory_count and
+      Nano.ImageInput.estimated_bytes([s.pending, s.pending_images, text, images]) <=
+        @pending_memory_bytes
+  end
+
+  defp enqueue_pending(%{pending_unavailable: _} = s, _text, _images),
+    do: s |> pending_unavailable(:pending_already_unavailable) |> prune_admission_evidence()
+
+  defp enqueue_pending(s, text, images) do
+    if backlog_count(s) == 0 and pending_fits?(s, text, images) do
+      add_pending(s, text, images)
+    else
+      evidence =
+        Map.get(s, :admission_evidence, %{})
+        |> Enum.filter(fn {hash, _} -> is_binary(hash) and String.contains?(text, hash) end)
+        |> Map.new()
+
+      record = %{text: text, images: images, evidence: evidence}
+      q = Map.get(s, :pending_backlog, Nano.ContextAdmission.empty_queue())
+
+      case Nano.ContextAdmission.queue_push(q, record, env(:spill_dir), s.id) do
+        {:ok, q} -> s |> Map.put(:pending_backlog, q) |> prune_admission_evidence()
+        {:error, reason} -> s |> pending_unavailable(reason) |> prune_admission_evidence()
+      end
+    end
+  end
+
+  defp add_pending(s, text, images) do
+    attributed? = Map.has_key?(s, :image_deliveries) or s.pending_images == []
+
+    s = %{
+      s
+      | pending: s.pending ++ [text],
+        pending_images: s.pending_images ++ images,
+        pending_image_delivery: s.pending_image_delivery or images != []
+    }
+
+    if attributed?,
+      do: Map.update(s, :image_deliveries, %{text => images}, &Map.put(&1, text, images)),
+      else: s
+  end
+
+  defp pending_unavailable(s, reason) do
+    text =
+      "Pending backlog unavailable (#{inspect(reason)}). No provider request is allowed. Preserve queue files, coherent envelope and event/harness logs; repair/reconstruct the logged pending range before clearing pending_unavailable. Unhalt alone is not repair."
+
+    log(s, :harness_note, %{text: text})
+
+    lost =
+      Map.get(s, :pending_unavailable, %{
+        first_event: s.event_seq,
+        last_event: s.event_seq,
+        count: 0
+      })
+
+    s
+    |> Map.put(:halted, :compaction_failed)
+    |> Map.put(
+      :pending_unavailable,
+      %{lost | last_event: s.event_seq, count: lost.count + 1}
+    )
+  end
+
+  defp refill_pending(s) do
+    if Map.has_key?(s, :pending_unavailable) do
+      %{s | halted: :compaction_failed}
+    else
+      refill_pending_ready(s)
+    end
+  end
+
+  defp refill_pending_ready(s) do
+    if backlog_count(s) > 0 and length(s.pending) < @pending_memory_count do
+      case Nano.ContextAdmission.queue_peek(s.pending_backlog, env(:spill_dir), s.id) do
+        {:ok, record, next} ->
+          if pending_fits?(s, record.text, record.images) do
+            evidence = Map.merge(Map.get(s, :admission_evidence, %{}), record.evidence)
+
+            s
+            |> Map.put(:pending_backlog, next)
+            |> Map.put(:admission_evidence, evidence)
+            |> add_pending(record.text, record.images)
+            |> refill_pending_ready()
+          else
+            if s.pending == [],
+              do: pending_unavailable(s, :irreducibly_oversized_pending_record),
+              else: s
+          end
+
+        {:error, reason} ->
+          pending_unavailable(s, reason)
+      end
+    else
+      s
+    end
+  end
+
+  defp prune_admission_evidence(s) do
+    content = Jason.encode!([s.pending, s.transcript, Map.get(s, :compacting, %{})])
+    evidence = Map.get(s, :admission_evidence, %{})
+
+    if is_map(evidence),
+      do:
+        Map.put(
+          s,
+          :admission_evidence,
+          evidence
+          |> Enum.filter(fn {hash, _} -> is_binary(hash) and String.contains?(content, hash) end)
+          |> Map.new()
+        ),
+      else: s
+  end
+
   # Admission metadata lives in the coherent per-agent envelope (U05), never in task state.
+
   defp admission_text(s, text) do
     if not is_map(Map.get(s, :admission_evidence, %{})) do
       {halt(
@@ -1063,18 +1257,49 @@ defmodule NanoAgent do
         "Malformed exact evidence metadata; preserve and repair the coherent envelope before unhalting."
       )
 
+  defp validate_admission(%{admission_evidence: handles} = s) when map_size(handles) > 4096,
+    do:
+      halt(
+        s,
+        :compaction_failed,
+        "Exact evidence registry exceeds the bounded active validation limit (4096). Preserve the envelope and archived files; reconcile active references before unhalting."
+      )
+
   defp validate_admission(s) do
-    Enum.reduce(Map.get(s, :admission_evidence, %{}), s, fn {_id, handle}, state ->
+    handles = Map.get(s, :admission_evidence, %{})
+
+    bytes =
+      Enum.reduce(handles, 0, fn {_hash, handle}, total ->
+        case handle do
+          %{bytes: bytes} when is_integer(bytes) and bytes >= 0 -> total + bytes
+          _ -> total
+        end
+      end)
+
+    if bytes > 33_554_432 do
+      halt(
+        s,
+        :compaction_failed,
+        "Active exact-evidence validation exceeds32MiB. Preserve the envelope/files and reconcile active references before unhalting; no provider request is allowed."
+      )
+    else
+      validate_admission_handles(s)
+    end
+  end
+
+  defp validate_admission_handles(s) do
+    Enum.reduce_while(Map.get(s, :admission_evidence, %{}), s, fn {_id, handle}, state ->
       case Nano.ContextAdmission.validate(handle, env(:spill_dir), s.id) do
         :ok ->
-          state
+          {:cont, state}
 
         {:error, reason} ->
-          halt(
-            state,
-            :compaction_failed,
-            "Staged exact evidence #{inspect(reason)}. Restore the immutable evidence file from preserved storage before unhalting; no provider request was sent."
-          )
+          {:halt,
+           halt(
+             state,
+             :compaction_failed,
+             "Staged exact evidence #{inspect(reason)}. Restore the immutable evidence file from preserved storage before unhalting; no provider request was sent."
+           )}
       end
     end)
   end
@@ -1119,6 +1344,8 @@ defmodule NanoAgent do
                 ),
               pending_image_delivery: remaining != []
           }
+
+          next = Map.update(next, :pending_item_ids, %{}, &Map.drop(&1, selected))
 
           next =
             if images_by_event,
@@ -1667,6 +1894,7 @@ defmodule NanoAgent do
     |> Map.delete(:compacting)
     |> Map.merge(%{transcript: t, context_used: 0, measured_bytes: 0, child_reports: []})
     |> Nano.Attention.after_compaction()
+    |> prune_admission_evidence()
     |> save()
   end
 
@@ -1885,8 +2113,10 @@ defmodule NanoAgent do
             |> Map.put(:pending_summary, text)
             |> run_calls()
 
-          _ ->
-            start_eval(s, call, started, code)
+          {:error, reason} ->
+            if Compaction.standalone?(code),
+              do: run_calls(tool_result(s, call, started, false, "Summary refused: " <> reason)),
+              else: start_eval(s, call, started, code)
         end
 
       {"idle", {:ok, %{}}} when is_nil(wakeup) or wakeup in 0..4_294_967_295 ->

@@ -25,6 +25,14 @@ defmodule Compaction do
       {:error, "Use a standalone eval call to Compaction.provide_summary with a literal string."}
 
   @doc false
+  def standalone?(code) do
+    case Code.string_to_quoted(code) do
+      {:ok, {{:., _, [{:__aliases__, _, [:Compaction]}, :provide_summary]}, _, [_]}} -> true
+      _ -> false
+    end
+  end
+
+  @doc false
   def parse(code) do
     with {:ok, {{:., _, [{:__aliases__, _, [:Compaction]}, :provide_summary]}, _, [literal]}} <-
            Code.string_to_quoted(code),

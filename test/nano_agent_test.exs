@@ -104,13 +104,90 @@ defmodule NanoAgentTest do
     new
   end
 
-  test "U06 burst is delivered as fitting ordered prefixes without queue overflow loss", ctx do
+  test "U06 malformed registry gives one bounded recovery diagnostic per attempt", ctx do
+    {pid, id} = start!(ctx, max_context: 20_000, system_prompt: "brief")
+
+    :sys.replace_state(
+      pid,
+      &Map.merge(&1, %{
+        halted: :compaction_failed,
+        admission_evidence: Map.new(1..100, fn n -> {Integer.to_string(n), %{}} end)
+      })
+    )
+
+    NanoAgent.unhalt(ctx.name)
+    state = :sys.get_state(pid)
+    assert state.halted == :compaction_failed
+    assert Enum.count(state.pending, &String.contains?(&1, "malformed_evidence")) == 1
+    assert map_size(state.admission_evidence) == 100
+    refute_receive {:openrouter_request, _, _}, 50
+    assert length(entries(id, :model_request)) == 0
+  end
+
+  test "U06 finite spool saturation fences requests and records undelivered identity without growing RAM",
+       ctx do
+    {pid, id} = start!(ctx, max_context: 60_000)
+    send(pid, :first)
+    request!(ctx.model)
+    for n <- 1..256, do: send(pid, {:buffered, n})
+    state = :sys.get_state(pid)
+    assert length(state.pending) == 256
+    saturated = %{version: 1, read_index: 1, write_index: 10_000, count: 10_000, bytes: 100_000}
+    :sys.replace_state(pid, &Map.put(&1, :pending_backlog, saturated))
+    for n <- 1..4, do: send(pid, {:undelivered, n})
+    state = :sys.get_state(pid)
+    assert length(state.pending) == 256
+    assert state.pending_backlog == saturated
+    assert state.pending_unavailable.first_event == 258
+    assert state.pending_unavailable.last_event == 261
+    assert state.pending_unavailable.count == 4
+    assert state.halted == :compaction_failed
+
+    assert Enum.map(Enum.take(entries(id, :event_received), -4), & &1["event_seq"]) ==
+             Enum.to_list(258..261)
+
+    Fake.push(ctx.model, text: "done")
+    await(id, :turn_ended)
+    NanoAgent.unhalt(ctx.name)
+    state = :sys.get_state(pid)
+    assert state.halted == :compaction_failed
+    assert length(state.pending) == 256
+    refute_receive {:openrouter_request, _, _}, 50
+  end
+
+  test "U06 oversized voluntary standalone summary returns measured feedback, not module fallback",
+       ctx do
+    {_, id} = start!(ctx, max_context: 60_000)
+
+    code =
+      "Compaction.provide_summary(" <>
+        inspect(String.duplicate("é", 6001), limit: :infinity, printable_limit: :infinity) <> ")"
+
+    Fake.push(ctx.model, calls: [eval: code])
+    Fake.push(ctx.model, text: "done")
+    send(NanoAgent.whereis(ctx.name), :summary)
+    request!(ctx.model)
+    body = request!(ctx.model)
+    feedback = body["messages"] |> Enum.find(&(&1["role"] == "tool")) |> text()
+    assert feedback =~ "12002 UTF-8 bytes"
+    assert feedback =~ "8,000 UTF-8 bytes"
+    refute feedback =~ "Use a standalone"
+    await(id, :turn_ended)
+    assert entries(id, :eval_started) == []
+  end
+
+  test "U06 burst is delivered as fitting ordered prefixes without queue overflow loss",
+       ctx do
     {pid, id} = start!(ctx, max_context: 60_000)
     send(pid, :first)
     request!(ctx.model)
     for n <- 1..1100, do: send(pid, {n, String.duplicate("b", 100)})
-    :sys.get_state(pid)
-    assert length(:sys.get_state(pid).pending) == 1100
+    # Each spill record is synchronously published; allow the durable burst to finish.
+    state = :sys.get_state(pid, 60_000)
+    assert length(state.pending) <= 256
+    assert length(state.pending) + state.pending_backlog.count == 1100
+    assert state.pending_backlog.count > 0
+    assert Nano.ImageInput.estimated_bytes([state.pending, state.pending_images]) <= 1_048_576
     assert length(entries(id, :event_received)) == 1101
     Fake.push(ctx.model, text: "done")
 
@@ -124,12 +201,19 @@ defmodule NanoAgentTest do
       else
         state = :sys.get_state(pid)
         Fake.push(ctx.model, text: "done", usage: {div(byte_size(Jason.encode!(body)), 2), 10, 0})
-        if state.pending != [], do: drain.(drain, remaining - 1)
+
+        if state.pending != [] or Map.get(state, :pending_backlog, %{count: 0}).count > 0,
+          do: drain.(drain, remaining - 1)
       end
     end
 
     drain.(drain, 30)
-    await(id, :turn_ended, fn _ -> :sys.get_state(pid).pending == [] end)
+
+    await(id, :turn_ended, fn _ ->
+      state = :sys.get_state(pid)
+      state.pending == [] and Map.get(state, :pending_backlog, %{count: 0}).count == 0
+    end)
+
     admitted = Enum.flat_map(entries(id, :input_admitted), & &1["event_ids"])
     assert admitted == Enum.map(2..1101, &Integer.to_string/1)
     assert entries(id, :input_overflow) == []

@@ -4,12 +4,16 @@
 
 Old: U05 coherent envelope-v1 metadata with string `pending`, flat `pending_images`,
 transcript and optional checkpoint `{base, attempt, reason}`. Known missing admission
-fields mean no staged admission metadata; pending/transcript remain untouched.
+fields are migrated by compatible readers: text-only queues become attributed ordered
+items, oversized old text is staged, legacy flat image bundles stay atomic; transcript
+and existing tool-call/result pairs retain their identities.
 
 New: the same envelope-v1 (no StateStore disk-schema change), with additive metadata:
 `admission_evidence` SHA-256 keyed v1 handles (`path`, `bytes`, `position`),
 `image_deliveries` keyed by exact event text (immutable canonical image references),
-`admission_split`, `admission_compactions`, and checkpoint `tail` plus original measured
+`admission_split`, `admission_compactions`, `admission_version`, optional grouped
+`pending_item_ids`, bounded `pending_backlog` v1 pointer and explicit `pending_unavailable`
+recovery range (see resources.md), and checkpoint `tail` plus original measured
 context fields. Handles point to immutable UTF-8 files, at most 8 MiB, under configured
 `spill_dir/<agent-id>/admission/<sha256>.txt`. Position zero denotes staged/not read;
 explicit agent file paging does not fabricate harness read/answered acknowledgment.
@@ -42,7 +46,7 @@ preamble states that absent image parts no longer provide pixels in current cont
 `test/flywheel/u06/restoration.exs` runs as two SERIAL `mix run --no-start` VMs, with
 this dispatch's explicit private runtime subroot audited before application startup.
 Seed starts the real NanoAgent/StateStore/Image paths, halts before provider calls,
-mutates two pending items including a multibyte staged event, one immutable image ref,
+mutates302 pending items including a multibyte staged event and disk FIFO, one immutable image ref,
 and binding `durable=23`, and observes durable publication. Restore boots new code in a
 fresh VM against that preserved disposable state and checks pending identity/order,
 handle position/hash/files, bindings and readable image bytes. No transcript pixels or
