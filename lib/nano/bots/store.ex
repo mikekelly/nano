@@ -370,15 +370,26 @@ defmodule Nano.Bots.Store do
     with {:ok, _} <- fetch(d, :sessions, id) do
       cursor = Keyword.get(opts, :after, 0)
       limit = Keyword.get(opts, :limit, 50)
+      tail = Keyword.get(opts, :tail, false)
+      before = Keyword.get(opts, :before)
 
-      if is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit in 1..200 do
+      valid =
+        is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit in 1..200 and
+          is_boolean(tail) and
+          (before == nil or (tail and is_integer(before) and before > 0)) and
+          not (tail and Keyword.has_key?(opts, :after))
+
+      if valid do
         list =
           d.messages
           |> Map.values()
-          |> Enum.filter(&(&1.session_id == id and &1.sequence > cursor))
+          |> Enum.filter(fn m ->
+            m.session_id == id and
+              if(tail, do: before == nil or m.sequence < before, else: m.sequence > cursor)
+          end)
           |> Enum.sort_by(& &1.sequence)
 
-        page = Enum.take(list, limit)
+        page = Enum.take(list, if(tail, do: -limit, else: limit))
 
         {:read,
          {:ok,

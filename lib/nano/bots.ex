@@ -16,6 +16,11 @@ defmodule Nano.Bots do
   epoch, idempotency_key. Every bot post counts toward ceiling.
   list_messages opts `after: 0, limit: 50` (1..200) returns
   `{:ok, %{messages: ascending_list, next_cursor: sequence, has_more: boolean}}`.
+  With `tail: true`, returns latest limit messages ascending; `has_more` means older
+  messages exist. Optional `before: sequence` (exclusive, tail mode only) pages
+  older messages; use first displayed sequence for before. next_cursor is always
+  last/newest displayed sequence for after/live polling (0 if empty tail page).
+  tail cannot combine with explicit after. Default forward mode is unchanged.
 
   request_human takes bot_id/session_id/requester (stable name, not pid)/text.
   Requests: status :pending/:answered/:acked, answer, delivery_attempts.
