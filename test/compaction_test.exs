@@ -66,4 +66,27 @@ defmodule CompactionTest do
     assert Enum.at(Compaction.rebuild(transcript, "Goal: mixed", 60_000, "log", [event.(2)]), 1) ==
              Enum.at(kept, 1)
   end
+
+  test "oversized first image burst pins words and honest omission metadata, not image tokens" do
+    ref = %{"type" => "image_ref", "image_ref" => %{image_ref: String.duplicate("b", 64)}}
+
+    initial = %{
+      "role" => "user",
+      "content" => [
+        %{"type" => "text", "text" => "<event seq=\"1\">first brief</event>"}
+        | List.duplicate(ref, 10)
+      ]
+    }
+
+    kept = Compaction.rebuild([initial], "Goal: semantic image observations", 20_000, "log")
+    assert [first, _] = kept
+    assert is_binary(first["content"])
+    assert first["content"] =~ "first brief"
+    assert first["content"] =~ "Pixels are no longer available"
+    assert first["content"] =~ String.duplicate("b", 64)
+    assert Nano.ImageInput.estimated_bytes(first["content"]) < div(20_000, 5) * 2
+    repeated = Compaction.rebuild(kept, "Goal: checkpoint twice", 20_000, "log")
+    assert hd(repeated) == first
+    refute inspect(kept) =~ "image_ref"
+  end
 end
