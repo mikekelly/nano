@@ -386,6 +386,35 @@ defmodule Nano.Bots.RuntimeTest do
     assert restored.stop_intents == %{}
   end
 
+  test "production prompt composes full seed and bot flavour with explicit consumer tools, no false reporting",
+       c do
+    workspace = Path.join(c.opts[:state_dir], "workspace-" <> c.a.id)
+    File.mkdir_p!(workspace)
+
+    opts =
+      Nano.Bots.Agent.prompt_options(c.a, c.session,
+        store: c.store,
+        runtime: :consumer_runtime,
+        workspace: workspace
+      )
+
+    assert opts[:mode] == :consumer
+    assert opts[:flavours] == ["bot"]
+    assert {:ok, composed} = Delegation.Prompt.compose(opts)
+    seed = File.read!(Path.expand("../../prompts/seed.txt", __DIR__))
+    assert String.starts_with?(composed.prompt, seed)
+    assert Enum.any?(composed.provenance.partials, &String.ends_with?(&1.path, "/bot.txt"))
+    assert composed.prompt =~ "Nano.Bots.Runtime.post"
+    assert composed.prompt =~ "epoch: batch.epoch"
+    assert composed.prompt =~ "delivery_id: batch.delivery_id"
+    assert composed.prompt =~ workspace
+    refute composed.prompt =~ "Report to \"altair-bots\" using Delegation.report"
+    refute composed.prompt =~ "This job is read-only"
+
+    assert Nano.Bots.Agent.name(c.a.id, c.session.id) !=
+             Nano.Bots.Agent.name(c.a.id, "different-session")
+  end
+
   defp collect_chunks(runtime, bot, page, acc) do
     [message] = page.messages
     Runtime.ack_delivery(page.delivery_id, server: runtime)
@@ -441,5 +470,11 @@ defmodule Nano.Bots.RouterTest do
 
     assert {:stop, :routing_unavailable} =
              Router.select(bots, session, bot, evaluate: fn _, _, _ -> {:error, :down} end)
+
+    assert {:stop, :routing_unavailable} =
+             Router.select(bots, session, human ++ bot,
+               human_batch: false,
+               evaluate: fn _, _, _ -> raise "down" end
+             )
   end
 end
