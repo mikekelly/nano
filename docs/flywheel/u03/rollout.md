@@ -56,3 +56,7 @@ restart and a fresh OS VM restoring safe-decoded inert evidence, accounting/scop
 and rejecting stale tokens. Original U01 migration checks archived Git commit/ancestry;
 stage-proof fixtures are not fresh real-world deployment verification. Parent supplies
 actual closure/live proof at cutover.
+
+Integration repair: accept now persists a clean canonical-repository HEAD pin before cherry-pick; land validates candidate parent/diff and exact merge-tree result. Older pre-pinning accepted schema1 snapshots are retained but cannot land: reconcile/adopt to fence old reservation, then accept a compatible clean base. No pin inferred from monitor/history/evidence. Roll forward; no deployed graph downgrade allowed.
+
+Attempt-proof repair: fresh claims/reopens archive prior evidence, clear active pointers, and require current prepared-attempt stage bindings. Completed pre-binding graph snapshots (never deployed by this worker) are semantically incompatible and quarantine rather than auto-done; parent must use a reviewed roll-forward evidence reconciliation, never strip newer authority. Explicit original bootstrap migration retains its separately verified seam. Reconcile and startup now share semantic validation; invalid disk stays untouched and claims degraded.

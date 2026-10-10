@@ -52,7 +52,17 @@
     ":invalid_schema",
     ":missing_dependency",
     ":cycle",
-    ":duplicate_leaf_link"
+    ":duplicate_leaf_link",
+    ":acceptance_required",
+    ":already_accepted",
+    ":already_integrated",
+    ":integration_repository_mismatch",
+    ":dirty_integration_repository",
+    ":integration_head_mismatch",
+    ":integration_parent_mismatch",
+    ":integration_content_mismatch",
+    ":corrupt_state",
+    ":stale_stage_proof"
   ],
   "functions": [
     "start_link/1",
@@ -80,6 +90,13 @@
     "reconcile_bootstrap/5"
   ],
   "information_format": "fixed protocol atom keys; caller evidence/extra metadata normalized to bounded strings; no artifact atom interning",
+  "integration_validation": {
+    "accept": "persist clean HEAD compatible base and attributed pin before cherry-pick; no repin",
+    "land": "clean current HEAD=candidate, single parent=accepted base, exact reserved diff, exact successful merge-tree result tree",
+    "legacy": "pre-pinning accepted snapshots require reconcile/adopt/accept; never infer pin",
+    "repository": "graph canonical repository",
+    "retry": "owner adopt new integration generation then accept; no retry after integrated"
+  },
   "map_keys": "atoms",
   "module": "Nano.Flywheel",
   "reservation": [
@@ -95,6 +112,16 @@
   ],
   "schema_version": 1,
   "serialization": "Erlang external term",
+  "stage_binding": {
+    "bootstrap": "explicit captured original-record reconciliation only",
+    "revision": "deployed/live_verified/announced bind integrated commit",
+    "attempt": [
+      "claim_token",
+      "dispatch_generation",
+      "unit_sha256"
+    ],
+    "fresh_claim": "archive and clear proofs/proposal/dispatch; no inheritance"
+  },
   "startup": "explicit parent-only, reconciliation required",
   "worker_token": [
     "unit",

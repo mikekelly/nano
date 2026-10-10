@@ -59,9 +59,20 @@ never monitors a short-lived eval Task. Names are durable; pids are observation 
 * `adopt(server, owner_authority, unit_id, proposal_id)` -> new reservation with incremented
   integration generation; preserves original author token/commit/evidence, rechecks diff,
   fences original worker. Necessary after owner restart, even if already accepted.
-* `integration(server, owner_authority, reservation, :accept)` -> `:accepted`.
+* `integration(server, owner_authority, reservation, :accept)` -> `:accepted`. Pins graph's
+  canonical repository and its clean exact HEAD (an ancestor-compatible current integration
+  base) in unit acceptance/history before cherry-pick. Proposal objects must already exist
+  there. No arbitrary evidence repository overrides. Repeated accept refuses repinning.
 * `integration(server, owner_authority, reservation, {:land, integrated_commit, evidence})`
-  -> `:integrated`; requires acceptance and independently rechecks actual committed diff.
+  -> `:integrated`; independently rechecks original proposal and actual integration candidate.
+  Candidate must exist, equal clean canonical repository HEAD, have exactly one parent equal
+  to the persisted accepted base, and have exactly the claimed proposal changed-file set.
+  Git `merge-tree --write-tree --merge-base=<proposal-base> <accepted-base> <proposal-commit>`
+  must succeed without conflict and equal candidate's exact tree, not whitespace-insensitive
+  patch-ID. A real cherry-pick may have a different hash on a nonoverlapping later base.
+  No safe equivalence proof means reject/review a rebased proposal, never guess.
+  Before land, owner may adopt under a new integration generation to clear an old acceptance
+  and accept anew; old reservation tokens become stale. Already-landed units cannot repin.
 * `integration(server, owner_authority, reservation, {:abandon, reason})` -> `:abandoned`;
   durably releases reservation/claim, clears stages for reassignment, retains history.
 * `record_stage(server, owner_authority, id, stage, evidence)` -> stage. Stages:
@@ -138,3 +149,22 @@ Errors include `:stale`, `:stale_owner`, `:stale_reservation`, `:degraded`, `:co
 `{:not_ready, reason}`, `{:persistence, detail}`, `:unclaimed_diff`, `:diff_mismatch`,
 `:git_diff_failed`, `:operation_conflict`, `:event_conflict`, validation and stage errors.
 Persistence errors block claims until coherent recovery, never imply release succeeded.
+
+## Attempt and reconciliation fencing
+
+Each fresh claim archives active proposal/dispatch/stages/bindings into attributed history and
+clears active pointers/proofs. Original external blockers/resolutions/findings remain. New
+owner-authored proof requires a prepared attempt and binds claim token, dispatch generation,
+and resolved-unit hash; deployment/live/announcement also bind actual integrated revision.
+A referenced unchanged artifact may be explicitly verified again in the current attempt;
+no old proof is silently inherited. Submitted immutable proposal adoption preserves its
+original prepared-attempt provenance. Reprepare changes the attempt/hash and makes old
+bindings ineligible. Changed integrated identity archives and clears downstream deployment
+proof; exact same candidate recovery preserves legitimate proof.
+
+Reopening without a pending reservation archives and clears old proposal/dispatch/proofs,
+allowing fresh claim/prepare/submit. Pending reservations stay fenced and retained; no
+implicit file release. Reconcile applies the same full semantic validator as startup before
+any mutation; corrupt snapshots remain byte-for-byte untouched and authority becomes degraded.
+The explicit original-bootstrap reconciliation seam remains separate, binds captured original
+bytes and owner stage proof, and does not fabricate a graph-era prepared attempt.
