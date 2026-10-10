@@ -18,7 +18,8 @@ defmodule Nano.Tools do
   grep returns `lines_truncated`, `binary_files_skipped` (visited files only) and
   `notices`; `max_line_chars:` changes its per-match display bound. Explicit file
   searches bypass ignore rules. find uses `cwd:`, grep uses `path:`. Filename
-  enumeration is materialized and sorted; line/match buffering is bounded, even
+  enumeration is materialized and sorted, with `enumeration_timeout:` (5000ms
+  default) and a complete output spool; errors/timeouts are explicit values. Filename line/match buffering is bounded, even
   for large offsets. `tail` replaces malformed UTF8 with U+FFFD and reports
   `encoding_replaced`, keeping valid UTF8 text inside max_bytes. Output files
   preserve original bytes. No automatic spool cleanup or disk quota is applied.
@@ -305,20 +306,32 @@ defmodule Nano.Tools do
     args = if Keyword.get(opts, :include_ignored, false), do: args ++ ["--no-ignore"], else: args
     allowed = Path.wildcard(Path.join(cwd, glob), match_dot: true) |> MapSet.new()
     # Positive rg globs override ignores, so glob filtering happens after enumeration.
-    # Separate stderr so filenames are not confused with a diagnostic.
-    case System.cmd(rg, args, cd: cwd) do
-      {output, code} when code in [0, 1] ->
-        output
+    # Enumeration uses the same timeout/spool machinery as shell; stdout is parsed
+    # from the complete spool, not from its bounded tail. Diagnostics cannot be paths.
+    timeout = positive(opts, :enumeration_timeout, 5000)
+    command = Enum.map_join([rg | args], " ", &shell_quote/1) <> " 2>/dev/null"
+
+    case Nano.Background.run(command, cwd: cwd, timeout: timeout, max_bytes: 1000, limit: 10) do
+      {:ok, %{status: :completed, exit_code: code, output_path: output}} when code in [0, 1] ->
+        File.read!(output)
         |> :binary.split(<<0>>, [:global])
         |> Enum.reject(&(&1 == ""))
         |> Enum.map(&Path.expand(&1, cwd))
         |> Enum.filter(&MapSet.member?(allowed, &1))
         |> Enum.sort()
 
-      {_, code} ->
-        raise "ripgrep file enumeration failed with exit #{code}; check path and glob"
+      {:ok, %{status: :timed_out}} ->
+        raise "ripgrep enumeration timed out after #{timeout}ms; narrow path or increase enumeration_timeout"
+
+      {:ok, result} ->
+        raise "ripgrep enumeration failed (#{result.status}, exit #{inspect(result[:exit_code])}); check path, permissions and glob"
+
+      {:error, reason} ->
+        raise "cannot run ripgrep enumeration: #{reason}"
     end
   end
+
+  defp shell_quote(text), do: "'" <> String.replace(text, "'", "'\\''") <> "'"
 
   defp grep_file(file, regex, cap, max_chars, remaining, base, skip) do
     File.open!(file, [:read, :binary, :raw], fn io ->
