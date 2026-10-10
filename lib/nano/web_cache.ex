@@ -44,7 +44,12 @@ defmodule Nano.Web.Cache do
   defp locked(opts, fun) do
     dir =
       Path.expand(
-        Keyword.get(opts, :cache_dir, System.get_env("NANO_WEB_CACHE_DIR") || "/data/web")
+        Keyword.get(
+          opts,
+          :cache_dir,
+          Application.get_env(:nano, :web_cache_dir) || System.get_env("NANO_WEB_CACHE_DIR") ||
+            "/data/web"
+        )
       )
 
     File.mkdir_p!(dir)

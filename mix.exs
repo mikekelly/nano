@@ -3,9 +3,11 @@ defmodule Nano.MixProject do
 
   def project do
     # Test builds go in each checkout's own _build/test, not under the image's MIX_BUILD_ROOT
-    # (which overrides :build_path): several suites run at once on the node, in /app and in
-    # worktrees, and each must compile and load its own checkout's code.
-    if Mix.env() == :test, do: System.delete_env("MIX_BUILD_ROOT")
+    # (which overrides :build_path). An explicit MIX_BUILD_PATH opts into a caller-owned
+    # private build root; do not erase its MIX_BUILD_ROOT. Dependencies must likewise be
+    # copied/fetched into a private MIX_DEPS_PATH (see docs/flywheel/u02/isolation.md).
+    if Mix.env() == :test and is_nil(System.get_env("MIX_BUILD_PATH")),
+      do: System.delete_env("MIX_BUILD_ROOT")
 
     [
       app: :nano,

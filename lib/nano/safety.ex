@@ -3,9 +3,14 @@ defmodule Nano.Safety do
   Outside-checkout recovery status and credential write-through copies.
   `status/0` reports the independent OS watchdog (including stale/off state).
   `health/0` is its loopback probe. Promotion requires a successful model reply.
+  Root defaults to `/data/safety`; :nano/:safety_dir takes precedence over
+  NANO_SAFETY_DIR so disposable test VMs cannot inherit production stores.
   See `scripts/safety/README.md`. Loading this module starts no watchdog.
   """
-  def root, do: System.get_env("NANO_SAFETY_DIR") || "/data/safety"
+  def root,
+    do:
+      Application.get_env(:nano, :safety_dir) || System.get_env("NANO_SAFETY_DIR") ||
+        "/data/safety"
 
   def health,
     do: %{
