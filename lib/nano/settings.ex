@@ -191,7 +191,7 @@ defmodule Nano.Settings do
     GenServer.call(__MODULE__, msg, 30_000)
   catch
     :exit, reason ->
-      {:error, "the settings process did not answer (#{inspect(reason, limit: 5)})"}
+      {:error, "the settings process did not answer (#{diagnostic_reason(reason)})"}
   end
 
   defp default(key), do: elem(List.keyfind(@specs, key, 0), 1)
@@ -400,20 +400,45 @@ defmodule Nano.Settings do
   def handle_cast(_msg, values), do: {:noreply, values}
 
   @impl true
-  # Crash reports and :sys.get_status print the state and the last message: never a secret.
+  # OTP passes state, last message, reason and the sys debug log here. Treat all
+  # payloads as credentials, including unexpected envelopes and future fields.
   def format_status(status) do
-    status
-    |> Map.update(:state, nil, &redact/1)
-    |> Map.update(:message, nil, fn
-      {:put, key, _} -> {:put, key, :redacted}
-      message -> message
+    Map.new(status, fn
+      {:reason, reason} -> {:reason, diagnostic_reason(reason)}
+      {key, _} -> {key, :redacted}
     end)
   end
 
-  defp redact(%{} = values),
-    do: Map.new(values, fn {k, v} -> {k, if(secret?(k), do: :redacted, else: v)} end)
+  @impl true
+  def terminate(reason, _state) when reason in [:normal, :shutdown], do: :ok
 
-  defp redact(other), do: other
+  def terminate(reason, _state) do
+    # OTP appends the original exception stack AFTER format_status/1. Stack
+    # frames can contain credential arguments, so replace the exit before that
+    # logging boundary as well. No state is mutated or persisted here.
+    :erlang.raise(:exit, diagnostic_reason(reason), [])
+  end
+
+  # Retain only a fixed failure class, never exception arguments or arbitrary atoms.
+  defp diagnostic_reason({reason, _}), do: diagnostic_reason(reason)
+
+  defp diagnostic_reason(reason)
+       when reason in [
+              :badmap,
+              :badarg,
+              :badarith,
+              :badmatch,
+              :function_clause,
+              :case_clause,
+              :undef,
+              :timeout,
+              :noproc,
+              :normal,
+              :shutdown
+            ],
+       do: reason
+
+  defp diagnostic_reason(_), do: :redacted
 
   # Saved before it is used: a change that only lived in memory would be lost at a restart.
   defp save(old, old), do: {:reply, :ok, old}
