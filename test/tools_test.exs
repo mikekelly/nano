@@ -212,6 +212,7 @@ defmodule Nano.ToolsTest do
     assert {:error, message} = Nano.Tools.ls(dir, max_bytes: 1)
     assert message =~ "increase max_bytes"
     assert {:error, _} = Nano.Tools.find("*", cwd: dir, max_bytes: 1)
+    assert {:error, _} = Nano.Tools.find("*", cwd: dir, enumeration_timeout: 0)
     assert {:error, _} = Nano.Tools.grep("match", path: dir, max_bytes: 1)
     assert {:ok, r} = Nano.Tools.grep("match", path: dir)
     refute r.lines_truncated
