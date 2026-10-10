@@ -64,7 +64,39 @@ defmodule Nano.BotsStoreTest do
     assert {:ok, _} = Bots.publish(c.session.id, %{a | epoch: 3, idempotency_key: "new"}, c.opts)
   end
 
-  test "conditional stop cannot fence a newer human generation", c do
+  test "tail pages long sessions newest first in selection, ascending in output", c do
+    for n <- 1..300 do
+      {:ok, _} =
+        Bots.post_human(
+          c.session.id,
+          %{text: "message #{n}", idempotency_key: "long-#{n}"},
+          c.opts
+        )
+    end
+
+    {:ok, head} = Bots.list_messages(c.session.id, c.opts ++ [limit: 200])
+    assert Enum.map(head.messages, & &1.sequence) == Enum.to_list(1..200)
+    assert head.next_cursor == 200 and head.has_more
+    {:ok, tail} = Bots.list_messages(c.session.id, c.opts ++ [tail: true, limit: 200])
+    assert Enum.map(tail.messages, & &1.sequence) == Enum.to_list(101..300)
+    assert tail.next_cursor == 300 and tail.has_more
+
+    {:ok, older} =
+      Bots.list_messages(c.session.id, c.opts ++ [tail: true, before: 101, limit: 200])
+
+    assert Enum.map(older.messages, & &1.sequence) == Enum.to_list(1..100)
+    assert older.next_cursor == 100 and not older.has_more
+
+    assert {:ok, %{messages: [], next_cursor: 0, has_more: false}} =
+             Bots.list_messages(c.session.id, c.opts ++ [tail: true, before: 1])
+
+    assert {:error, :invalid} = Bots.list_messages(c.session.id, c.opts ++ [tail: true, after: 0])
+    assert {:error, :invalid} = Bots.list_messages(c.session.id, c.opts ++ [before: 10])
+  end
+
+  test "conditional stop
+ cannot fence a newer human generation",
+       c do
     {:ok, _} = Bots.post_human(c.session.id, %{text: "new turn", idempotency_key: "new"}, c.opts)
     assert {:error, :stale_epoch} = Bots.stop_session(c.session.id, c.opts ++ [expected_epoch: 0])
 
