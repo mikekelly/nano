@@ -55,7 +55,10 @@ defmodule Nano.Flywheel.U05.RecoveryTest do
   defp restart_store do
     old = Store.recovery_generation()
     Process.exit(Process.whereis(Store), :kill)
-    eventually(fn -> Store.recovery_generation() not in [old, :unavailable] end)
+
+    eventually(fn ->
+      Store.availability() == :ok and Store.recovery_generation() not in [old, :unavailable]
+    end)
   end
 
   test "A1 multiple actual agents resave coherent bindings after store kill then agent kill", c do
@@ -184,6 +187,12 @@ defmodule Nano.Flywheel.U05.RecoveryTest do
   test "A3 commit-before-reply crash restores only coherent committed pair and fences old token",
        c do
     name = c.prefix <> "ack"
+
+    on_exit(fn ->
+      Application.delete_env(:nano, :state_store_fault)
+      Store.delete(name)
+    end)
+
     {:ok, token} = Store.register(name, name, self())
     metadata = %{name: name, id: name, pid: self(), pending: [:completed_evidence]}
     assert {:ok, _} = Store.checkpoint(token, 1, metadata, value: 1)
@@ -209,7 +218,8 @@ defmodule Nano.Flywheel.U05.RecoveryTest do
     refute log =~ "u05-redaction-sentinel"
 
     eventually(fn ->
-      Store.recovery_generation() not in [token.store_generation, :unavailable]
+      Store.availability() == :ok and
+        Store.recovery_generation() not in [token.store_generation, :unavailable]
     end)
 
     assert Store.get(name) == metadata

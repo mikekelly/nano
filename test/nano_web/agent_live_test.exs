@@ -207,7 +207,7 @@ defmodule NanoWeb.AgentLiveTest do
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     # A halt value this view has no special wording for still shows, with Un-halt.
     state = Nano.StateStore.get(ctx.name)
-    Nano.Flywheel.U05.Fixture.put(ctx.name, %{state | halted: :node_budget})
+    Nano.Flywheel.U05.Fixture.commit_live(ctx.name, %{state | halted: :node_budget})
     send(view.pid, :refresh)
     assert has_element?(view, "section.bar .badge.halted", "halted: node_budget")
     assert has_element?(view, ".flag.halted", "node-wide hourly token cap")
@@ -452,7 +452,11 @@ defmodule NanoWeb.AgentLiveTest do
           log_failed: "could not write its log",
           something_else: "reason :something_else"
         ] do
-      Nano.Flywheel.U05.Fixture.put(ctx.name, %{Nano.StateStore.get(ctx.name) | halted: reason})
+      Nano.Flywheel.U05.Fixture.commit_live(ctx.name, %{
+        Nano.StateStore.get(ctx.name)
+        | halted: reason
+      })
+
       {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
       assert html =~ text
       assert has_element?(view, ".flag.halted")

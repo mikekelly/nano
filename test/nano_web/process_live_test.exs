@@ -627,7 +627,12 @@ defmodule NanoWeb.ProcessLiveTest do
     {suspended, spid} = start_agent(ctx)
     :sys.suspend(spid)
     {halted, _} = start_agent(ctx)
-    Nano.Flywheel.U05.Fixture.put(halted, %{Nano.StateStore.get(halted) | halted: :context})
+
+    Nano.Flywheel.U05.Fixture.commit_live(halted, %{
+      Nano.StateStore.get(halted)
+      | halted: :context
+    })
+
     {thinking, _} = start_agent(ctx)
     NanoAgent.notify(thinking, :hello)
     # The fake holds the request open: the agent stays thinking.

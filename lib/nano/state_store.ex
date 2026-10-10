@@ -815,6 +815,104 @@ defmodule Nano.StateStore do
   end
 
   @impl true
+  def code_change(:pre_u05, watched, {:u05_upgrade, max_agents})
+      when is_map(watched) and is_integer(max_agents) and max_agents in 1..10_000 do
+    live = for {{:agent, name}, pid} <- Nano.Names.all(), do: {name, pid}
+    entries = all()
+    {authority, degraded} = read_authority()
+
+    cond do
+      not Enum.all?(watched, fn
+        {name, {ref, pid}} when is_binary(name) and is_reference(ref) and is_pid(pid) -> true
+        _ -> false
+      end) ->
+        {:error, :invalid_legacy_process_state}
+
+      not Enum.all?(entries, fn entry ->
+        is_map(entry) and valid_name?(entry[:name]) and is_binary(entry[:id])
+      end) ->
+        {:error, :invalid_legacy_entry}
+
+      degraded ->
+        {:error, :degraded_authority}
+
+      length(live) > max_agents or length(entries) > max_agents ->
+        {:error, :upgrade_bound_exceeded}
+
+      not Enum.all?(live, fn {_, pid} ->
+        match?(
+          {:current_function, {:sys, :suspend_loop, _}},
+          Process.info(pid, :current_function)
+        )
+      end) ->
+        {:error, :live_agents_not_quiescent}
+
+      not Enum.all?(live, fn {name, _} ->
+        match?(%{name: ^name, id: id} when is_binary(id), get(name))
+      end) ->
+        {:error, :live_identity_unavailable}
+
+      true ->
+        candidate =
+          Enum.reduce_while(entries, {:ok, authority}, fn entry, {:ok, acc} ->
+            case entry do
+              %{name: name, id: id} when is_binary(id) ->
+                case acc[name] do
+                  nil ->
+                    {:cont,
+                     {:ok,
+                      Map.put(acc, name, %{
+                        id: id,
+                        generation: 1,
+                        status: :active,
+                        retired_ids: []
+                      })}}
+
+                  %{id: ^id, status: :active} ->
+                    {:cont, {:ok, acc}}
+
+                  _ ->
+                    {:halt, {:error, :newer_lifecycle_conflict}}
+                end
+
+              _ ->
+                {:halt, {:error, :invalid_legacy_entry}}
+            end
+          end)
+
+        with {:ok, authority} <- candidate, :ok <- persist_authority(authority) do
+          epoch = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+          # Preserve counters, exits, pending logs and original bytes. Legacy binding rows
+          # are not coherent authority: only each suspended live agent's full resave is.
+          for entry <- entries do
+            :ets.delete(@table, entry.name)
+            :ets.delete(@table, {:bindings, entry.name})
+          end
+
+          s = %{
+            authority: authority,
+            degraded: false,
+            epoch: epoch,
+            registrations: %{},
+            watched: watched,
+            recovering: MapSet.new(),
+            binding_refs: %{}
+          }
+
+          s = restore_disk(s)
+          :ets.insert(@table, [{:recovery_generation, epoch}, {:availability, :ready}])
+          send(self(), :u05_upgrade_resave)
+          {:ok, s}
+        else
+          error -> error
+        end
+    end
+  end
+
+  def code_change(_old, %{authority: _, registrations: _} = s, _extra), do: {:ok, s}
+  def code_change(_, _, _), do: {:error, :unsupported_state_upgrade}
+
+  @impl true
   def format_status(status) do
     Map.new(status, fn
       {:state, s} ->
@@ -835,6 +933,8 @@ defmodule Nano.StateStore do
   end
 
   @impl true
+  def handle_info(:u05_upgrade_resave, s), do: handle_continue(:resave, s)
+
   def handle_info({:DOWN, ref, :process, pid, reason}, s) do
     case Enum.find(s.watched, fn {_, {r, _}} -> r == ref end) do
       {name, _} ->
