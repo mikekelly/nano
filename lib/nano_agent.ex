@@ -21,6 +21,7 @@ defmodule NanoAgent do
     * `Nano.Tools`: bounded file read/write/edit/list/find/search and synchronous shell.
     * `Nano.Background`: independent shell jobs, durable results, completion events.
     * `Compaction`: automatic checkpoints and voluntary summaries.
+    * `Delegation`: composed prompts, isolated sub-agents, and durable lifecycle/result events.
     * `Nano.Ops`: everything an operator can do with agents and users; the dashboard and the
       HTTP API are skins over it.
     * `Nano.Model`: which provider serves a model (`Nano.ChatGPT`, `Nano.OpenRouter`) and
