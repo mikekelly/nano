@@ -238,7 +238,8 @@ defmodule Nano.Ops do
   agent records), or if its parent, `$callers` or `$ancestors` chain reaches the agent, its
   running eval, or one of those pids. The standard set is the processes alive at boot, the
   agents' own model requests, processes of other OTP applications (Finch pools, kernel
-  helpers: their group leader is that application's master), and anything under
+  helpers: their group leader is that application's master), unowned descendants
+  of the live harness supervisor (including restarted children, except unowned eval tasks), and anything under
   `NanoWeb.Endpoint` (connection handlers, LiveViews, channels).
   """
   def processes do
@@ -288,6 +289,8 @@ defmodule Nano.Ops do
       agents: agents,
       boot: Nano.Application.boot_set(),
       endpoint: Process.whereis(NanoWeb.Endpoint),
+      supervisor: Process.whereis(Nano.Supervisor),
+      eval_supervisor: Process.whereis(Nano.EvalSupervisor),
       names: names,
       model_requests: for(%{task: %{kind: :model, task: %{pid: pid}}} <- agents, do: pid),
       # pid => agent name: each agent, its running eval, and what its evals started.
@@ -366,6 +369,12 @@ defmodule Nano.Ops do
 
       agent = background_owner(pid) || Enum.find_value(chain, &ctx.owned[&1]) ->
         {:spawned_by, agent}
+
+      # Boot captures PIDs, not roles: restarted harness children have new PIDs.
+      # Agent ownership wins first. Unowned eval-supervisor tasks are user work,
+      # not plumbing; they must remain visible as :other (model requests above excepted).
+      ctx.supervisor && ctx.supervisor in chain && ctx.eval_supervisor not in chain ->
+        :standard
 
       ctx.endpoint in chain ->
         :standard
