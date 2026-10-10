@@ -21,17 +21,12 @@ defmodule Nano.Bots.Agent do
         end
 
       true ->
-        job =
-          Nano.Bots.Prompt.job(bot, session,
-            server: opts[:store],
-            publication: protocol(opts[:runtime], bot.id, session.id)
-          )
+        workspace = workspace(bot.id, opts)
+        :ok = File.mkdir_p(workspace)
 
-        case Delegation.subagent(name,
-               level: :engineering,
-               parent: opts[:parent] || "altair-bots",
-               flavours: ["bot"],
-               job: job
+        case Delegation.subagent(
+               name,
+               prompt_options(bot, session, Keyword.put(opts, :workspace, workspace))
              ) do
           {:ok, _} -> {:ok, name}
           error -> error
@@ -39,7 +34,33 @@ defmodule Nano.Bots.Agent do
     end
   end
 
-  def deliver(name, batch), do: NanoAgent.notify(name, {:bots_turn, batch})
+  @doc "Pure composed options; useful for auditing consumer prompt provenance without starting a model."
+  def prompt_options(bot, session, opts) do
+    [
+      name: name(bot.id, session.id),
+      level: :engineering,
+      parent: opts[:parent] || "altair-bots",
+      flavours: ["bot"],
+      mode: :consumer,
+      workspace: opts[:workspace],
+      job:
+        Nano.Bots.Prompt.job(bot, session,
+          server: opts[:store],
+          publication: protocol(opts[:runtime], bot.id, session.id)
+        )
+    ]
+  end
+
+  defp workspace(bot, opts) do
+    root =
+      opts[:workspace_root] ||
+        Path.join(Application.fetch_env!(:nano, :state_dir), "bots-workspaces")
+
+    Path.expand(Path.join(root, bot))
+  end
+
+  def deliver(name, batch),
+    do: NanoAgent.notify(name, {:bots_turn, batch})
 
   def notify(name, message) do
     if NanoAgent.whereis(name),

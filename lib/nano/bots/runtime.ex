@@ -212,9 +212,17 @@ defmodule Nano.Bots.Runtime do
 
     Enum.each(s.data.pending, fn {_, p} ->
       with {:ok, session} <- Bots.get_session(elem(p.key, 0), server: s.store),
+           false <- session.stopped,
+           true <- session.epoch == p.batch.epoch,
            {:ok, bot} <- Bots.get_bot(elem(p.key, 1), server: s.store),
            {:ok, _} <-
-             safe(fn -> s.adapter.ensure(bot, session, store: s.store, runtime: s.runtime) end) do
+             safe(fn ->
+               s.adapter.ensure(bot, session,
+                 store: s.store,
+                 runtime: s.runtime,
+                 workspace_root: Path.join(Path.dirname(s.path), "workspaces")
+               )
+             end) do
         safe(fn -> s.adapter.deliver(p.name, p.batch) end)
       end
 
@@ -232,7 +240,13 @@ defmodule Nano.Bots.Runtime do
       with {:ok, session} <- Bots.get_session(sid, server: s.store),
            {:ok, bot} <- Bots.get_bot(bid, server: s.store),
            {:ok, name} <-
-             safe(fn -> s.adapter.ensure(bot, session, store: s.store, runtime: s.runtime) end) do
+             safe(fn ->
+               s.adapter.ensure(bot, session,
+                 store: s.store,
+                 runtime: s.runtime,
+                 workspace_root: Path.join(Path.dirname(s.path), "workspaces")
+               )
+             end) do
         st = safe(fn -> s.adapter.status(name) end)
         status(s, sid, bid, if(st in [:thinking, :idle, :error], do: st, else: :error))
       else
@@ -389,7 +403,13 @@ defmodule Nano.Bots.Runtime do
                ),
              true <- page.messages != [],
              {:ok, name} <-
-               safe(fn -> s.adapter.ensure(bot, session, store: s.store, runtime: s.runtime) end),
+               safe(fn ->
+                 s.adapter.ensure(bot, session,
+                   store: s.store,
+                   runtime: s.runtime,
+                   workspace_root: Path.join(Path.dirname(s.path), "workspaces")
+                 )
+               end),
              true <- is_binary(name) do
           id = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
 
@@ -470,7 +490,7 @@ defmodule Nano.Bots.Runtime do
     else
       {messages, _} =
         Enum.reduce_while(page.messages, {[], 0}, fn m, {acc, bytes} ->
-          size = byte_size(:erlang.term_to_binary(m))
+          size = byte_size(inspect(m, limit: :infinity, printable_limit: :infinity))
 
           if bytes + size > 16_000 and acc != [],
             do: {:halt, {acc, bytes}},
