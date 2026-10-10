@@ -64,7 +64,7 @@ class RecoveryTest(unittest.TestCase):
             entries[key] = dict(state='invalidated', version=len(entries) + 1)
         atomic(self.root / 'credentials' / 'intent-v1.json', json.dumps(dict(schema_version=1, revision=len(entries), entries=entries)).encode())
         # This synthetic watchdog child is not BEAM; capability fixture is explicit.
-        for file, content in [('safety.ex', '@credential_intent_schema 1\n@credential_intent_lock 1\n@noncredential_settings_schema 1'), ('chatgpt/auth.ex', 'Nano.Safety.credential_write'), ('settings.ex', 'Nano.Safety.credential_read')]:
+        for file, content in [('safety.ex', '@credential_intent_schema 1\ndef credential_intent_lock_schema, do: 1\n@noncredential_settings_schema 1'), ('chatgpt/auth.ex', 'Nano.Safety.credential_write'), ('settings.ex', 'Nano.Safety.credential_read')]:
             path = self.app / 'lib/nano' / file
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)

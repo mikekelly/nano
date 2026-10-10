@@ -97,7 +97,8 @@ defmodule Nano.Safety do
 
   # Capability checked by the outside-checkout runner before any fallback launch.
   @credential_intent_schema 1
-  @credential_intent_lock 1
+  @doc false
+  def credential_intent_lock_schema, do: 1
   @noncredential_settings_schema 1
   @maintenance "credential authority unavailable or blocked; stop credential writers and reconcile in maintenance"
 

@@ -167,7 +167,7 @@ def compatible_credentials(source, root):
     # Compatible BEAM boot handles missing authority fail-closed; old code cannot.
     try:
         return '@credential_intent_schema 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
-            '@credential_intent_lock 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
+            'def credential_intent_lock_schema, do: 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
             '@noncredential_settings_schema 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
             'Nano.Safety.credential_write' in (Path(source) / 'lib/nano/chatgpt/auth.ex').read_text() and \
             'Nano.Safety.credential_read' in (Path(source) / 'lib/nano/settings.ex').read_text()

@@ -39,6 +39,7 @@ defmodule Nano.CredentialIntentTest do
     }
 
   test "BEAM publishers and actual Python Net share lock; owner death releases it", ctx do
+    assert Safety.credential_intent_lock_schema() == 1
     assert :ok = Safety.provision_new_credentials(:new_installation)
     assert {:ok, g} = Safety.credential_write("chatgpt_auth.json", auth())
     config = %{app: File.cwd!(), state_dir: ctx.state, command: ["true"]}
