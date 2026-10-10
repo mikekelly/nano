@@ -31,9 +31,11 @@ defmodule Nano.MCP.HTTP do
   def stop(pid), do: GenServer.stop(pid, :normal)
   @impl true
   def init({owner, config}) do
-    uri = URI.parse(config["url"] || "")
+    url = if is_map(config), do: config["url"], else: nil
+    uri = URI.parse(if is_binary(url), do: url, else: "")
 
-    if uri.scheme in ["http", "https"] and is_binary(uri.host) do
+    if uri.scheme in ["http", "https"] and is_binary(uri.host) and
+         valid_headers?(config["headers"] || %{}) do
       {:ok,
        %{
          owner: owner,
@@ -45,18 +47,26 @@ defmodule Nano.MCP.HTTP do
          listening: false
        }}
     else
-      {:stop, :invalid_url}
+      {:stop, :invalid_transport_config}
     end
   end
 
   @impl true
   def handle_cast({:send, message, headers}, s) do
-    if modern?(s.version) and message["method"] == "notifications/cancelled" do
-      {:noreply, cancel(s, get_in(message, ["params", "requestId"]))}
-    else
-      if map_size(s.jobs) >= 64,
-        do: down(s, :too_many_requests),
-        else: {:noreply, launch(s, %{new_job(:post, message) | extra_headers: headers})}
+    try do
+      if not valid_headers?(headers), do: throw(:invalid_headers)
+
+      if modern?(s.version) and message["method"] == "notifications/cancelled" do
+        {:noreply, cancel(s, get_in(message, ["params", "requestId"]))}
+      else
+        if map_size(s.jobs) >= 64,
+          do: down(s, :too_many_requests),
+          else: {:noreply, launch(s, %{new_job(:post, message) | extra_headers: headers})}
+      end
+    rescue
+      _ -> down(s, :invalid_request)
+    catch
+      _, _ -> down(s, :invalid_request)
     end
   end
 
@@ -70,6 +80,23 @@ defmodule Nano.MCP.HTTP do
     end
 
     %{s | jobs: Map.new(retained)}
+  end
+
+  defp valid_headers?(headers) when is_map(headers) do
+    Enum.all?(headers, fn {key, value} ->
+      is_binary(key) and key =~ ~r/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/ and
+        is_binary(value) and value =~ ~r/^[\x20-\x7e\x09]*$/
+    end)
+  end
+
+  defp valid_headers?(_), do: false
+
+  @impl true
+  def format_status(status) do
+    status
+    |> Map.put(:state, :redacted_transport_state)
+    |> Map.put(:message, :redacted)
+    |> Map.put(:reason, :redacted)
   end
 
   defp new_job(method, message) do
@@ -103,6 +130,9 @@ defmodule Nano.MCP.HTTP do
       get_in(job.message || %{}, ["params", "_meta", "io.modelcontextprotocol/protocolVersion"]) ||
         s.version
 
+    if not is_binary(version) or not Regex.match?(~r/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, version),
+      do: throw(:invalid_protocol_version)
+
     headers =
       Map.new(s.config["headers"] || %{}, fn {k, v} -> {String.downcase(k), v} end)
       |> Map.merge(%{
@@ -123,7 +153,7 @@ defmodule Nano.MCP.HTTP do
     headers =
       Map.merge(
         headers,
-        Map.new(job.extra_headers, fn {k, v} -> {String.downcase(k), encode_header(v)} end)
+        Map.new(job.extra_headers, fn {k, v} -> {String.downcase(k), v} end)
       )
 
     headers =
@@ -168,7 +198,20 @@ defmodule Nano.MCP.HTTP do
         ]
 
         opts = if job.method == :post, do: Keyword.put(opts, :json, job.message), else: opts
-        send(parent, {:finished, job.key, Req.request(opts)})
+
+        result =
+          try do
+            case Req.request(opts) do
+              {:error, _} -> {:error, :request_failed}
+              result -> result
+            end
+          rescue
+            _ -> {:error, :request_failed}
+          catch
+            _, _ -> {:error, :request_failed}
+          end
+
+        send(parent, {:finished, job.key, result})
       end)
 
     put_in(s.jobs[job.key], %{job | pid: pid, ref: ref})
@@ -428,8 +471,8 @@ defmodule Nano.MCP.HTTP do
     if Map.has_key?(s.jobs, job.key), do: {:noreply, launch(s, job)}, else: {:noreply, s}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, s) do
-    if ref == s.owner_ref, do: {:stop, :normal, s}, else: down(s, {:worker_down, reason})
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, s) do
+    if ref == s.owner_ref, do: {:stop, :normal, s}, else: down(s, :worker_down)
   end
 
   defp notify(s, event), do: send(s.owner, {:mcp_transport, self(), event})
