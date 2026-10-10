@@ -44,7 +44,8 @@ defmodule Nano.Bots.AuditTest do
   test "production adapter delivers uploaded image pixels to harness", c do
     png = Base.decode64!("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
     {:ok, image} = Nano.Images.import_bytes(png)
-    batch = %{session_id: c.a.id, bot_id: c.bot.id, epoch: 1, delivery_id: "audit-image", messages: [%{text: "What is this?", attachments: ["image:" <> image.image_ref]}]}
+    {:ok, message} = Bots.post_human(c.a.id, %{text: "What is this?", idempotency_key: "audit-image", attachments: ["image:" <> image.image_ref]}, c.opts)
+    batch = %{session_id: c.a.id, bot_id: c.bot.id, epoch: message.epoch, delivery_id: "audit-image", messages: [message]}
     Bots.Agent.deliver(self(), batch)
     assert_receive {:"$gen_cast", {:notify, event}}
     {_, visible, _} = Nano.ImageInput.event(event, ["text", "image"])
