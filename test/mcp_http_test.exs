@@ -22,7 +22,11 @@ defmodule Nano.MCP.HTTPTest do
 
   defp client(url) do
     {:ok, pid} =
-      HTTP.start_link(self(), %{"url" => url, "headers" => %{"authorization" => "Bearer test"}})
+      HTTP.start_link(self(), %{
+        "url" => url,
+        "protocol_version" => "2025-11-25",
+        "headers" => %{"authorization" => "Bearer test"}
+      })
 
     on_exit(fn ->
       try do
@@ -210,6 +214,114 @@ defmodule Nano.MCP.HTTPTest do
     HTTP.stop(pid)
     refute Process.alive?(pid)
     Enum.each(workers, fn worker -> refute Process.alive?(worker) end)
+  end
+
+  test "modern mirrored headers and error bodies permit protocol switching" do
+    url =
+      server(fn conn, _ ->
+        if Plug.Conn.get_req_header(conn, "mcp-protocol-version") == ["2026-07-28"] do
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(
+            400,
+            Jason.encode!(%{
+              "id" => 8,
+              "error" => %{"code" => -32001, "data" => %{"supported" => ["2025-11-25"]}}
+            })
+          )
+        else
+          json(conn, %{"id" => 9, "result" => %{}})
+        end
+      end)
+
+    {:ok, pid} = HTTP.start_link(self(), %{"url" => url})
+
+    HTTP.send_message(
+      pid,
+      %{
+        "id" => 8,
+        "method" => "tools/call",
+        "params" => %{
+          "name" => "Hello, 世界",
+          "_meta" => %{"io.modelcontextprotocol/protocolVersion" => "2026-07-28"}
+        }
+      },
+      %{"Mcp-Param-Region" => " padded "}
+    )
+
+    assert_receive {:request, "POST", headers, _}, 2000
+    headers = Map.new(headers)
+    assert headers["mcp-method"] == "tools/call"
+    assert headers["mcp-name"] == "=?base64?" <> Base.encode64("Hello, 世界") <> "?="
+    assert headers["mcp-param-region"] == "=?base64?" <> Base.encode64(" padded ") <> "?="
+    assert_receive {:mcp_transport, ^pid, {:message, %{"error" => %{"code" => -32001}}}}, 2000
+    assert :ok = HTTP.set_protocol(pid, "2025-11-25")
+    HTTP.send_message(pid, %{"id" => 9, "method" => "ping"})
+    assert_receive {:request, "POST", headers, _}, 2000
+    assert Map.new(headers)["mcp-protocol-version"] == "2025-11-25"
+    assert_receive {:mcp_transport, ^pid, {:message, %{"id" => 9}}}, 2000
+    HTTP.stop(pid)
+  end
+
+  test "modern subscription cancellation closes worker without notification POST or GET" do
+    url =
+      server(fn conn, _ ->
+        conn = sse(conn, ["data: {\"method\":\"notifications/subscriptions/acknowledged\"}\n\n"])
+        Process.sleep(500)
+        conn
+      end)
+
+    {:ok, pid} = HTTP.start_link(self(), %{"url" => url})
+    HTTP.send_message(pid, %{"id" => 4, "method" => "subscriptions/listen"})
+    assert_receive {:request, "POST", _, _}, 2000
+
+    assert_receive {:mcp_transport, ^pid,
+                    {:message, %{"method" => "notifications/subscriptions/acknowledged"}}},
+                   2000
+
+    [job] = :sys.get_state(pid).jobs |> Map.values()
+
+    HTTP.send_message(pid, %{
+      "method" => "notifications/cancelled",
+      "params" => %{"requestId" => 4}
+    })
+
+    assert :sys.get_state(pid).jobs == %{}
+    refute Process.alive?(job.pid)
+    refute_receive {:request, _, _, _}, 100
+    refute_receive {:mcp_transport, ^pid, {:down, _}}, 100
+    HTTP.stop(pid)
+  end
+
+  test "modern stream closure does not resume with Last-Event-ID" do
+    url =
+      server(fn conn, _ ->
+        sse(conn, [
+          "id: ignored\nretry: 1\ndata: {\"method\":\"notifications/subscriptions/acknowledged\"}\n\n"
+        ])
+      end)
+
+    {:ok, pid} = HTTP.start_link(self(), %{"url" => url})
+    HTTP.send_message(pid, %{"id" => 4, "method" => "subscriptions/listen"})
+    assert_receive {:request, "POST", _, _}, 2000
+    assert_receive {:mcp_transport, ^pid, {:down, :stream_closed}}, 2000
+    refute_receive {:request, "GET", _, _}, 100
+  end
+
+  test "modern empty HTTP 400 is surfaced for fallback without killing transport" do
+    {:ok, pid} =
+      HTTP.start_link(self(), %{
+        "url" => server(fn conn, _ -> Plug.Conn.send_resp(conn, 400, "") end)
+      })
+
+    HTTP.send_message(pid, %{"id" => 3, "method" => "server/discover"})
+
+    assert_receive {:mcp_transport, ^pid,
+                    {:message, %{"id" => 3, "error" => %{"data" => %{"http_status" => 400}}}}},
+                   2000
+
+    assert Process.alive?(pid)
+    HTTP.stop(pid)
   end
 
   test "HTTP failure is reported without retrying POST" do
