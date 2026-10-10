@@ -98,6 +98,7 @@ defmodule Nano.Safety do
   # Capability checked by the outside-checkout runner before any fallback launch.
   @credential_intent_schema 1
   @credential_intent_lock 1
+  @noncredential_settings_schema 1
   @maintenance "credential authority unavailable or blocked; stop credential writers and reconcile in maintenance"
 
   @doc "Read protected credential authority. Never log the returned private values."
@@ -203,12 +204,110 @@ defmodule Nano.Safety do
 
   @doc false
   def noncredential_settings_write(values) do
-    serialized(fn ->
-      with :ok <- File.mkdir_p(Path.dirname(primary("settings.json"))),
-           :ok <- atomic(primary("settings.json"), Jason.encode!(values)),
+    # Separate document: no credential-bearing primary/backup is touched when
+    # protected storage is unavailable. Full snapshot preserves deletion intent.
+    :global.trans({{__MODULE__, :noncredential_settings}, self()}, fn ->
+      with :ok <- noncredential_write_ready(),
+           :ok <- File.mkdir_p(Path.dirname(noncredential_path())),
+           :ok <-
+             atomic(
+               noncredential_path(),
+               Jason.encode!(%{
+                 "schema_version" => @noncredential_settings_schema,
+                 "values" => nonsecret_values(values)
+               })
+             ),
            do: :ok
     end)
   end
+
+  @doc false
+  def prepare_noncredential_upgrade(values) do
+    :global.trans({{__MODULE__, :noncredential_settings}, self()}, fn ->
+      case noncredential_document() do
+        {:error, :enoent} ->
+          # Parent suspended the old owner. Its nonsecret memory and legacy
+          # primary must agree before establishing the new durable snapshot.
+          if nonsecret_values(values) == nonsecret_values(read_map(primary("settings.json"))) do
+            with :ok <- File.mkdir_p(Path.dirname(noncredential_path())),
+                 :ok <-
+                   atomic(
+                     noncredential_path(),
+                     Jason.encode!(%{
+                       "schema_version" => @noncredential_settings_schema,
+                       "values" => nonsecret_values(values)
+                     })
+                   ),
+                 do: {:ok, nonsecret_values(values)}
+          else
+            {:error, :noncredential_settings_maintenance}
+          end
+
+        {:ok, ordinary} ->
+          {:ok, ordinary}
+
+        _ ->
+          {:error, :noncredential_settings_maintenance}
+      end
+    end)
+  end
+
+  defp noncredential_write_ready do
+    case noncredential_document() do
+      {:ok, _} -> :ok
+      {:error, :enoent} -> :ok
+      _ -> {:error, :noncredential_settings_maintenance}
+    end
+  end
+
+  defp noncredential_document do
+    with {:ok, bytes} <- File.read(noncredential_path()),
+         {:ok, %{"schema_version" => @noncredential_settings_schema, "values" => values}}
+         when is_map(values) <- Jason.decode(bytes),
+         true <-
+           Enum.all?(values, fn {key, _} -> nonsecret_key?(key) and canonical_nonsecret?(key) end),
+         do: {:ok, values},
+         else: (
+           {:error, :enoent} -> {:error, :enoent}
+           _ -> {:error, :noncredential_settings_maintenance}
+         )
+  end
+
+  @doc false
+  def noncredential_settings_read(legacy \\ nil) do
+    legacy = legacy || read_map(primary("settings.json"))
+
+    case noncredential_document() do
+      {:error, :enoent} -> nonsecret_values(legacy)
+      {:ok, values} -> values
+      _ -> damaged_noncredentials()
+    end
+  end
+
+  defp damaged_noncredentials do
+    Logger.warning("noncredential settings document unavailable; using nonsecret defaults")
+    %{}
+  end
+
+  defp nonsecret_key?(key) do
+    case Nano.Settings.key(key) do
+      {:ok, canonical} when is_atom(canonical) and canonical != :openrouter_api_key -> true
+      _ -> false
+    end
+  end
+
+  defp canonical_nonsecret?(key) do
+    case Nano.Settings.key(key) do
+      {:ok, canonical} -> key == to_string(canonical)
+      _ -> false
+    end
+  end
+
+  defp nonsecret_values(values) do
+    values |> normalize_settings() |> Map.filter(fn {key, _} -> nonsecret_key?(key) end)
+  end
+
+  defp noncredential_path, do: primary("settings-noncredentials-v1.json")
 
   # The stable lock inode is shared with the external Python watchdog. A port
   # holder releases the OS lock on stdin EOF, including owner/VM death.
@@ -431,7 +530,7 @@ defmodule Nano.Safety do
 
   defp materialize("settings.json", values, intent) do
     values = normalize_settings(values)
-    values = Map.reject(values, fn {key, _} -> secret_key?(key) end)
+    values = noncredential_settings_read(values)
 
     Enum.reduce(intent["entries"], values, fn
       {"settings/" <> key, %{"state" => "enabled", "value" => value}}, acc ->
@@ -504,7 +603,7 @@ defmodule Nano.Safety do
   end
 
   defp reconcile_files(intent) do
-    with :ok <- write_materialized("settings.json", read_map(primary("settings.json")), intent),
+    with :ok <- write_materialized("settings.json", read_primary("settings.json"), intent),
          :ok <- write_materialized("chatgpt_auth.json", %{}, intent),
          :ok <- write_mirror(intent),
          do: :ok
@@ -547,7 +646,7 @@ defmodule Nano.Safety do
                (backup == {:ok, %{}} or (current != {:ok, %{}} and current == backup))
            end),
          true <- unambiguous_settings?(read_map(primary("settings.json"))),
-         :ok <- preserve_legacy(files) do
+         :ok <- preserve_legacy(files ++ ["settings-noncredentials-v1.json"]) do
       empty = %{"schema_version" => 1, "revision" => 0, "entries" => %{}}
 
       with {:ok, settings} <-

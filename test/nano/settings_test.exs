@@ -22,6 +22,9 @@ defmodule Nano.SettingsTest do
 
   defp path, do: Path.join(Application.fetch_env!(:nano, :state_dir), "settings.json")
 
+  defp nonsecret_path,
+    do: Path.join(Application.fetch_env!(:nano, :state_dir), "settings-noncredentials-v1.json")
+
   # Kills the settings process and waits for its supervisor to start it again.
   defp restart_settings do
     old = Process.whereis(Nano.Settings)
@@ -49,6 +52,83 @@ defmodule Nano.SettingsTest do
     {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(model, opts))
     on_exit(fn -> Nano.Ops.stop_agent(name) end)
     %{name: name, model: model, pid: pid, id: NanoAgent.info(name).id}
+  end
+
+  test "actual API nonsecret writes survive unavailable protected root without touching mixed credentials" do
+    safety = Application.fetch_env!(:nano, :safety_dir)
+    obstruction = Path.join(Application.fetch_env!(:nano, :test_dir), "u07-blocked-root")
+    File.write!(obstruction, "not-directory")
+    original = File.read!(path())
+    ordinary = File.read!(nonsecret_path())
+
+    on_exit(fn ->
+      Application.put_env(:nano, :safety_dir, safety)
+      File.write!(path(), original)
+      File.write!(nonsecret_path(), ordinary)
+      restart_settings()
+    end)
+
+    try do
+      Application.put_env(:nano, :safety_dir, obstruction)
+
+      conn =
+        build_conn()
+        |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+
+      assert %{"value" => 12345, "set" => true} =
+               conn
+               |> put("/api/settings/eval_timeout_ms", Jason.encode!(%{"value" => "12345"}))
+               |> json_response(200)
+
+      assert File.read!(path()) == original
+      sidecar = Jason.decode!(File.read!(nonsecret_path()))
+      assert sidecar["values"]["eval_timeout_ms"] == 12345
+      refute Map.has_key?(sidecar["values"], "openrouter_api_key")
+      restart_settings()
+      assert Nano.Settings.get(:eval_timeout_ms) == 12345
+      assert Nano.Settings.get(:openrouter_api_key) == nil
+
+      assert %{"set" => false} =
+               conn |> delete("/api/settings/eval_timeout_ms") |> json_response(200)
+
+      restart_settings()
+      assert Nano.Settings.get(:eval_timeout_ms) == 30000
+      assert File.read!(path()) == original
+    after
+      Application.put_env(:nano, :safety_dir, safety)
+      File.write!(nonsecret_path(), ordinary)
+      restart_settings()
+    end
+  end
+
+  test "failed nonsecret snapshot persistence keeps current memory and damaged evidence" do
+    TestSettings.put(:eval_timeout_ms, 12345)
+    bytes = File.read!(nonsecret_path())
+    File.rm!(nonsecret_path())
+    File.mkdir!(nonsecret_path())
+
+    try do
+      conn =
+        build_conn()
+        |> Plug.Conn.put_req_header("x-nano-api-intent", "mutate")
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+
+      assert %{"error" => message} =
+               conn
+               |> put("/api/settings/eval_timeout_ms", Jason.encode!(%{value: 54321}))
+               |> json_response(422)
+
+      assert message =~ "noncredential_settings_maintenance"
+      assert Nano.Settings.get(:eval_timeout_ms) == 12345
+      assert File.dir?(nonsecret_path())
+    after
+      File.rmdir!(nonsecret_path())
+      File.write!(nonsecret_path(), bytes)
+    end
+
+    restart_settings()
+    assert Nano.Settings.get(:eval_timeout_ms) == 12345
   end
 
   test "secret removal persists revocation, while authority failure is truthful and ordinary settings still work" do
@@ -97,8 +177,8 @@ defmodule Nano.SettingsTest do
     TestSettings.put(:eval_timeout_ms, "45000")
     assert Nano.Settings.get(:eval_timeout_ms) == 45_000
     assert %{set: true, value: 45_000, default: 30_000, applies: :live} = entry(:eval_timeout_ms)
-    assert File.stat!(path()).mode |> Bitwise.band(0o777) == 0o600
-    assert Jason.decode!(File.read!(path()))["eval_timeout_ms"] == 45_000
+    assert File.stat!(nonsecret_path()).mode |> Bitwise.band(0o777) == 0o600
+    assert Jason.decode!(File.read!(nonsecret_path()))["values"]["eval_timeout_ms"] == 45_000
 
     restart_settings()
     assert Nano.Settings.get(:eval_timeout_ms) == 45_000
@@ -111,10 +191,12 @@ defmodule Nano.SettingsTest do
 
   test "an unreadable file comes up with the defaults, logged once without its content" do
     good = File.read!(path())
+    ordinary = File.read!(nonsecret_path())
     protected_key = Nano.Settings.get(:openrouter_api_key)
 
     on_exit(fn ->
       File.write!(path(), good)
+      File.write!(nonsecret_path(), ordinary)
       restart_settings()
     end)
 
@@ -124,10 +206,29 @@ defmodule Nano.SettingsTest do
     assert log =~ "ignoring damaged primary settings; protected credentials retained"
     refute log =~ @secret
     assert Nano.Settings.get(:openrouter_api_key) == protected_key
+
+    assert Nano.Settings.get(:openrouter_base_url) ==
+             Jason.decode!(ordinary)["values"]["openrouter_base_url"]
+
+    # Damage to the authoritative nonsecret document defaults safely, without
+    # treating a secret payload as noncredential or reviving legacy values.
+    File.write!(
+      nonsecret_path(),
+      ~s|{"schema_version":1,"values":{"openrouter_api_key":"#{@secret}"}}|
+    )
+
+    log = capture_log(fn -> restart_settings() end)
+    assert log =~ "noncredential settings document unavailable"
+    refute log =~ @secret
+    assert Nano.Settings.get(:openrouter_api_key) == protected_key
     assert Nano.Settings.get(:openrouter_base_url) == "https://openrouter.ai/api/v1"
 
     # A bad value in a good file goes back to its default; the rest are kept.
-    File.write!(path(), ~s|{"eval_timeout_ms": -1, "result_max_bytes": 100}|)
+    File.write!(
+      nonsecret_path(),
+      ~s|{"schema_version":1,"values":{"eval_timeout_ms": -1, "result_max_bytes": 100}}|
+    )
+
     log = capture_log(fn -> restart_settings() end)
     assert log =~ ~s|ignoring "eval_timeout_ms"|
 

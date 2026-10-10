@@ -364,6 +364,16 @@ defmodule Nano.Settings do
     {:ok, publish(values)}
   end
 
+  @impl true
+  def code_change(_old, values, _extra) do
+    with {:ok, _} <- Nano.Safety.prepare_noncredential_upgrade(values),
+         {:ok, current, _} <- Nano.Safety.credential_read("settings.json") do
+      {:ok, current |> load() |> publish()}
+    else
+      _ -> {:error, :settings_maintenance_required}
+    end
+  end
+
   # Each value is checked as a change would be (a file setting only for its type), so a bad
   # one goes back to its default; the rest are kept.
   defp load(%{} = json) do
@@ -483,20 +493,7 @@ defmodule Nano.Settings do
     end
   end
 
-  defp load_nonsecrets do
-    case File.read(path()) do
-      {:ok, json} ->
-        Jason.decode!(json)
-        |> load()
-        |> Map.reject(fn {key, _} -> secret?(key) end)
-
-      {:error, :enoent} ->
-        %{}
-
-      {:error, e} ->
-        raise File.Error, reason: e, action: "read", path: path()
-    end
-  end
+  defp load_nonsecrets, do: Nano.Safety.noncredential_settings_read() |> load()
 
   defp publish(values) do
     if :persistent_term.get(@values, nil) != values, do: :persistent_term.put(@values, values)

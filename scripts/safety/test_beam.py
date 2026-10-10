@@ -119,6 +119,15 @@ File.write!(Path.join(private, "effective-paths.json"), Jason.encode!(paths))
                 # Exercise actual settings persistence hook, no polling copy.
                 evaluate('Nano.Settings.put("fixture_key", "fake-latest"); :ok')
                 self.assertEqual(read_json(root / 'credentials' / 'settings.json')['FIXTURE_KEY'], 'fake-latest')
+                # Ordinary settings use their separate complete snapshot. Updates
+                # and deletion must not become credential damage or kill this child.
+                previous = status()['child_pid']
+                self.assertEqual(evaluate('Nano.Settings.put(:eval_timeout_ms, 45000)')['result'], ':ok')
+                self.assertEqual(evaluate('Nano.Settings.put(:network_policy, "temporary")')['result'], ':ok')
+                self.assertEqual(evaluate('Nano.Settings.delete(:network_policy)')['result'], ':ok')
+                ordinary = (state / 'settings-noncredentials-v1.json').read_bytes()
+                time.sleep(.6)
+                self.assertEqual(status()['child_pid'], previous)
                 old = status()['child_pid']; os.kill(old, signal.SIGSTOP)
                 wait_for(lambda: status().get('child_pid') != old and status().get('state') == 'watching', 100)
                 with self.assertRaises(ProcessLookupError): os.kill(old, 0)
@@ -149,6 +158,9 @@ File.write!(Path.join(private, "effective-paths.json"), Jason.encode!(paths))
                 proc = start(); ready()
                 self.assertEqual(status()['evidence_source'], good['source'])
                 self.assertTrue(status()['fallback'])
+                self.assertEqual((state / 'settings-noncredentials-v1.json').read_bytes(), ordinary)
+                self.assertEqual(evaluate('Nano.Settings.get(:eval_timeout_ms)')['result'], '45000')
+                self.assertEqual(evaluate('Nano.Settings.get(:network_policy) == "unrestricted outbound internet access"')['result'], 'true')
                 self.assertFalse((app / 'deps').exists())
                 self.assertEqual(evaluate('NanoAgent.info("safety-fixture") != nil')['result'], 'true')
                 previous = status()['child_pid']

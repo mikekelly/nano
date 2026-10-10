@@ -112,6 +112,95 @@ defmodule Nano.CredentialIntentTest do
     assert {"coherent-no-restart\n", 0} = System.cmd("python3", ["-c", script, ctx.safety])
   end
 
+  test "flock tool absence and acquisition timeout fail before credential mutation", ctx do
+    assert :ok = Safety.provision_new_credentials(:new_installation)
+    assert {:ok, _} = Safety.credential_write("chatgpt_auth.json", auth())
+    previous = File.read!(intent(ctx.safety))
+    original_path = System.get_env("PATH")
+    empty = Path.join(ctx.safety, "empty-tools")
+    File.mkdir!(empty)
+
+    try do
+      System.put_env("PATH", empty)
+      assert {:error, message} = Safety.credential_invalidate("chatgpt_auth.json")
+      assert message =~ "maintenance"
+    after
+      System.put_env("PATH", original_path)
+    end
+
+    assert File.read!(intent(ctx.safety)) == previous
+    refute File.exists?(barrier(ctx.safety))
+
+    holder =
+      Port.open({:spawn_executable, System.find_executable("flock")}, [
+        :binary,
+        :exit_status,
+        :use_stdio,
+        {:args,
+         [
+           "-x",
+           Path.join([ctx.safety, "credentials", "intent-v1.lock"]),
+           "/bin/sh",
+           "-c",
+           "printf 'locked\\n'; read release"
+         ]}
+      ])
+
+    assert_receive {^holder, {:data, "locked\n"}}, 2_000
+
+    try do
+      assert {:error, message} = Safety.credential_invalidate("chatgpt_auth.json")
+      assert message =~ "maintenance"
+      assert File.read!(intent(ctx.safety)) == previous
+      refute File.exists?(barrier(ctx.safety))
+    after
+      if Port.info(holder), do: Port.close(holder)
+    end
+
+    assert {:ok, nil} = Safety.credential_invalidate("chatgpt_auth.json")
+  end
+
+  test "separate nonsecret snapshot wins deletions through credential writes and reconciliation",
+       ctx do
+    assert :ok = Safety.provision_new_credentials(:new_installation)
+
+    assert {:ok, _} =
+             Safety.credential_write("settings.json", %{
+               "openrouter_api_key" => "fixture",
+               "eval_timeout_ms" => 9
+             })
+
+    mixed = File.read!(Path.join(ctx.state, "settings.json"))
+
+    assert :ok =
+             Safety.noncredential_settings_write(%{
+               "eval_timeout_ms" => 12345,
+               "openrouter_api_key" => "must-not-store"
+             })
+
+    assert File.read!(Path.join(ctx.state, "settings.json")) == mixed
+    ordinary = File.read!(Path.join(ctx.state, "settings-noncredentials-v1.json"))
+    refute ordinary =~ "must-not-store"
+    assert {:ok, values, _} = Safety.credential_read("settings.json")
+    assert values["eval_timeout_ms"] == 12345
+    assert values["openrouter_api_key"] == "fixture"
+
+    assert {:ok, _} =
+             Safety.credential_write("settings.json", %{
+               "openrouter_api_key" => "fresh",
+               "eval_timeout_ms" => 999
+             })
+
+    assert {:ok, values, _} = Safety.credential_read("settings.json")
+    assert values["eval_timeout_ms"] == 12345
+    assert :ok = Safety.noncredential_settings_write(%{})
+    assert :ok = Safety.reconcile_credentials()
+    File.write!(Path.join(ctx.state, "settings.json"), mixed)
+    assert {:ok, values, _} = Safety.credential_read("settings.json")
+    refute Map.has_key?(values, "eval_timeout_ms")
+    assert values["openrouter_api_key"] == "fresh"
+  end
+
   test "explicit provision; revoked generation loses to login and stale refresh", ctx do
     assert {:error, _} = Safety.credential_write("chatgpt_auth.json", auth())
     assert :ok = Safety.provision_new_credentials(:new_installation)

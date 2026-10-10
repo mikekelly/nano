@@ -51,3 +51,32 @@ latest protected intent and evidence preserved, then offline reconciliation if a
 barrier exists. Never replace authority with an older source checkpoint/mirror.
 Live rollout requires parent-owned serialization/migration or external maintenance;
 no live credentials are changed by the worker.
+
+Ordinary settings remain usable with unavailable protected credential storage.
+`state_dir/settings-noncredentials-v1.json` is schema 1 with a complete canonical
+`values` snapshot containing only declared nonsecret settings. Presence wins over
+all legacy nonsecret fields, including deletion by absence; malformed/unreadable
+sidecar selects nonsecret defaults rather than reviving legacy fields. It is
+atomically published under the Settings owner/node lock, never rewrites the mixed
+credential primary/backup, and does not acquire the credential flock. Thus this
+is separation of storage, not a lock bypass on a credential-bearing document.
+Credential reads/writes/reconciliation overlay the sidecar's nonsecret authority
+while secret values always come from protected intent. The Python watchdog does
+not merge this sidecar into the mixed file: ordinary changes cannot become a
+false credential-damage/child-kill signal. Migration preserves the sidecar bytes;
+compatible source must advertise both credential lock and nonsecret schema v1.
+Allowed roll-forward restoration preserves this sidecar as well as tombstones.
+Old code unable to read its complete-snapshot deletion semantics is ineligible.
+
+Old live Settings owners are suspended by the parent before migration. Their
+`code_change` snapshots nonsecret memory only if the current legacy primary agrees;
+if a newer valid sidecar already exists it wins and is not overwritten. Mismatch or
+unreadable/malformed sidecar blocks this upgrade for maintenance. Successful upgrade
+reloads protected secrets plus the current nonsecret snapshot before publishing.
+Failed nonsecret persistence leaves usable in-memory settings unchanged and returns
+a truthful maintenance error; damaged sidecar bytes are not automatically replaced.
+Repair requires offline restoration of the newest coherent nonsecret snapshot, not
+copying older mixed primary defaults. Boot logs a fixed diagnostic and defaults
+nonsecrets when this authority is unreadable, without changing the damaged file.
+Installed v1 runner always requires lifecycle-compatible source, even if every
+protected authority/history/mirror file is missing: absence never proves freshness.

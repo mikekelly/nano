@@ -37,11 +37,25 @@ true = Process.whereis(Nano.Settings) == settings_pid
 {:ok, %{access_token: "u07-fake-access"}} = Nano.ChatGPT.Auth.token()
 true = Nano.Settings.get(:openrouter_api_key) == "u07-fake-key"
 true = Nano.ChatGPT.Auth.status().error == nil
+ordinary_path = Path.join(state, "settings-noncredentials-v1.json")
+
+%{"schema_version" => 1, "values" => %{"eval_timeout_ms" => 30000}} =
+  Jason.decode!(File.read!(ordinary_path))
+
+:ok = Nano.Settings.put(:eval_timeout_ms, 45000)
+:ok = Nano.Settings.put(:network_policy, "temporary")
+:ok = Nano.Settings.delete(:network_policy)
+ordinary = File.read!(ordinary_path)
 :ok = Nano.ChatGPT.Auth.logout()
 :ok = Nano.Settings.delete(:openrouter_api_key)
 # Forward mutation -> compatible owner restart; retain authority/tombstones.
 Supervisor.terminate_child(Nano.Supervisor, Nano.ChatGPT.Auth)
 {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Nano.ChatGPT.Auth)
+Supervisor.terminate_child(Nano.Supervisor, Nano.Settings)
+{:ok, _} = Supervisor.restart_child(Nano.Supervisor, Nano.Settings)
+true = Nano.Settings.get(:eval_timeout_ms) == 45000
+true = Nano.Settings.get(:network_policy) == "unrestricted outbound internet access"
+true = File.read!(ordinary_path) == ordinary
 {:error, _} = Nano.ChatGPT.Auth.token()
 :ok = Nano.Safety.reconcile_credentials()
 {:ok, %{}, nil} = Nano.Safety.credential_read("chatgpt_auth.json")
@@ -49,7 +63,7 @@ Supervisor.terminate_child(Nano.Supervisor, Nano.ChatGPT.Auth)
 false = Map.has_key?(values, "openrouter_api_key")
 
 IO.puts(
-  "U07 old-owner suspended migration -> hot upgrade without refresh/logout -> forward invalidation -> compatible restart/restoration passed"
+  "U07 old-owner suspended migration -> hot upgrade without refresh/logout -> forward invalidation -> compatible credential+nonsecret snapshot restart/restoration passed"
 )
 
 System.halt(0)

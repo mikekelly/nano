@@ -3,6 +3,7 @@
 Never prints credential values or subprocess output. See README.md.
 """
 import fcntl
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -76,6 +77,29 @@ def canonical_settings(values):
         result[canonical] = value
     return result
 
+class CredentialLockUnavailable(OSError):
+    pass
+
+
+@contextmanager
+def credential_lock(root):
+    # Stable inode: creation only, never replace or unlink this file.
+    lock = Path(root) / 'credentials' / 'intent-v1.lock'
+    fd = None
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        raise CredentialLockUnavailable('credential lock unavailable') from None
+    try:
+        yield
+    finally:
+        os.close(fd)
+
+
 def credential_intent(root):
     root = Path(root)
     if (root / 'credentials' / 'intent-blocked-v1.json').exists():
@@ -138,12 +162,13 @@ def credential_repair(current, backup, root=None):
 
 
 def compatible_credentials(source, root):
-    # A protected authority (including a blocked mutation) forbids pre-v1 fallback.
-    if not any((Path(root) / 'credentials' / name).exists() for name in ('intent-v1.json', 'intent-blocked-v1.json', 'intent-required-v1')):
-        return True
+    # This v1 installed runner only launches lifecycle-compatible code, even
+    # after all protected files are lost. Absence is never proof of a fresh install.
+    # Compatible BEAM boot handles missing authority fail-closed; old code cannot.
     try:
         return '@credential_intent_schema 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
             '@credential_intent_lock 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
+            '@noncredential_settings_schema 1' in (Path(source) / 'lib/nano/safety.ex').read_text() and \
             'Nano.Safety.credential_write' in (Path(source) / 'lib/nano/chatgpt/auth.ex').read_text() and \
             'Nano.Safety.credential_read' in (Path(source) / 'lib/nano/settings.ex').read_text()
     except OSError:
@@ -206,17 +231,12 @@ class Net:
         # Share one stable flock inode with every BEAM credential transaction.
         # A busy writer is not damage. Hold through snapshot, decision, stop and
         # repair; rechecking only after killing cannot prevent spurious restarts.
-        lock = self.root / 'credentials' / 'intent-v1.lock'
-        lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return False
-            return self._credentials_locked()
-        finally:
-            os.close(fd)
+            with credential_lock(self.root):
+                return self._credentials_locked()
+        except CredentialLockUnavailable:
+            # A busy/unavailable lock is not evidence of credential damage.
+            return False
 
     def _credentials_locked(self):
         restored = False

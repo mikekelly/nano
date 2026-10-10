@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
-from runner import atomic, read_json, valid_credentials, canonical_settings, canonical_setting
+from runner import atomic, read_json, valid_credentials, canonical_settings, canonical_setting, credential_lock, NONSECRET_SETTINGS
 
 
 def main():
@@ -25,6 +25,14 @@ def main():
     root = Path(args.root).resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
+    try:
+        with credential_lock(root):
+            install(parser, args, root)
+    except OSError:
+        parser.error('credential lock or persistence unavailable; quiesce writers and reconcile offline')
+
+
+def install(parser, args, root):
     if (root / 'config.json').exists():
         parser.error('already installed; review existing config rather than replacing it')
     app = Path(args.app).resolve()
@@ -32,8 +40,8 @@ def main():
         parser.error('safety root must be outside app checkout')
     if not (app / 'mix.exs').is_file():
         parser.error('app must contain mix.exs')
-    if not shutil.which('python3') or not shutil.which('elixir'):
-        parser.error('python3 and elixir are required at every container start')
+    if not shutil.which('python3') or not shutil.which('elixir') or not shutil.which('flock'):
+        parser.error('python3, elixir and util-linux flock are required at every container start')
     config = {
         'app': str(app), 'deps_path': str(Path(os.environ.get('MIX_DEPS_PATH') or app / 'deps').resolve()), 'state_dir': str(Path(args.state_dir).resolve()),
         'health_url': 'http://127.0.0.1:%d/api/safety/health' % args.port,
@@ -47,6 +55,13 @@ def main():
         parser.error('existing protected history: preserve it and use compatible reconciliation, never reinstall')
     entries, revision = {}, 0
     originals = []
+    sidecar = state / 'settings-noncredentials-v1.json'
+    if sidecar.exists():
+        ordinary = read_json(sidecar)
+        if not isinstance(ordinary, dict) or type(ordinary.get('schema_version')) is not int or ordinary.get('schema_version') != 1 or not isinstance(ordinary.get('values'), dict) or any(canonical_setting(key)[1] or canonical_setting(key)[0] not in NONSECRET_SETTINGS or key != canonical_setting(key)[0] for key in ordinary['values']):
+            parser.error('invalid noncredential settings document; preserve originals and reconcile offline')
+        originals.append(('primary-settings-noncredentials-v1.json', sidecar.read_bytes()))
+
     for name in ('settings.json', 'chatgpt_auth.json'):
         source, backup = state / name, root / 'credentials' / name
         if args.new_installation and (source.exists() or backup.exists()):

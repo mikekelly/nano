@@ -8,9 +8,11 @@ anything on module load. Only the integration owner installs it after review.
 
 1. Merge and compile the safety changes, including credential persistence hooks,
    model success hook and HTTP routes. Do not run the installer from an agent's
-   worktree against live data. Verify `python3` is in the container image (this
-   machine has it; the integration owner must add `python3` to Dockerfile's apt
-   installation before image recreation: the original Dockerfile does not guarantee it).
+   worktree against live data. Verify `python3`, `elixir`, and util-linux `flock` are available at every
+   container start. The image must explicitly include Python and util-linux. Missing
+   flock or bounded acquisition timeout fails credential operations closed. The
+   BEAM port and Python share the stable `credentials/intent-v1.lock` inode; never
+   unlink/replace it, including during maintenance or atomic publication.
 2. Approve maintenance quiescence first: all credential writers must be stopped
    so bootstrap cannot race a single-use token refresh. Either stop the node, or
    have the integration owner synchronously `:sys.suspend/1` Nano.Settings and
