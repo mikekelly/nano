@@ -91,6 +91,31 @@ defmodule ContextBobTest do
              Nano.ContextBob.apply(first, cursors, [source], true)
   end
 
+  test "image references count visual context, not just short hash JSON" do
+    source = %{key: :note, text: "own note", version: 1, threshold_tokens: 8000}
+    {first, cursors, _} = Nano.ContextBob.apply([], %{}, [source])
+
+    image = %{
+      "role" => "user",
+      "content" => [
+        %{"type" => "image_ref", "image_ref" => %{"hash" => String.duplicate("a", 64)}}
+      ]
+    }
+
+    text_only_estimate = div(byte_size(Jason.encode!(image)) + 1, 2)
+    assert Nano.ContextBob.tokens(image) == text_only_estimate + 4800
+    assert Nano.ContextBob.tokens(image) == div(Nano.ImageInput.estimated_bytes(image) + 1, 2)
+    assert {_, _, []} = Nano.ContextBob.apply(first ++ [image], cursors, [source])
+    grown = first ++ [image, image]
+    distance = 2 * Nano.ContextBob.tokens(image)
+
+    {bobbed, _, [%{reason: :distance, distance_tokens: ^distance}]} =
+      Nano.ContextBob.apply(grown, cursors, [source])
+
+    assert Enum.take(bobbed, length(grown)) == grown
+    assert distance > source.threshold_tokens
+  end
+
   test "multiple sources bob independently" do
     sources =
       for key <- [:note, :goal],
