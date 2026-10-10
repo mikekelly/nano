@@ -3,7 +3,8 @@ defmodule Nano.StateStore do
   Serialized lifecycle authority and coherent agent checkpoints. A live agent registers
   its logical identity and process incarnation, then checkpoints metadata and bindings
   together with a monotonically increasing revision. Store recovery invalidates tokens
-  and asynchronously requests live resaves; missing bindings are `:unavailable`, not empty.
+  and fences known live-owner disk rows before publishing readiness, then asynchronously
+  requests live resaves; missing bindings are `:unavailable`, not empty.
 
   Durable v1 envelopes reference immutable identity-bound binding blobs. Lifecycle
   tombstones survive restart. A checkpoint returns `{:ok, acknowledgment}` with
@@ -216,7 +217,9 @@ defmodule Nano.StateStore do
       binding_refs: %{}
     }
 
-    s = restore_disk(s)
+    # Fence known live owners synchronously before any public readiness/ETS read.
+    # The continuation still discovers late/preinit owners and requests fresh resaves.
+    s = s |> restore_disk() |> recover_live(false)
     :ets.insert(@table, {:availability, if(s.degraded, do: :degraded, else: :ready)})
     {:ok, s, {:continue, :resave}}
   end
@@ -265,6 +268,12 @@ defmodule Nano.StateStore do
 
   @impl true
   def handle_continue(:resave, s) do
+    {:noreply, recover_live(s, true)}
+  catch
+    _, _ -> {:noreply, s}
+  end
+
+  defp recover_live(s, resave?) do
     live = for {{:agent, name}, pid} <- Nano.Names.all(), do: {name, pid}
 
     s =
@@ -279,7 +288,7 @@ defmodule Nano.StateStore do
             else: %{status: :recovering}
 
         :ets.insert(@table, {{:durability, name}, recovering})
-        GenServer.cast(pid, {:resave, acc.epoch})
+        if resave?, do: GenServer.cast(pid, {:resave, acc.epoch})
 
         watched =
           case acc.watched[name] do
@@ -290,9 +299,7 @@ defmodule Nano.StateStore do
         %{acc | recovering: MapSet.put(acc.recovering, name), watched: watched}
       end)
 
-    {:noreply, s}
-  catch
-    _, _ -> {:noreply, s}
+    s
   end
 
   @impl true
