@@ -17,6 +17,16 @@ defmodule CompactionTest do
     assert {:error, _} = Compaction.validate(String.duplicate("a", 24_001))
   end
 
+  test "U06 byte feedback measures multibyte input and gives a safe byte target" do
+    assert {:error, _} = Compaction.validate(<<255>>)
+    assert :ok = Compaction.validate(String.duplicate("é", 6000))
+    assert {:error, feedback} = Compaction.validate(String.duplicate("é", 6001))
+    assert feedback =~ "12002 UTF-8 bytes"
+    assert feedback =~ "12,000 UTF-8 bytes"
+    assert feedback =~ "8,000 UTF-8 bytes"
+    refute Compaction.note() =~ "12,000 tokens"
+  end
+
   test "events remain exact, chronological and first brief is pinned" do
     event = fn n -> "<event seq=\"#{n}\">#{String.duplicate("x", 100)}</event>" end
 
