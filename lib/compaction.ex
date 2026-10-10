@@ -4,7 +4,9 @@ defmodule Compaction do
   Voluntarily checkpoint with an eval containing only
   `Compaction.provide_summary(~S\"\"\"...\"\"\")`. The harness parses this call without executing
   it, and replaces history only after answering the tool. Bindings, identity and mailbox
-  are untouched. Automatic reserve is 16,384 tokens (one quarter of smaller windows).
+  are untouched. Automatic reserve is 16,384 tokens (one quarter of smaller windows), with a
+  5,120-token minimum envelope for the reply and checkpoint note. Inputs are admitted as
+  fitting ordered prefixes; staged exact text is not an acknowledgment of reading it.
   Without a provider tokenizer, the summary cap is 12,000 UTF-8 bytes, a strict
   conservative upper bound of 12,000 byte-level tokens. First brief is pinned; newer received events fit a fifth
   of the window. Explicitly attributed reports from own children are summarized rather
@@ -46,12 +48,15 @@ defmodule Compaction do
   def validate(text)
       when is_binary(text) do
     cond do
+      not String.valid?(text) ->
+        {:error, "The summary must be valid UTF-8 text."}
+
       String.trim(text) == "" ->
         {:error, "The summary is empty."}
 
       byte_size(text) > 12_000 ->
         {:error,
-         "The summary exceeds the 12,000 UTF-8 byte bound (at most 12,000 byte-level tokens)."}
+         "The summary is #{byte_size(text)} UTF-8 bytes; limit 12,000 UTF-8 bytes (not characters). Retry with a safe target of at most 8,000 UTF-8 bytes, shorter for small windows."}
 
       true ->
         :ok
@@ -64,7 +69,7 @@ defmodule Compaction do
       "Write a structured checkpoint: Goal; Constraints & Preferences; Progress (Done, In Progress, Blocked); " <>
       "Key Decisions with reasons; Next Steps; Critical Context (exact paths, functions and errors). " <>
       "Update any previous summary. Mark unverified guesses explicitly. Do not repeat the system prompt or received messages. " <>
-      "Use at most 12,000 tokens and 12,000 UTF-8 bytes; shorter when possible. " <>
+      "Limit: 12,000 UTF-8 bytes, not characters; safe target at most 8,000 UTF-8 bytes, shorter for small windows. " <>
       "Your own model writes this summary; the harness will replace your work history, preserving received events. " <>
       if(reason, do: "Previous reply refused: #{reason}</harness>", else: "</harness>")
   end
@@ -98,7 +103,7 @@ defmodule Compaction do
         %{
           "role" => "user",
           "content" =>
-            "Your conversation before this point was compacted by the harness using your own summary. The messages above are ones you received, kept in their own words; this is your summary of everything else. Full record: #{log_path}.\n\n#{text}"
+            "Your conversation before this point was compacted by the harness using your own summary. The messages above are ones you received, kept in their own words; this is your summary of everything else. Images absent from retained image parts are references in the full log only, not pixels in this request; do not infer their contents. Full record: #{log_path}.\n\n#{text}"
         }
       ]
   end

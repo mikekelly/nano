@@ -136,15 +136,30 @@ defmodule Nano.StateStore do
     end
   end
 
-  defp publish(path, term) do
-    tmp = path <> ".next-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  @doc "Atomic synced raw evidence publication; same durability protocol as term envelopes."
+  def write_bytes(name, path, bytes) when is_binary(bytes) do
+    case publish_bytes(path, bytes) do
+      :ok ->
+        :ok
+
+      error ->
+        Logger.error("#{name}: could not durably save evidence #{path}: #{inspect(error)}")
+        error
+    end
+  end
+
+  defp publish(path, term), do: publish_bytes(path, :erlang.term_to_binary(term))
+
+  defp publish_bytes(path, bytes) do
+    tmp =
+      path <> ".next-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
     result =
       with :ok <- fault(:before_write, path),
            :ok <- File.mkdir_p(Path.dirname(path)),
            {:ok, io} <- :file.open(String.to_charlist(tmp), [:write, :binary, :raw]) do
         written =
-          with :ok <- :file.write(io, :erlang.term_to_binary(term)),
+          with :ok <- :file.write(io, bytes),
                :ok <- fault(:before_fsync, path),
                do: :file.sync(io)
 

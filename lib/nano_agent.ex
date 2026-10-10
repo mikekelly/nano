@@ -445,6 +445,16 @@ defmodule NanoAgent do
 
   defp restore(saved) do
     saved = saved |> upgrade() |> stated()
+
+    saved =
+      case Map.get(saved, :compacting) do
+        %{base: _} = c ->
+          restore_checkpoint(saved, c)
+
+        _ ->
+          saved
+      end
+
     reason = Nano.StateStore.exit_reason(saved.name, saved.pid) || :unknown
     # Revived at boot from the agent's state file: the whole node stopped, not just the process.
     node_restart? = reason == :node_restart
@@ -792,13 +802,7 @@ defmodule NanoAgent do
   def handle_info(msg, s), do: noreply(event(s, msg))
 
   defp event(s, term) do
-    if length(s.pending) >= 1000 do
-      count = Map.get(s, :input_overflow, 0) + 1
-      log(s, :input_overflow, %{dropped: count, reason: "bounded pending input queue full"})
-      Map.put(s, :input_overflow, count)
-    else
-      event_unbounded(s, term)
-    end
+    event_unbounded(s, term)
   end
 
   defp event_unbounded(s, term) do
@@ -823,12 +827,21 @@ defmodule NanoAgent do
 
     at = timestamp(DateTime.utc_now())
 
+    event = ~s(<event seq="#{seq}" at="#{at}">#{text}</event>)
+    {s, event} = admission_text(s, event)
+
     s = %{
       s
       | event_seq: seq,
         wakeup: nil,
-        pending: s.pending ++ [~s(<event seq="#{seq}" at="#{at}">#{text}</event>)]
+        pending: s.pending ++ [event]
     }
+
+    s =
+      if Map.has_key?(s, :image_deliveries) or length(s.pending_images) == length(visible),
+        do: Map.update(s, :image_deliveries, %{event => visible}, &Map.put(&1, event, visible)),
+        # Legacy pending images have no event attribution; preserve the entire bundle.
+        else: s
 
     if_child = child_report?(s.name, term)
 
@@ -940,33 +953,47 @@ defmodule NanoAgent do
               ),
             else: line
 
-        deliver? = new_turn? or s.pending_image_delivery
-        content = Nano.ImageInput.content(Enum.join(s.pending ++ [line], "\n"), s.pending_images)
-        user = %{"role" => "user", "content" => content}
-
-        next =
-          if deliver?,
-            do: %{
-              append(s, user)
-              | pending: [],
-                pending_images: [],
-                pending_image_delivery: false
-            },
-            else: s
-
+        s = validate_admission(s)
+        deliver? = new_turn? or s.pending_image_delivery or s.pending != []
+        {next, admitted} = admit_pending(s, line, deliver?)
         next = Nano.Attention.before_request(next)
         estimate = estimate(next)
         room = b.max_context - estimate
+        reserve = max(@reply_room + 1024, min(Compaction.reserve(), div(b.max_context, 4)))
 
         cond do
-          b.max_context > 0 and room < @reply_room ->
-            s |> context_halt(estimate) |> end_turn("budget")
+          s.halted ->
+            end_turn(s, "error")
 
-          b.max_context > 0 and room < min(Compaction.reserve(), div(b.max_context, 4)) ->
-            start_compaction(next)
+          b.max_context > 0 and (room < reserve or (deliver? and admitted == 0)) ->
+            if s.transcript == [] do
+              s
+              |> halt(
+                :compaction_failed,
+                "Initial/system brief or evidence cannot fit with checkpoint headroom. Reduce the brief/system prompt or increase max_context before unhalting; pending evidence is retained."
+              )
+              |> end_turn("error")
+            else
+              start_compaction(s)
+            end
 
           true ->
-            call(next, new_turn? && line, estimate, room)
+            if admitted > 0 and (next.pending != [] or Map.get(s, :admission_split, false)) do
+              ids =
+                Enum.take(s.pending, admitted)
+                |> Enum.flat_map(fn text ->
+                  for [_, id] <- Regex.scan(~r/<event seq="(\d+)"/, text), do: id
+                end)
+
+              log(next, :input_admitted, %{
+                event_ids: ids,
+                remaining: length(next.pending),
+                read: false,
+                answered: false
+              })
+            end
+
+            call(Map.put(next, :admission_compactions, 0), new_turn? && line, estimate, room)
         end
     end
   end
@@ -987,7 +1014,128 @@ defmodule NanoAgent do
 
   defp check_provider(s), do: s
 
-  # Tokens a request for this conversation may take, at most: what the provider measured for
+  # Admission metadata lives in the coherent per-agent envelope (U05), never in task state.
+  defp admission_text(s, text) do
+    if not is_map(Map.get(s, :admission_evidence, %{})) do
+      {halt(
+         s,
+         :compaction_failed,
+         "Malformed exact evidence metadata; preserve and repair the coherent envelope before unhalting."
+       ), text}
+    else
+      stage_admission_text(s, text)
+    end
+  end
+
+  defp stage_admission_text(s, text) do
+    if byte_size(text) <= Nano.ContextAdmission.item_limit(s.max_context) do
+      {s, text}
+    else
+      case Nano.ContextAdmission.stage(text, env(:spill_dir), s.id) do
+        {:ok, handle} ->
+          handles = Map.get(s, :admission_evidence, %{}) |> Map.put(handle.sha256, handle)
+          log(s, :evidence_staged, %{handle: handle, read: false, answered: false})
+          notice = Nano.ContextAdmission.notice(handle)
+
+          notice =
+            case Regex.run(~r/\A(<event\b[^>]*>).*(<\/event>)\z/s, text) do
+              [_, open, close] -> open <> notice <> close
+              _ -> notice
+            end
+
+          {Map.put(s, :admission_evidence, handles), notice}
+
+        {:error, reason} ->
+          {halt(
+             s,
+             :compaction_failed,
+             "Exact evidence unavailable (#{inspect(reason)}). Preserve pending state and repair spill storage before unhalting."
+           ), text}
+      end
+    end
+  end
+
+  defp validate_admission(%{admission_evidence: handles} = s) when not is_map(handles),
+    do:
+      halt(
+        s,
+        :compaction_failed,
+        "Malformed exact evidence metadata; preserve and repair the coherent envelope before unhalting."
+      )
+
+  defp validate_admission(s) do
+    Enum.reduce(Map.get(s, :admission_evidence, %{}), s, fn {_id, handle}, state ->
+      case Nano.ContextAdmission.validate(handle, env(:spill_dir), s.id) do
+        :ok ->
+          state
+
+        {:error, reason} ->
+          halt(
+            state,
+            :compaction_failed,
+            "Staged exact evidence #{inspect(reason)}. Restore the immutable evidence file from preserved storage before unhalting; no provider request was sent."
+          )
+      end
+    end)
+  end
+
+  defp admit_pending(s, _line, false), do: {s, 0}
+
+  defp admit_pending(s, line, true) do
+    reserve = max(@reply_room + 1024, min(Compaction.reserve(), div(s.max_context, 4)))
+    images_by_event = Map.get(s, :image_deliveries)
+    # Legacy bundles have no per-event attribution: admit atomically, never guess.
+    candidates = if images_by_event, do: 1..max(length(s.pending), 1), else: [length(s.pending)]
+
+    {next, count} =
+      Enum.reduce_while(candidates, {s, 0}, fn n, acc ->
+        selected = Enum.take(s.pending, n)
+
+        images =
+          if images_by_event,
+            do: Enum.flat_map(selected, &Map.get(images_by_event, &1, [])),
+            else: s.pending_images
+
+        content = Nano.ImageInput.content(Enum.join(selected ++ [line], "\n"), images)
+        next = append(s, %{"role" => "user", "content" => content})
+
+        if s.max_context == 0 or s.max_context - estimate(next) >= reserve do
+          remaining = Enum.drop(s.pending, n)
+
+          next =
+            Map.put(
+              next,
+              :admission_split,
+              Map.get(s, :admission_split, false) or remaining != []
+            )
+
+          next = %{
+            next
+            | pending: remaining,
+              pending_images:
+                if(images_by_event,
+                  do: Enum.flat_map(remaining, &Map.get(images_by_event, &1, [])),
+                  else: []
+                ),
+              pending_image_delivery: remaining != []
+          }
+
+          next =
+            if images_by_event,
+              do: Map.put(next, :image_deliveries, Map.drop(images_by_event, selected)),
+              else: next
+
+          {:cont, {next, n}}
+        else
+          {:halt, acc}
+        end
+      end)
+
+    {next, count}
+  end
+
+  # Tokens a request for this conversation may take, at most:
+  # what the provider measured for
   # the conversation at its last response, plus one token for every 2 bytes it has grown by
   # since, as JSON (before a first response, all of it). Tokenizers average 3.5 to 4.5 bytes
   # a token on English and code, about 3 on JSON, hex, base64 and CJK text, so this
@@ -1020,6 +1168,10 @@ defmodule NanoAgent do
 
   # Starts the model request. The response is bounded by the room left in the context (and
   # by what the model generates at most), so that the request and its response fit.
+  defp call(s, _line, estimate, room) when room < @reply_room and s.max_context > 0 do
+    s |> context_halt(estimate) |> end_turn("budget")
+  end
+
   defp call(s, line, estimate, room) do
     messages = [%{"role" => "system", "content" => s.system_prompt} | s.transcript]
     id = s.request_id + 1
@@ -1185,8 +1337,64 @@ defmodule NanoAgent do
   defp task_done(%{task: %{kind: :eval} = t} = s, result),
     do: eval_done(%{s | task: nil}, t, result)
 
+  defp restore_checkpoint(s, c) do
+    s
+    |> Map.merge(%{
+      transcript: c.base ++ Map.get(c, :tail, []),
+      context_used: Map.get(c, :original_context_used, s.context_used),
+      measured_bytes: Map.get(c, :original_measured_bytes, s.measured_bytes)
+    })
+    |> Map.delete(:compacting)
+  end
+
   defp start_compaction(s) do
-    compaction_call(Map.put(s, :compacting, %{base: s.transcript, attempt: 1, reason: nil}), nil)
+    # Select a fitting complete prefix, keeping the suffix durably outside the checkpoint
+    # request. Its tool-call/result pairs are never severed or silently summarized away.
+    note = %{"role" => "user", "content" => Compaction.note()}
+
+    boundary =
+      Nano.ContextAdmission.boundaries(s.transcript)
+      |> Enum.filter(fn n ->
+        t = Enum.take(s.transcript, n) ++ [note]
+
+        input =
+          if n == length(s.transcript),
+            do: estimate(%{s | transcript: t}),
+            else: div(bytes(s.system_prompt, t) + 1, 2)
+
+        input + @reply_room + 1024 <= s.max_context
+      end)
+      |> List.last()
+
+    cycles = Map.get(s, :admission_compactions, 0)
+
+    if boundary && cycles < 8 do
+      {base, tail} = Enum.split(s.transcript, boundary)
+
+      s =
+        Map.merge(s, %{
+          context_used: if(tail == [], do: s.context_used, else: 0),
+          measured_bytes: if(tail == [], do: s.measured_bytes, else: 0),
+          admission_compactions: cycles + 1,
+          compacting: %{
+            base: base,
+            tail: tail,
+            attempt: 1,
+            reason: nil,
+            original_context_used: s.context_used,
+            original_measured_bytes: s.measured_bytes
+          }
+        })
+
+      compaction_call(s, nil)
+    else
+      s
+      |> halt(
+        :compaction_failed,
+        "No fitting tool-paired checkpoint prefix or eight checkpoints made insufficient progress. Pending evidence remains durable. Reduce pinned/system brief or tool-call batch, increase max_context, or supply a short standalone summary; unhalt alone cannot repair this."
+      )
+      |> end_turn("error")
+    end
   end
 
   defp compaction_call(s, reason) do
@@ -1221,10 +1429,11 @@ defmodule NanoAgent do
 
     if s.max_context - n < @reply_room do
       s
+      |> restore_checkpoint(s.compacting)
       |> Map.delete(:compacting)
       |> halt(
         :compaction_failed,
-        "Automatic compaction request cannot fit; full history remains in the log"
+        "Automatic compaction request cannot fit; pending evidence is retained. Reduce the summary/system brief or increase max_context before unhalting"
       )
       |> end_turn("error")
     else
@@ -1287,11 +1496,40 @@ defmodule NanoAgent do
           {s, {:error, "Model call failed: #{inspect(result)}"}}
       end
 
+    parsed =
+      case parsed do
+        {:ok, text} ->
+          rebuilt =
+            Compaction.rebuild(
+              c.base,
+              text,
+              s.max_context,
+              "full record",
+              Map.get(s, :child_reports, [])
+            )
+
+          n = div(bytes(s.system_prompt, rebuilt) + 1, 2)
+
+          if s.max_context - n >= @reply_room + 1024 do
+            {:ok, text}
+          else
+            target =
+              max(0, min(8000, byte_size(text) - 2 * (n + @reply_room + 1024 - s.max_context)))
+
+            {:error,
+             "Summary #{byte_size(text)} UTF-8 bytes is within 12,000 UTF-8 bytes but rebuilt input is approximately #{n} tokens; safe target at most #{target} UTF-8 bytes. Pinned/system input may need operator repair."}
+          end
+
+        other ->
+          other
+      end
+
     case parsed do
       {:ok, text} ->
         s
         |> Map.put(:transcript, c.base)
         |> apply_summary(text)
+        |> then(fn state -> if state.halted, do: restore_checkpoint(state, c), else: state end)
         |> check_budget()
         |> then(&request(&1, &1.pending != []))
 
@@ -1308,7 +1546,7 @@ defmodule NanoAgent do
 
       {:error, reason} ->
         s
-        |> Map.put(:transcript, c.base)
+        |> restore_checkpoint(c)
         |> Map.delete(:compacting)
         |> halt(
           :compaction_failed,
@@ -1376,6 +1614,9 @@ defmodule NanoAgent do
         |> Map.reject(fn {_, v} -> v in [nil, []] end)
       )
 
+    {s, assistant_text} = admission_text(s, message["content"])
+    message = Map.put(message, "content", assistant_text)
+
     s =
       %{
         s
@@ -1419,7 +1660,8 @@ defmodule NanoAgent do
 
   defp rebuild_summary(s, text, path) do
     t =
-      Compaction.rebuild(s.transcript, text, s.max_context, path, Map.get(s, :child_reports, []))
+      Compaction.rebuild(s.transcript, text, s.max_context, path, Map.get(s, :child_reports, [])) ++
+        Map.get(Map.get(s, :compacting, %{}), :tail, [])
 
     s
     |> Map.delete(:compacting)
@@ -1898,6 +2140,7 @@ defmodule NanoAgent do
       })
     )
 
+    {s, text} = admission_text(s, text)
     append(s, tool_message(call, text))
   end
 

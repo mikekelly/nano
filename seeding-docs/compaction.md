@@ -16,7 +16,35 @@ was compacted, by what, and where the full record is. This works for every agent
 node, including sub-agents, without any of them having to remember to do it — tested on a
 real agent whose context crosses the threshold, not only in unit tests.
 
-## A proposal
+## Current production contract (U06)
+
+`NanoAgent` admits fitting ordered event prefixes before spending checkpoint headroom.
+Large bounded text results/events use `Nano.ContextAdmission` v1 content-addressed exact
+files under configured `spill_dir/<agent-id>/admission/`. Handles retain SHA-256, byte
+count and continuation position 0 in the coherent per-agent envelope. Position 0 means
+no automatic read acknowledgment; an agent must explicitly read/page the file. Image
+references remain distinct from pixels retained in a request. Checkpoint prefixes end
+only at complete tool-call/result boundaries; their suffix and queued arrivals survive
+checkpoint refusal and restart. Legacy unattributed image bundles are admitted atomically.
+
+The summary limit is **12,000 UTF-8 bytes**, not 12,000 characters or tokens. Rejection
+reports observed bytes and a safe target (normally 8,000 bytes, lower when rebuilt input
+cannot fit). At most three checkpoint reply attempts and eight consecutive checkpoints
+without a normal delivery are allowed. Initial/system briefs and atomic image/tool groups
+that cannot fit fail actionably, retaining pending state rather than sending doomed calls.
+Final request and response fit guards still apply; staging is not reading or answering.
+
+For `compaction_failed`, inspect the halt note and preserved exact files/envelope. Restore
+missing/corrupt evidence from the retained storage, reduce the pinned/system brief or tool
+batch, increase the context limit, or provide an appropriately short checkpoint. Unhalt
+alone cannot fix those causes. Restoration is roll-forward with compatible U05 envelope
+and U06 admission readers; never replace newer pending evidence with an old checkpoint.
+Evidence is not automatically deleted by compaction or agent lifecycle deletion: operators
+must explicitly retain/archive it with corresponding logs before any separate cleanup.
+See `docs/flywheel/u06/restoration.md` for the version and rehearsal record.
+
+## Historical proposal (not current byte-limit or recovery authority)
+
 
 This is one way to do it, with numbers to start from; change what does not hold up.
 
