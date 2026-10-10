@@ -103,7 +103,12 @@ defmodule Nano.MCP.StdioTest do
     server = System.get_env("MCP_REFERENCE_FILESYSTEM")
 
     if node && server do
-      dir = Path.join(System.tmp_dir!(), "mcp-reference-#{System.unique_integer([:positive])}")
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "altair-mcp-reference-#{Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)}"
+        )
+
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "hello.txt"), "reference transport works")
       on_exit(fn -> File.rm_rf!(dir) end)

@@ -42,15 +42,25 @@ defmodule DelegationStartTest do
       :persistent_term.erase({Nano.ChatGPT, :models})
     end)
 
-    assert {:error, why} =
-             Delegation.subagent(name,
-               parent: "parent",
-               level: :engineering,
-               job: "Check",
-               mcp: ["missing"]
-             )
+    # MCP is integrated by default; this branch explicitly exercises unavailable integration.
+    initializer = Application.get_env(:nano, :delegation_mcp_initializer)
+    Application.delete_env(:nano, :delegation_mcp_initializer)
 
-    assert why =~ "MCP is not integrated"
+    try do
+      assert {:error, why} =
+               Delegation.subagent(name,
+                 parent: "parent",
+                 level: :engineering,
+                 job: "Check",
+                 mcp: ["missing"]
+               )
+
+      assert why =~ "MCP is not integrated"
+    after
+      if initializer,
+        do: Application.put_env(:nano, :delegation_mcp_initializer, initializer),
+        else: Application.delete_env(:nano, :delegation_mcp_initializer)
+    end
 
     dir =
       Path.join(

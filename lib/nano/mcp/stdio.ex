@@ -25,6 +25,10 @@ defmodule Nano.MCP.Stdio do
   end
 
   @impl true
+  def format_status(status),
+    do: status |> Map.put(:state, :redacted) |> Map.put(:message, :redacted)
+
+  @impl true
   def init({owner, config}) do
     Process.flag(:trap_exit, true)
 

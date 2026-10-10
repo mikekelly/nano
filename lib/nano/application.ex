@@ -28,6 +28,7 @@ defmodule Nano.Application do
           Nano.Settings,
           Nano.StateStore,
           Delegation.Monitor,
+          Nano.MCP.Supervisor,
           {Task.Supervisor, name: Nano.EvalSupervisor},
           # Holds the ChatGPT subscription's tokens; its init cannot fail, so it cannot stop the boot.
           Nano.ChatGPT.Auth,
