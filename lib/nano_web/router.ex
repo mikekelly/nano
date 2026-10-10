@@ -21,6 +21,9 @@ defmodule NanoWeb.Router do
     live "/", ProcessLive
     live "/agents/:name", AgentLive
     live "/messages", MessagesLive
+    live "/bots", BotsLive
+    live "/bots/:id", BotsLive
+    get "/bots/attachments/:id", BotAttachmentController, :show
     get "/openrouter/connect", OpenRouterController, :connect
     get "/openrouter/callback", OpenRouterController, :callback
   end
