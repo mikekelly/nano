@@ -27,6 +27,7 @@ defmodule NanoAgent do
     * `FrontMind`: own short durable note; `Nano.ContextBob` re-shows sources by token distance.
     * `Nano.Decision`: reusable typed Jev decisions and probabilities (optional credentials).
     * `Delegation`: composed prompts, isolated sub-agents, and durable lifecycle/result events.
+    * `Nano.MCP`: stdio/Streamable HTTP tools, resources, prompts and durable named subscriptions.
     * `Nano.Ops`: everything an operator can do with agents and users; the dashboard and the
       HTTP API are skins over it.
     * `Nano.Images`: immutable validated image attachments; `look(path, me)` opens a file.
