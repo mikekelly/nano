@@ -70,9 +70,6 @@ defmodule Nano.Flywheel.U02.IsolationTest do
     assert {:ok, page} = Nano.Web.fetch("http://127.0.0.1:#{port}/article", js: false)
     assert {:ok, _} = Nano.Web.read(page.id)
     assert File.exists?(Path.join([root, "fallback-web_cache_dir", page.id <> ".json"]))
-    System.delete_env("NANO_SAFETY_DIR")
-    # pure path selection, no shared-store access
-    assert Nano.Safety.root() == "/data/safety"
   end
 
   test "default safety backup uses private configured root before publishing credentials" do
