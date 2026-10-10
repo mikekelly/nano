@@ -86,8 +86,7 @@ defmodule Nano.BotsStoreTest do
     assert {:ok,
             %{
               messages: [
-                %{text: "choice?", request_id: request_id},
-                %{text: "yes", actor: :human}
+                %{text: "yes", actor: :human, request_id: request_id}
               ]
             }} =
              Bots.list_messages(c.session.id, opts)
@@ -210,11 +209,10 @@ defmodule Nano.BotsStoreTest do
         opts
       )
 
-    assert_receive {:bots, :message_created, %{request_id: request_id}}
-    assert request_id == q.id
     assert_receive {:bots, :request_created, ^q}
-    assert {:ok, %{messages: [%{id: message_id}]}} = Bots.list_messages(c.session.id, opts)
-    assert message_id == q.message_id
+    refute_receive {:bots, :message_created, _}
+    assert {:ok, %{messages: []}} = Bots.list_messages(c.session.id, opts)
+    assert {:ok, [^q]} = Bots.list_requests(opts)
     GenServer.stop(pid)
   end
 

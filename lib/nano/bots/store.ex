@@ -400,24 +400,7 @@ defmodule Nano.Bots.Store do
               })
             )
 
-          sequence = next_sequence(d, s.id)
-
-          m =
-            record(%{
-              session_id: s.id,
-              sequence: sequence,
-              actor: {:bot, r.bot_id},
-              text: r.text,
-              attachments: [],
-              epoch: s.epoch,
-              idempotency_key: "request-question:" <> r.id,
-              request_id: r.id
-            })
-
-          r = Map.put(r, :message_id, m.id)
-
-          {:write, r, d |> put(:requests, r) |> put(:messages, m),
-           [{:message_created, m}, {:request_created, r}]}
+          write(d, :requests, r, :request_created)
         else
           {:error, :invalid}
         end
