@@ -130,4 +130,56 @@ defmodule Nano.ToolsTest do
     refute File.exists?(marker)
     assert {:ok, %{status: :interrupted}} = Nano.Background.status(h)
   end
+
+  test "default search cap, line truncation, byte caps and invalid inputs", %{dir: dir} do
+    path = Path.join(dir, "matches")
+    File.write!(path, String.duplicate("needle " <> String.duplicate("x", 800) <> "\n", 105))
+    assert {:ok, r} = Nano.Tools.grep("needle", path: path)
+    assert r.cut
+    assert byte_size(r.text) <= 16000
+    assert r.next_offset == length(r.entries)
+    assert String.contains?(r.continuation, "500")
+    File.write!(path, String.duplicate("needle\n", 105))
+
+    assert {:ok, %{entries: matches, cut: true, next_offset: 100}} =
+             Nano.Tools.grep("needle", path: path)
+
+    assert length(matches) == 100
+
+    assert {:ok, %{entries: last, cut: false}} =
+             Nano.Tools.grep("needle", path: path, offset: 100)
+
+    assert length(last) == 5
+    assert {:error, _} = Nano.Tools.grep("needle", path: path <> "absent")
+    assert {:error, _} = Nano.Tools.ls(path)
+    assert {:error, _} = Nano.Tools.ls(dir, offset: -1)
+    assert {:error, _} = Nano.Background.start("true", owner: "test", timeout: 0, dir: dir)
+    assert {:error, _} = Nano.Tools.sh("true", dir: dir, env: [bad: 3])
+    File.write!(path, String.duplicate("x", 1_000_000))
+    assert {:error, text} = Nano.Tools.read(path, max_bytes: 100)
+    assert text =~ "single line exceeds"
+  end
+
+  test "owner inference and large output spooling", %{dir: dir} do
+    name = "tools-inferred-" <> Base.encode16(:crypto.strong_rand_bytes(8))
+    assert :yes = Nano.Names.register_name({:agent, name}, self())
+    on_exit(fn -> Nano.Names.unregister_name({:agent, name}) end)
+    {:ok, h} = Nano.Background.start("printf done", dir: dir)
+    assert h.owner == name
+    id = h.id
+    assert_receive {:background, ^id, %{status: :completed}}, 1000
+
+    {:ok, r} =
+      Nano.Tools.sh("awk 'BEGIN {for(i=0;i<10000;i++) print \"output\"}'",
+        dir: dir,
+        limit: 5,
+        max_bytes: 100
+      )
+
+    assert r.bytes == 70000
+    assert r.cut
+    assert byte_size(r.text) <= 100
+    assert length(String.split(r.text, "\n")) <= 5
+    assert File.stat!(r.path).size == 70000
+  end
 end
