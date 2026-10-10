@@ -226,7 +226,14 @@ defmodule NanoWeb.AgentLive do
             <details id="say-menu" class="dropdown" phx-mounted={keep_open()}>
               <summary class="button"><.icon name="send" /> Send message</summary>
               <div class="panel">
-                <.send_form id="send" to={@name} draft={@draft} sent={@sent} boxes={["text"]} />
+                <.send_form
+                  id="send"
+                  to={@name}
+                  draft={@draft}
+                  sent={@sent}
+                  boxes={["text"]}
+                  uploads={@uploads}
+                />
               </div>
             </details>
             <details id="raw-menu" class="dropdown" phx-mounted={keep_open()}>
@@ -316,6 +323,7 @@ defmodule NanoWeb.AgentLive do
         queue {txt(@e["queue_length"])}<span :if={@e["truncated"]}> · truncated</span>
       </.meta>
       <pre>{printed(@e["message"])}</pre>
+      <.image_thumbnails images={@e["images"] || []} />
     </li>
     """
   end
@@ -487,6 +495,7 @@ defmodule NanoWeb.AgentLive do
   defp eval_result(assigns) do
     ~H"""
     <div class="result">
+      <.image_thumbnails images={@result["images"] || []} />
       <pre class={if !@result["ok"], do: "error"}>{txt(@result["result"])}</pre>
       <div :if={@result["io"] not in [nil, ""]} class="io">
         <span class="dim">captured IO</span>
@@ -507,6 +516,7 @@ defmodule NanoWeb.AgentLive do
     <li id={@id} class="r event">
       <div class="r-label">received <time>{time(@e["at"])}</time></div>
       <pre>{printed(@e["message"])}</pre>
+      <.image_thumbnails images={@e["images"] || []} />
     </li>
     """
   end

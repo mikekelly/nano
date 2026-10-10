@@ -59,8 +59,20 @@ defmodule Nano.User do
   @doc false
   def start_link(name), do: GenServer.start_link(__MODULE__, name, name: via(name))
 
-  @doc "Sends `%{sender_pid: user_pid, message: text}` to `to`: a pid, agent name, user name, or registered name."
-  def say(name, to, text), do: deliver(name, to, {:say, text})
+  @doc """
+  Sends `%{sender_pid: user_pid, message: payload}` to a pid, agent, user or registered name.
+  Payload is plain text or `%{text: text, images: [refs]}`. Image references are verified
+  against the immutable store and reduced to canonical metadata before delivery or storage.
+  """
+
+  def say(name, to, %{text: text, images: images}) when is_binary(text) and is_list(images) do
+    with {:ok, refs} <- Nano.Ops.image_refs(images) do
+      deliver(name, to, {:say, %{text: text, images: refs}})
+    end
+  end
+
+  def say(name, to, text) when is_binary(text), do: deliver(name, to, {:say, text})
+  def say(_, _, _), do: {:error, :invalid_message}
 
   @doc "Sends `term` to `to` exactly as given, with no sender added."
   def send_raw(name, to, term), do: deliver(name, to, {:raw, term})

@@ -12,6 +12,10 @@ defmodule NanoWeb.ApiController do
 
   @endpoints [
     {"GET", "/api", "This index."},
+    {"POST", "/api/images",
+     "Upload an image: JSON base64, at most 5,000,000 encoded bytes; validated type, size and dimensions. Returns immutable image_ref metadata, never base64."},
+    {"GET", "/api/images/:hash",
+     "Immutable image bytes by lowercase SHA-256 hash. Invalid or missing hashes give 404."},
     {"GET", "/api/processes",
      "Live processes outside the standard set (boot-time, OTP and dashboard processes), agents first. " <>
        "Each: pid, name, kind (agent | user | spawned_by | other), spawned_by (agent name), " <>
@@ -75,7 +79,7 @@ defmodule NanoWeb.ApiController do
        "send to it (Nano.User.pid(name))."},
     {"POST", "/api/users", "Start a user, or find it if already started. Body: name."},
     {"POST", "/api/users/:name/say",
-     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text."},
+     "The user sends %{sender_pid: user_pid, message: text} to a target. Body: to, text, optional images (list of stored image reference maps from POST /api/images)."},
     {"POST", "/api/users/:name/send_raw",
      "The user sends a term to a target exactly as given. Body: to, term (Elixir source, parsed and evaluated)."},
     {"GET", "/api/users/:name/inbox?clear=true",
@@ -281,8 +285,16 @@ defmodule NanoWeb.ApiController do
 
   def say(conn, %{"name" => name} = params) do
     case strings(params, ["to", "text"]) do
-      {:ok, [to, text]} -> sent(conn, name, to, User.say(name, to, text))
-      {:error, field} -> missing(conn, field)
+      {:ok, [to, text]} ->
+        payload =
+          if Map.has_key?(params, "images"),
+            do: %{text: text, images: params["images"]},
+            else: text
+
+        sent(conn, name, to, User.say(name, to, payload))
+
+      {:error, field} ->
+        missing(conn, field)
     end
   end
 
@@ -308,6 +320,8 @@ defmodule NanoWeb.ApiController do
 
   defp sent(conn, _name, to, {:error, :unknown_target}),
     do: error(conn, 404, "no such target: #{to}")
+
+  defp sent(conn, _name, _to, {:error, reason}), do: error(conn, 422, inspect(reason))
 
   defp unresponsive(conn, name),
     do:

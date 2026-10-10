@@ -395,6 +395,25 @@ defmodule Nano.Ops do
     end
   end
 
+  @doc "Validates stored image references and returns canonical metadata, never image bytes."
+  def image_refs(images) when is_list(images) and length(images) <= 20 do
+    Enum.reduce_while(images, {:ok, []}, fn ref, {:ok, refs} ->
+      hash = if is_map(ref), do: ref[:image_ref] || ref["image_ref"]
+
+      if is_binary(hash) and hash =~ ~r/\A[a-f0-9]{64}\z/ do
+        with {:ok, canonical} <- Nano.Images.canonicalize(%{image_ref: hash}) do
+          {:cont, {:ok, refs ++ [canonical]}}
+        else
+          _ -> {:halt, {:error, :invalid_image}}
+        end
+      else
+        {:halt, {:error, :invalid_image}}
+      end
+    end)
+  end
+
+  def image_refs(_), do: {:error, :invalid_images}
+
   ## Targets and evaluation
 
   @doc """
