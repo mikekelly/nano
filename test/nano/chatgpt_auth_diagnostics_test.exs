@@ -11,6 +11,13 @@ defmodule Nano.AuthDiagnosticsTest do
     pid
   end
 
+  defp save_capture(module, scenario, log) do
+    if root = System.get_env("U04_CAPTURE_ROOT") do
+      File.mkdir_p!(root)
+      File.write!(Path.join(root, "#{module}-#{scenario}.log"), log)
+    end
+  end
+
   test "all OTP status payloads, envelopes, log and reasons are secret-free" do
     for module <- @modules,
         message <- [
@@ -57,6 +64,7 @@ defmodule Nano.AuthDiagnosticsTest do
         end)
 
       refute log =~ @secret
+      save_capture(module, "queued", log)
     end
   end
 
@@ -90,6 +98,7 @@ defmodule Nano.AuthDiagnosticsTest do
         end)
 
       refute log =~ @secret
+      save_capture(module, "callback", log)
       assert log =~ "terminating"
       if module == Nano.Settings, do: assert(log =~ "badmap")
     end
