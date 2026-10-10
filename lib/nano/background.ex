@@ -70,7 +70,13 @@ defmodule Nano.Background do
     cwd = Path.expand(Keyword.get(opts, :cwd, "."))
     if not File.dir?(cwd), do: raise(ArgumentError, "cwd is not a directory: #{cwd}")
     executable = System.find_executable("setsid") || raise "setsid is required"
-    env = Enum.map(Keyword.get(opts, :env, []), fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
+
+    env =
+      Enum.map(Keyword.get(opts, :env, []), fn
+        {k, v} when is_binary(k) and is_binary(v) -> {to_charlist(k), to_charlist(v)}
+        _ -> raise ArgumentError, "env must contain string key/value pairs"
+      end)
+
     id = Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
 
     parent =
