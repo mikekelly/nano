@@ -82,7 +82,7 @@ defmodule NanoWeb.AgentLiveTest do
   end
 
   test "renders the backlog: every entry type of a turn, and the header numbers", ctx do
-    {_pid, _id} = start!(ctx, start_idle: false)
+    {pid, _id} = start!(ctx, start_idle: false)
     Fake.push(ctx.model, text: "Started.")
     await(:turn_ended)
     script_turn(ctx)
