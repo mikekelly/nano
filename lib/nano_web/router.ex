@@ -29,6 +29,8 @@ defmodule NanoWeb.Router do
   # Path params arrive URL-decoded, so `/api/processes/%23PID%3C0.231.0%3E` gives "#PID<0.231.0>".
   scope "/api", NanoWeb do
     get "/", ApiController, :index
+    post "/images", ImageController, :upload
+    get "/images/:hash", ImageController, :show
 
     get "/processes", ApiController, :processes
     get "/processes/:pid", ApiController, :process

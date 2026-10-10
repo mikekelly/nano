@@ -104,6 +104,7 @@ defmodule NanoWeb.MessagesLive do
           draft={@draft}
           sent={@sent}
           boxes={["text"]}
+          uploads={@uploads}
         />
       </section>
       <p :if={!@open} class="pick dim">Choose a conversation.</p>
