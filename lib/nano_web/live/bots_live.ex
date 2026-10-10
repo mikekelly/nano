@@ -519,6 +519,17 @@ defmodule NanoWeb.BotsLive do
           >
             {bot(assigns, id).name} could not reply. Try sending again.
           </p>
+          <p
+            :for={notice <- @notices}
+            :if={
+              notice.session_id == @current.id and @current.stopped and
+                notice.epoch + 1 == @current.epoch
+            }
+            class="runtime-notice"
+            role="status"
+          >
+            {notice.text}
+          </p>
           <div
             class="messages"
             aria-live="polite"

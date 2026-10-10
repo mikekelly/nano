@@ -208,4 +208,55 @@ defmodule NanoWeb.BotsLiveTest do
     assert sid == c.id
     assert {:ok, %{messages: []}} = Nano.Bots.list_messages(a.id, o)
   end
+
+  test "persisted runtime pause notice renders on mount and reconnect, only for stopped epoch", %{
+    conn: conn,
+    store: store
+  } do
+    o = [server: store]
+    {:ok, b} = Nano.Bots.create_bot(%{name: "Paused"}, o)
+    {:ok, c} = Nano.Bots.create_session(%{participant_ids: [b.id], exchange_ceiling: 1}, o)
+
+    {:ok, _} =
+      Nano.Bots.publish(
+        c.id,
+        %{actor: {:bot, b.id}, text: "Done", epoch: c.epoch, idempotency_key: "notice-bot"},
+        o
+      )
+
+    dir =
+      Path.join(System.tmp_dir!(), "altair-bots-ui-notices-#{System.unique_integer([:positive])}")
+
+    runtime =
+      start_supervised!(
+        {Nano.Bots.Runtime,
+         name: nil, store: store, state_dir: dir, pubsub: nil, retry_ms: 60_000}
+      )
+
+    on_exit(fn -> File.rm_rf!(dir) end)
+    :ok = Nano.Bots.Runtime.reconcile(server: runtime)
+    assert {:ok, [notice]} = Nano.Bots.Runtime.notices(server: runtime)
+    :ok = stop_supervised(Nano.Bots.Runtime)
+
+    runtime =
+      start_supervised!(
+        {Nano.Bots.Runtime,
+         name: nil, store: store, state_dir: dir, pubsub: nil, retry_ms: 60_000}
+      )
+
+    assert {:ok, [^notice]} = Nano.Bots.Runtime.notices(server: runtime)
+
+    conn =
+      Plug.Test.init_test_session(conn, %{
+        "bots_server" => store,
+        "bots_runtime_server" => runtime
+      })
+
+    {:ok, v, _} = live(conn, "/bots/" <> c.id)
+    assert has_element?(v, ".runtime-notice", "conversation limit")
+    {:ok, reopened, _} = live(conn, "/bots/" <> c.id)
+    assert has_element?(reopened, ".runtime-notice", notice.text)
+    v |> form("#bots-composer", text: "Continue") |> render_submit()
+    refute has_element?(v, ".runtime-notice")
+  end
 end
