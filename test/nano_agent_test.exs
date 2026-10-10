@@ -1,3 +1,5 @@
+Code.require_file("flywheel/u05/fixtures.ex", __DIR__)
+
 defmodule NanoAgentTest do
   # Not async: tests change node-wide settings (eval timeout, truncation limit, hourly cap).
   use ExUnit.Case, async: false
@@ -549,7 +551,12 @@ defmodule NanoAgentTest do
     pid = NanoAgent.whereis(ctx.name)
     :sys.get_state(pid)
     entry = Nano.StateStore.get(ctx.name)
-    Nano.StateStore.put(ctx.name, %{entry | restarts: Enum.map(entry.restarts, &(&1 - 61_000))})
+
+    Nano.Flywheel.U05.Fixture.put(ctx.name, %{
+      entry
+      | restarts: Enum.map(entry.restarts, &(&1 - 61_000))
+    })
+
     Fake.push(ctx.model, text: "ok")
     kill(ctx, id)
     assert %{halted: nil, restart_count: 3} = NanoAgent.info(ctx.name)
@@ -1273,7 +1280,7 @@ defmodule NanoAgentTest do
     log =
       ExUnit.CaptureLog.capture_log(fn ->
         # An entry restore cannot handle, as a broken edit or a bad value would.
-        Nano.StateStore.put(ctx.name, %{good | transcript: :garbage})
+        Nano.Flywheel.U05.Fixture.put(ctx.name, %{good | transcript: :garbage})
         Process.exit(pid, :kill)
 
         assert await(id, :agent_started, &(&1["halted"] == "start_failed"))["error"] =~
@@ -1331,7 +1338,7 @@ defmodule NanoAgentTest do
     {pid, _id} = start!(ctx)
     :sys.get_state(pid)
     # save/1 cannot handle this, in restore and in the :start_failed fallback alike.
-    Nano.StateStore.put(ctx.name, %{Nano.StateStore.get(ctx.name) | spawned: :bad})
+    Nano.Flywheel.U05.Fixture.put(ctx.name, %{Nano.StateStore.get(ctx.name) | spawned: :bad})
     ref = Process.monitor(sup)
 
     ExUnit.CaptureLog.capture_log(fn ->
@@ -1513,16 +1520,16 @@ defmodule NanoAgentTest do
     send(pid, :go)
     request!(ctx.model)
     # Watch the agent's saves while it handles the response.
-    :erlang.trace_pattern({Nano.StateStore, :put, 2}, true, [:global])
+    :erlang.trace_pattern({Nano.StateStore, :checkpoint, 4}, true, [:global])
     :erlang.trace(pid, true, [:call])
 
-    on_exit(fn -> :erlang.trace_pattern({Nano.StateStore, :put, 2}, false, [:global]) end)
+    on_exit(fn -> :erlang.trace_pattern({Nano.StateStore, :checkpoint, 4}, false, [:global]) end)
 
     Fake.push(ctx.model, calls: [idle: nil])
     await(NanoAgent.info(ctx.name).id, :turn_ended)
     :erlang.trace(pid, false, [:call])
 
-    saves = for {:trace, ^pid, :call, {_, :put, [_, state]}} <- flush(), do: state
+    saves = for {:trace, ^pid, :call, {_, :checkpoint, [_, _, state, _]}} <- flush(), do: state
     # One save has the response appended and accounted, before its idle call was handled.
     assert Enum.any?(saves, &match?(%{status: :running_tool, calls: [_], tokens_used: 110}, &1))
   end
@@ -1669,7 +1676,7 @@ defmodule NanoAgentTest do
     assert NanoAgent.info(ctx.name).halted == :budget
     [eval_task] = tasks_of(pid)
     # restore fails before it would kill the task itself.
-    Nano.StateStore.put(ctx.name, Map.delete(Nano.StateStore.get(ctx.name), :name))
+    Nano.Flywheel.U05.Fixture.put(ctx.name, Map.delete(Nano.StateStore.get(ctx.name), :name))
 
     ExUnit.CaptureLog.capture_log(fn ->
       Process.exit(pid, :kill)
@@ -1907,7 +1914,7 @@ defmodule NanoAgentTest do
     {pid, id} = start!(ctx)
     old = fn s -> Map.drop(s, [:max_context, :context_used | @newer]) end
     :sys.replace_state(pid, old)
-    Nano.StateStore.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
+    Nano.Flywheel.U05.Fixture.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
     {mod, bin, file} = :code.get_object_code(NanoAgent)
     for _ <- 1..2, do: {:module, NanoAgent} = :code.load_binary(mod, file, bin)
 
@@ -1926,7 +1933,7 @@ defmodule NanoAgentTest do
 
     # And through a restart, from an old-shape entry.
     :sys.replace_state(pid, old)
-    Nano.StateStore.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
+    Nano.Flywheel.U05.Fixture.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
     Fake.push(ctx.model, text: "ok")
     kill(ctx, id)
     assert delivery(List.last(request!(ctx.model)["messages"])) =~ "Your process exited"
@@ -2024,7 +2031,7 @@ defmodule NanoAgentTest do
     # The previous version kept no source, and nil as the template meant the built-in default.
     old = fn s -> s |> Map.delete(:prompt_file) |> Map.put(:template, nil) end
     :sys.replace_state(pid, old)
-    Nano.StateStore.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
+    Nano.Flywheel.U05.Fixture.put(ctx.name, old.(Nano.StateStore.get(ctx.name)))
     Fake.push(ctx.model, text: "ok")
     new = kill(ctx, id)
     prompt = NanoAgent.info(ctx.name).system_prompt
@@ -2035,18 +2042,18 @@ defmodule NanoAgentTest do
 
   ## Surviving node death
 
-  defp state_file(name), do: Path.join(Application.get_env(:nano, :state_dir), name <> ".term")
+  defp state_file(name),
+    do: Path.join(Application.get_env(:nano, :state_dir), name <> ".envelope-v1")
 
   # What a node restart leaves: the agent's process and its rows in the table are gone, its
   # state file and log are not. Then what boot does: load the files, revive the agents.
-  defp node_restart(ctx, id) do
+  defp node_restart(ctx, _id) do
     pid = NanoAgent.whereis(ctx.name)
     :sys.get_state(pid)
     DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
 
-    for key <- [ctx.name, {:exit, ctx.name}, {:seq, id}, {:bindings, ctx.name}],
-        do: :ets.delete(Nano.StateStore, key)
-
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Nano.StateStore)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Nano.StateStore)
     Nano.StateStore.load()
     NanoAgent.revive(Nano.AgentSupervisor)
     new = NanoAgent.whereis(ctx.name)
@@ -2060,20 +2067,33 @@ defmodule NanoAgentTest do
     {pid, _id} = start!(ctx)
     :sys.get_state(pid)
     path = state_file(ctx.name)
-    assert path |> File.read!() |> :erlang.binary_to_term() == Nano.StateStore.get(ctx.name)
+
+    assert (path |> File.read!() |> :erlang.binary_to_term()).metadata ==
+             Nano.StateStore.get(ctx.name)
 
     send(pid, :hello)
     request!(ctx.model)
     :sys.get_state(pid)
-    assert %{event_seq: 1, status: :thinking} = path |> File.read!() |> :erlang.binary_to_term()
+
+    assert %{metadata: %{event_seq: 1, status: :thinking}} =
+             path |> File.read!() |> :erlang.binary_to_term()
 
     # An unchanged entry is written again if its file is missing.
     File.rm!(path)
-    Nano.StateStore.put(ctx.name, Nano.StateStore.get(ctx.name))
+    GenServer.cast(pid, :resave)
+    :sys.get_state(pid)
     assert File.exists?(path)
 
     Nano.StateStore.delete(ctx.name)
-    refute File.exists?(path)
+    # Tombstone is authority; the previous coherent envelope remains forensic evidence.
+    assert File.exists?(path)
+
+    assert {:error, :deleted} =
+             Nano.StateStore.register(
+               ctx.name,
+               :sys.get_state(pid).id,
+               self()
+             )
   end
 
   test "after a node restart an agent comes back from its file with history and bindings",
@@ -2134,7 +2154,7 @@ defmodule NanoAgentTest do
     :sys.get_state(pid)
     old = ctx.name |> Nano.StateStore.get() |> Map.drop(@newer) |> fun.()
     :sys.replace_state(pid, fn _ -> old end)
-    Nano.StateStore.put(ctx.name, old)
+    Nano.Flywheel.U05.Fixture.put(ctx.name, old)
   end
 
   test "an old state file revives: the window from the model's list caps the limit", ctx do
@@ -2177,32 +2197,53 @@ defmodule NanoAgentTest do
     assert request!(ctx.model)["max_tokens"] < 50_000
   end
 
-  test "an unreadable state file is skipped at boot, with an error logged", ctx do
-    dir = Application.get_env(:nano, :state_dir)
-    File.mkdir_p!(dir)
-    bad = Path.join(dir, "#{ctx.name}.term")
-    File.write!(bad, "not a term")
-    on_exit(fn -> File.rm(bad) end)
-    log = ExUnit.CaptureLog.capture_log(fn -> assert Nano.StateStore.load() == :ok end)
-    assert log =~ "Nano.StateStore: skipped #{bad}"
+  test "corrupt committed envelope remains unavailable after store recreation", ctx do
+    {pid, _} = start!(ctx)
+    :sys.get_state(pid)
+    DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+    File.write!(state_file(ctx.name), "not a term")
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Nano.StateStore)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Nano.StateStore)
     assert Nano.StateStore.get(ctx.name) == nil
+    assert Nano.StateStore.binding_status(ctx.name) == :unavailable
+    assert %{status: :unavailable} = Nano.StateStore.durability(ctx.name)
   end
 
-  test "a state file that cannot be written is logged; the agent carries on", ctx do
-    saved = Application.get_env(:nano, :state_dir)
-    Application.put_env(:nano, :state_dir, "/dev/null/state")
-    on_exit(fn -> Application.put_env(:nano, :state_dir, saved) end)
+  test "a checkpoint that cannot be written warns memory_only; registered agent carries on",
+       ctx do
+    {pid, _} = start!(ctx)
+    :sys.get_state(pid)
+
+    Application.put_env(:nano, :state_store_fault, fn stage, path ->
+      if stage == :before_write and String.ends_with?(path, ".envelope-v1"),
+        do: {:error, :enospc},
+        else: :ok
+    end)
+
+    on_exit(fn -> Application.delete_env(:nano, :state_store_fault) end)
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        {pid, _id} = start!(ctx)
         send(pid, :hello)
         request!(ctx.model)
         :sys.get_state(pid)
       end)
 
-    assert log =~ "#{ctx.name}: could not save state to /dev/null/state/#{ctx.name}.term"
-    assert %{halted: nil, status: :thinking} = NanoAgent.info(ctx.name)
+    assert log =~ "#{ctx.name}: memory_only revision"
+
+    assert %{
+             halted: nil,
+             status: :thinking,
+             durability: %{
+               status: :memory_only,
+               accepted_revision: accepted,
+               durable_revision: durable,
+               warning: warning
+             }
+           } = NanoAgent.info(ctx.name)
+
+    assert accepted > durable
+    assert warning =~ "simultaneous"
   end
 
   test "an agent started from another agent's eval records which agent started it", ctx do
@@ -2238,8 +2279,10 @@ defmodule NanoAgentTest do
 
   ## Large bindings
 
-  defp bindings_file(name),
-    do: Path.join(Application.get_env(:nano, :state_dir), name <> ".bindings")
+  defp bindings_file(name) do
+    envelope = state_file(name) |> File.read!() |> :erlang.binary_to_term()
+    Path.join(Application.fetch_env!(:nano, :state_dir), envelope.blob)
+  end
 
   test "events preserve large bindings without embedding or rewriting them",
        ctx do
@@ -2251,18 +2294,33 @@ defmodule NanoAgentTest do
     :sys.get_state(pid)
     assert {[big: _, me: _], []} = snapshot = Nano.StateStore.bindings(ctx.name)
     refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
-    File.rm!(bindings_file(ctx.name))
+    blob_path = bindings_file(ctx.name)
+    blob_bytes = File.read!(blob_path)
+    blob_stat = File.stat!(blob_path, time: :posix)
 
-    # Exercise the actual save boundary, independent of tracing/scheduling wall time.
+    # Metadata saves must not copy the multi-megabyte bindings into the store call.
+    :erlang.trace_pattern({Nano.StateStore, :checkpoint, 4}, true, [:global])
+    :erlang.trace(pid, true, [:call])
     for i <- 1..10, do: send(pid, {:poke, i})
     :sys.get_state(pid)
+    :erlang.trace(pid, false, [:call])
+    :erlang.trace_pattern({Nano.StateStore, :checkpoint, 4}, false, [:global])
+
+    payloads =
+      for {:trace, ^pid, :call, {Nano.StateStore, :checkpoint, [_, _, _, payload]}} <- flush(),
+          do: payload
+
+    assert length(payloads) == 10
+    assert Enum.all?(payloads, &(&1 == :unchanged))
     saved = state_file(ctx.name) |> File.read!() |> :erlang.binary_to_term()
     refute Map.has_key?(saved, :bindings)
     refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
     assert Nano.StateStore.bindings(ctx.name) == snapshot
     assert File.stat!(state_file(ctx.name)).size < 100_000
-    # Events do not rewrite the bindings.
-    refute File.exists?(bindings_file(ctx.name))
+    # Events neither copy nor rewrite the immutable binding blob.
+    assert bindings_file(ctx.name) == blob_path
+    assert File.read!(blob_path) == blob_bytes
+    assert File.stat!(blob_path, time: :posix).mtime == blob_stat.mtime
   end
 
   test "variables too large to save are left out, with one warning, and named at restart", ctx do
@@ -2283,7 +2341,9 @@ defmodule NanoAgentTest do
     assert [_] = Regex.scan(~r/not saving eval variables big \(\d+ bytes\)/, log)
     assert {kept, [:big]} = Nano.StateStore.bindings(ctx.name)
     assert Keyword.keys(kept) == [:me, :small]
-    assert {_, [:big]} = bindings_file(ctx.name) |> File.read!() |> :erlang.binary_to_term()
+
+    assert %{dropped: [:big]} =
+             bindings_file(ctx.name) |> File.read!() |> :erlang.binary_to_term()
 
     Fake.push(ctx.model, calls: [eval: "binding() |> Keyword.keys() |> Enum.sort()"])
     Fake.push(ctx.model, text: "ok")

@@ -112,7 +112,8 @@ defmodule NanoAgent do
   def start(opts) do
     name = opts[:name]
 
-    with :ok <-
+    with :ok <- Nano.StateStore.availability(),
+         :ok <-
            if(is_binary(name) and name =~ ~r/^[\w.-]+$/,
              do: :ok,
              else:
@@ -250,6 +251,7 @@ defmodule NanoAgent do
         started_by: Map.get(s, :started_by),
         restart_count: s.restart_count,
         cost: s.cost,
+        durability: Nano.StateStore.durability(name),
         reasoning: Map.get(s, :reasoning, "off"),
         context_window: Map.get(s, :context_window),
         cache_hit_rate: if(s.responses > 0, do: s.cache_hits / s.responses),
@@ -298,6 +300,8 @@ defmodule NanoAgent do
   @impl true
   def init(opts) do
     id = opts[:id]
+    {:ok, registration} = Nano.StateStore.register(opts[:name], opts[:id], self())
+    Process.put(:state_store_token, registration)
     Nano.StateStore.watch(opts[:name], self())
 
     # The supervisor restarts us with the same opts, so a matching id means this is a restart.
@@ -326,8 +330,7 @@ defmodule NanoAgent do
       %{id: ^id} = saved ->
         # The previous process's eval has no timeout any more, and no one to report to.
         kill_tasks(saved.pid)
-        # An entry saved by an older version of this module still holds its bindings.
-        with %{bindings: b} <- saved, do: Nano.StateStore.put_bindings(saved.name, b)
+        # Keep the coherent binding row even when metadata restoration fails.
 
         s =
           opts
@@ -344,6 +347,12 @@ defmodule NanoAgent do
           halted: :start_failed,
           error: brief(error)
         })
+
+        s =
+          case Nano.StateStore.binding_status(s.name) do
+            {:ok, bindings, _} -> Map.merge(s, %{bindings: bindings, bindings_dirty: true})
+            :unavailable -> Map.put(s, :bindings_unknown, true)
+          end
 
         {:ok, save(s)}
 
@@ -420,8 +429,7 @@ defmodule NanoAgent do
       |> stated()
 
     s = %{s | system_prompt: render(s)}
-    # Clears any saved by an earlier agent of the same name.
-    Nano.StateStore.put_bindings(s.name, [])
+    # Lifecycle registration already fenced and cleared the predecessor's bindings.
 
     log(
       s,
@@ -455,8 +463,11 @@ defmodule NanoAgent do
 
     # Bindings are saved apart from the entry (one saved by an older version of this module
     # still holds them), and the largest may have been left out as too large to save.
-    with %{bindings: b} <- saved, do: Nano.StateStore.put_bindings(saved.name, b)
-    {bindings, unsaved} = Nano.StateStore.bindings(saved.name)
+    {bindings, unsaved} =
+      case saved do
+        %{bindings: b} when is_list(b) -> {b, []}
+        _ -> Nano.StateStore.bindings(saved.name)
+      end
 
     s =
       saved
@@ -581,7 +592,14 @@ defmodule NanoAgent do
   # The fields that belong to a process rather than to the agent's history.
   defp new_process(s),
     do: %{
-      s
+      Map.drop(s, [
+        :store_token,
+        :pending_model,
+        :pending_eval,
+        :store_retry_pending,
+        :bindings_dirty,
+        :bindings_unknown
+      ])
       | pid: self(),
         tag: make_ref(),
         status: :idle,
@@ -665,10 +683,19 @@ defmodule NanoAgent do
   def handle_cast({:notify, term}, s), do: noreply(event(s, term))
 
   # From Nano.StateStore after it restarted with an empty table: save again, and be watched.
-  def handle_cast(:resave, s) do
-    Nano.StateStore.watch(s.name, self())
-    noreply(s)
+  def handle_cast({:resave, generation}, s) do
+    if generation == Nano.StateStore.recovery_generation() do
+      Process.delete(:state_store_token)
+      s = save(Map.delete(s, :store_token))
+      Nano.StateStore.watch(s.name, self())
+      noreply(resume_after_store(s))
+    else
+      noreply(s)
+    end
   end
+
+  def handle_cast(:resave, s),
+    do: handle_cast({:resave, Nano.StateStore.recovery_generation()}, s)
 
   def handle_cast(:check_provider, s), do: noreply(check_provider(s))
 
@@ -757,9 +784,24 @@ defmodule NanoAgent do
   # A stale timer (its eval finished, or an event cancelled the wakeup).
   def handle_info({tag, _, _}, %{tag: tag} = s), do: noreply(s)
 
+  def handle_info(:state_store_retry, s) do
+    s = save(Map.put(s, :store_retry_pending, false))
+    noreply(resume_after_store(s))
+  end
+
   def handle_info(msg, s), do: noreply(event(s, msg))
 
   defp event(s, term) do
+    if length(s.pending) >= 1000 do
+      count = Map.get(s, :input_overflow, 0) + 1
+      log(s, :input_overflow, %{dropped: count, reason: "bounded pending input queue full"})
+      Map.put(s, :input_overflow, count)
+    else
+      event_unbounded(s, term)
+    end
+  end
+
+  defp event_unbounded(s, term) do
     s = upgrade(s)
     {term, images, image_notice} = Nano.ImageInput.event(term, s.input_modalities)
     visible = if "image" in s.input_modalities, do: images, else: []
@@ -850,6 +892,11 @@ defmodule NanoAgent do
   defp maybe_start_turn(s), do: s
 
   defp request(s, new_turn?) do
+    s = save(s)
+    if store_available?(s), do: request_registered(s, new_turn?), else: s
+  end
+
+  defp request_registered(s, new_turn?) do
     # State from an older version of this module, still running after a reload.
     s = s |> upgrade() |> check_provider()
     node_used = Nano.StateStore.node_tokens_last_hour()
@@ -882,6 +929,16 @@ defmodule NanoAgent do
           "<harness>Used so far: #{used(b.turns_used, b.max_turns, "turns")}, " <>
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
+
+        line =
+          if get_in(s, [:durability, :status]) == :memory_only,
+            do:
+              String.replace_suffix(
+                line,
+                "</harness>",
+                " Disk checkpoint warning: memory_only; simultaneous agent/store/node loss may lose newer history and bindings.</harness>"
+              ),
+            else: line
 
         deliver? = new_turn? or s.pending_image_delivery
         content = Nano.ImageInput.content(Enum.join(s.pending ++ [line], "\n"), s.pending_images)
@@ -988,8 +1045,13 @@ defmodule NanoAgent do
       how = {s.model, Map.get(s, :reasoning, "off"), output, raw}
       args = [self(), s.tag, how, messages, id]
       fun = if Map.has_key?(s, :compacting), do: :call_compaction_model, else: :call_model
-      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, fun, args)
-      %{s | task: %{kind: :model, task: task}}
+
+      if store_available?(s) do
+        task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, fun, args)
+        %{s | task: %{kind: :model, task: task}}
+      else
+        Map.put(s, :pending_model, {fun, args})
+      end
     else
       s |> halt(:log_failed, @log_failed) |> end_turn("error")
     end
@@ -1024,6 +1086,7 @@ defmodule NanoAgent do
         request_id,
         attempt \\ 1
       ) do
+    await_store_registration(agent)
     started = System.monotonic_time(:millisecond)
 
     {result, files} =
@@ -1067,6 +1130,17 @@ defmodule NanoAgent do
   # keeps trickling in would otherwise hold the agent forever. The killed task held its HTTP/1
   # connection checked out of the pool: the pool sees it die and closes that connection; its
   # idle connections are left alone.
+  defp await_store_registration(agent) do
+    unless Nano.StateStore.pid_registered?(agent) do
+      if Process.alive?(agent) do
+        Process.sleep(50)
+        await_store_registration(agent)
+      else
+        exit(:agent_gone)
+      end
+    end
+  end
+
   defp within_max(raw, fun) do
     max = Nano.Settings.get(:model_call_max_ms)
     task = Task.async(fn -> Nano.RawLog.recording(raw, fun) end)
@@ -1504,7 +1578,12 @@ defmodule NanoAgent do
     end
   end
 
-  defp run_calls(%{calls: [call | rest]} = s) do
+  defp run_calls(%{calls: [_ | _]} = s) do
+    s = save(s)
+    if store_available?(s), do: run_registered_calls(s), else: s
+  end
+
+  defp run_registered_calls(%{calls: [call | rest]} = s) do
     s = %{s | calls: rest, call_seq: s.call_seq + 1}
     name = call["function"]["name"]
     raw = call["function"]["arguments"]
@@ -1592,6 +1671,14 @@ defmodule NanoAgent do
   end
 
   defp start_eval(s, call, started, code) do
+    s = save(s)
+
+    if store_available?(s),
+      do: start_registered_eval(Map.delete(s, :pending_eval), call, started, code),
+      else: Map.put(s, :pending_eval, {call, started, code})
+  end
+
+  defp start_registered_eval(s, call, started, code) do
     # The agent owns the capture device, so output and spawned processes survive a timeout.
     {:ok, io} = StringIO.open("")
 
@@ -1602,11 +1689,16 @@ defmodule NanoAgent do
           task: %{kind: :eval, n: s.call_seq, call: call, started: started, io: io}
       })
 
-    args = [code, Keyword.put(s.bindings, :me, self()), io]
-    task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :eval, args)
-    timeout = Nano.Settings.get(:eval_timeout_ms)
-    Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, timeout)
-    %{s | task: Map.merge(s.task, %{task: task, timeout: timeout})}
+    if store_available?(s) do
+      args = [self(), code, Keyword.put(s.bindings, :me, self()), io]
+      task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, :registered_eval, args)
+      timeout = Nano.Settings.get(:eval_timeout_ms)
+      Process.send_after(self(), {s.tag, :eval_timeout, task.ref}, timeout)
+      %{s | task: Map.merge(s.task, %{task: task, timeout: timeout})}
+    else
+      StringIO.close(io)
+      Map.merge(s, %{task: nil, pending_eval: {call, started, code}})
+    end
   end
 
   defp arm_wakeup(s) do
@@ -1650,6 +1742,14 @@ defmodule NanoAgent do
 
   @doc false
   # {:ok, inspected, bindings, warnings} | {:error, formatted}, with io as the group leader.
+  def registered_eval(agent, code, bindings, io) do
+    # Admission must occur in the actual effect task, after supervisor scheduling.
+    # Existing admitted evals may finish during Store loss; new ones wait for resave.
+    await_store_registration(agent)
+    eval(code, bindings, io)
+  end
+
+  @doc false
   def eval(code, bindings, io) do
     Process.group_leader(self(), io)
 
@@ -1754,8 +1854,14 @@ defmodule NanoAgent do
 
     case result do
       {:ok, value, bindings, warnings} ->
-        Nano.StateStore.put_bindings(s.name, bindings)
-        tool_result(%{s | bindings: bindings}, call, started, true, value, output <> warnings)
+        tool_result(
+          Map.put(%{s | bindings: bindings}, :bindings_dirty, true),
+          call,
+          started,
+          true,
+          value,
+          output <> warnings
+        )
 
       {:error, error} ->
         tool_result(s, call, started, false, error, output)
@@ -1884,11 +1990,82 @@ defmodule NanoAgent do
       :error
   end
 
-  # Bindings are saved apart, when an eval changes them (Nano.StateStore.put_bindings/2).
+  # Coherent checkpoint; unchanged bindings stay in the store's immutable blob cache.
+  defp save(%{bindings_unknown: true} = s), do: recovering(s)
+
   defp save(s) do
     s = %{s | spawned: Enum.filter(s.spawned, &Process.alive?/1)}
-    Nano.StateStore.put(s.name, Map.delete(s, :bindings))
-    s
+    token = Map.get(s, :store_token) || Process.get(:state_store_token)
+
+    registration =
+      if Nano.StateStore.registered?(token),
+        do: {:ok, token},
+        else:
+          Nano.StateStore.register(s.name, s.id, self(), Nano.StateStore.recovery_generation())
+
+    with {:ok, token} <- registration do
+      Process.put(:state_store_token, token)
+      current = Nano.StateStore.durability(s.name)
+      accepted = if is_map(current), do: current[:accepted_revision] || 0, else: 0
+      revision = max(Map.get(s, :state_revision, 0), accepted) + 1
+
+      payload =
+        if Map.get(s, :bindings_dirty, true) or Map.get(s, :store_token) != token,
+          do: s.bindings,
+          else: :unchanged
+
+      s = Map.merge(s, %{store_token: token, state_revision: revision})
+
+      case Nano.StateStore.checkpoint(token, revision, Map.delete(s, :bindings), payload) do
+        {:ok, acknowledgment} ->
+          Map.merge(s, %{durability: acknowledgment, bindings_dirty: false})
+
+        _ ->
+          recovering(s)
+      end
+    else
+      _ -> recovering(s)
+    end
+  end
+
+  defp recovering(s) do
+    unless Map.get(s, :store_retry_pending, false),
+      do: Process.send_after(self(), :state_store_retry, 50)
+
+    Map.merge(s, %{
+      durability: %{
+        status: :recovering,
+        warning: "State registration unavailable; new model/eval launches held."
+      },
+      store_retry_pending: true
+    })
+  end
+
+  defp store_available?(s),
+    do:
+      Nano.StateStore.registered?(Map.get(s, :store_token)) and
+        get_in(s, [:durability, :status]) in [:durable, :memory_only]
+
+  defp resume_after_store(s) do
+    cond do
+      not store_available?(s) ->
+        s
+
+      Map.has_key?(s, :pending_model) ->
+        {fun, args} = s.pending_model
+        task = Task.Supervisor.async_nolink(Nano.EvalSupervisor, __MODULE__, fun, args)
+        Map.put(Map.delete(s, :pending_model), :task, %{kind: :model, task: task})
+
+      Map.has_key?(s, :pending_eval) ->
+        {call, started, code} = s.pending_eval
+        start_eval(s, call, started, code)
+
+      s.status == :running_tool and s.task == nil ->
+        run_calls(s)
+
+      true ->
+        maybe_start_turn(s)
+    end
   end
 
   defp noreply(s), do: {:noreply, save(s)}

@@ -255,11 +255,14 @@ defmodule Nano.OpsTest do
 
       NanoAgent.notify(name, :go)
       assert_receive {:spawned, eval_task, [plain | _] = started}, 5_000
+      # Signal from eval may beat the agent callback's coherent checkpoint.
+      :sys.get_state(agent_pid)
       kinds = kinds()
       for pid <- [eval_task | started], do: assert(kinds[pid] == {:spawned_by, name})
 
       send(eval_task, :finish)
       assert_receive {:nano_log, %{type: :turn_ended}}, 5_000
+      :sys.get_state(agent_pid)
       refute Process.alive?(eval_task)
       send(plain, {:spawn, self()})
       assert_receive {:grandchild, grandchild}
@@ -270,6 +273,7 @@ defmodule Nano.OpsTest do
       Nano.FakeOpenRouter.push(model, calls: [idle: nil])
       Process.exit(agent_pid, :kill)
       assert_receive {:nano_log, %{type: :turn_ended}}, 5_000
+      :sys.get_state(NanoAgent.whereis(name))
       kinds = kinds()
       for pid <- [grandchild | started], do: assert(kinds[pid] == {:spawned_by, name})
     end

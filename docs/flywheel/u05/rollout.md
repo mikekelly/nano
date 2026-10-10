@@ -1,0 +1,129 @@
+# U05 owner gate and restoration
+
+## APIs and failure behavior
+
+`Nano.StateStore.register(name,id,self(),recovery_generation)` registers current logical
+identity and process incarnation. Only the registered caller may checkpoint.
+`checkpoint(token,revision,metadata,bindings_or_unchanged)` returns `{:ok, ack}` with
+status, accepted_revision, durable_revision, dropped and persistent warning; errors
+include stale, stale_revision, incoherent, bindings_unavailable, deleted,
+retired_identity, degraded and unavailable. `:unchanged` never imports predecessor
+bindings after replacement. Production NanoAgent uses this path, not legacy put/2.
+`binding_status/1` distinguishes explicit empty from unavailable; `Nano.Ops.durability/0`
+includes recovering live agents whose metadata is deliberately not exposed as current.
+Legacy put/2 is retained for partial non-agent records, never unfenced full-agent saves.
+
+Disk-only failure remains available in memory with API/operator and model-input warnings.
+Registration/store absence holds new model/eval launches (including provider retries),
+retains completed evidence and uses a bounded pending-event queue with overflow counts
+logged. It is not a bound on an externally flooded BEAM mailbox or arbitrary eval effects.
+The normal agent log can append completed evidence while ETS is absent. Crash formatting
+redacts checkpoint metadata and binding values.
+
+## Formats and restoration
+
+See schema/migration.md. Old process StateStore state was a watched-pid map; new process
+state contains lifecycle authority, registrations, recovery epoch and binding references.
+Old disk files remain read-only. Coherent embedded legacy bindings migrate once; unversioned
+split files cannot prove matching identity/revision and stay unavailable. New durable
+lifecycles retain retired IDs and tombstones. Replacing source alone cannot revoke them.
+
+Allowed restoration is roll-forward with compatible U05 code and the **entire latest**
+coherent authority/envelope/blob directory. Preserve later tombstones, retired IDs,
+accepted pending evidence and generations; do not overlay an old checkpoint on newer
+same-name authority. The disposable migration test clones the latest coherent directory,
+starts U05 in that copy, verifies revision/pending evidence/lifecycle identity, then commits
+further mutation+tombstone and restarts again. Older pre-U05 source downgrade is forbidden.
+Missing/corrupt selected blobs cannot be repaired by choosing an unrelated newer blob.
+
+## Parent-only rollout
+
+The bounded hot conversion seam is:
+
+```
+:sys.change_code(store_pid, Nano.StateStore, :pre_u05, {:u05_upgrade, max_agents}, 15_000)
+```
+
+Only use it on the legacy watched-map process state, after fresh exact-revision review.
+Its bound counts both live named agents and saved metadata entries (1..10000 allowed).
+It refuses nonquiescent agents or unpaused live model-request outer Tasks,
+unavailable/malformed identities, invalid old process
+state, unsupported/corrupt authority, or conflicts with newer lifecycles. It syncs the
+whole lifecycle candidate before replacing legacy agent rows. Existing newer authority
+is read and preserved, never regenerated from old bytes. It retains legacy files, log
+sequence/token counters and monitor refs, restores only coherent v1 disk pairs and
+asynchronously requests full live resaves under a new store epoch. Legacy dead split
+records stay visibly unavailable, not silently paired or revived. Such unavailable
+recovery outcomes require owner disposition; fixtures cannot make them current.
+
+**Owner protocol (bounded cooperative rollout, not a sandbox):**
+
+1. Pause cooperative new-agent launchers for the short upgrade lane. Inventory exact
+   named live pids/identities, saved-entry count and existing authority; preserve all
+   current bytes. Choose an explicit count bound and deadlines. If any actor cannot
+   quiesce, or launchers cannot be paused, stay maintenance-blocked without loading.
+2. Suspend every inventoried live agent at its callback boundary with bounded
+   `:sys.suspend(pid, timeout)` calls **before** suspending StateStore. Eval/model tasks
+   may complete while callbacks are suspended; their messages remain queued. Never
+   kill/restart those agents or tasks. A coordinating eval Task can continue while its
+   own parent agent is suspended, but must resume that parent before returning.
+3. While agent callbacks are suspended, inventory their current model-request outer
+   Task pids (never arbitrary service processes). Existing old code can retry a provider
+   locally even while its agent callback is suspended: suspend those still-live outer
+   Tasks with `:erlang.suspend_process(task_pid)`, record which leases this coordinator
+   acquired, and do not resume tasks already suspended by someone else. Existing inner
+   provider requests may finish; their results queue, but outer Tasks cannot launch a
+   new retry during conversion. Eval Tasks, including the coordinating eval, continue
+   and may finish normally; no cancellation/purge is allowed. The seam verifies model
+   outer Tasks are dead/completed or actually suspended.
+4. Suspend StateStore, verify the named live set has not changed and all actors are
+   actually quiescent. Load the exact reviewed StateStore and NanoAgent modules once;
+   do not purge the old NanoAgent code while old eval tasks may still execute it.
+   New NanoAgent.start/1 now refuses launches until store availability is restored.
+5. Invoke the exact change_code seam above. Failure means keep the lane suspended and
+   preserve bytes; persistence uncertainty is not permission to resume incompatible
+   old state or downgrade. Re-read latest authority and retry the same compatible
+   conversion only after resolving the failure (the disposable test exercises an
+   authority commit-before-ack error and safe retry). Never reset newer generations.
+6. Resume Store **before** agents, then resume agents. Their lazy registration and
+   coherent full resaves preserve identity/bindings and completed evidence irrespective
+   of whether task-result or resave messages arrive first. Registration/store loss
+   holds new launches; disk-only failures expose memory_only warnings. Resume only the
+   model outer Task leases this coordinator acquired, **after** the owning agents have
+   current registration/coherent resave acknowledgments. A dead Task needs no resume.
+7. With deadlines, verify each exact live pid/id has current store epoch/incarnation,
+   expected lifecycle, coherent binding availability and accepted/durable revisions;
+   inspect queued/completed evidence without printing bindings. Only then reopen
+   launchers and record deployment/live evidence. Timeout/unavailable/degraded remains
+   blocked and requires a reviewed roll-forward repair, not a fabricated pass.
+
+`test/flywheel/u05/hot_upgrade.exs` is a standalone **disposable OS VM** driver.
+It compiles exact base old Store/Agent source before application boot, seeds two live
+agents, reproduces the old store-kill metadata-only resave losing its binding row while
+the live agent still retains bindings (baseline failure), then keeps an old eval in flight across module load, rejects unquiescent/count-bound
+conversion, completes that eval while agents are suspended, queues events and a store
+caller, injects authority commit-before-ack failure/retries preserving exact bytes,
+rejects an unpaused old model Task and proves a queued transient provider result cannot
+launch its old-code retry until that Task resumes after registration, converts without
+changing Store/agent pids, verifies bindings/pending evidence, then
+rehearses disposable Store and agent restart recovery. This is two-actor upgrade proof,
+not measured proof for every live actor on this harness. Parent alone executes live gates.
+
+Before accepting: verify exact dispatch claim/generation/hash, actual manifest/scopes and
+compatible integration base; obtain fresh nonauthor workflow review. Before any rollout:
+preserve latest authority and evidence, rehearse applicable migration in disposable VM,
+verify effective private paths, and obtain the compatible conversion decision. Only parent
+integrates/loads/verifies/announces/closes. No deployed/live/done claim is made here.
+
+### Actual coordinating eval / own-parent proof
+Opt-in disposable driver `mix run --no-start test/flywheel/u05/self_parent_upgrade.exs` starts exact old Store/Agent code and drives a real model-to-eval production task. That task suspends its own agent callback and Store, loads compatible code, encounters authority commit-before-ack failure, retains suspension/latest authority bytes, retries compatible conversion, resumes Store then its own parent before returning. The parent then commits returned binding/evidence without changing PID/identity. This tested recoverable-error path is not permission for unconditional resume after irrecoverable conversion error; keep actors quiescent and use the independently reviewed maintenance lane. Never run this driver in the normal suite or shared node. Attributed original proof: fresh reviewer altair-u05-review-r3, review-r3-run/self_parent.exs.
+
+### Independently reachable failed-lane maintenance procedure
+
+Before any shared load, parent verifies an independent operator can reach existing `POST /api/eval` through the actual permitted listener while launcher and agent callbacks are paused. Use JSON content type, `x-nano-api-intent: mutate`, no browser Origin, and the deployment's applicable access controls. A harmless bounded `1+1` preflight must return 200/result2 without relying on the suspended agent or Store. Do not publish credentials, broad environment, raw argv or cookie. If access is unavailable, conversion is maintenance-blocked before loading; do not improvise a second authority/control plane.
+
+After conversion failure, retain suspension and latest whole coherent lifecycle/files. Independently inspect the attributed exact compatible revision, error, Store/parent PIDs and owned Task leases; a lost reply may have committed authority. Only retry the reviewed compatible forward conversion (`:sys.change_code(store, Nano.StateStore, :pre_u05, {:u05_upgrade, bound}, 15_000)`) after correcting the actual cause. Preserve latest authority byte/generation evidence. Do not unconditionally resume an old-shape Store, discard new files, downgrade or re-load a third NanoAgent code version while old-code Tasks remain. If forward retry is still impossible, preserve the lane quiescent and escalate external maintenance.
+
+On successful compatible conversion resume Store first, then owned agent callback suspensions; wait bounded current-token full coherent registration/checkpoint acknowledgments, then release only coordinator-owned outer model Task leases. The independent maintenance callback must resume a coordinating eval's parent before notifying/returning its completed result. Confirm same intended logical IDs/PIDs, bindings/pending/completed evidence and durability. This is owner-only operational execution, never worker authorization to fault/load the shared node.
+
+Opt-in disposable proof: `mix run --no-start test/flywheel/u05/external_maintenance_upgrade.exs`. Attributed original fresh reviewer R3 `review-r3-run/external_maintenance.exs`: actual old eval suspends own parent and Store, conversion authority commits before failed acknowledgment, actual Endpoint Phoenix.ConnTest dispatch confirms existing POST/eval remains usable, second endpoint eval performs compatible forward repair/resume, then original result/binding42 is committed durably with same PIDs/ID. This is the real router/controller/eval production boundary **not an OS HTTP listener/network-access claim**. Parent actual listener healthy preflight and real live population checks remain separate gates. Fault hook/context env in the driver are private test fixtures only, not instructions for production configuration.

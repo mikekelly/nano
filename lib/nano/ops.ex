@@ -20,6 +20,9 @@ defmodule Nano.Ops do
   @doc "Independent safety net status; never includes credentials."
   def safety, do: Nano.Safety.status()
 
+  @doc "Agent checkpoint warnings and live recovery availability (not a durability promise)."
+  def durability, do: Nano.StateStore.status()
+
   ## Agents
 
   @doc "Info maps for all agents."
@@ -37,13 +40,15 @@ defmodule Nano.Ops do
   @doc "Stops an agent for good: terminates its process, if running, and deletes its stored state."
   def stop_agent(name) do
     if agent(name) do
-      with {:ok, pid} <- find(name) do
-        DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
-        # Its evals and model requests run in tasks that would outlive it.
-        NanoAgent.kill_tasks(pid)
-      end
+      # Tombstone commits before terminating; failed durable deletion leaves the agent intact.
+      with :ok <- Nano.StateStore.delete(name) do
+        with {:ok, pid} <- find(name) do
+          DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+          NanoAgent.kill_tasks(pid)
+        end
 
-      Nano.StateStore.delete(name)
+        :ok
+      end
     else
       {:error, :not_found}
     end

@@ -1,3 +1,5 @@
+Code.require_file("../flywheel/u05/fixtures.ex", __DIR__)
+
 defmodule NanoWeb.AgentLiveTest do
   # Not async: the dashboard user is node-wide, and agents use the fake OpenRouter.
   use ExUnit.Case, async: false
@@ -80,12 +82,14 @@ defmodule NanoWeb.AgentLiveTest do
   end
 
   test "renders the backlog: every entry type of a turn, and the header numbers", ctx do
-    {_pid, _id} = start!(ctx, start_idle: false)
+    {pid, _id} = start!(ctx, start_idle: false)
     Fake.push(ctx.model, text: "Started.")
     await(:turn_ended)
     script_turn(ctx)
     NanoAgent.notify(ctx.name, {:question, 6, 7})
     await(:turn_ended)
+    # Log publication precedes the callback's final coherent checkpoint.
+    :sys.get_state(pid)
 
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert has_entry?(view, "started", "started")
@@ -205,7 +209,7 @@ defmodule NanoWeb.AgentLiveTest do
     {:ok, view, _} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     # A halt value this view has no special wording for still shows, with Un-halt.
     state = Nano.StateStore.get(ctx.name)
-    Nano.StateStore.put(ctx.name, %{state | halted: :node_budget})
+    Nano.Flywheel.U05.Fixture.commit_live(ctx.name, %{state | halted: :node_budget})
     send(view.pid, :refresh)
     assert has_element?(view, "section.bar .badge.halted", "halted: node_budget")
     assert has_element?(view, ".flag.halted", "node-wide hourly token cap")
@@ -450,7 +454,11 @@ defmodule NanoWeb.AgentLiveTest do
           log_failed: "could not write its log",
           something_else: "reason :something_else"
         ] do
-      Nano.StateStore.put(ctx.name, %{Nano.StateStore.get(ctx.name) | halted: reason})
+      Nano.Flywheel.U05.Fixture.commit_live(ctx.name, %{
+        Nano.StateStore.get(ctx.name)
+        | halted: reason
+      })
+
       {:ok, view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
       assert html =~ text
       assert has_element?(view, ".flag.halted")
@@ -473,7 +481,7 @@ defmodule NanoWeb.AgentLiveTest do
   test "an agent whose saved state predates the context limit still renders", ctx do
     start!(ctx)
     old = Map.drop(Nano.StateStore.get(ctx.name), [:max_context, :context_used])
-    Nano.StateStore.put(ctx.name, old)
+    Nano.Flywheel.U05.Fixture.put(ctx.name, old)
 
     {:ok, _view, html} = live(ctx.conn, "/agents/#{ctx.name}?view=debug")
     assert html =~ ~r|<dt>context</dt>\s*<dd>|
