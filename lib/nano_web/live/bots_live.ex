@@ -73,9 +73,12 @@ defmodule NanoWeb.BotsLive do
   end
 
   def handle_params(p, _, s), do: {:noreply, select(s, p["id"])}
-  defp select(s, nil), do: assign(s, current: nil, messages: [])
+  defp select(s, nil), do: assign(s, current: nil, messages: [], answer_id: nil)
 
   defp select(s, id) do
+    s =
+      if !s.assigns.current || s.assigns.current.id != id, do: assign(s, answer_id: nil), else: s
+
     with {:ok, chat} <- Bots.get_session(id, opts(s)),
          {:ok, page} <-
            Bots.list_messages(
@@ -186,7 +189,7 @@ defmodule NanoWeb.BotsLive do
         do: {:error, :attachment_failed},
         else:
           if(s.assigns.answer_id,
-            do: Bots.answer_request(s.assigns.answer_id, text, opts(s)),
+            do: answer_current_request(s, text),
             else:
               Bots.post_human(
                 s.assigns.current.id,
@@ -278,6 +281,16 @@ defmodule NanoWeb.BotsLive do
       Map.new([:name, :description, :voice, :face, :color], &{&1, p[Atom.to_string(&1)] || ""})
 
     mutate(s, Bots.update_bot(id, attrs, opts(s)))
+  end
+
+  defp answer_current_request(s, text) do
+    with %{id: sid} <- s.assigns.current,
+         {:ok, request} <- Bots.get_request(s.assigns.answer_id, opts(s)),
+         true <- request.session_id == sid and request.status == :pending do
+      Bots.answer_request(request.id, text, opts(s))
+    else
+      _ -> {:error, :invalid_request_session}
+    end
   end
 
   defp mutate(s, result, sent \\ false) do

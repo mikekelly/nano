@@ -181,4 +181,31 @@ defmodule NanoWeb.BotsLiveTest do
     assert {:ok, "Shared attachment content", _} = Nano.Bots.Attachments.read(ref)
     assert has_element?(v, "a[download][href='#{url}']", "notes.txt")
   end
+
+  test "request answer selection never crosses session navigation", %{conn: conn, store: store} do
+    o = [server: store]
+    {:ok, b} = Nano.Bots.create_bot(%{name: "Requests"}, o)
+    {:ok, a} = Nano.Bots.create_session(%{participant_ids: [b.id], title: "Chat A"}, o)
+    {:ok, c} = Nano.Bots.create_session(%{participant_ids: [b.id], title: "Chat B"}, o)
+
+    {:ok, r} =
+      Nano.Bots.request_human(
+        %{bot_id: b.id, session_id: a.id, requester: "request-test", text: "A question"},
+        o
+      )
+
+    {:ok, v, _} = live(conn, "/bots/" <> a.id)
+    v |> element("button[phx-click=answer]") |> render_click()
+    assert has_element?(v, "[role=status]", "Answering")
+    v |> element("a[href='/bots/#{c.id}']") |> render_click()
+    refute has_element?(v, "[role=status]", "Answering")
+    v |> form("#bots-composer", text: "Only for B") |> render_submit()
+    assert {:ok, %{status: :pending, answer: nil}} = Nano.Bots.get_request(r.id, o)
+
+    assert {:ok, %{messages: [%{text: "Only for B", session_id: sid}]}} =
+             Nano.Bots.list_messages(c.id, o)
+
+    assert sid == c.id
+    assert {:ok, %{messages: []}} = Nano.Bots.list_messages(a.id, o)
+  end
 end
