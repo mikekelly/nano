@@ -68,13 +68,6 @@ defmodule GoalsTest do
     assert {:error, :corrupt_goals} = Goals.add(n, "x", why: "y")
     assert File.read!(p) == "corrupt"
   end
-
-  test "does not touch agent saved state", %{name: n} do
-    Nano.StateStore.put(n, %{name: n, sentinel: :unchanged})
-    assert {:ok, _} = Goals.add(n, "x", why: "y")
-    assert %{sentinel: :unchanged} = Nano.StateStore.get(n)
-    on_exit(fn -> Nano.StateStore.delete(n) end)
-  end
 end
 
 defmodule GoalsDashboardTest do
@@ -82,6 +75,27 @@ defmodule GoalsDashboardTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   @endpoint NanoWeb.Endpoint
+  test "does not touch a real agent saved state" do
+    Nano.FakeOpenRouter.start()
+    name = "goals-state-" <> Base.encode16(:crypto.strong_rand_bytes(8))
+    model = Nano.FakeOpenRouter.model()
+    {:ok, pid} = NanoAgent.start([name: name] ++ Nano.FakeOpenRouter.opts(model))
+    path = Path.join([Application.fetch_env!(:nano, :state_dir), "goals", name <> ".term"])
+
+    on_exit(fn ->
+      DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+      NanoAgent.kill_tasks(pid)
+      Nano.StateStore.delete(name)
+      File.rm(path)
+    end)
+
+    # A valid registered, idle agent is safe for concurrently rendered dashboard lists.
+    :sys.get_state(pid)
+    before = Nano.StateStore.get(name)
+    assert {:ok, _} = Goals.add(name, "x", why: "y")
+    assert Nano.StateStore.get(name) == before
+  end
+
   test "goal summary renders and refreshes without agent calls" do
     name = "goals-page-" <> Base.encode16(:crypto.strong_rand_bytes(8))
     path = Path.join([Application.fetch_env!(:nano, :state_dir), "goals", name <> ".term"])
