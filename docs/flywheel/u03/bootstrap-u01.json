@@ -1,0 +1,139 @@
+{
+  "owner": "altair-u01-73938543",
+  "pid": "#PID<0.46602.0>",
+  "unit": "U01",
+  "history": [
+    {
+      "at": "2026-10-10T08:53:50.102706Z",
+      "event": "serialized_bootstrap_claim",
+      "review": "/data/altair-flywheel/unit-review-r2-p0.md",
+      "by": "altair"
+    },
+    {
+      "at": "2026-10-10T08:59:23.272708Z",
+      "text": "Implemented guard/OAuth/client changes, private regression matrix underway; no test pass or live load claimed.",
+      "event": "progress",
+      "by": "altair-u01-73938543"
+    },
+    {
+      "at": "2026-10-10T09:05:15.203625Z",
+      "text": "Disposable baseline reproduction confirmed effects; interim97focused and525full+2skip passed; final tests ongoing. RealLightpanda same-origin fetch and CLI guard tested; no live deployment.",
+      "event": "progress",
+      "by": "altair-u01-73938543"
+    },
+    {
+      "at": "2026-10-10T09:10:54.971448Z",
+      "event": "proposal_submitted",
+      "tests": "101focused;529full+2optional skips",
+      "commit": "88d68d1960e281c5b9db4a7f700e413f248d86af",
+      "evidence": "/data/altair-flywheel/evidence/U01",
+      "by": "altair-u01-73938543"
+    },
+    {
+      "at": "2026-10-10T09:19:03.898253Z",
+      "event": "integrated_deployed_verified_announced",
+      "commit": "45d527c",
+      "restoration": "Compatible roll-forward only; no persistent schema change; pending-attempt invalidation rehearsed isolated",
+      "by": "altair"
+    }
+  ],
+  "base": "28f16500fcb2b38d4c397efda05fbbda704cb0e3",
+  "stage": "done",
+  "evidence": [],
+  "review": "/data/altair-flywheel/evidence/U01/review-r1.md",
+  "generation": 1,
+  "incarnation": "u01-73938543",
+  "unit_sha256": "5d21c96c7169165754c7d6d4748e2eda4f88966b068855b53d1e1c288b2d8d36",
+  "unit_path": "/data/altair-flywheel/runs/u01-73938543/unit.json",
+  "template_sha256": "241594325248e420cfcef56312ae86e49462a0959bf11c5f52e5a10e7038f910",
+  "file_scopes": {
+    "artifact_prefix": [
+      "/data/altair-flywheel/evidence/U01/"
+    ],
+    "repository_exact": [
+      "lib/nano_web/endpoint.ex",
+      "lib/nano_web/router.ex",
+      "lib/nano_web/controllers/api_controller.ex",
+      "lib/nano_web/controllers/open_router_controller.ex",
+      "lib/nano/open_router/auth.ex",
+      "lib/nano/user.ex",
+      "lib/nano/ops.ex",
+      "lib/nano_web/live/settings_panel.ex",
+      "lib/nano_web/live/components.ex",
+      "test/nano_web/api_controller_test.exs",
+      "test/nano_web/images_test.exs",
+      "test/nano_web/safety_api_test.exs",
+      "test/nano/open_router_auth_test.exs",
+      "test/nano/user_test.exs",
+      "config/runtime.exs",
+      "config/config.exs",
+      "README.md",
+      "docs/network.md",
+      "prompts/seed.txt",
+      "AGENTS.md",
+      "bin/push-settings",
+      "scripts/safety/test_beam.py",
+      "test/nano/settings_test.exs",
+      "test/nano/chatgpt_test.exs",
+      "lib/nano_web/live/start_form.ex",
+      "test/smoke_test.exs",
+      "bin/up",
+      "lib/nano_web/api_guard.ex",
+      "test/nano_web/api_guard_endpoint_test.exs"
+    ],
+    "repository_prefix": [
+      "test/flywheel/u01/",
+      "docs/flywheel/u01/"
+    ],
+    "rule": "Canonical repository-relative exact and component-prefix overlap, including future new files. Artifact roots also exclusive per unit. Read any source; edit only claimed scopes. Parent persists expansion before new paths. Changed tests/config/docs count as files, not exceptions.",
+    "source_mutation": "Only implement this unit contract; adjacent change requires expansion/review."
+  },
+  "proposal_reservation": null,
+  "metrics_start": {
+    "model": "openai-codex/gpt-6.1-sol",
+    "reasoning": "low",
+    "cost": 0,
+    "budget": {
+      "max_turns": 0,
+      "max_tokens": 0,
+      "max_context": 272000,
+      "context_used": 23747,
+      "tokens_used": 53398,
+      "turns_used": 4
+    }
+  },
+  "metrics_submission": {
+    "model": "openai-codex/gpt-6.1-sol",
+    "reasoning": "low",
+    "cost": 0,
+    "budget": {
+      "max_turns": 0,
+      "max_tokens": 0,
+      "max_context": 272000,
+      "context_used": 140887,
+      "tokens_used": 5365777,
+      "turns_used": 60
+    }
+  },
+  "integrated_commit": "45d527c",
+  "deployed_modules": [
+    "Elixir.NanoWeb.ApiGuard",
+    "Elixir.Nano.OpenRouter.Auth",
+    "Elixir.Nano.User",
+    "Elixir.Nano.Ops",
+    "Elixir.NanoWeb.ApiController",
+    "Elixir.NanoWeb.OpenRouterController",
+    "Elixir.NanoWeb.Components",
+    "Elixir.NanoWeb.SettingsPanel",
+    "Elixir.NanoWeb.StartForm",
+    "Elixir.NanoWeb.Router.Helpers",
+    "Elixir.NanoWeb.Router",
+    "Elixir.NanoWeb.Endpoint"
+  ],
+  "live_evidence": "/data/altair-flywheel/evidence/U01/live-owner.json",
+  "owner_tests": {
+    "log": "/data/spill/background/711184e6042c0a9dc22234f7/output.log",
+    "skipped": 0,
+    "passed": 531
+  }
+}
