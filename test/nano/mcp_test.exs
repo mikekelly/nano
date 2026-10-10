@@ -373,8 +373,157 @@ defmodule Nano.MCPTest do
     assert {:error, :subscriptions_unsupported} = MCP.subscribe(a, "reference", "file://" <> file)
   end
 
+  for {mode, reason} <- [{"legacy_error", "server_error"}, {"legacy_timeout", "timeout"}] do
+    test "legacy durable restore #{mode} is visible, backed off and recovered", %{
+      agent: a,
+      config: config,
+      trace: trace
+    } do
+      uri = "restore://resource"
+      assert :ok = MCP.connect(a, "legacy")
+      assert :ok = MCP.subscribe(a, "legacy", uri)
+      prepare_restore_failure(config, "legacy", unquote(mode), 2)
+      {:ok, old} = Nano.MCP.Manager.session(a, "legacy")
+      Process.exit(old, :kill)
+
+      assert_receive {:"$gen_cast",
+                      {:notify,
+                       %{
+                         mcp: "subscription_restore_failed",
+                         payload: %{
+                           data: %{"uri" => ^uri, "reason" => unquote(reason), "retryMs" => 250}
+                         }
+                       }}},
+                     3000
+
+      assert {:ok, [^uri]} = Nano.MCP.Manager.uris(a, "legacy")
+
+      assert {:ok, %{data: %{subscriptions: %{desired: [^uri], active: []}}}} =
+               MCP.catalog(a, "legacy")
+
+      assert_receive {:"$gen_cast",
+                      {:notify,
+                       %{
+                         mcp: "subscription_restore_failed",
+                         payload: %{data: %{"uri" => ^uri, "retryMs" => 500}}
+                       }}},
+                     3000
+
+      assert_receive {:"$gen_cast",
+                      {:notify,
+                       %{mcp: "subscription_restored", payload: %{data: %{"uri" => ^uri}}}}},
+                     3000
+
+      assert {:ok, %{data: %{subscriptions: %{active: [^uri]}}}} = MCP.catalog(a, "legacy")
+
+      assert Enum.count(
+               trace(trace),
+               &(&1["method"] == "resources/subscribe" and &1["params"]["uri"] == uri)
+             ) >= 4
+
+      assert {:ok, _} = MCP.call_tool(a, "legacy", "update")
+
+      assert_receive {:"$gen_cast",
+                      {:notify,
+                       %{
+                         mcp: "notifications/resources/updated",
+                         payload: %{data: %{"uri" => ^uri}}
+                       }}},
+                     1000
+    end
+  end
+
+  test "modern automatic restoration verifies acknowledged URIs and backs off rejection", %{
+    agent: a,
+    config: config
+  } do
+    uri = "restore://resource"
+    assert :ok = MCP.connect(a, "modern")
+    assert :ok = MCP.subscribe(a, "modern", uri)
+    prepare_restore_failure(config, "modern", "modern_reject", 2)
+    {:ok, old} = Nano.MCP.Manager.session(a, "modern")
+    Process.exit(old, :kill)
+
+    assert_receive {:"$gen_cast",
+                    {:notify,
+                     %{
+                       mcp: "subscription_restore_failed",
+                       payload: %{
+                         data: %{"uris" => [^uri], "reason" => "not_honored", "retryMs" => 250}
+                       }
+                     }}},
+                   3000
+
+    assert {:ok, [^uri]} = Nano.MCP.Manager.uris(a, "modern")
+
+    assert {:ok, %{data: %{subscriptions: %{desired: [^uri], active: []}}}} =
+             MCP.catalog(a, "modern")
+
+    assert_receive {:"$gen_cast",
+                    {:notify,
+                     %{
+                       mcp: "subscription_restore_failed",
+                       payload: %{data: %{"uris" => [^uri], "retryMs" => 500}}
+                     }}},
+                   3000
+
+    eventually(fn ->
+      assert {:ok, %{data: %{subscriptions: %{active: [^uri]}}}} = MCP.catalog(a, "modern")
+    end)
+
+    assert {:ok, _} = MCP.call_tool(a, "modern", "update")
+
+    assert_receive {:"$gen_cast",
+                    {:notify,
+                     %{mcp: "notifications/resources/updated", payload: %{data: %{"uri" => ^uri}}}}},
+                   1000
+  end
+
+  test "legacy retry never reinstalls a URI removed while restoration is degraded", %{
+    agent: a,
+    config: config,
+    trace: trace
+  } do
+    uri = "restore://resource"
+    assert :ok = MCP.connect(a, "legacy")
+    assert :ok = MCP.subscribe(a, "legacy", uri)
+    prepare_restore_failure(config, "legacy", "legacy_error", 20)
+    {:ok, old} = Nano.MCP.Manager.session(a, "legacy")
+    Process.exit(old, :kill)
+    assert_receive {:"$gen_cast", {:notify, %{mcp: "subscription_restore_failed"}}}, 3000
+    assert :ok = MCP.unsubscribe(a, "legacy", uri)
+    count = Enum.count(trace(trace), &(&1["method"] == "resources/subscribe"))
+    Process.sleep(600)
+    assert Enum.count(trace(trace), &(&1["method"] == "resources/subscribe")) == count
+    assert {:ok, []} = Nano.MCP.Manager.uris(a, "legacy")
+    assert {:ok, %{data: %{subscriptions: %{desired: [], active: []}}}} = MCP.catalog(a, "legacy")
+  end
+
+  test "trace observations defer an incomplete append but keep complete records strict", %{
+    config: config
+  } do
+    file = Path.join(Path.dirname(config), "partial.jsonl")
+    File.write!(file, "{\"one\":1}\n{\"two\":")
+    assert trace(file) == [%{"one" => 1}]
+    File.write!(file, "2}\n", [:append])
+    assert trace(file) == [%{"one" => 1}, %{"two" => 2}]
+    File.write!(file, "bad json\n", [:append])
+    assert_raise Jason.DecodeError, fn -> trace(file) end
+  end
+
+  defp prepare_restore_failure(config, server, mode, remaining) do
+    control = Path.join(Path.dirname(config), "restore-control.json")
+    File.write!(control, Jason.encode!(%{"mode" => mode, "remaining" => remaining}))
+    cfg = config |> File.read!() |> Jason.decode!()
+    cfg = put_in(cfg, ["servers", server, "env"], %{"MCP_RESTORE_CONTROL" => control})
+    cfg = put_in(cfg, ["servers", server, "subscription_timeout_ms"], 80)
+    File.write!(config, Jason.encode!(cfg))
+  end
+
   defp trace(path),
-    do: path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+    # Newline commits a fixture record; a concurrent append may expose an incomplete tail.
+    # Do not soften decode errors for completed records.
+    do: path |> File.read!() |> String.split("\n") |> Enum.drop(-1) |> Enum.map(&Jason.decode!/1)
 
   defp eventually(fun, n \\ 100)
   defp eventually(fun, 0), do: fun.()

@@ -4,7 +4,11 @@ defmodule Nano.MCP do
   agent name and a server ID in `priv/mcp_servers.json`. See `Nano.MCP.Config`
   for configuration and secret references. Supervised connections are independent
   of agent pids. Subscription intent is stored under the node's state directory;
-  server restarts reconnect with exponential backoff and re-subscribe. Notifications,
+  server restarts reconnect with exponential backoff and re-subscribe. Failed restores
+  emit subscription_restore_failed with URI(s), reason and retryMs and retry with
+  exponential backoff (250 ms to 30 seconds). `catalog/2` shows desired and active
+  subscriptions separately, so a ready transport is not mistaken for restored intent.
+  Notifications,
   disconnects and catalog changes reach `NanoAgent.notify/2` and the timeline.
 
       Nano.MCP.connect("scout", "filesystem")

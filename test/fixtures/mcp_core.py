@@ -3,6 +3,18 @@ mode, trace = sys.argv[1:3]
 subscriptions = []
 stream = None
 
+def restore_failure(mode):
+    path = os.environ.get("MCP_RESTORE_CONTROL")
+    if not path or not os.path.exists(path):
+        return False
+    control = json.load(open(path))
+    if control.get("mode") != mode or control.get("remaining", 0) <= 0:
+        return False
+    control["remaining"] -= 1
+    with open(path, "w") as f:
+        json.dump(control, f)
+    return True
+
 def send(value):
     print(json.dumps(dict(jsonrpc="2.0", **value)), flush=True)
 
@@ -35,6 +47,10 @@ for line in sys.stdin:
     elif method == "subscriptions/listen":
         stream = id
         subscriptions = p["notifications"]["resourceSubscriptions"]
+        if restore_failure("modern_reject"):
+            subscriptions = []
+            event("notifications/subscriptions/acknowledged", {"notifications": {}})
+            continue
         if "hang://resource" in subscriptions:
             continue
         if "close://resource" in subscriptions:
@@ -64,9 +80,15 @@ for line in sys.stdin:
     elif method == "prompts/get":
         result = {"messages": [{"role": "user", "content": {"type": "text", "text": "hello"}}]}
     elif method == "resources/subscribe":
+        if restore_failure("legacy_error"):
+            send(dict(id=id, error={"code": -32001, "message": "deliberate restore failure"}))
+            continue
+        if restore_failure("legacy_timeout"):
+            continue
         subscriptions.append(p["uri"])
     elif method == "resources/unsubscribe":
-        subscriptions.remove(p["uri"])
+        if p["uri"] in subscriptions:
+            subscriptions.remove(p["uri"])
     elif method == "tools/call":
         name = p["name"]
         if name == "hang":
