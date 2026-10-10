@@ -22,3 +22,26 @@ defmodule Nano.Flywheel.U05.Fixture do
     :ok
   end
 end
+
+defmodule Nano.Flywheel.U05.BarrierAgent do
+  use GenServer
+
+  def start_link({opts, observer}),
+    do:
+      GenServer.start_link(__MODULE__, {opts, observer},
+        name: {:via, Nano.Names, {:agent, opts[:name]}}
+      )
+
+  def init({opts, observer}) do
+    send(observer, {:name_registered, self()})
+
+    receive do
+      :release_init -> NanoAgent.init(opts)
+    end
+  end
+
+  def handle_continue(c, s), do: NanoAgent.handle_continue(c, s)
+  def handle_info(m, s), do: NanoAgent.handle_info(m, s)
+  def handle_cast(m, s), do: NanoAgent.handle_cast(m, s)
+  def handle_call(m, f, s), do: NanoAgent.handle_call(m, f, s)
+end

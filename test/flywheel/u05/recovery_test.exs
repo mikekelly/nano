@@ -1,3 +1,5 @@
+Code.require_file("fixtures.ex", __DIR__)
+
 defmodule Nano.Flywheel.U05.RecoveryTest do
   use ExUnit.Case, async: false
   alias Nano.StateStore, as: Store
@@ -449,5 +451,166 @@ defmodule Nano.Flywheel.U05.RecoveryTest do
     assert :sys.get_state(observed).id == old_token
     assert :sys.get_state(observed).id == state.id
     assert :sys.get_state(observed).bindings[:retained] == 321
+  end
+
+  test "recovery registration cannot steal a still-live current incarnation" do
+    Fake.start()
+    name = "r3-live-registration"
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(Fake.model()))
+    state = :sys.get_state(pid)
+    :ok = :sys.suspend(pid)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: :sys.resume(pid)
+
+      if p = NanoAgent.whereis(name),
+        do: DynamicSupervisor.terminate_child(Nano.AgentSupervisor, p)
+
+      Store.delete(name)
+    end)
+
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Store)
+    assert Store.get(name) == nil
+    assert Store.durability(name).status == :recovering
+    assert {:error, :incarnation_active} = Store.watch(name, self())
+
+    assert {:error, :incarnation_active} =
+             Store.register(name, state.id <> "-foreign", self(), Store.recovery_generation())
+
+    result = Store.register(name, state.id, self(), Store.recovery_generation())
+    IO.puts("R3_LIVE_INCARCATION_STEAL " <> inspect(result))
+
+    if match?({:ok, _}, result) do
+      {:ok, token} = result
+
+      ack =
+        Store.checkpoint(
+          token,
+          state.state_revision + 100,
+          %{name: name, id: state.id, pid: self(), pending: [:foreign_incarnation]},
+          retained: -1
+        )
+
+      IO.puts("R3_FOREIGN_CHECKPOINT " <> inspect(ack))
+    end
+
+    assert {:error, :incarnation_active} == result
+    :ok = :sys.resume(pid)
+    eventually(fn -> Store.get(name) != nil and Store.pid_registered?(pid) end)
+    assert :sys.get_state(pid).id == state.id
+  end
+
+  test "R3 F2 supervisor-loss revive scan reconciles dead resavers before DOWN delivery" do
+    name = "r3-supervisor-death"
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(Fake.model()))
+
+    on_exit(fn ->
+      if p = NanoAgent.whereis(name),
+        do: DynamicSupervisor.terminate_child(Nano.AgentSupervisor, p)
+
+      Store.delete(name)
+    end)
+
+    :sys.replace_state(pid, fn s ->
+      Map.put(%{s | bindings: [retained: 654]}, :bindings_dirty, true)
+    end)
+
+    GenServer.cast(pid, :resave)
+    state = :sys.get_state(pid)
+    :ok = :sys.suspend(pid)
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+    {:ok, store} = Supervisor.restart_child(Nano.Supervisor, Store)
+    assert Store.get(name) == nil
+    assert Store.durability(name).status == :recovering
+    # Block Store callback delivery, not its monitor signals; revival scan must be
+    # safe regardless of whether queued DOWN or scan request is handled first.
+    :ok = :sys.suspend(store)
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Nano.AgentSupervisor)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Nano.AgentSupervisor)
+    assert NanoAgent.whereis(name) == nil
+    :ok = :sys.resume(store)
+    :ok = NanoAgent.revive(Nano.AgentSupervisor)
+    recovered = NanoAgent.whereis(name)
+    assert is_pid(recovered)
+    assert :sys.get_state(recovered).id == state.id
+    assert :sys.get_state(recovered).bindings[:retained] == 654
+  end
+
+  test "recovery death never reloads tombstoned or corrupt pair", c do
+    for mode <- [:deleted, :corrupt] do
+      a = agent(c, Atom.to_string(mode))
+      state = :sys.get_state(a.pid)
+      :ok = :sys.suspend(a.pid)
+      :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+      {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Store)
+      assert Store.get(a.name) == nil
+
+      if mode == :deleted do
+        assert :ok = Store.delete(a.name)
+      else
+        File.write!(
+          Path.join(Application.fetch_env!(:nano, :state_dir), a.name <> ".envelope-v1"),
+          "corrupt"
+        )
+      end
+
+      Process.exit(a.pid, :kill)
+      eventually(fn -> not Process.alive?(a.pid) end)
+      rows = Store.all()
+      refute Enum.any?(rows, &(&1.name == a.name))
+      eventually(fn -> NanoAgent.whereis(a.name) == nil end)
+      assert Store.binding_status(a.name) == :unavailable
+
+      if mode == :deleted do
+        assert {:error, :deleted} = Store.register(a.name, state.id, self())
+      else
+        assert {:error, :recovery_unavailable} = Store.register(a.name, state.id, self())
+      end
+    end
+  end
+
+  test "named replacement at pre-init scheduling boundary is not mistaken for an established resaver" do
+    Fake.start()
+    name = "r3-replacement-inventory"
+    {:ok, pid} = NanoAgent.start([name: name] ++ Fake.opts(Fake.model()))
+
+    :sys.replace_state(pid, fn s ->
+      Map.put(%{s | bindings: [retained: 987]}, :bindings_dirty, true)
+    end)
+
+    GenServer.cast(pid, :resave)
+    state = :sys.get_state(pid)
+    :ok = DynamicSupervisor.terminate_child(Nano.AgentSupervisor, pid)
+    observer = self()
+
+    task =
+      Task.async(fn ->
+        DynamicSupervisor.start_child(
+          Nano.AgentSupervisor,
+          {Nano.Flywheel.U05.BarrierAgent, {[name: name, id: state.id], observer}}
+        )
+      end)
+
+    assert_receive {:name_registered, replacement}, 5000
+    assert NanoAgent.whereis(name) == replacement
+    :ok = Supervisor.terminate_child(Nano.Supervisor, Store)
+    {:ok, _} = Supervisor.restart_child(Nano.Supervisor, Store)
+    assert Store.get(name) == nil
+    send(replacement, :release_init)
+    result = Task.await(task, 5000)
+    Process.sleep(100)
+
+    IO.puts(
+      "R3_REPLACEMENT_INIT_RESULT " <>
+        inspect(%{start: result, pid: NanoAgent.whereis(name), ack: Store.durability(name)})
+    )
+
+    # Barrier is only scheduling instrumentation. Production NanoAgent.init/1 ran above.
+    assert {:ok, recovered} = result
+    assert :sys.get_state(recovered).id == state.id
+    assert :sys.get_state(recovered).bindings[:retained] == 987
+    DynamicSupervisor.terminate_child(Nano.AgentSupervisor, recovered)
+    Store.delete(name)
   end
 end

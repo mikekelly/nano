@@ -20,6 +20,13 @@ defmodule Nano.StateStore do
   def get(name), do: lookup(name, nil)
 
   def all do
+    case call(:all) do
+      rows when is_list(rows) -> rows
+      _ -> []
+    end
+  end
+
+  defp table_all do
     :ets.select(@table, [{{:"$1", :"$2"}, [{:is_binary, :"$1"}], [:"$2"]}])
   rescue
     ArgumentError -> []
@@ -344,6 +351,12 @@ defmodule Nano.StateStore do
     end
   end
 
+  def handle_call(:all, _from, s) do
+    # Scan barrier reconciles deaths even when DOWN has not reached this mailbox.
+    s = Enum.reduce(s.recovering, s, fn name, acc -> restore_dead_resaver(acc, name) end)
+    {:reply, table_all(), s}
+  end
+
   def handle_call(:load, _from, s), do: {:reply, :ok, s}
 
   def handle_call({:compat_put, name, map}, {caller, _}, s) do
@@ -397,7 +410,17 @@ defmodule Nano.StateStore do
     end
   end
 
-  def handle_call({:watch, name, pid}, _from, s) do
+  def handle_call({:watch, name, pid}, from, s) do
+    if MapSet.member?(s.recovering, name) and recovering_other_alive?(s, name, pid) do
+      {:reply, {:error, :incarnation_active}, s}
+    else
+      watch_reply(name, pid, from, s)
+    end
+  end
+
+  def handle_call(_, _from, s), do: {:reply, {:error, :unknown_call}, s}
+
+  defp watch_reply(name, pid, _from, s) do
     # Record a dead predecessor before attaching, without a synchronous store->agent call.
     s =
       case s.watched[name] do
@@ -431,12 +454,14 @@ defmodule Nano.StateStore do
     {:reply, :ok, %{s | watched: watched}}
   end
 
-  def handle_call(_, _from, s), do: {:reply, {:error, :unknown_call}, s}
-
   defp register_identity(s, name, id, pid, epoch) do
     # A dead resaver cannot provide its live map. Recover only its last coherent
     # identity/generation-bound pair; never expose another still-live resaver's row.
-    s = restore_dead_resaver(s, name)
+    s =
+      if epoch == nil,
+        do: restore_dead_resaver(s, name, pid, id),
+        else: restore_dead_resaver(s, name)
+
     current = s.authority[name]
     registered = s.registrations[name]
 
@@ -454,6 +479,9 @@ defmodule Nano.StateStore do
         {{:ok, registered}, s}
 
       registered != nil and Process.alive?(registered.pid) ->
+        {{:error, :incarnation_active}, s}
+
+      MapSet.member?(s.recovering, name) and recovering_other_alive?(s, name, pid) ->
         {{:error, :incarnation_active}, s}
 
       current != nil and current.status == :active and current.id == id and get(name) == nil and
@@ -745,14 +773,31 @@ defmodule Nano.StateStore do
     s
   end
 
-  defp restore_dead_resaver(s, name) do
+  defp recovering_other_alive?(s, name, claimant) do
+    case s.watched[name] do
+      {_, pid} when pid != claimant -> Process.alive?(pid)
+      _ -> false
+    end
+  end
+
+  defp restore_dead_resaver(s, name, initializing_pid \\ nil, initializing_id \\ nil) do
     alive =
       case s.watched[name] do
         {_, pid} -> Process.alive?(pid)
         _ -> false
       end
 
-    if not s.degraded and MapSet.member?(s.recovering, name) and not alive do
+    initializing =
+      case {s.watched[name], s.authority[name]} do
+        {{_, ^initializing_pid}, %{status: :active, id: ^initializing_id}}
+        when initializing_pid != nil ->
+          true
+
+        _ ->
+          false
+      end
+
+    if not s.degraded and MapSet.member?(s.recovering, name) and (not alive or initializing) do
       case s.authority[name] do
         %{status: :active} = a ->
           case coherent_disk(name, a) do
@@ -896,7 +941,7 @@ defmodule Nano.StateStore do
   def code_change(:pre_u05, watched, {:u05_upgrade, max_agents})
       when is_map(watched) and is_integer(max_agents) and max_agents in 1..10_000 do
     live = for {{:agent, name}, pid} <- Nano.Names.all(), do: {name, pid}
-    entries = all()
+    entries = table_all()
     {authority, degraded} = read_authority()
 
     cond do
@@ -1026,6 +1071,7 @@ defmodule Nano.StateStore do
   def handle_info({:DOWN, ref, :process, pid, reason}, s) do
     case Enum.find(s.watched, fn {_, {r, _}} -> r == ref end) do
       {name, _} ->
+        s = restore_dead_resaver(s, name)
         record(name, pid, reason)
         {:noreply, %{s | watched: Map.delete(s.watched, name)}}
 

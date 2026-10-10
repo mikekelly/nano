@@ -114,3 +114,6 @@ compatible integration base; obtain fresh nonauthor workflow review. Before any 
 preserve latest authority and evidence, rehearse applicable migration in disposable VM,
 verify effective private paths, and obtain the compatible conversion decision. Only parent
 integrates/loads/verifies/announces/closes. No deployed/live/done claim is made here.
+
+### Actual coordinating eval / own-parent proof
+Opt-in disposable driver `mix run --no-start test/flywheel/u05/self_parent_upgrade.exs` starts exact old Store/Agent code and drives a real model-to-eval production task. That task suspends its own agent callback and Store, loads compatible code, encounters authority commit-before-ack failure, retains suspension/latest authority bytes, retries compatible conversion, resumes Store then its own parent before returning. The parent then commits returned binding/evidence without changing PID/identity. This tested recoverable-error path is not permission for unconditional resume after irrecoverable conversion error; keep actors quiescent and use the independently reviewed maintenance lane. Never run this driver in the normal suite or shared node. Attributed original proof: fresh reviewer altair-u05-review-r3, review-r3-run/self_parent.exs.
