@@ -101,7 +101,7 @@ defmodule NanoWeb.AgentLive do
     name = socket.assigns.name
     agent = Nano.Ops.agent(name)
     spawned = for %{kind: {:spawned_by, ^name}} = row <- Nano.Ops.processes(), do: row
-    socket = assign(socket, agent: agent, spawned: spawned)
+    socket = assign(socket, agent: agent, spawned: spawned, goals_review: Goals.review(name))
 
     if agent && agent.id != socket.assigns.id && connected?(socket),
       do: load(socket, agent.id),
@@ -181,6 +181,10 @@ defmodule NanoWeb.AgentLive do
     </header>
     <div class="layout">
       <main>
+        <section id="agent-goals">
+          <h2>Goals</h2>
+          <pre>{@goals_review}</pre>
+        </section>
         <section :if={@agent} class="bar">
           <dl>
             <div>
