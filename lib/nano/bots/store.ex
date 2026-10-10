@@ -100,9 +100,14 @@ defmodule Nano.Bots.Store do
       try do
         Phoenix.PubSub.broadcast(state.pubsub, "bots", message)
 
-        if record[:session_id],
-          do:
-            Phoenix.PubSub.broadcast(state.pubsub, "bots:session:" <> record.session_id, message)
+        session_id =
+          record[:session_id] ||
+            if(event in [:session_created, :session_updated, :session_deleted, :session_stopped],
+              do: record.id
+            )
+
+        if session_id,
+          do: Phoenix.PubSub.broadcast(state.pubsub, "bots:session:" <> session_id, message)
       rescue
         _ -> :ok
       end
@@ -299,6 +304,9 @@ defmodule Nano.Bots.Store do
           )
 
         cond do
+          String.starts_with?(a.idempotency_key, ["request-answer:", "request-question:"]) ->
+            {:error, :reserved_key}
+
           old != nil ->
             same =
               old.actor == actor and old.text == a.text and
@@ -392,7 +400,24 @@ defmodule Nano.Bots.Store do
               })
             )
 
-          write(d, :requests, r, :request_created)
+          sequence = next_sequence(d, s.id)
+
+          m =
+            record(%{
+              session_id: s.id,
+              sequence: sequence,
+              actor: {:bot, r.bot_id},
+              text: r.text,
+              attachments: [],
+              epoch: s.epoch,
+              idempotency_key: "request-question:" <> r.id,
+              request_id: r.id
+            })
+
+          r = Map.put(r, :message_id, m.id)
+
+          {:write, r, d |> put(:requests, r) |> put(:messages, m),
+           [{:message_created, m}, {:request_created, r}]}
         else
           {:error, :invalid}
         end
@@ -412,17 +437,25 @@ defmodule Nano.Bots.Store do
           if q.answer == text, do: {:read, {:ok, q}}, else: {:error, :already_answered}
 
         true ->
-          case execute(
-                 :post_human,
-                 [q.session_id, %{text: text, idempotency_key: "request-answer:" <> id}],
-                 d
-               ) do
-            {:write, m, data, events} ->
-              q = %{q | status: :answered, answer: text} |> Map.put(:answer_message_id, m.id)
-              {:write, q, put(data, :requests, q), events ++ [{:request_answered, q}]}
+          with {:ok, s} <- fetch(d, :sessions, q.session_id) do
+            s = %{s | epoch: s.epoch + 1, stopped: false, exchange_count: 0}
 
-            error ->
-              error
+            m =
+              record(%{
+                session_id: s.id,
+                sequence: next_sequence(d, s.id),
+                actor: :human,
+                text: text,
+                attachments: [],
+                epoch: s.epoch,
+                idempotency_key: "request-answer:" <> id,
+                request_id: id
+              })
+
+            q = %{q | status: :answered, answer: text} |> Map.put(:answer_message_id, m.id)
+
+            {:write, q, d |> put(:sessions, s) |> put(:messages, m) |> put(:requests, q),
+             [{:message_created, m}, {:request_answered, q}]}
           end
       end
     end
@@ -496,4 +529,10 @@ defmodule Nano.Bots.Store do
   end
 
   defp execute(_, _, _), do: {:error, :invalid}
+
+  defp next_sequence(d, id),
+    do:
+      Enum.reduce(Map.values(d.messages), 0, fn m, n ->
+        if m.session_id == id, do: max(m.sequence, n), else: n
+      end) + 1
 end
