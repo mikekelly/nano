@@ -120,6 +120,58 @@ defmodule AttentionTest do
     Nano.Attention.before_request(fallback, decision: fn _ -> flunk("disabled drift called") end)
   end
 
+  test "image-rich activity triggers both note distance and drift interval", c do
+    assert {:ok, _} = FrontMind.set(c.name, "Inspect the attached images")
+
+    assert {:ok, _} =
+             FrontMind.configure(c.name,
+               drift: true,
+               drift_interval_tokens: 16000,
+               threshold_tokens: 8000
+             )
+
+    s = Nano.StateStore.get(c.name)
+
+    first =
+      Nano.Attention.before_request(
+        %{s | transcript: [%{"role" => "user", "content" => "start"}]},
+        decision: fn _ -> flunk("too early") end
+      )
+
+    image = %{
+      "role" => "user",
+      "content" => [
+        %{"type" => "image_ref", "image_ref" => %{"hash" => String.duplicate("b", 64)}}
+      ]
+    }
+
+    grown = %{first | transcript: first.transcript ++ List.duplicate(image, 4)}
+
+    second =
+      Nano.Attention.before_request(grown,
+        decision: fn state ->
+          assert state.note == "Inspect the attached images"
+          assert String.length(state.recent_activity) <= 3000
+          {:ok, 0.2}
+        end
+      )
+
+    assert length(second.transcript) == length(grown.transcript) + 1
+    assert second.attention_drift.probability == 0.2
+    entries = Nano.Log.read(s.id)
+
+    assert Enum.any?(
+             entries,
+             &(&1["kind"] == "drift_judgement" and &1["distance_tokens"] >= 19200)
+           )
+
+    assert Enum.any?(
+             entries,
+             &(&1["kind"] == "context_bob" and &1["reason"] == "distance" and
+                 &1["distance_tokens"] >= 19200)
+           )
+  end
+
   test "goals are independently bobbed and disabled", c do
     assert {:ok, goal} =
              Goals.add(c.name, "Test harness",
