@@ -138,7 +138,8 @@ defmodule Nano.ToolsTest do
     assert r.cut
     assert byte_size(r.text) <= 16000
     assert r.next_offset == length(r.entries)
-    assert String.contains?(r.continuation, "500")
+    assert r.lines_truncated
+    assert Enum.any?(r.notices, &String.contains?(&1, "500"))
     File.write!(path, String.duplicate("needle\n", 105))
 
     assert {:ok, %{entries: matches, cut: true, next_offset: 100}} =
@@ -181,5 +182,87 @@ defmodule Nano.ToolsTest do
     assert byte_size(r.text) <= 100
     assert length(String.split(r.text, "\n")) <= 5
     assert File.stat!(r.path).size == 70000
+  end
+
+  test "ignore-aware files and relative search paths", %{dir: dir} do
+    File.mkdir_p!(Path.join(dir, "nested"))
+    File.mkdir_p!(Path.join(dir, ".git"))
+    File.write!(Path.join(dir, ".gitignore"), "ignored*\n")
+    File.write!(Path.join(dir, "ignored.txt"), "needle\n")
+    File.write!(Path.join(dir, ".hidden"), "needle\n")
+    File.write!(Path.join(dir, ".git/secret"), "needle\n")
+    File.write!(Path.join(dir, "nested/a.txt"), "needle\n")
+    assert {:ok, r} = Nano.Tools.find("**/*", cwd: dir)
+    assert ".hidden" in r.entries
+    refute "ignored.txt" in r.entries
+    refute ".git/secret" in r.entries
+    assert {:ok, r} = Nano.Tools.find("**/*", cwd: dir, include_ignored: true)
+    assert "ignored.txt" in r.entries
+    assert {:ok, r} = Nano.Tools.grep("needle", path: dir)
+    assert Enum.sort(r.entries) == [".hidden:1: needle", "nested/a.txt:1: needle"]
+    assert {:ok, r} = Nano.Tools.grep("needle", path: dir, include_ignored: true)
+    assert "ignored.txt:1: needle" in r.entries
+
+    assert {:ok, %{entries: ["a.txt:1: needle"]}} =
+             Nano.Tools.grep("needle", path: Path.join(dir, "nested/a.txt"))
+  end
+
+  test "precise cuts, zero progress errors and EOF offset", %{dir: dir} do
+    File.write!(Path.join(dir, "long-entry"), "normal match\n")
+    assert {:error, message} = Nano.Tools.ls(dir, max_bytes: 1)
+    assert message =~ "increase max_bytes"
+    assert {:error, _} = Nano.Tools.find("*", cwd: dir, max_bytes: 1)
+    assert {:error, _} = Nano.Tools.grep("match", path: dir, max_bytes: 1)
+    assert {:ok, r} = Nano.Tools.grep("match", path: dir)
+    refute r.lines_truncated
+    assert r.notices == []
+    assert r.continuation == nil
+    assert {:error, message} = Nano.Tools.read(Path.join(dir, "long-entry"), offset: 2)
+    assert message =~ "1 lines"
+    File.write!(Path.join(dir, "empty"), "")
+    assert {:ok, %{text: "", cut: false}} = Nano.Tools.read(Path.join(dir, "empty"))
+    assert {:error, _} = Nano.Tools.read(Path.join(dir, "empty"), offset: 2)
+  end
+
+  test "bounded giant lines, binary skips, valid tail text", %{dir: dir} do
+    File.write!(Path.join(dir, "giant"), "needle " <> String.duplicate("x", 20000))
+    assert {:error, message} = Nano.Tools.grep("needle", path: dir, max_line_bytes: 1000)
+    assert message =~ "single line exceeds"
+    assert {:ok, r} = Nano.Tools.grep("needle", path: dir, max_line_bytes: 30000)
+    assert r.lines_truncated
+
+    assert r.notices == [
+             "Some matching lines truncated to 500 characters; use read for full lines"
+           ]
+
+    File.rm!(Path.join(dir, "giant"))
+    File.write!(Path.join(dir, "nul"), <<0, "needle\n">>)
+    File.write!(Path.join(dir, "invalid"), <<255, "needle\n">>)
+    File.write!(Path.join(dir, "valid"), "needle αβγ\n")
+    assert {:ok, r} = Nano.Tools.grep("needle", path: dir)
+    assert r.binary_files_skipped == 2
+    assert r.entries == ["valid:1: needle αβγ"]
+    path = Path.join(dir, "invalid")
+    assert {:ok, r} = Nano.Tools.tail(path, max_bytes: 10)
+    assert r.encoding_replaced
+    assert String.valid?(r.text)
+    assert byte_size(r.text) <= 10
+    File.write!(path, "αβγδ")
+    assert {:ok, r} = Nano.Tools.tail(path, max_bytes: 5)
+    assert String.valid?(r.text)
+    assert byte_size(r.text) <= 5
+    assert r.cut
+  end
+
+  test "search offsets cross files without retaining skipped matches", %{dir: dir} do
+    File.write!(Path.join(dir, "a"), String.duplicate("needle\n", 1000))
+    File.write!(Path.join(dir, "b"), "needle " <> String.duplicate("α", 700) <> "\n")
+
+    assert {:ok, %{entries: [entry], cut: false, lines_truncated: true}} =
+             Nano.Tools.grep("needle", path: dir, offset: 1000, limit: 1)
+
+    assert entry == "b:1: needle " <> String.duplicate("α", 493)
+    assert {:ok, %{entries: [], cut: false}} = Nano.Tools.grep("needle", path: dir, offset: 1001)
+    assert {:error, _} = Nano.Tools.grep("needle", path: dir, offset: -1)
   end
 end
