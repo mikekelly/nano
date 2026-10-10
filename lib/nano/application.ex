@@ -28,6 +28,7 @@ defmodule Nano.Application do
           Nano.Settings,
           Nano.StateStore,
           Delegation.Monitor,
+          Nano.Bots.Store,
           Nano.MCP.Supervisor,
           {Task.Supervisor, name: Nano.EvalSupervisor},
           # Holds the ChatGPT subscription's tokens; its init cannot fail, so it cannot stop the boot.
@@ -36,6 +37,7 @@ defmodule Nano.Application do
           Nano.OpenRouter.Auth,
           %{id: Nano.AgentSupervisor, start: {__MODULE__, :start_agents, []}, type: :supervisor},
           %{id: Nano.UserSupervisor, start: {__MODULE__, :start_users, []}, type: :supervisor},
+          Nano.Bots.Runtime,
           NanoWeb.Endpoint
         ],
         &retrying/1
