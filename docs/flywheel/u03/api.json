@@ -62,7 +62,11 @@
     ":integration_parent_mismatch",
     ":integration_content_mismatch",
     ":corrupt_state",
-    ":stale_stage_proof"
+    ":stale_stage_proof",
+    ":recovery_not_eligible",
+    ":recovery_pin_required",
+    ":recovery_proposal_mismatch",
+    ":integration_identity_conflict"
   ],
   "functions": [
     "start_link/1",
@@ -99,6 +103,13 @@
   },
   "map_keys": "atoms",
   "module": "Nano.Flywheel",
+  "recover_land": {
+    "cancel": "normal newaccept or freshattempt cancels active recovery receipt, history retained",
+    "operation": "integration/4 action {:recover_land, candidate, evidence}",
+    "receipt": "immutable prior accept pin + original proposal + source reservation retained through adoption",
+    "gate": "current reservation, no active acceptance, unchanged proposal, no conflicting integrated identity; same exact candidate validation with historical parent base",
+    "effects": "durable integrated proof with recovery generations/provenance; no Git reset/cherry-pick"
+  },
   "reservation": [
     "unit",
     "proposal_id",
@@ -113,14 +124,14 @@
   "schema_version": 1,
   "serialization": "Erlang external term",
   "stage_binding": {
-    "bootstrap": "explicit captured original-record reconciliation only",
-    "revision": "deployed/live_verified/announced bind integrated commit",
     "attempt": [
       "claim_token",
       "dispatch_generation",
       "unit_sha256"
     ],
-    "fresh_claim": "archive and clear proofs/proposal/dispatch; no inheritance"
+    "bootstrap": "explicit captured original-record reconciliation only",
+    "fresh_claim": "archive and clear proofs/proposal/dispatch; no inheritance",
+    "revision": "deployed/live_verified/announced bind integrated commit"
   },
   "startup": "explicit parent-only, reconciliation required",
   "worker_token": [

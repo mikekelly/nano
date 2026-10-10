@@ -644,11 +644,17 @@ defmodule Nano.Flywheel do
           owner_generation: s.data.owner_generation
       }
 
+      recovery =
+        if u[:acceptance] != nil,
+          do: %{pin: u.acceptance, proposal: u.proposal, source_reservation: u.reservation},
+          else: u[:recovery_pin]
+
       u = interrupt(u, :adopted)
 
       u =
         %{u | reservation: r, integration_generation: r.integration_generation, accepted: false}
         |> Map.put(:acceptance, nil)
+        |> Map.put(:recovery_pin, recovery)
 
       {:ok, put_unit(s.data, id, u), r, :active}
     end
@@ -674,7 +680,7 @@ defmodule Nano.Flywheel do
                {:ok, original} <-
                  git_read(s.repository, ["rev-parse", u.proposal.commit <> "^{commit}"]),
                true <- original == u.proposal.commit || {:error, :invalid_commit} do
-            u = %{u | accepted: true} |> Map.put(:acceptance, pin)
+            u = %{u | accepted: true} |> Map.put(:acceptance, pin) |> Map.put(:recovery_pin, nil)
 
             u =
               unit_history(u, %{
@@ -690,6 +696,50 @@ defmodule Nano.Flywheel do
             data = put_unit(s.data, r.unit, u)
 
             {:ok, data, :accepted, :active}
+          end
+
+        {:recover_land, commit, ev} ->
+          recovery = u[:recovery_pin]
+
+          with true <-
+                 (not u.accepted and u[:acceptance] == nil) || {:error, :recovery_not_eligible},
+               true <- is_map(recovery) || {:error, :recovery_pin_required},
+               true <- recovery.proposal == u.proposal || {:error, :recovery_proposal_mismatch},
+               true <-
+                 (u.stages[:integrated] == nil or u.stages.integrated.commit == commit) ||
+                   {:error, :integration_identity_conflict},
+               :ok <- hash(commit),
+               :ok <- evidence(ev),
+               :ok <- landed_candidate(s, u, commit, recovery.pin) do
+            stage = %{
+              commit: commit,
+              evidence: Data.normalize(ev),
+              recovery: recovery,
+              owner_generation: a.owner_generation,
+              integration_generation: r.integration_generation
+            }
+
+            u = %{u | stages: Map.put(u.stages, :integrated, stage)}
+
+            u =
+              Map.put(
+                u,
+                :stage_bindings,
+                Map.put(u[:stage_bindings] || %{}, :integrated, stage_binding(u, :integrated))
+              )
+
+            u =
+              unit_history(u, %{
+                id: "recover-land-#{r.integration_generation}-#{commit}",
+                kind: :integration_recovered,
+                by: a.owner,
+                at: now(),
+                prior_pin: recovery,
+                current_reservation: r,
+                commit: commit
+              })
+
+            {:ok, put_unit(s.data, r.unit, u), :integrated, :active}
           end
 
         {:land, commit, ev} ->
@@ -1124,7 +1174,8 @@ defmodule Nano.Flywheel do
         prior_stages: u.stages,
         prior_attempt: u[:attempt],
         prior_bindings: u[:stage_bindings],
-        prior_bootstrap: u[:bootstrap_reconciled]
+        prior_bootstrap: u[:bootstrap_reconciled],
+        prior_recovery_pin: u[:recovery_pin]
       })
 
     %{
@@ -1135,6 +1186,7 @@ defmodule Nano.Flywheel do
         stages: Map.take(u.stages, [:external_blockers, :external_resolutions, :serious_findings])
     }
     |> Map.put(:acceptance, nil)
+    |> Map.put(:recovery_pin, nil)
     |> Map.put(:attempt, nil)
     |> Map.put(:stage_bindings, %{})
     |> Map.put(:bootstrap_reconciled, nil)
@@ -1402,9 +1454,9 @@ defmodule Nano.Flywheel do
     end
   end
 
-  defp landed_candidate(s, u, commit) do
-    pin = u[:acceptance]
+  defp landed_candidate(s, u, commit), do: landed_candidate(s, u, commit, u[:acceptance])
 
+  defp landed_candidate(s, u, commit, pin) do
     with true <- is_map(pin) || {:error, :acceptance_required},
          true <- pin.repository == s.repository || {:error, :integration_repository_mismatch},
          {:ok, current} <- acceptance_pin(s),

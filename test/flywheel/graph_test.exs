@@ -343,6 +343,8 @@ defmodule Nano.Flywheel.GraphTest do
     assert retry_unit.acceptance == nil
     r = retry
     assert {:ok, :accepted} = F.integration(s, a, r, :accept)
+    {:ok, repinned} = F.unit(s, "A")
+    assert repinned.recovery_pin == nil
     git(c.repo, ["cherry-pick", p.commit])
     candidate = git(c.repo, ["rev-parse", "HEAD"])
     refute candidate == p.commit
@@ -864,6 +866,11 @@ defmodule Nano.Flywheel.GraphTest do
     assert {:error, :git_diff_failed} =
              F.integration(s, a, r, {:land, candidate, :manual_resolution_not_reviewed})
 
+    {:ok, recovery} = F.adopt(s, a, "A", p.id)
+
+    assert {:error, :git_diff_failed} =
+             F.integration(s, a, recovery, {:recover_land, candidate, :unreviewed_conflict})
+
     {:ok, unchanged} = F.unit(s, "A")
     assert unchanged.stages[:integrated] == nil
     refute unchanged.done
@@ -888,6 +895,127 @@ defmodule Nano.Flywheel.GraphTest do
     {:ok, memory} = F.snapshot(s)
     assert memory.owner_generation == a.owner_generation
     assert memory.units["A"].claim.claim_generation != 999
+  end
+
+  test "U03-A2 commit-before-land restart adopts and recovers immutable accepted pin without repeating Git integration",
+       c do
+    p = fixture(c)
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [%{description("A", [scope("new.ex")]) | base_commit: p.base_commit}])
+    {:ok, t} = claim(s, "A")
+    p = prepared_proposal(s, a, t, p)
+    {:ok, r} = F.submit(s, t, p)
+    git(c.repo, ["reset", "--hard", p.base_commit])
+    File.write!(Path.join(c.repo, "prior"), "prior integration")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "prior"])
+    base = git(c.repo, ["rev-parse", "HEAD"])
+    {:ok, :accepted} = F.integration(s, a, r, :accept)
+    git(c.repo, ["cherry-pick", p.commit])
+    candidate = git(c.repo, ["rev-parse", "HEAD"])
+    refute candidate == p.commit
+
+    assert {:error, :recovery_not_eligible} =
+             F.integration(s, a, r, {:recover_land, candidate, :not_adopted})
+
+    GenServer.stop(s)
+    # The actual candidate is already committed; recovery never resets or cherry-picks again.
+    restored = start(c)
+    a2 = reconcile(restored, a.owner_generation)
+    {:ok, fresh} = F.adopt(restored, a2, "A", p.id)
+    {:ok, pending} = F.unit(restored, "A")
+    refute pending.accepted
+    assert pending.acceptance == nil
+    assert pending.recovery_pin.pin == %{repository: c.repo, base_commit: base}
+    assert pending.recovery_pin.source_reservation == r
+    assert pending.recovery_pin.proposal.author_token == t
+
+    assert {:error, :stale_reservation} =
+             F.integration(restored, a2, r, {:recover_land, candidate, :proof})
+
+    assert {:error, :not_accepted} =
+             F.integration(restored, a2, fresh, {:land, candidate, :proof})
+
+    assert {:error, :integration_head_mismatch} =
+             F.integration(
+               restored,
+               a2,
+               fresh,
+               {:recover_land, String.duplicate("f", 40), :proof}
+             )
+
+    before = git(c.repo, ["rev-parse", "HEAD"])
+
+    assert {:ok, :integrated} =
+             F.integration(
+               restored,
+               a2,
+               fresh,
+               {:recover_land, candidate, %{recovery: :exact_commit_gap}}
+             )
+
+    assert git(c.repo, ["rev-parse", "HEAD"]) == before
+    assert git(c.repo, ["status", "--porcelain"]) == ""
+    {:ok, recovered} = F.unit(restored, "A")
+    assert recovered.stages.integrated.commit == candidate
+    assert recovered.stages.integrated.owner_generation == a2.owner_generation
+    assert recovered.stages.integrated.integration_generation == fresh.integration_generation
+    assert recovered.stages.integrated.recovery == pending.recovery_pin
+    refute recovered.done
+
+    for stage <- [:implemented, :tested, :reviewed, :deployed, :live_verified, :announced],
+        do:
+          assert({:ok, ^stage} = F.record_stage(restored, a2, "A", stage, %{revision: candidate}))
+
+    assert {:ok, :done} = F.close(restored, a2, "A")
+  end
+
+  test "U03-A3 recovery pin cannot authorize wrong content changed base or conflicting identity",
+       c do
+    p = fixture(c)
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [%{description("A", [scope("new.ex")]) | base_commit: p.base_commit}])
+    {:ok, t} = claim(s, "A")
+    p = prepared_proposal(s, a, t, p)
+    {:ok, r} = F.submit(s, t, p)
+    git(c.repo, ["reset", "--hard", p.base_commit])
+    {:ok, :accepted} = F.integration(s, a, r, :accept)
+    {:ok, fresh} = F.adopt(s, a, "A", p.id)
+    {:ok, again} = F.adopt(s, a, "A", p.id)
+
+    assert {:error, :stale_reservation} =
+             F.integration(s, a, fresh, {:recover_land, p.commit, :proof})
+
+    {:ok, u} = F.unit(s, "A")
+    assert u.recovery_pin.source_reservation == r
+    File.write!(Path.join(c.repo, "new.ex"), "wrong content")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "wrong candidate"])
+    wrong = git(c.repo, ["rev-parse", "HEAD"])
+
+    assert {:error, :integration_content_mismatch} =
+             F.integration(s, a, again, {:recover_land, wrong, :proof})
+
+    File.write!(Path.join(c.repo, "new.ex"), "new")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "changed base"])
+    changed_base = git(c.repo, ["rev-parse", "HEAD"])
+
+    assert {:error, :integration_parent_mismatch} =
+             F.integration(s, a, again, {:recover_land, changed_base, :proof})
+
+    git(c.repo, ["reset", "--hard", p.commit])
+    assert {:ok, :integrated} = F.integration(s, a, again, {:recover_land, p.commit, :proof})
+    git(c.repo, ["commit", "--amend", "-qm", "different recorded identity"])
+    conflicting = git(c.repo, ["rev-parse", "HEAD"])
+
+    assert {:error, :integration_identity_conflict} =
+             F.integration(s, a, again, {:recover_land, conflicting, :proof})
+
+    {:ok, preserved} = F.unit(s, "A")
+    assert preserved.stages.integrated.commit == p.commit
   end
 
   defp prepare_artifact(s, a, id) do
