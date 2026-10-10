@@ -246,7 +246,7 @@ defmodule Nano.MCP.HTTPTest do
           "_meta" => %{"io.modelcontextprotocol/protocolVersion" => "2026-07-28"}
         }
       },
-      %{"Mcp-Param-Region" => " padded "}
+      %{"Mcp-Param-Region" => HTTP.encode_header(" padded ")}
     )
 
     assert_receive {:request, "POST", headers, _}, 2000
@@ -322,6 +322,60 @@ defmodule Nano.MCP.HTTPTest do
 
     assert Process.alive?(pid)
     HTTP.stop(pid)
+  end
+
+  test "config rejects malformed headers and sys status redacts transport secrets" do
+    Process.flag(:trap_exit, true)
+
+    for headers <- [
+          [],
+          %{"authorization" => ["secret"]},
+          %{1 => "secret"},
+          %{"bad\nname" => "secret"},
+          %{"authorization" => "secret\r\nInjected: true"}
+        ] do
+      assert {:error, :invalid_transport_config} =
+               HTTP.start_link(self(), %{"url" => "http://127.0.0.1:1/mcp", "headers" => headers})
+    end
+
+    assert {:error, :invalid_transport_config} = HTTP.start_link(self(), %{"url" => 42})
+
+    {:ok, pid} =
+      HTTP.start_link(self(), %{
+        "url" => "http://127.0.0.1:1/mcp",
+        "headers" => %{"authorization" => "super-secret-test-token"}
+      })
+
+    refute inspect(:sys.get_status(pid)) =~ "super-secret-test-token"
+    HTTP.send_message(pid, %{"id" => 1, "method" => "server/discover"})
+    assert_receive {:mcp_transport, ^pid, {:down, {:http_error, :request_failed}}}, 2000
+  end
+
+  test "invalid request metadata is sanitized without a credential-bearing crash" do
+    {:ok, pid} =
+      HTTP.start_link(self(), %{
+        "url" => "http://127.0.0.1:1/mcp",
+        "headers" => %{"authorization" => "super-secret-test-token"}
+      })
+
+    HTTP.send_message(pid, %{"id" => 1, "method" => "tools/call", "params" => %{"name" => %{}}})
+    assert_receive {:mcp_transport, ^pid, {:down, :invalid_request}}, 2000
+  end
+
+  test "invalid protocol metadata is rejected before Req can log its value" do
+    {:ok, pid} =
+      HTTP.start_link(self(), %{
+        "url" => "http://127.0.0.1:1/mcp",
+        "headers" => %{"authorization" => "super-secret-test-token"}
+      })
+
+    HTTP.send_message(pid, %{
+      "id" => 1,
+      "method" => "server/discover",
+      "params" => %{"_meta" => %{"io.modelcontextprotocol/protocolVersion" => %{}}}
+    })
+
+    assert_receive {:mcp_transport, ^pid, {:down, :invalid_request}}, 2000
   end
 
   test "HTTP failure is reported without retrying POST" do
