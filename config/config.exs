@@ -13,6 +13,8 @@ config :nano, NanoWeb.Endpoint,
   render_errors: [formats: [json: NanoWeb.Error, html: NanoWeb.Error], layout: false]
 
 config :phoenix, :json_library, Jason
+# Upload bytes must not enter Phoenix debug request parameter logs.
+config :phoenix, :filter_parameters, ["password", "base64"]
 
 config :logger, :default_formatter, format: "$time [$level] $message\n"
 

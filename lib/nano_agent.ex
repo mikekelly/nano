@@ -24,6 +24,7 @@ defmodule NanoAgent do
     * `Delegation`: composed prompts, isolated sub-agents, and durable lifecycle/result events.
     * `Nano.Ops`: everything an operator can do with agents and users; the dashboard and the
       HTTP API are skins over it.
+    * `Nano.Images`: immutable validated image attachments; `look(path, me)` opens a file.
     * `Nano.Model`: which provider serves a model (`Nano.ChatGPT`, `Nano.OpenRouter`) and
       what each model allows.
     * `Nano.Settings`: the node's settings: keys, limits, what new agents' prompts state.
@@ -118,6 +119,7 @@ defmodule NanoAgent do
         template: template,
         prompt_file: file,
         context_window: entry.context_length,
+        input_modalities: entry[:input_modalities] || ["text"],
         max_output: entry[:max_output],
         # Called from an agent's eval: the eval task's first caller is that agent.
         started_by:
@@ -222,6 +224,7 @@ defmodule NanoAgent do
         name: s.name,
         pid: pid,
         model: s.model,
+        input_modalities: Map.get(s, :input_modalities, ["text"]),
         status: s.status,
         retry_at:
           with(:waiting_retry <- s.status, %{at: at} <- s[:retry], do: at, else: (_ -> nil)),
@@ -358,6 +361,9 @@ defmodule NanoAgent do
       bindings: [],
       status: :idle,
       pending: [],
+      pending_images: [],
+      pending_image_delivery: false,
+      input_modalities: opts[:input_modalities] || ["text"],
       halted: nil,
       max_turns: opts[:max_turns],
       max_tokens: opts[:max_tokens],
@@ -522,7 +528,25 @@ defmodule NanoAgent do
   # come from the model's list if it can be had, and the window then caps max_context (which
   # could be 0, no limit); if it cannot, max_context is the ceiling. What the provider last
   # measured is the conversation up to its last response.
-  defp upgrade(%{context_window: _} = s), do: s
+  defp upgrade(%{context_window: _} = s) do
+    s =
+      if Map.has_key?(s, :input_modalities) do
+        s
+      else
+        modalities =
+          with {:ok, entry} <- Nano.Model.lookup(s.model),
+               do: entry[:input_modalities] || ["text"],
+               else: (_ -> ["text"])
+
+        s
+        |> Map.put(:input_modalities, modalities)
+        |> Map.update(:system_prompt, nil, fn prompt ->
+          if prompt, do: prompt <> "\n\n" <> Nano.ImageInput.notice(modalities), else: nil
+        end)
+      end
+
+    s |> Map.put_new(:pending_images, []) |> Map.put_new(:pending_image_delivery, false)
+  end
 
   defp upgrade(s) do
     entry = with {:ok, entry} <- Nano.Model.lookup(s.model), do: entry, else: (_ -> %{})
@@ -532,6 +556,9 @@ defmodule NanoAgent do
 
     Map.merge(s, %{
       context_window: window,
+      input_modalities: entry[:input_modalities] || ["text"],
+      pending_images: Map.get(s, :pending_images, []),
+      pending_image_delivery: Map.get(s, :pending_image_delivery, false),
       max_output: entry[:max_output],
       max_context: if(window && (max == 0 or max > window), do: window, else: max),
       context_used: Map.get(s, :context_used, 0),
@@ -596,9 +623,12 @@ defmodule NanoAgent do
       "result_max_bytes" => stated(s, :result_max_bytes)
     }
 
-    Enum.reduce(vars, s.template, fn {k, v}, acc ->
-      String.replace(acc, "{{#{k}}}", to_string(v))
-    end)
+    rendered =
+      Enum.reduce(vars, s.template, fn {k, v}, acc ->
+        String.replace(acc, "{{#{k}}}", to_string(v))
+      end)
+
+    rendered <> "\n\n" <> Nano.ImageInput.notice(Map.get(s, :input_modalities, ["text"]))
   end
 
   # The template file an agent's prompt comes from, or nil for one given as a string. State
@@ -719,11 +749,21 @@ defmodule NanoAgent do
   def handle_info(msg, s), do: noreply(event(s, msg))
 
   defp event(s, term) do
+    s = upgrade(s)
+    {term, images, image_notice} = Nano.ImageInput.event(term, s.input_modalities)
+    visible = if "image" in s.input_modalities, do: images, else: []
+
+    s = %{
+      s
+      | pending_images: s.pending_images ++ visible,
+        pending_image_delivery: s.pending_image_delivery or images != [] or image_notice != ""
+    }
+
     seq = s.event_seq + 1
 
     {text, truncated, spill} =
       truncate(
-        inspect(term, inspect_opts()),
+        inspect(term, inspect_opts()) <> image_notice,
         stated(s, :result_max_bytes),
         {s.id, "event-#{seq}"}
       )
@@ -754,6 +794,7 @@ defmodule NanoAgent do
       spilled(spill, %{
         event_seq: seq,
         message: text,
+        images: images,
         queue_length: queued,
         truncated: truncated
       })
@@ -831,8 +872,20 @@ defmodule NanoAgent do
             "#{used(b.tokens_used, b.max_tokens, "tokens")}, " <>
             "context #{used(b.context_used, b.max_context, "tokens")}.</harness>"
 
-        user = %{"role" => "user", "content" => Enum.join(s.pending ++ [line], "\n")}
-        next = if new_turn?, do: %{append(s, user) | pending: []}, else: s
+        deliver? = new_turn? or s.pending_image_delivery
+        content = Nano.ImageInput.content(Enum.join(s.pending ++ [line], "\n"), s.pending_images)
+        user = %{"role" => "user", "content" => content}
+
+        next =
+          if deliver?,
+            do: %{
+              append(s, user)
+              | pending: [],
+                pending_images: [],
+                pending_image_delivery: false
+            },
+            else: s
+
         estimate = estimate(next)
         room = b.max_context - estimate
 
@@ -878,9 +931,10 @@ defmodule NanoAgent do
   # The size, as JSON, of the tools and messages of a request: what the estimate scales.
   defp bytes(system_prompt, transcript),
     do:
-      byte_size(
-        Jason.encode!([@tools, %{"role" => "system", "content" => system_prompt} | transcript])
-      )
+      Nano.ImageInput.estimated_bytes([
+        @tools,
+        %{"role" => "system", "content" => system_prompt} | transcript
+      ])
 
   defp context_halt(s, estimate) do
     b = budget(s)
