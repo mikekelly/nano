@@ -155,4 +155,30 @@ defmodule NanoWeb.BotsLiveTest do
              |> LazyHTML.to_tree()
            ) <= 200
   end
+
+  test "uploads a file through shared immutable attachment store and renders download link", %{
+    conn: conn,
+    store: store
+  } do
+    o = [server: store]
+    {:ok, b} = Nano.Bots.create_bot(%{name: "Files"}, o)
+    {:ok, c} = Nano.Bots.create_session(%{participant_ids: [b.id]}, o)
+    {:ok, v, _} = live(conn, "/bots/" <> c.id)
+
+    upload =
+      file_input(v, "#bots-composer", :files, [
+        %{name: "notes.txt", content: "Shared attachment content", type: "text/plain"}
+      ])
+
+    assert render_upload(upload, "notes.txt") =~ "bots-composer"
+    v |> form("#bots-composer", text: "Here are the notes") |> render_submit()
+    {:ok, %{messages: [message]}} = Nano.Bots.list_messages(c.id, o)
+    assert [ref] = message.attachments
+
+    assert {:ok, %{filename: "notes.txt", kind: :file, url: url}} =
+             Nano.Bots.Attachments.metadata(ref)
+
+    assert {:ok, "Shared attachment content", _} = Nano.Bots.Attachments.read(ref)
+    assert has_element?(v, "a[download][href='#{url}']", "notes.txt")
+  end
 end

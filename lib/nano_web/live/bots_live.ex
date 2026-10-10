@@ -157,6 +157,9 @@ defmodule NanoWeb.BotsLive do
     end
   end
 
+  def handle_event("cancel_upload", %{"ref" => ref}, s),
+    do: {:noreply, cancel_upload(s, :files, ref)}
+
   def handle_event("validate", _, s), do: {:noreply, s}
 
   def handle_event("send", %{"text" => text} = p, s) do
@@ -529,6 +532,13 @@ defmodule NanoWeb.BotsLive do
             >Answer this request</button>
           </section>
           <p :if={@answer_id} role="status">Answering the selected request</p>
+          <div :for={entry <- @uploads.files.entries} class="upload-preview">
+            <span>{entry.client_name}</span><progress value={entry.progress} max="100">{entry.progress}%</progress><button
+              phx-click="cancel_upload"
+              phx-value-ref={entry.ref}
+              aria-label={"Remove " <> entry.client_name}
+            >×</button><span :for={error <- upload_errors(@uploads.files, entry)} role="alert">Upload error: {error}</span>
+          </div>
           <form id="bots-composer" phx-submit="send" phx-change="validate" class="bots-composer">
             <input type="hidden" name="message_key" value={@composer_key} /><label
               class="attachment-button"
