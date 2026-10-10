@@ -95,6 +95,7 @@ defmodule Nano.Bots.Agent do
     |> then(fn event -> if images == [], do: event, else: Map.put(event, :images, images) end)
   end
 
+  def requester_incarnation(name), do: NanoAgent.whereis(name)
   def lifecycle(name), do: Delegation.events(name)
   def ack_lifecycle(id), do: Delegation.ack(id)
 

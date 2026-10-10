@@ -7,7 +7,13 @@ defmodule Nano.Bots.Runtime do
   delivery_id before responding. Cursor advances only on acknowledgment. Pages are
   bounded (default 50), never silently skip posts. Pending pages survive restart.
   Human answers arrive as {:bots_human_answer, %{request_id:, answer:, session_id:}};
-  requester deduplicates by request_id and calls ack_human(id). Retry until acknowledged.
+  requester deduplicates by request_id and calls ack_human(id). First delivery is immediate;
+  further sends to the same requester incarnation wait 60 seconds (human_retry_ms:
+  injectable, capped at 60000). A changed requester pid redelivers immediately.
+  Adapter requester_incarnation/1 returns pid/token or nil when offline. Retry metadata
+  is transient, never persisted with pids, and pruned on ack or durable outbox removal.
+  Runtime restart immediately reconciles the durable outbox. human_clock: function/0
+  is an isolated test seam, not a node setting. Missing live-state keys default safely.
   Status events: {:bots, :runtime_status, %{session_id:, bot_id:, status:}}.
   Stop notices: {:bots, :runtime_notice, %{session_id:, epoch:, text:}}; notices are
   persisted in runtime state and available through notices/1 for UI reconciliation.
@@ -88,7 +94,10 @@ defmodule Nano.Bots.Runtime do
       retry_ms: opts[:retry_ms] || 1000,
       memory_opts: opts[:memory_opts] || [],
       agent_parent: opts[:agent_parent] || "bots-runtime-owner",
-      sent: %{}
+      sent: %{},
+      human_deliveries: %{},
+      human_retry_ms: min(60_000, max(1, Keyword.get(opts, :human_retry_ms, 60_000))),
+      human_clock: opts[:human_clock]
     }
 
     send(self(), :tick)
@@ -125,7 +134,16 @@ defmodule Nano.Bots.Runtime do
     {:reply, result, s}
   end
 
-  def handle_call({:ack_human, id}, _, s), do: {:reply, Bots.ack_request(id, server: s.store), s}
+  def handle_call({:ack_human, id}, _, s) do
+    result = Bots.ack_request(id, server: s.store)
+
+    s =
+      if match?({:ok, _}, result),
+        do: Map.put(s, :human_deliveries, Map.delete(Map.get(s, :human_deliveries, %{}), id)),
+        else: s
+
+    {:reply, result, s}
+  end
 
   def handle_call({:ack, id}, _, s) do
     case s.data.pending[id] do
@@ -196,6 +214,13 @@ defmodule Nano.Bots.Runtime do
   end
 
   defp run(s) do
+    # Defaults also cover a live process created before retry hardening was loaded.
+    s =
+      s
+      |> Map.put_new(:human_deliveries, %{})
+      |> Map.put_new(:human_retry_ms, 60_000)
+      |> Map.put_new(:human_clock, nil)
+
     {:ok, sessions} = Bots.list_sessions(server: s.store)
     valid_ids = MapSet.new(Enum.map(sessions, & &1.id))
 
@@ -322,17 +347,49 @@ defmodule Nano.Bots.Runtime do
 
     {:ok, outbox} = Bots.outbox(server: s.store)
 
-    Enum.each(outbox, fn r ->
-      if safe(fn ->
-           s.adapter.notify(
-             r.requester,
-             {:bots_human_answer,
-              Map.take(r, [:session_id, :answer]) |> Map.put(:request_id, r.id)}
-           )
-         end) == :ok, do: Bots.mark_delivery(r.id, server: s.store)
-    end)
+    pending_ids = MapSet.new(Enum.map(outbox, & &1.id))
+    retries = Map.filter(s.human_deliveries, fn {id, _} -> MapSet.member?(pending_ids, id) end)
+    s = %{s | human_deliveries: retries}
+    Enum.reduce(outbox, s, &deliver_human/2)
+  end
 
-    s
+  defp deliver_human(request, s) do
+    incarnation =
+      if Code.ensure_loaded?(s.adapter) and
+           function_exported?(s.adapter, :requester_incarnation, 1),
+         do: safe(fn -> s.adapter.requester_incarnation(request.requester) end),
+         else: :unknown
+
+    now =
+      case s.human_clock do
+        fun when is_function(fun, 0) -> fun.()
+        _ -> System.monotonic_time(:millisecond)
+      end
+
+    previous = Map.get(s.human_deliveries, request.id)
+    due? = is_nil(previous) or previous.incarnation != incarnation or now >= previous.next_at
+
+    if incarnation != nil and not match?({:error, _}, incarnation) and due? do
+      result =
+        safe(fn ->
+          s.adapter.notify(
+            request.requester,
+            {:bots_human_answer,
+             Map.take(request, [:session_id, :answer]) |> Map.put(:request_id, request.id)}
+          )
+        end)
+
+      if result == :ok do
+        Bots.mark_delivery(request.id, server: s.store)
+        # Incarnations may be pids; this metadata is deliberately transient, outside data.
+        retry = %{incarnation: incarnation, next_at: now + s.human_retry_ms}
+        %{s | human_deliveries: Map.put(s.human_deliveries, request.id, retry)}
+      else
+        s
+      end
+    else
+      s
+    end
   end
 
   defp route(session, s) do
