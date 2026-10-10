@@ -230,7 +230,10 @@ defmodule NanoWeb.StartForm do
         </button>
       <% else %>
         <span>not connected</span>
-        <a class="button small" href="/openrouter/connect">Connect OpenRouter</a>
+        <form action="/openrouter/connect" method="post">
+          <input type="hidden" name="_csrf_token" value={Plug.CSRFProtection.get_csrf_token()} />
+          <button class="button small" type="submit">Connect OpenRouter</button>
+        </form>
         <form id="openrouter-key" phx-submit="openrouter_key">
           <input
             type="password"

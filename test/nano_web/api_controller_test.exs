@@ -10,6 +10,7 @@ defmodule NanoWeb.ApiControllerTest do
 
   defp post_json(path, body) do
     build_conn()
+    |> put_req_header("x-nano-api-intent", "mutate")
     |> put_req_header("content-type", "application/json")
     |> post(path, Jason.encode!(body))
   end
@@ -127,8 +128,12 @@ defmodule NanoWeb.ApiControllerTest do
       assert %{"error" => "name is required" <> _} =
                post_json("/api/users", %{name: 7}) |> json_response(422)
 
-      conn = build_conn() |> put_req_header("content-type", "application/json")
-      assert_error_sent 400, fn -> post(conn, "/api/users", "{nope") end
+      conn =
+        build_conn()
+        |> put_req_header("x-nano-api-intent", "mutate")
+        |> put_req_header("content-type", "application/json")
+
+      assert conn |> post("/api/users", "{nope") |> json_response(400)
     end
 
     test "say sends %{sender_pid, message} from the user" do
@@ -193,7 +198,7 @@ defmodule NanoWeb.ApiControllerTest do
       # The inbox request below is a call from this same process, so it arrives after both.
 
       assert [%{"term" => ":one"}, %{"term" => "{:two, 2}"}] =
-               build_conn() |> get("/api/users/#{name}/inbox?clear=true") |> json_response(200)
+               post_json("/api/users/#{name}/inbox/consume", %{}) |> json_response(200)
 
       assert [] = build_conn() |> get("/api/users/#{name}/inbox") |> json_response(200)
     end

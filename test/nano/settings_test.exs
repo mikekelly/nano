@@ -284,6 +284,11 @@ defmodule Nano.SettingsTest do
   test "the API: list, set and clear; 422 and 404 say why" do
     conn = fn method, path, body ->
       build_conn()
+      |> then(fn conn ->
+        if method in [:get, :head, :options],
+          do: conn,
+          else: Plug.Conn.put_req_header(conn, "x-nano-api-intent", "mutate")
+      end)
       |> Plug.Conn.put_req_header("content-type", "application/json")
       |> dispatch(@endpoint, method, path, body && Jason.encode!(body))
     end

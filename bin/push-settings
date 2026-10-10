@@ -28,7 +28,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   [ -n "$value" ] || continue
   json=$(printf '%s' "$value" | sed 's/\\/\\\\/g; s/"/\\"/g')
   out=$(printf '{"value":"%s"}' "$json" |
-    curl -sS -X PUT -H 'content-type: application/json' --data-binary @- -w ' %{http_code}' \
+    curl -sS -X PUT -H 'X-Nano-API-Intent: mutate' -H 'content-type: application/json' --data-binary @- -w ' %{http_code}' \
       "$url/api/settings/$name" 2>&1)
   case $out in
     *' 200') pushed="$pushed $name" ;;

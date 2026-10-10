@@ -56,3 +56,41 @@ config :nano, NanoWeb.Endpoint,
   # No authentication, local use only: the secret only signs the session cookie that carries
   # the CSRF token, so a fresh one per boot is enough (open pages reload after a node restart).
   secret_key_base: env.("SECRET_KEY_BASE", Base.encode64(:crypto.strong_rand_bytes(48)))
+
+# Explicit public address policy: malformed settings remain invalid, never reflected from
+# Host/Forwarded. Read-only boot/repair stays available while mutations fail closed.
+policy_env = fn name, default -> if test?, do: default, else: System.get_env(name) || default end
+public_port = policy_env.("NANO_API_PUBLIC_PORT", env.("PORT", "4000"))
+
+public_port =
+  case Integer.parse(public_port) do
+    {port, ""} when port in 1..65535 -> port
+    _ -> :invalid
+  end
+
+origins =
+  case policy_env.("NANO_API_TRUSTED_ORIGINS", nil) do
+    nil ->
+      if is_integer(public_port),
+        do: [
+          "http://localhost:#{public_port}",
+          "http://127.0.0.1:#{public_port}",
+          "http://[::1]:#{public_port}"
+        ],
+        else: :invalid
+
+    value ->
+      case Jason.decode(value) do
+        {:ok, list} when is_list(list) -> list
+        _ -> :invalid
+      end
+  end
+
+config :nano,
+  api_public_port: public_port,
+  api_trusted_origins: origins,
+  openrouter_callback_url:
+    policy_env.(
+      "NANO_OPENROUTER_CALLBACK_URL",
+      "http://localhost:#{public_port}/openrouter/callback"
+    )
