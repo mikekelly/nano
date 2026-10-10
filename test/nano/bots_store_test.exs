@@ -83,11 +83,18 @@ defmodule Nano.BotsStoreTest do
     assert {:ok, bot} = Bots.get_bot(c.bot.id, opts)
     assert bot.voice == "warm"
 
-    assert {:ok, %{messages: [%{text: "yes", actor: :human}]}} =
+    assert {:ok,
+            %{
+              messages: [
+                %{text: "choice?", request_id: request_id},
+                %{text: "yes", actor: :human}
+              ]
+            }} =
              Bots.list_messages(c.session.id, opts)
 
     {:ok, q} = Bots.ack_request(q.id, opts)
     assert q.status == :acked
+    assert request_id == q.id
     GenServer.stop(pid)
     {:ok, pid} = Store.start_link(name: nil, store_dir: c.dir, pubsub: nil)
     assert {:ok, []} = Bots.outbox(server: pid)
@@ -126,7 +133,94 @@ defmodule Nano.BotsStoreTest do
     assert {:error, :immutable_id} = Bots.update_bot(c.bot.id, %{id: "new"}, c.opts)
   end
 
-  test "corrupt snapshots fail and abandoned temp is ignored", c do
+  test "malformed attrs and foreign bots cannot mutate the session", c do
+    {:ok, other} = Bots.create_bot(%{name: "Foreign"}, c.opts)
+
+    for bad <- [nil, [], "bad", %{name: self()}] do
+      assert {:error, :invalid} = Bots.create_bot(bad, c.opts)
+      assert {:error, :invalid} = Bots.post_human(c.session.id, bad, c.opts)
+      assert {:error, :invalid} = Bots.request_human(bad, c.opts)
+    end
+
+    assert {:error, :invalid_actor} =
+             Bots.publish(
+               c.session.id,
+               %{
+                 actor: {:bot, other.id},
+                 epoch: 0,
+                 text: "intrusion",
+                 idempotency_key: "foreign"
+               },
+               c.opts
+             )
+
+    assert {:error, :invalid} =
+             Bots.request_human(
+               %{
+                 bot_id: other.id,
+                 session_id: c.session.id,
+                 requester: "worker",
+                 text: "intrusion"
+               },
+               c.opts
+             )
+
+    assert {:error, :reserved_key} =
+             Bots.post_human(
+               c.session.id,
+               %{text: "spoof", idempotency_key: "request-answer:abc"},
+               c.opts
+             )
+
+    assert {:error, :invalid} =
+             Bots.create_memory(
+               c.bot.id,
+               %{text: "fact", provenance: %{callback: fn -> :ok end}},
+               c.opts
+             )
+
+    assert {:ok, %{messages: []}} = Bots.list_messages(c.session.id, c.opts)
+  end
+
+  test "failed atomic write leaves in-memory and disk state unchanged", c do
+    File.mkdir!(Path.join(c.dir, "domain.term.tmp"))
+
+    assert {:error, {:storage, _}} =
+             Bots.post_human(c.session.id, %{text: "lost", idempotency_key: "lost"}, c.opts)
+
+    assert {:ok, %{epoch: 0}} = Bots.get_session(c.session.id, c.opts)
+    assert {:ok, %{messages: []}} = Bots.list_messages(c.session.id, c.opts)
+    GenServer.stop(c.pid)
+    {:ok, pid} = Store.start_link(name: nil, store_dir: c.dir, pubsub: nil)
+    assert {:ok, %{epoch: 0}} = Bots.get_session(c.session.id, server: pid)
+    GenServer.stop(pid)
+  end
+
+  test "session topic receives persisted session and request events", c do
+    GenServer.stop(c.pid)
+    {:ok, pid} = Store.start_link(name: nil, store_dir: c.dir)
+    opts = [server: pid]
+    Phoenix.PubSub.subscribe(Nano.PubSub, "bots:session:" <> c.session.id)
+    {:ok, stopped} = Bots.stop_session(c.session.id, opts)
+    assert_receive {:bots, :session_stopped, ^stopped}
+
+    {:ok, q} =
+      Bots.request_human(
+        %{bot_id: c.bot.id, session_id: c.session.id, requester: "worker", text: "choice?"},
+        opts
+      )
+
+    assert_receive {:bots, :message_created, %{request_id: request_id}}
+    assert request_id == q.id
+    assert_receive {:bots, :request_created, ^q}
+    assert {:ok, %{messages: [%{id: message_id}]}} = Bots.list_messages(c.session.id, opts)
+    assert message_id == q.message_id
+    GenServer.stop(pid)
+  end
+
+  test "corrupt snapshots fail
+ and abandoned temp is ignored",
+       c do
     GenServer.stop(c.pid)
     File.write!(Path.join(c.dir, "domain.term.tmp"), "incomplete")
     {:ok, pid} = Store.start_link(name: nil, store_dir: c.dir, pubsub: nil)

@@ -16,7 +16,11 @@ defmodule Nano.Bots do
   `{:ok, %{messages: ascending_list, next_cursor: sequence, has_more: boolean}}`.
 
   request_human takes bot_id/session_id/requester (stable name, not pid)/text.
-  Requests: status :pending/:answered/:acked, answer, delivery_attempts.
+  Requests: status :pending/:answered/:acked, answer, delivery_attempts, message_id.
+  Creation atomically appends a visible message with request_id and bot actor, without
+  consuming exchange budget or changing epoch. Answer message also has request_id.
+  Keys prefixed request-answer: or request-question: are internal; public posts
+  using them return :reserved_key.
   answer_request atomically posts human answer and stores durable outbox answer.
   outbox lists answered unacked requests; mark_delivery increments attempts;
   ack_request persists acknowledgment. Runtime delivers by stable requester and
@@ -25,7 +29,8 @@ defmodule Nano.Bots do
   200 per bot (oldest evicted). list_memories newest first, limit 1..200.
 
   Store publishes `{:bots, event, record}` after disk commit to `"bots"` and
-  `"bots:session:" <> record.session_id` when present. Events: :bot_created,
+  `"bots:session:" <> record.session_id` when present (session lifecycle events
+  use record.id). Events: :bot_created,
   :bot_updated, :bot_deleted, :session_created, :session_updated, :session_deleted,
   :session_stopped, :message_created, :request_created, :request_answered,
   :request_delivery, :request_acked, :memory_created, :memory_updated, :memory_deleted.
