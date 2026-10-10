@@ -699,6 +699,24 @@ defmodule Nano.Flywheel.GraphTest do
     {:ok, adopted} = F.adopt(s2, a2, "A", p.id)
     assert adopted.owner_generation == 2
     assert {:error, :missing_stages} = F.close(s2, a2, "A")
+    {:ok, resumed} = F.unit(s2, "A")
+    assert resumed.stages.integrated.commit == p.commit
+    assert resumed.stages.deployed == u.stages.deployed
+    refute resumed.accepted
+
+    for stage <- [:implemented, :tested, :reviewed, :live_verified, :announced],
+        do:
+          assert(
+            {:ok, ^stage} =
+              F.record_stage(s2, a2, "A", stage, %{
+                revision: p.commit,
+                recovery: :same_recorded_revision
+              })
+          )
+
+    assert {:ok, :done} = F.close(s2, a2, "A")
+    assert {:ok, :ready} = F.readiness(s2, "B")
+    assert git(c.repo, ["rev-parse", "HEAD"]) == p.commit
   end
 
   test "U03-A5 corrupt and unsupported snapshots never silently reset authority", c do
