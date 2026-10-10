@@ -17,6 +17,9 @@ defmodule Nano.Ops do
 
   @inspect [pretty: true, limit: :infinity, printable_limit: :infinity]
 
+  @doc "Independent safety net status; never includes credentials."
+  def safety, do: Nano.Safety.status()
+
   ## Agents
 
   @doc "Info maps for all agents."

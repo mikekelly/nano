@@ -32,6 +32,8 @@ defmodule NanoWeb.Router do
     post "/images", ImageController, :upload
     get "/images/:hash", ImageController, :show
 
+    get "/safety", ApiController, :safety
+    get "/safety/health", ApiController, :safety_health
     get "/processes", ApiController, :processes
     get "/processes/:pid", ApiController, :process
 

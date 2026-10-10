@@ -8,6 +8,9 @@ defmodule NanoWeb.ApiController do
 
   alias Nano.{Ops, User}
 
+  def safety(conn, _params), do: json(conn, Ops.safety())
+  def safety_health(conn, _params), do: json(conn, Nano.Safety.health())
+
   @keepalive_ms 15_000
 
   @endpoints [
@@ -16,6 +19,9 @@ defmodule NanoWeb.ApiController do
      "Upload an image: JSON base64, at most 5,000,000 encoded bytes; validated type, size and dimensions. Returns immutable image_ref metadata, never base64."},
     {"GET", "/api/images/:hash",
      "Immutable image bytes by lowercase SHA-256 hash. Invalid or missing hashes give 404."},
+    {"GET", "/api/safety", "Independent recovery watchdog status and last notice (no secrets)."},
+    {"GET", "/api/safety/health",
+     "Watchdog liveness and model-served attestation for this OS process."},
     {"GET", "/api/processes",
      "Live processes outside the standard set (boot-time, OTP and dashboard processes), agents first. " <>
        "Each: pid, name, kind (agent | user | spawned_by | other), spawned_by (agent name), " <>
