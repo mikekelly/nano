@@ -301,7 +301,8 @@ defmodule Nano.Bots.Store do
     with {:ok, s} <- fetch(d, :sessions, id) do
       if valid?(a) and text?(a[:text]) and is_binary(a[:idempotency_key]) and
            a[:idempotency_key] != "" and is_list(Map.get(a, :attachments, [])) and
-           Enum.all?(Map.get(a, :attachments, []), &is_binary/1) do
+           length(Map.get(a, :attachments, [])) <= 10 and
+           Enum.all?(Map.get(a, :attachments, []), &(is_binary(&1) and byte_size(&1) <= 128)) do
         actor = if op == :post_human, do: :human, else: a[:actor]
 
         old =

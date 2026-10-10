@@ -12,7 +12,8 @@ defmodule Nano.Bots do
   epoch, participant actor `{:bot, id}` and idempotency_key. Errors :stale_epoch,
   :stopped, :exchange_ceiling, :idempotency_conflict. Exact retries return original
   message even after epoch changes and do not emit events. Messages: session_id,
-  sequence (1-based), actor (:human or {:bot, id}), text, attachments (string refs),
+  sequence (1-based), actor (:human or {:bot, id}), text (nonblank, max100000 bytes), attachments (max10 string refs, max128 bytes each;
+  overbounds return :invalid, never truncated),
   epoch, idempotency_key. Every bot post counts toward ceiling.
   list_messages opts `after: 0, limit: 50` (1..200) returns
   `{:ok, %{messages: ascending_list, next_cursor: sequence, has_more: boolean}}`.
