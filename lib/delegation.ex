@@ -19,8 +19,10 @@ defmodule Delegation do
   Halts are detected within one second; deaths are monitored and restart pids reattached.
 
   `level:` or `stratum:` accepts exec/lead/worker/grunt and the legacy engineering alias.
-  `model:` accepts the same stratum atoms or an explicit slug; `reasoning:` defaults
-  to low (strata cannot override operator effort). Nano.Staffing validates before
+  Selectors must agree (engineering=worker); explicit slugs require a role and
+  must match its matrix pair. `reasoning:` defaults to the matrix effort, not an override.
+  `matrix_path:` opts into submitted custom evidence, included in prompt breadcrumbs.
+  The schema validates structure, not scientific truth or human review. Nano.Staffing validates before
   worktree creation and startup validates again. Job levels use guidance's model/effort pairs. Limits are always whole model window,
   zero turns and zero token budget. NanoAgent validates the operator allowlist.
   Optional `mcp: servers` requires an initializer configured as application env
@@ -36,8 +38,8 @@ defmodule Delegation do
          {:ok, parent} <- parent(opts),
          :ok <- mcp_available(opts[:mcp]),
          {:ok, staffing} <-
-           Nano.Staffing.select(opts[:model] || opts[:stratum] || opts[:level],
-             effort: opts[:reasoning] || "low"
+           Nano.Staffing.resolve(
+             Keyword.take(opts, [:model, :stratum, :level, :reasoning, :matrix_path])
            ),
          model = staffing.model,
          {:ok, entry} <- Nano.Model.lookup(model),
@@ -45,10 +47,7 @@ defmodule Delegation do
          {:ok, worktree} <- worktree(opts[:worktree]) do
       prepared =
         opts
-        |> Keyword.put_new(
-          :level,
-          if(staffing.stratum, do: String.to_existing_atom(staffing.stratum), else: :engineering)
-        )
+        |> Keyword.put(:level, staffing.level)
         |> Keyword.put(:staffing, staffing)
         |> Keyword.put(:parent, parent)
         |> Keyword.put(:worktree, worktree)

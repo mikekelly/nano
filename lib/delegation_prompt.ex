@@ -111,7 +111,7 @@ defmodule Delegation.Prompt do
 
   defp staffing_note(pair),
     do:
-      "\nStaffing: #{pair.model} / #{pair.effort}; #{pair.reason} Evidence: Nano.Staffing and priv/staffing/matrix.json.\n"
+      "\nStaffing: #{pair.model} / #{pair.effort}; #{pair.reason} Evidence: Nano.Staffing and #{pair.matrix_path}.\n"
 
   defp default(:exec), do: ["exec"]
   defp default(_), do: ["builder"]
