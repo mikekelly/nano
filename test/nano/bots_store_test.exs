@@ -94,7 +94,49 @@ defmodule Nano.BotsStoreTest do
     assert {:error, :invalid} = Bots.list_messages(c.session.id, c.opts ++ [before: 10])
   end
 
+  test "attachment refs are bounded without truncation", c do
+    base = %{text: "attached", idempotency_key: "attachment"}
+
+    assert {:error, :invalid} =
+             Bots.post_human(
+               c.session.id,
+               Map.put(base, :attachments, List.duplicate("ref", 11)),
+               c.opts
+             )
+
+    assert {:error, :invalid} =
+             Bots.post_human(
+               c.session.id,
+               Map.put(base, :attachments, [String.duplicate("x", 129)]),
+               c.opts
+             )
+
+    assert {:error, :invalid} =
+             Bots.post_human(c.session.id, Map.put(base, :attachments, [nil]), c.opts)
+
+    refs = List.duplicate(String.duplicate("x", 128), 10)
+
+    assert {:ok, %{attachments: ^refs}} =
+             Bots.post_human(c.session.id, Map.put(base, :attachments, refs), c.opts)
+
+    assert {:error, :invalid} =
+             Bots.publish(
+               c.session.id,
+               %{
+                 text: "bot attached",
+                 actor: {:bot, c.bot.id},
+                 epoch: 1,
+                 idempotency_key: "bot",
+                 attachments: List.duplicate("ref", 11)
+               },
+               c.opts
+             )
+
+    assert {:ok, %{messages: [_]}} = Bots.list_messages(c.session.id, c.opts)
+  end
+
   test "conditional stop
+
  cannot fence a newer human generation",
        c do
     {:ok, _} = Bots.post_human(c.session.id, %{text: "new turn", idempotency_key: "new"}, c.opts)
