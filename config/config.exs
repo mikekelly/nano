@@ -1,4 +1,5 @@
 import Config
+import_config "mcp.exs"
 
 # Static configuration. Everything that depends on the environment is in runtime.exs.
 

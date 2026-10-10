@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data/project"]
+    },
+    "remote": {
+      "transport": "http",
+      "url": "https://your-mcp-server.example/mcp",
+      "headers": {
+        "authorization": {"setting": "MCP_AUTHORIZATION"}
+      }
+    }
+  }
+}
