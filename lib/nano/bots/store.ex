@@ -285,9 +285,16 @@ defmodule Nano.Bots.Store do
     end
   end
 
-  defp execute(:stop_session, [id], d) do
-    with {:ok, s} <- fetch(d, :sessions, id),
-         do: write(d, :sessions, %{s | stopped: true, epoch: s.epoch + 1}, :session_stopped)
+  defp execute(:stop_session, [id], d), do: execute(:stop_session, [id, :error], d)
+
+  defp execute(:stop_session, [id, expected], d) do
+    with {:ok, s} <- fetch(d, :sessions, id) do
+      case expected do
+        {:ok, epoch} when not is_integer(epoch) or epoch < 0 -> {:error, :invalid}
+        {:ok, epoch} when epoch != s.epoch -> {:error, :stale_epoch}
+        _ -> write(d, :sessions, %{s | stopped: true, epoch: s.epoch + 1}, :session_stopped)
+      end
+    end
   end
 
   defp execute(op, [id, a], d) when op in [:post_human, :publish] do

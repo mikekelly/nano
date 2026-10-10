@@ -64,7 +64,25 @@ defmodule Nano.BotsStoreTest do
     assert {:ok, _} = Bots.publish(c.session.id, %{a | epoch: 3, idempotency_key: "new"}, c.opts)
   end
 
-  test "restart preserves identity, session, messages and ack", c do
+  test "conditional stop cannot fence a newer human generation", c do
+    {:ok, _} = Bots.post_human(c.session.id, %{text: "new turn", idempotency_key: "new"}, c.opts)
+    assert {:error, :stale_epoch} = Bots.stop_session(c.session.id, c.opts ++ [expected_epoch: 0])
+
+    assert {:ok, %{epoch: 1, stopped: false, exchange_count: 0}} =
+             Bots.get_session(c.session.id, c.opts)
+
+    assert {:error, :invalid} = Bots.stop_session(c.session.id, c.opts ++ [expected_epoch: nil])
+
+    assert {:ok, %{epoch: 2, stopped: true}} =
+             Bots.stop_session(c.session.id, c.opts ++ [expected_epoch: 1])
+
+    assert {:error, :stale_epoch} = Bots.stop_session(c.session.id, c.opts ++ [expected_epoch: 1])
+    assert {:ok, %{epoch: 3, stopped: true}} = Bots.stop_session(c.session.id, c.opts)
+  end
+
+  test "restart preserves identity
+, session, messages and ack",
+       c do
     {:ok, q} =
       Bots.request_human(
         %{bot_id: c.bot.id, session_id: c.session.id, requester: "worker-one", text: "choice?"},

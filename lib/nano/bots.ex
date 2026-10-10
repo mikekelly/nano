@@ -5,7 +5,9 @@ defmodule Nano.Bots do
   or `{:error, {:storage, reason}}`. Records are atom-keyed maps, random immutable
   string id and created_at milliseconds. Bots: name/face/color/description/voice.
   Sessions: participant_ids/title/epoch/stopped/exchange_count/exchange_ceiling/
-  notification_prefs. Epoch starts 0, ceiling defaults 12. Human posts advance epoch,
+  notification_prefs. Epoch starts 0, ceiling defaults 12. stop_session accepts expected_epoch: integer
+  for atomic compare-and-stop (:stale_epoch mismatch, :invalid malformed). Omitting
+  expected_epoch preserves unconditional stop. Human posts advance epoch,
   clear stopped and reset budget. Stop advances epoch. Bot publish requires current
   epoch, participant actor `{:bot, id}` and idempotency_key. Errors :stale_epoch,
   :stopped, :exchange_ceiling, :idempotency_conflict. Exact retries return original
@@ -51,7 +53,10 @@ defmodule Nano.Bots do
   def delete_session(a, opts \\ []), do: call(:delete_session, [a], opts)
   def get_session(a, opts \\ []), do: call(:get_session, [a], opts)
   def list_sessions(opts \\ []), do: call(:list_sessions, [], opts)
-  def stop_session(a, opts \\ []), do: call(:stop_session, [a], opts)
+
+  def stop_session(a, opts \\ []),
+    do: call(:stop_session, [a, Keyword.fetch(opts, :expected_epoch)], opts)
+
   def post_human(a, b, opts \\ []), do: call(:post_human, [a, b], opts)
   def publish(a, b, opts \\ []), do: call(:publish, [a, b], opts)
   def request_human(a, opts \\ []), do: call(:request_human, [a], opts)
