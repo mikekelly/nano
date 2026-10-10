@@ -1134,6 +1134,7 @@ defmodule NanoAgent do
           s.compacting.base ++ [%{"role" => "user", "content" => Compaction.note(reason)}]
     }
 
+    s = Nano.Attention.before_request(s)
     n = estimate(s)
 
     if s.max_context - n < @reply_room do

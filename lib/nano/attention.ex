@@ -1,6 +1,6 @@
 defmodule Nano.Attention do
   @moduledoc """
-  Harness adapter for FrontMind and Goals, before every ordinary request (also tool
+  Harness adapter for FrontMind and Goals, before every request (also compaction and tool
   continuations). Appends attributed own notes and logs measurements as harness notes.
   `after_compaction/1` forces the first subsequent bob. Optional drift uses a bounded
   2000ms Jev choice probability, note plus at most 3000 recent activity characters.
@@ -10,7 +10,6 @@ defmodule Nano.Attention do
   """
   def after_compaction(s), do: Map.put(s, :attention_force, true)
   def before_request(s, opts \\ [])
-  def before_request(%{compacting: _} = s, _), do: s
 
   def before_request(s, opts) do
     note =
@@ -49,6 +48,8 @@ defmodule Nano.Attention do
     |> Map.put(:attention_cursors, cursors)
     |> Map.put(:attention_force, false)
   end
+
+  defp drift(%{compacting: _} = s, _, _), do: {s, nil}
 
   defp drift(s, %{note: note, drift: true} = data, opts) when is_binary(note) do
     previous = Map.get(s, :attention_drift)
