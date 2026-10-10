@@ -78,8 +78,8 @@ defmodule Compaction do
         _ -> []
       end)
 
-    first = List.first(events)
     budget = div(max(window, 0), 5) * 2
+    first = pin_first(List.first(events), budget)
 
     {kept, _} =
       events
@@ -132,6 +132,32 @@ defmodule Compaction do
 
   defp text_and_images(_), do: {"", []}
   defp bundle(text, images), do: [%{"type" => "text", "text" => text} | images]
+  # The brief's words stay pinned, but pixels must not bypass the retention budget.
+  # Keep an honest, durable notice inside the event rather than pretending the model
+  # still has the image. Semantic observations belong in the model's summary.
+  defp pin_first(parts, budget) when is_list(parts) do
+    if cost(parts) <= budget do
+      parts
+    else
+      {text, images} = text_and_images(parts)
+
+      hashes =
+        Enum.map_join(images, ", ", fn %{"image_ref" => ref} ->
+          ref[:image_ref] || ref["image_ref"] || "unknown"
+        end)
+
+      notice =
+        "<harness>Image attachments omitted by compaction because the pinned brief exceeds the image/event retention budget. Pixels are no longer available; do not infer their contents. Omitted image hashes: " <>
+          hashes <> ". Full image references remain in the original log.</harness>"
+
+      if String.ends_with?(text, "</event>"),
+        do: String.replace_suffix(text, "</event>", "\n" <> notice <> "</event>"),
+        else: text <> "\n" <> notice
+    end
+  end
+
+  defp pin_first(first, _budget), do: first
+
   defp cost(nil), do: 0
   defp cost(text) when is_binary(text), do: byte_size(text)
   defp cost(parts), do: Nano.ImageInput.estimated_bytes(parts)
