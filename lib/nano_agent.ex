@@ -1083,6 +1083,11 @@ defmodule NanoAgent do
     end
   end
 
+  defp pending_generation(s) do
+    token = Map.get(s, :store_token) || Process.get(:state_store_token)
+    if is_map(token), do: token[:lifecycle_generation], else: nil
+  end
+
   defp backlog_count(s) do
     if Map.has_key?(s, :pending_backlog) do
       q = s.pending_backlog
@@ -1112,9 +1117,10 @@ defmodule NanoAgent do
         |> Map.new()
 
       record = %{text: text, images: images, evidence: evidence}
-      q = Map.get(s, :pending_backlog, Nano.ContextAdmission.empty_queue())
+      generation = pending_generation(s)
+      q = Map.get(s, :pending_backlog, Nano.ContextAdmission.empty_queue(s.id, generation))
 
-      case Nano.ContextAdmission.queue_push(q, record, env(:spill_dir), s.id) do
+      case Nano.ContextAdmission.queue_push(q, record, env(:spill_dir), s.id, generation) do
         {:ok, q} -> s |> Map.put(:pending_backlog, q) |> prune_admission_evidence()
         {:error, reason} -> s |> pending_unavailable(reason) |> prune_admission_evidence()
       end
@@ -1167,7 +1173,12 @@ defmodule NanoAgent do
 
   defp refill_pending_ready(s) do
     if backlog_count(s) > 0 and length(s.pending) < @pending_memory_count do
-      case Nano.ContextAdmission.queue_peek(s.pending_backlog, env(:spill_dir), s.id) do
+      case Nano.ContextAdmission.queue_peek(
+             s.pending_backlog,
+             env(:spill_dir),
+             s.id,
+             pending_generation(s)
+           ) do
         {:ok, record, next} ->
           if pending_fits?(s, record.text, record.images) do
             evidence = Map.merge(Map.get(s, :admission_evidence, %{}), record.evidence)

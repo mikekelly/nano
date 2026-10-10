@@ -126,14 +126,18 @@ case mode do
     queue_record = fn index ->
       Application.fetch_env!(:nano, :spill_dir)
       |> Path.join(state.id)
-      |> Path.join("pending-v1/#{index}.term")
+      |> Path.join("pending-v2/#{state.pending_backlog.lifecycle_generation}-#{index}.term")
       |> File.read!()
       |> :erlang.binary_to_term([:safe])
     end
 
     for index <- expected.pending_backlog.read_index..expected.pending_backlog.write_index do
-      record = queue_record.(index)
-      true = String.contains?(record.text, "<event seq=")
+      envelope = queue_record.(index)
+      true = envelope.agent_id == state.id
+      true = envelope.lifecycle_generation == state.pending_backlog.lifecycle_generation
+      true = envelope.index == index
+      true = String.contains?(envelope.record.text, "<event seq=")
+      true = state.pending_backlog.items[index] == expected.pending_backlog.items[index]
     end
 
     true = state.bindings[:durable] == 23

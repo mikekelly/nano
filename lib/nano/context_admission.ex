@@ -63,43 +63,92 @@ defmodule Nano.ContextAdmission do
   @queue_max_count 10_000
   @queue_max_bytes 67_108_864
   @record_max_bytes 1_048_576
-  def empty_queue, do: %{version: 1, read_index: 1, write_index: 0, count: 0, bytes: 0}
 
-  def queue_push(q, record, root, id) do
-    encoded = :erlang.term_to_binary(record)
-    bytes = byte_size(encoded)
+  # Raw digest/size belongs to the coherent envelope, not the replaceable file.
+  # v1 queues had no such authority and remain explicitly unavailable.
+  def empty_queue(id, generation),
+    do: %{
+      version: 2,
+      agent_id: id,
+      lifecycle_generation: generation,
+      read_index: 1,
+      write_index: 0,
+      count: 0,
+      bytes: 0,
+      items: %{}
+    }
 
-    if valid_queue?(q) and q.count < @queue_max_count and q.bytes + bytes <= @queue_max_bytes and
-         bytes <= @record_max_bytes do
+  def queue_push(q, record, root, id, generation) do
+    if bound_queue?(q, id, generation) and q.count < @queue_max_count do
       index = q.write_index + 1
-      path = queue_path(root, id, index)
 
-      with :ok <- File.mkdir_p(Path.dirname(path)),
-           :ok <- keep(path, encoded) do
-        {:ok, %{q | write_index: index, count: q.count + 1, bytes: q.bytes + bytes}}
+      encoded =
+        :erlang.term_to_binary(%{
+          version: 2,
+          agent_id: id,
+          lifecycle_generation: generation,
+          index: index,
+          record: record
+        })
+
+      bytes = byte_size(encoded)
+      path = queue_path(root, id, generation, index)
+
+      if bytes <= @record_max_bytes and q.bytes + bytes <= @queue_max_bytes do
+        with :ok <- File.mkdir_p(Path.dirname(path)), :ok <- keep(path, encoded) do
+          entry = %{sha256: sha256(encoded), bytes: bytes}
+
+          {:ok,
+           %{
+             q
+             | write_index: index,
+               count: q.count + 1,
+               bytes: q.bytes + bytes,
+               items: Map.put(q.items, index, entry)
+           }}
+        end
+      else
+        {:error, :pending_backlog_limit}
       end
     else
-      {:error, :pending_backlog_limit_or_malformed}
+      {:error, :pending_backlog_limit_or_unbound}
     end
   end
 
-  def queue_peek(q, root, id) do
-    if valid_queue?(q) and q.count > 0 do
-      path = queue_path(root, id, q.read_index)
+  def queue_peek(q, root, id, generation) do
+    if bound_queue?(q, id, generation) and q.count > 0 do
+      index = q.read_index
+      path = queue_path(root, id, generation, index)
 
-      with {:ok, %{type: :regular, size: size}} when size <= @record_max_bytes and size <= q.bytes <-
-             File.lstat(path),
+      with {:ok, %{sha256: digest, bytes: size}} <- Map.fetch(q.items, index),
+           true <-
+             is_binary(digest) and digest =~ ~r/\A[0-9a-f]{64}\z/ and
+               is_integer(size) and size > 0 and size <= @record_max_bytes and size <= q.bytes,
+           {:ok, %{type: :regular, size: ^size}} <- File.lstat(path),
            {:ok, bytes} <- File.read(path),
-           %{text: text, images: images, evidence: evidence} = record <-
+           true <- sha256(bytes) == digest,
+           %{
+             version: 2,
+             agent_id: ^id,
+             lifecycle_generation: ^generation,
+             index: ^index,
+             record: %{text: text, images: images, evidence: evidence} = record
+           } <-
              :erlang.binary_to_term(bytes, [:safe]),
            true <- is_binary(text) and is_list(images) and is_map(evidence) do
         {:ok, record,
-         %{q | read_index: q.read_index + 1, count: q.count - 1, bytes: q.bytes - size}}
+         %{
+           q
+           | read_index: index + 1,
+             count: q.count - 1,
+             bytes: q.bytes - size,
+             items: Map.delete(q.items, index)
+         }}
       else
         _ -> {:error, :unavailable_pending_backlog}
       end
     else
-      {:error, :empty_or_malformed_pending_backlog}
+      {:error, :empty_or_unbound_pending_backlog}
     end
   rescue
     _ -> {:error, :malformed_pending_backlog}
@@ -107,13 +156,18 @@ defmodule Nano.ContextAdmission do
 
   @doc false
   def valid_queue?(%{
-        version: 1,
+        version: 2,
+        agent_id: id,
+        lifecycle_generation: generation,
         read_index: read,
         write_index: write,
         count: count,
-        bytes: bytes
+        bytes: bytes,
+        items: items
       }) do
-    is_integer(read) and is_integer(write) and is_integer(count) and is_integer(bytes) and
+    is_binary(id) and byte_size(id) <= 512 and is_integer(generation) and generation > 0 and
+      is_integer(read) and is_integer(write) and is_integer(count) and is_integer(bytes) and
+      is_map(items) and map_size(items) == count and
       read > 0 and write >= 0 and count >= 0 and count <= @queue_max_count and
       write - read + 1 == count and bytes >= 0 and bytes <= @queue_max_bytes and
       ((count == 0 and bytes == 0) or (count > 0 and bytes > 0))
@@ -121,8 +175,13 @@ defmodule Nano.ContextAdmission do
 
   def valid_queue?(_), do: false
 
-  defp queue_path(root, id, index),
-    do: Path.join([root, id, "pending-v1", Integer.to_string(index) <> ".term"])
+  defp bound_queue?(q, id, generation),
+    do: valid_queue?(q) and q.agent_id == id and q.lifecycle_generation == generation
+
+  defp sha256(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+
+  defp queue_path(root, id, generation, index),
+    do: Path.join([root, id, "pending-v2", "#{generation}-#{index}.term"])
 
   def notice(h) do
     "<harness>Staged exact evidence, not read or answered: #{h.path}; " <>

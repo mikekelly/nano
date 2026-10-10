@@ -1,11 +1,19 @@
 # Bounded pending admission and saturation
 
-Envelope-v1 adds `admission_version=1`, `pending_backlog` v1 `{read_index,
-write_index,count,bytes}`, and optional `pending_unavailable` identity range.
+Envelope-v1 adds `admission_version=1`, `pending_backlog` v2 `{agent_id,lifecycle_generation,read_index,
+write_index,count,bytes,items}`, and optional `pending_unavailable` identity range.
 Live pending RAM admission target is 256 items / 1 MiB estimated text+image-reference
-bytes. Excess is synchronously synced to immutable `spill_dir/<id>/pending-v1/<index>.term`;
+bytes. Excess is synchronously synced to immutable `spill_dir/<id>/pending-v2/<lifecycle-generation>-<index>.term`;
 active queue limits: 10,000 records / 64 MiB, each record at most 1 MiB. The record
-contains text, immutable image references and relevant exact-evidence metadata. Pointer
+contains text, immutable image references and relevant exact-evidence metadata, plus
+agent ID/lifecycle/index. The coherent envelope independently binds each active index's
+exact raw SHA-256 and byte count; a replaceable record cannot vouch for itself. Read
+verifies expected raw bytes before decoding and checks all identity associations. The
+authority manifest has at most10,000 fixed digest/size entries (bounded metadata in
+addition to the256-item/1MiB text/image RAM target). Unbound v1 queue metadata is
+explicitly unavailable: preserve its files/logs, reconstruct from independently preserved
+original evidence before recovery; never trust it by hashing current possibly tampered
+spool bytes. No v1 queue was activated on the shared node by this worker. Pointer
 advancement and delivered prefix live in the same coherent envelope. Reads do not delete
 records; restart restores pointer and pending prefix before requesting the provider.
 Old text-only live queues are staged and admitted in order; old unattributed image

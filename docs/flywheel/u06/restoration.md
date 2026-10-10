@@ -12,7 +12,7 @@ New: the same envelope-v1 (no StateStore disk-schema change), with additive meta
 `admission_evidence` SHA-256 keyed v1 handles (`path`, `bytes`, `position`),
 `image_deliveries` keyed by exact event text (immutable canonical image references),
 `admission_split`, `admission_compactions`, `admission_version`, optional grouped
-`pending_item_ids`, bounded `pending_backlog` v1 pointer and explicit `pending_unavailable`
+`pending_item_ids`, bounded `pending_backlog` v2 identity+raw-digest manifest/pointer and explicit `pending_unavailable`
 recovery range (see resources.md), and checkpoint `tail` plus original measured
 context fields. Handles point to immutable UTF-8 files, at most 8 MiB, under configured
 `spill_dir/<agent-id>/admission/<sha256>.txt`. Position zero denotes staged/not read;

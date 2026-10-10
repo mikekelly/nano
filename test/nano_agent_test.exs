@@ -104,6 +104,49 @@ defmodule NanoAgentTest do
     new
   end
 
+  test "U06 coherent spool authority rejects same-size valid corruption before provider and across restart",
+       ctx do
+    {pid, id} = start!(ctx, max_context: 60_000, system_prompt: "brief")
+    :sys.replace_state(pid, &Map.put(&1, :halted, :compaction_failed))
+    for n <- 1..257, do: send(pid, {:original, n})
+    before = :sys.get_state(pid)
+    assert before.pending_backlog.count == 1
+    q = before.pending_backlog
+
+    path =
+      Path.join([
+        Application.fetch_env!(:nano, :spill_dir),
+        before.id,
+        "pending-v2",
+        "#{q.lifecycle_generation}-1.term"
+      ])
+
+    exact = File.read!(path)
+    changed = :binary.replace(exact, "original", "tampered")
+    assert byte_size(changed) == byte_size(exact)
+    assert :erlang.binary_to_term(changed).record.text =~ ":tampered"
+    File.write!(path, changed)
+    NanoAgent.unhalt(ctx.name)
+    # Known-good RAM prefix is allowed; corrupt spool bytes never enter any request.
+    body = request!(ctx.model)
+    refute Jason.encode!(body) =~ "tampered"
+    Fake.push(ctx.model, text: "done")
+    await(id, :harness_note, &(&1["text"] =~ "unavailable_pending_backlog"))
+    refute_receive {:openrouter_request, _, _}, 50
+    failed = :sys.get_state(pid)
+    assert failed.halted == :compaction_failed
+    assert failed.pending_backlog.items[1] == q.items[1]
+    assert failed.pending_backlog.read_index == 1
+    new = kill(ctx, id)
+    restored = :sys.get_state(new)
+    assert restored.pending_backlog.items[1] == q.items[1]
+    assert restored.pending_backlog.read_index == 1
+    assert restored.pending_unavailable != nil
+    NanoAgent.unhalt(ctx.name)
+    refute_receive {:openrouter_request, _, _}, 50
+    assert :sys.get_state(new).halted == :compaction_failed
+  end
+
   test "U06 malformed registry gives one bounded recovery diagnostic per attempt", ctx do
     {pid, id} = start!(ctx, max_context: 20_000, system_prompt: "brief")
 
@@ -132,7 +175,17 @@ defmodule NanoAgentTest do
     for n <- 1..256, do: send(pid, {:buffered, n})
     state = :sys.get_state(pid)
     assert length(state.pending) == 256
-    saturated = %{version: 1, read_index: 1, write_index: 10_000, count: 10_000, bytes: 100_000}
+
+    saturated =
+      Nano.ContextAdmission.empty_queue(state.id, state.store_token.lifecycle_generation)
+      |> Map.merge(%{
+        read_index: 1,
+        write_index: 10_000,
+        count: 10_000,
+        bytes: 100_000,
+        items: Map.new(1..10_000, &{&1, %{sha256: String.duplicate("0", 64), bytes: 10}})
+      })
+
     :sys.replace_state(pid, &Map.put(&1, :pending_backlog, saturated))
     for n <- 1..4, do: send(pid, {:undelivered, n})
     state = :sys.get_state(pid)
