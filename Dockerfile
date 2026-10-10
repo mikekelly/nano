@@ -14,6 +14,9 @@ ENV MIX_ENV=prod \
     LISTEN_IP=0.0.0.0 \
     ERL_CRASH_DUMP=/data/erl_crash.dump
 
+# Ignore-aware file/search helpers enumerate with ripgrep.
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Hex and rebar, a git identity, the node's default cookie, and git's blessing for a

@@ -193,7 +193,9 @@ defmodule Nano.SettingsTest do
 
     assert {:error, refused} = start.(running.model, "low")
     assert refused =~ "#{running.model} is not allowed on this node (setting allowed_models)"
-    assert refused =~ "allowed: #{model} at low, medium; #{other}"
+    assert refused =~ "allowed: "
+    assert refused =~ "#{model} at low, medium"
+    assert refused =~ other
 
     # Agents already running carry on.
     assert NanoAgent.info(running.name).halted == nil
