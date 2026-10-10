@@ -18,7 +18,10 @@ defmodule Delegation do
   bounded result (16 KiB external term maximum). Events never include transcripts.
   Halts are detected within one second; deaths are monitored and restart pids reattached.
 
-  Job levels use guidance's model/effort pairs. Limits are always whole model window,
+  `level:` or `stratum:` accepts exec/lead/worker/grunt and the legacy engineering alias.
+  `model:` accepts the same stratum atoms or an explicit slug; `reasoning:` defaults
+  to low (strata cannot override operator effort). Nano.Staffing validates before
+  worktree creation and startup validates again. Job levels use guidance's model/effort pairs. Limits are always whole model window,
   zero turns and zero token budget. NanoAgent validates the operator allowlist.
   Optional `mcp: servers` requires an initializer configured as application env
   `:nano, :delegation_mcp_initializer` MFA; called with `[child_name, servers | args]`
@@ -32,12 +35,21 @@ defmodule Delegation do
     with :ok <- validate(opts),
          {:ok, parent} <- parent(opts),
          :ok <- mcp_available(opts[:mcp]),
-         {:ok, model} <- model(opts[:level]),
+         {:ok, staffing} <-
+           Nano.Staffing.select(opts[:model] || opts[:stratum] || opts[:level],
+             effort: opts[:reasoning] || "low"
+           ),
+         model = staffing.model,
          {:ok, entry} <- Nano.Model.lookup(model),
-         {:ok, _} <- Nano.Model.check(model, "low", entry.context_length),
+         {:ok, _} <- Nano.Model.check(model, staffing.effort, entry.context_length),
          {:ok, worktree} <- worktree(opts[:worktree]) do
       prepared =
         opts
+        |> Keyword.put_new(
+          :level,
+          if(staffing.stratum, do: String.to_existing_atom(staffing.stratum), else: :engineering)
+        )
+        |> Keyword.put(:staffing, staffing)
         |> Keyword.put(:parent, parent)
         |> Keyword.put(:worktree, worktree)
         |> Keyword.put_new(:cwd, if(worktree, do: worktree.path, else: "/app"))
@@ -60,7 +72,7 @@ defmodule Delegation do
 
     with {:ok, composed} <- Delegation.Prompt.compose(opts),
          :ok <- Delegation.Monitor.reserve(name, opts[:parent]) do
-      case start(name, model, entry, composed.prompt) do
+      case start(name, model, entry, composed.prompt, opts[:staffing].effort) do
         {:ok, pid} ->
           case initialize_mcp(name, opts[:mcp]) do
             :ok ->
@@ -86,7 +98,8 @@ defmodule Delegation do
                  model: model,
                  pre: composed.pre,
                  worktree: opts[:worktree],
-                 prompt_provenance: composed.provenance
+                 prompt_provenance: composed.provenance,
+                 staffing: opts[:staffing]
                }}
 
             {:error, why} ->
@@ -145,15 +158,15 @@ defmodule Delegation do
     end
   end
 
-  def model(:engineering), do: {:ok, "openai-codex/gpt-6.1-sol"}
-  def model(:exec), do: {:ok, "openai-codex/gpt-6-astra"}
-  def model(_), do: {:error, "level must be :engineering or :exec"}
+  def model(choice) do
+    with {:ok, pair} <- Nano.Staffing.mapping(choice), do: {:ok, pair.model}
+  end
 
-  defp start(name, model, entry, prompt) do
+  defp start(name, model, entry, prompt, effort) do
     case NanoAgent.start(
            name: name,
            model: model,
-           reasoning: "low",
+           reasoning: effort,
            max_context: entry.context_length,
            max_turns: 0,
            max_tokens: 0,

@@ -1,0 +1,227 @@
+Fetched 2026-10-10T07:43:48.842243Z
+URL https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-low-vs-gpt-6-astra-low
+Full extracted document SHA-256 52eb018a7e86528313cbebb52636b96556f4912886613c254b30125af3a1c5b5
+Exact opening excerpt (Sol low first, Astra low second):
+
+[Artificial Analysis](https://artificialanalysis.ai/)
+
+[](https://artificialanalysis.ai/login)K
+
+[All Models](https://artificialanalysis.ai/models)
+
+# GPT-6.1 Sol (Low) vs. GPT-6 Astra (Low)
+
+Comparison between GPT-6.1 Sol (Low) and GPT-6 Astra (Low) across intelligence, price, speed, context window and more.
+
+For details relating to our methodology, see our [Methodology page.](https://artificialanalysis.ai/methodology)
+
+OpenAI
+
+GPT-6.1 Sol (Low)
+
+OpenAI
+
+GPT-6 Astra (Low)
+
+Add model
+
+Intelligence
+
+Intelligence Index
+
+42
+
+46
+
+AA-Briefcase v1.1
+
+1116
+
+1257
+
+GDPval-AA v2.1
+
+1317
+
+1389
+
+AutomationBench-AA
+
+53%
+
+59%
+
+Terminal-Bench 4.0
+
+31%
+
+42%
+
+SciCode
+
+53%
+
+54%
+
+Humanity's Last Exam
+
+47%
+
+49%
+
+GDP.pdf
+
+27%
+
+30%
+
+CritPt
+
+25%
+
+26%
+
+AA-Omniscience
+
+38
+
+41
+
+AA-LCR v1.1
+
+84%
+
+80%
+
+Cost
+
+Price per 1M Tokens
+
+$1.47
+
+$7.70
+
+Input Price per 1M Tokens
+
+$2.00
+
+$10.00
+
+Output Price per 1M Tokens
+
+$10.00
+
+$50.00
+
+Cache Hit Price per 1M Tokens
+
+$0.10
+
+$1.00
+
+Cost per Task
+
+$0.13
+
+$0.82
+
+Cost to Run Intelligence Index
+
+$250
+
+$1,537
+
+Token Use
+
+Output Tokens per Task
+
+4k
+
+4k
+
+Reasoning Tokens per Task
+
+1k
+
+938
+
+Output Tokens to Run Intelligence Index
+
+9M
+
+10M
+
+Performance
+
+Output Speed
+
+51 tokens/s
+
+42 tokens/s
+
+Time to First Token
+
+3.04s
+
+2.61s
+
+Time to First Answer Token
+
+3.04s
+
+2.61s
+
+End-to-End Response Time
+
+12.79s
+
+14.58s
+
+Time per Task
+
+78.05s
+
+103.28s
+
+Technical specifications
+
+Context Window
+
+1000k tokens~1,500 A4 pages of size 12 Arial font
+
+1000k tokens~1,500 A4 pages of size 12 Arial font
+
+Release Date
+
+September 2026
+
+September 2026
+
+Knowledge Cutoff
+
+April 2026
+
+Reasoning
+
+Yes
+
+Yes
+
+Input modality
+
+Supports: text and image
+
+Supports: text and image
+
+Output modality
+
+Supports: text
+
+Supports: text
+
+Open Source (Weights)
+
+No
+
+No
+
