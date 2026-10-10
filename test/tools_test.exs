@@ -79,17 +79,15 @@ defmodule Nano.ToolsTest do
       end)
 
     ref = Process.monitor(caller)
-    assert_receive {:handle, h}
-    assert_receive {:DOWN, ^ref, :process, ^caller, _}
-    Process.sleep(200)
-    assert {:ok, %{status: :completed, exit_code: 0}} = Nano.Background.status(h)
+    assert_receive {:handle, h}, 10_000
+    assert_receive {:DOWN, ^ref, :process, ^caller, _}, 10_000
+    assert %{status: :completed, exit_code: 0} = await_status(h, :completed)
     assert {:ok, %{text: "complete\n"}} = Nano.Background.tail(h)
     Process.exit(h.pid, :kill)
     {:ok, h} = Nano.Background.start("sleep 10", owner: "nonexistent", dir: dir)
-    Process.sleep(50)
+    await(fn -> File.exists?(Path.join(h.dir, "os.pid")) end)
     assert :ok = Nano.Background.stop(h)
-    Process.sleep(100)
-    assert {:ok, %{status: :killed}} = Nano.Background.status(h)
+    assert %{status: :killed} = await_status(h, :killed)
     Process.exit(h.pid, :kill)
   end
 
@@ -107,28 +105,46 @@ defmodule Nano.ToolsTest do
     {:ok, h} = Nano.Background.start("sleep 0.1; printf done", owner: name, dir: dir)
     assert Nano.Ops.owner(h.pid) == name
     Process.exit(old, :kill)
-    Process.sleep(200)
+    assert %{status: :completed} = await_status(h, :completed)
     assert Process.alive?(h.pid)
     assert Nano.Ops.owner(h.pid) == name
     assert :yes = Nano.Names.register_name({:agent, name}, self())
     on_exit(fn -> Nano.Names.unregister_name({:agent, name}) end)
     id = h.id
-    assert_receive {:background, ^id, %{status: :completed, bytes: 4, output_path: path}}, 1000
+    assert_receive {:background, ^id, %{status: :completed, bytes: 4, output_path: path}}, 10_000
     assert File.read!(path) == "done"
     refute_receive {:background, ^id, _}, 150
   end
 
   test "dashboard worker death terminates descendants", %{dir: dir} do
     marker = Path.join(dir, "must-not-exist")
+    child_pid_file = Path.join(dir, "child.pid")
 
     {:ok, h} =
-      Nano.Background.start("(sleep 0.3; touch '#{marker}') & wait", owner: "absent", dir: dir)
+      Nano.Background.start(
+        "(sleep 10; touch '#{marker}') & echo $! > '#{child_pid_file}'; wait",
+        owner: "absent",
+        dir: dir
+      )
 
-    Process.sleep(80)
+    child_pid =
+      await(fn ->
+        case File.read(child_pid_file) do
+          {:ok, text} ->
+            case Integer.parse(String.trim(text)) do
+              {pid, ""} -> pid
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+      end)
+
     Process.exit(h.pid, :kill)
-    Process.sleep(400)
+    await(fn -> not os_process_alive?(child_pid) end)
     refute File.exists?(marker)
-    assert {:ok, %{status: :interrupted}} = Nano.Background.status(h)
+    assert %{status: :interrupted} = await_status(h, :interrupted)
   end
 
   test "default search cap, line truncation, byte caps and invalid inputs", %{dir: dir} do
@@ -168,7 +184,7 @@ defmodule Nano.ToolsTest do
     {:ok, h} = Nano.Background.start("printf done", dir: dir)
     assert h.owner == name
     id = h.id
-    assert_receive {:background, ^id, %{status: :completed}}, 1000
+    assert_receive {:background, ^id, %{status: :completed}}, 10_000
 
     {:ok, r} =
       Nano.Tools.sh("awk 'BEGIN {for(i=0;i<10000;i++) print \"output\"}'",
@@ -265,5 +281,40 @@ defmodule Nano.ToolsTest do
     assert entry == "b:1: needle " <> String.duplicate("α", 493)
     assert {:ok, %{entries: [], cut: false}} = Nano.Tools.grep("needle", path: dir, offset: 1001)
     assert {:error, _} = Nano.Tools.grep("needle", path: dir, offset: -1)
+  end
+
+  defp await_status(handle, expected) do
+    await(fn ->
+      case Nano.Background.status(handle) do
+        {:ok, %{status: ^expected} = result} -> result
+        _ -> nil
+      end
+    end)
+  end
+
+  defp await(predicate) do
+    poll(predicate, System.monotonic_time(:millisecond) + 10_000)
+  end
+
+  defp poll(predicate, deadline) do
+    case predicate.() do
+      value when value not in [false, nil] ->
+        value
+
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline,
+          do: flunk("asynchronous condition did not become true within 10 seconds")
+
+        Process.sleep(20)
+        poll(predicate, deadline)
+    end
+  end
+
+  defp os_process_alive?(pid) do
+    case File.read("/proc/#{pid}/status") do
+      {:ok, status} -> not Regex.match?(~r/^State:\s+[ZX]/m, status)
+      {:error, :enoent} -> false
+      {:error, reason} -> flunk("cannot inspect child #{pid}: #{inspect(reason)}")
+    end
   end
 end
