@@ -23,6 +23,7 @@ defmodule Nano.Bots.RuntimeTest do
       end
     end
 
+    def requester_incarnation(name), do: Process.whereis(String.to_existing_atom(name))
     def status(_), do: :thinking
     def lifecycle(name), do: Delegation.events(name)
     def ack_lifecycle(id), do: Delegation.ack(id)
@@ -156,7 +157,7 @@ defmodule Nano.Bots.RuntimeTest do
     assert_receive {:bots_human_answer, %{request_id: id, answer: "Friday"}}
     assert id == request.id
     Runtime.reconcile(server: c.runtime)
-    assert_receive {:bots_human_answer, %{request_id: ^id}}
+    refute_receive {:bots_human_answer, %{request_id: ^id}}, 20
     assert {:ok, %{status: :acked}} = Runtime.ack_human(id, server: c.runtime)
     assert {:ok, []} = Bots.outbox(server: c.store)
   end
@@ -532,6 +533,122 @@ defmodule Nano.Bots.RuntimeTest do
     assert Delegation.events(name) == []
   end
 
+  test "human delayed ack uses capped retry interval and clears ephemeral metadata", c do
+    {runtime, clock, _opts} = clocked_runtime(c, 90_000)
+    {:ok, request} = Runtime.ask_human(c.a.id, "choice", requester: c.requester, server: runtime)
+    Bots.answer_request(request.id, "yes", server: c.store)
+    Runtime.reconcile(server: runtime)
+    assert_receive {:bots_human_answer, %{request_id: id}}
+    assert id == request.id
+    assert :sys.get_state(runtime).human_retry_ms == 60_000
+
+    for milliseconds <- [1000, 5000, 15_000, 59_999] do
+      Agent.update(clock, fn _ -> milliseconds end)
+      Runtime.reconcile(server: runtime)
+      refute_receive {:bots_human_answer, %{request_id: ^id}}, 10
+    end
+
+    Agent.update(clock, fn _ -> 60_000 end)
+    Runtime.reconcile(server: runtime)
+    assert_receive {:bots_human_answer, %{request_id: ^id}}
+    assert {:ok, %{delivery_attempts: 2}} = Bots.get_request(id, server: c.store)
+    Runtime.ack_human(id, server: runtime)
+    refute Map.has_key?(:sys.get_state(runtime).human_deliveries, id)
+    Runtime.reconcile(server: runtime)
+    refute_receive {:bots_human_answer, _}, 10
+    state = :sys.get_state(runtime)
+    stored = :erlang.binary_to_term(File.read!(state.path), [:safe])
+    refute Map.has_key?(stored, :human_deliveries)
+  end
+
+  test "requester changed pid redelivers before retry deadline", c do
+    {runtime, _clock, _opts} = clocked_runtime(c, 60_000)
+    {:ok, request} = Runtime.ask_human(c.a.id, "restart", requester: c.requester, server: runtime)
+    Bots.answer_request(request.id, "answer", server: c.store)
+    Runtime.reconcile(server: runtime)
+    assert_receive {:bots_human_answer, %{request_id: id}}
+    parent = self()
+    name = String.to_existing_atom(c.requester)
+    Process.unregister(name)
+
+    worker =
+      spawn(fn ->
+        Process.register(self(), name)
+        send(parent, :new_requester_ready)
+
+        receive do
+          term -> send(parent, {:new_requester_delivery, term})
+        end
+      end)
+
+    assert_receive :new_requester_ready
+    Runtime.reconcile(server: runtime)
+    assert_receive {:new_requester_delivery, {:bots_human_answer, %{request_id: ^id}}}
+    assert {:ok, %{delivery_attempts: 2}} = Bots.get_request(id, server: c.store)
+    if Process.whereis(name), do: Process.unregister(name)
+    Process.exit(worker, :kill)
+    Process.register(self(), name)
+    Runtime.ack_human(request.id, server: runtime)
+  end
+
+  test "runtime restart immediately recovers unacked outbox and old hotload state defaults", c do
+    {runtime, _clock, opts} = clocked_runtime(c, 60_000)
+    {:ok, request} = Runtime.ask_human(c.a.id, "durable", requester: c.requester, server: runtime)
+    Bots.answer_request(request.id, "kept", server: c.store)
+    Runtime.reconcile(server: runtime)
+    assert_receive {:bots_human_answer, %{request_id: id}}
+    stop_supervised!(Runtime)
+    runtime = start_supervised!({Runtime, opts})
+    Runtime.reconcile(server: runtime)
+    assert_receive {:bots_human_answer, %{request_id: ^id}}
+    Runtime.ack_human(id, server: runtime)
+    :sys.replace_state(runtime, &Map.drop(&1, [:human_deliveries, :human_retry_ms, :human_clock]))
+    assert :ok = Runtime.reconcile(server: runtime)
+    assert :sys.get_state(runtime).human_retry_ms == 60_000
+    assert :sys.get_state(runtime).human_deliveries == %{}
+    :sys.replace_state(runtime, &Map.drop(&1, [:human_deliveries, :human_retry_ms, :human_clock]))
+    assert {:ok, %{status: :acked}} = Runtime.ack_human(id, server: runtime)
+  end
+
+  test "unaddressed private remember post receives runtime opportunity even with false classifier",
+       c do
+    stop_supervised!(Runtime)
+
+    opts =
+      Keyword.put(c.opts, :router_opts,
+        evaluate: fn _, _, _ -> {:ok, %{answers: %{c.a.id => %{noul: 0.0}}}} end
+      )
+
+    runtime = start_supervised!({Runtime, opts})
+
+    {:ok, session} =
+      Bots.create_session(%{participant_ids: [c.a.id], title: "private remember"},
+        server: c.store
+      )
+
+    text = "For future travel planning, please remember I prefer quiet scenic trains."
+
+    Bots.post_human(session.id, %{text: text, idempotency_key: "unaddressed-remember"},
+      server: c.store
+    )
+
+    Runtime.reconcile(server: runtime)
+    assert_receive {:delivery, sid, bid, page} when sid == session.id and bid == c.a.id
+    assert Enum.map(page.messages, & &1.text) == [text]
+  end
+
+  defp clocked_runtime(c, retry) do
+    clock = start_supervised!({Agent, fn -> 0 end})
+    stop_supervised!(Runtime)
+
+    opts =
+      c.opts
+      |> Keyword.put(:human_clock, fn -> Agent.get(clock, & &1) end)
+      |> Keyword.put(:human_retry_ms, retry)
+
+    {start_supervised!({Runtime, opts}), clock, opts}
+  end
+
   defp collect_chunks(runtime, bot, page, acc) do
     [message] = page.messages
     Runtime.ack_delivery(page.delivery_id, server: runtime)
@@ -564,6 +681,35 @@ end
 defmodule Nano.Bots.RouterTest do
   use ExUnit.Case, async: true
   alias Nano.Bots.Router
+
+  test "sole-bot private human gets opportunity without a classifier false negative" do
+    bot = %{id: "only", name: "Mira", description: ""}
+
+    assert {:ok, ["only"]} =
+             Router.select(
+               [bot],
+               %{exchange_count: 0},
+               [
+                 %{
+                   actor: :human,
+                   text:
+                     "For future travel planning, please remember I prefer quiet scenic trains."
+                 }
+               ],
+               evaluate: fn _, _, _ ->
+                 flunk("sole-bot human must not pay or depend on the classifier")
+               end
+             )
+
+    assert {:ok, []} =
+             Router.select(
+               [bot],
+               %{exchange_count: 1},
+               [%{actor: {:bot, "only"}, text: "remembered"}],
+               human_batch: false,
+               evaluate: fn _, _, _ -> flunk("bot's own post needs no turn") end
+             )
+  end
 
   test "contextual questions and rising probability threshold" do
     bots = [
