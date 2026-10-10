@@ -506,6 +506,7 @@ defmodule Nano.ChatGPTTest do
     Fake.models([
       %{
         "slug" => "gpt-x",
+        "input_modalities" => ["text", "image"],
         "display_name" => "GPT-X",
         "context_window" => 1000,
         "supported_reasoning_levels" => efforts.(~w(low medium high xhigh max ultra)),
@@ -522,6 +523,7 @@ defmodule Nano.ChatGPTTest do
     assert Nano.ChatGPT.models() == [
              %{
                id: "gpt-x",
+               input_modalities: ["text", "image"],
                name: "GPT-X",
                context_length: 1000,
                reasoning_levels: ~w(low medium high xhigh max),
@@ -529,6 +531,7 @@ defmodule Nano.ChatGPTTest do
              },
              %{
                id: "gpt-y",
+               input_modalities: ["text"],
                name: "gpt-y",
                context_length: nil,
                reasoning_levels: ~w(off low medium),

@@ -33,7 +33,7 @@ defmodule Nano.OpenRouter do
 
     body = %{
       model: model,
-      messages: cache(messages),
+      messages: messages |> Enum.map(&hydrate/1) |> cache(),
       tools: tools,
       usage: %{include: true},
       reasoning: if(reasoning == "off", do: %{enabled: false}, else: %{effort: reasoning})
@@ -62,7 +62,8 @@ defmodule Nano.OpenRouter do
         {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->
-        {:error, %{status: nil, body: Exception.message(exception), class: :transient}}
+        {:error,
+         %{status: nil, body: Nano.RawLog.redact(Exception.message(exception)), class: :transient}}
     end
   end
 
@@ -72,6 +73,7 @@ defmodule Nano.OpenRouter do
   defp error(status, body, headers) do
     code = if status == 200, do: is_map(body) && get_in(body, ["error", "code"]), else: status
     code = if is_integer(code), do: code
+    body = Nano.RawLog.redact(body)
     error = %{status: status, body: body, class: Nano.Model.class(code, body)}
 
     case code do
@@ -146,6 +148,7 @@ defmodule Nano.OpenRouter do
           id: m["id"],
           name: m["name"],
           context_length: m["context_length"],
+          input_modalities: get_in(m, ["architecture", "input_modalities"]) || ["text"],
           max_output: get_in(m, ["top_provider", "max_completion_tokens"]),
           prompt_price: price.(get_in(m, ["pricing", "prompt"])),
           completion_price: price.(get_in(m, ["pricing", "completion"]))
@@ -173,7 +176,37 @@ defmodule Nano.OpenRouter do
     }
   end
 
+  defp mark(%{"content" => [_ | _] = parts} = message) do
+    %{
+      message
+      | "content" =>
+          List.update_at(parts, -1, &Map.put(&1, "cache_control", %{"type" => "ephemeral"}))
+    }
+  end
+
   defp mark(message), do: message
+
+  defp hydrate(%{"content" => parts} = message) when is_list(parts) do
+    %{
+      message
+      | "content" =>
+          Enum.map(parts, fn
+            %{"type" => "image_ref", "image_ref" => ref} ->
+              case Nano.Images.data_url(ref) do
+                {:ok, url} ->
+                  %{"type" => "image_url", "image_url" => %{"url" => url}}
+
+                {:error, reason} ->
+                  raise ArgumentError, "cannot hydrate image: #{inspect(reason)}"
+              end
+
+            part ->
+              part
+          end)
+    }
+  end
+
+  defp hydrate(message), do: message
 
   defp base_url, do: Nano.Settings.get(:openrouter_base_url)
 end

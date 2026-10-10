@@ -30,6 +30,7 @@ defmodule Nano.ChatGPT do
              name: id,
              context_length: 272_000,
              reasoning_levels: ~w(low medium high xhigh max),
+             input_modalities: ["text"],
              default_reasoning: if(id == "gpt-6.1-sol", do: "low", else: "medium")
            }
          )
@@ -83,7 +84,8 @@ defmodule Nano.ChatGPT do
         {:error, error(status, body, resp.headers)}
 
       {:error, exception} ->
-        {:error, %{status: nil, body: Exception.message(exception), class: :transient}}
+        {:error,
+         %{status: nil, body: Nano.RawLog.redact(Exception.message(exception)), class: :transient}}
     end
   end
 
@@ -113,7 +115,7 @@ defmodule Nano.ChatGPT do
   ## Chat messages to Responses input items
 
   defp input(%{"role" => "user", "content" => text}),
-    do: [%{type: "message", role: "user", content: [%{type: "input_text", text: text}]}]
+    do: [%{type: "message", role: "user", content: content(text)}]
 
   # Reasoning first, as the model produced it, then the text, then the calls.
   defp input(%{"role" => "assistant"} = m) do
@@ -140,7 +142,28 @@ defmodule Nano.ChatGPT do
   end
 
   defp input(%{"role" => "tool"} = m),
-    do: [%{type: "function_call_output", call_id: m["tool_call_id"], output: m["content"]}]
+    do: [
+      %{
+        type: "function_call_output",
+        call_id: m["tool_call_id"],
+        output: if(is_list(m["content"]), do: content(m["content"]), else: m["content"])
+      }
+    ]
+
+  defp content(text) when is_binary(text), do: [%{type: "input_text", text: text}]
+
+  defp content(parts) when is_list(parts) do
+    Enum.map(parts, fn
+      %{"type" => "text", "text" => text} ->
+        %{type: "input_text", text: text}
+
+      %{"type" => "image_ref", "image_ref" => ref} ->
+        case Nano.Images.data_url(ref) do
+          {:ok, url} -> %{type: "input_image", image_url: url}
+          {:error, reason} -> raise ArgumentError, "cannot hydrate image: #{inspect(reason)}"
+        end
+    end)
+  end
 
   ## The event stream to a chat completions response
 
@@ -232,6 +255,7 @@ defmodule Nano.ChatGPT do
   @quota ~w(insufficient_quota credit_balance_exhausted)
 
   defp error(status, body, headers) do
+    body = Nano.RawLog.redact(body)
     e = if is_map(body) and is_map(body["error"]), do: body["error"], else: %{}
     kind = Enum.find([e["type"], e["code"]], &(&1 in @limits)) || e["code"]
     quota? = kind in @quota or String.ends_with?(to_string(kind), "_spend_limit_exceeded")
@@ -334,7 +358,8 @@ defmodule Nano.ChatGPT do
         %{
           id: m["slug"],
           name: m["display_name"] || m["slug"],
-          context_length: m["context_window"]
+          context_length: m["context_window"],
+          input_modalities: m["input_modalities"] || ["text"]
         },
         Nano.Model.reasoning(efforts, false, m["default_reasoning_level"])
       )
