@@ -15,7 +15,7 @@ ENV MIX_ENV=prod \
     ERL_CRASH_DUMP=/data/erl_crash.dump
 
 # Ignore-aware file/search helpers enumerate with ripgrep.
-RUN apt-get update && apt-get install -y --no-install-recommends ripgrep && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep python3 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

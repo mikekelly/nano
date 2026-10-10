@@ -32,6 +32,7 @@ defmodule NanoAgent do
     * `Nano.Images`: immutable validated image attachments; `look(path, me)` opens a file.
     * `Nano.Model`: which provider serves a model (`Nano.ChatGPT`, `Nano.OpenRouter`) and
       what each model allows.
+    * `Nano.Safety`: independent recovery watchdog, served-boot attestation and credential copies.
     * `Nano.Settings`: the node's settings: keys, limits, what new agents' prompts state.
     * `Nano.User`: named identities for people and outside agents.
     * `Nano.Log` and `Nano.StateStore`: each agent's log and its saved state.
