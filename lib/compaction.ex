@@ -72,11 +72,11 @@ defmodule Compaction do
   @doc false
   def rebuild(transcript, text, window, log_path, excluded \\ []) do
     events =
-      for %{"role" => "user", "content" => content} <- transcript,
-          [event] <-
-            Regex.scan(~r/<event\b[^>]*>.*?<\/event>(?=\n<(?:event|harness)\b|$)/s, content),
-          event not in excluded,
-          do: event
+      transcript
+      |> Enum.flat_map(fn
+        %{"role" => "user", "content" => content} -> received(content, excluded)
+        _ -> []
+      end)
 
     first = List.first(events)
     budget = div(max(window, 0), 5) * 2
@@ -85,9 +85,9 @@ defmodule Compaction do
       events
       |> Enum.drop(1)
       |> Enum.reverse()
-      |> Enum.reduce({[], byte_size(first || "")}, fn event, {acc, size} ->
-        if size + byte_size(event) <= budget,
-          do: {[event | acc], size + byte_size(event)},
+      |> Enum.reduce({[], cost(first)}, fn event, {acc, size} ->
+        if size + cost(event) <= budget,
+          do: {[event | acc], size + cost(event)},
           else: {acc, size}
       end)
 
@@ -102,4 +102,37 @@ defmodule Compaction do
         }
       ]
   end
+
+  # Historic image deliveries batch several events into one text block followed by refs,
+  # without per-event attribution. Keep that delivery atomically, never attach its refs
+  # to every regex match or to unrelated retained text. A mixed child-report bundle keeps
+  # its attribution too; an entirely excluded bundle can be dropped as a whole.
+  defp received(content, excluded) do
+    {text, images} = text_and_images(content)
+
+    events =
+      for [event] <- Regex.scan(~r/<event\b[^>]*>.*?<\/event>(?=\n<(?:event|harness)\b|$)/s, text),
+          do: event
+
+    cond do
+      images == [] -> Enum.reject(events, &(&1 in excluded))
+      events == [] -> [bundle(text, images)]
+      Enum.all?(events, &(&1 in excluded)) -> []
+      true -> [bundle(Enum.join(events, "\n"), images)]
+    end
+  end
+
+  defp text_and_images(text) when is_binary(text), do: {text, []}
+
+  defp text_and_images(parts) when is_list(parts) do
+    text = for %{"type" => "text", "text" => text} <- parts, is_binary(text), do: text
+    images = for %{"type" => "image_ref"} = image <- parts, do: image
+    {Enum.join(text, "\n"), images}
+  end
+
+  defp text_and_images(_), do: {"", []}
+  defp bundle(text, images), do: [%{"type" => "text", "text" => text} | images]
+  defp cost(nil), do: 0
+  defp cost(text) when is_binary(text), do: byte_size(text)
+  defp cost(parts), do: Nano.ImageInput.estimated_bytes(parts)
 end
