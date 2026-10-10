@@ -1,3 +1,6 @@
 #!/bin/sh
-# Container entrypoint: compile /app and run the node from source.
+# The durable net is deliberately outside the editable checkout.
+if [ -f "${NANO_SAFETY_DIR:-/data/safety}/runner.py" ]; then
+  exec python3 "${NANO_SAFETY_DIR:-/data/safety}/runner.py"
+fi
 exec elixir --name nano@127.0.0.1 --cookie "${NODE_COOKIE:-$(cat /opt/nano/cookie)}" -S mix run --no-halt

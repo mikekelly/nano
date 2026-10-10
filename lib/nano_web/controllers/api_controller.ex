@@ -8,10 +8,16 @@ defmodule NanoWeb.ApiController do
 
   alias Nano.{Ops, User}
 
+  def safety(conn, _params), do: json(conn, Ops.safety())
+  def safety_health(conn, _params), do: json(conn, Nano.Safety.health())
+
   @keepalive_ms 15_000
 
   @endpoints [
     {"GET", "/api", "This index."},
+    {"GET", "/api/safety", "Independent recovery watchdog status and last notice (no secrets)."},
+    {"GET", "/api/safety/health",
+     "Watchdog liveness and model-served attestation for this OS process."},
     {"GET", "/api/processes",
      "Live processes outside the standard set (boot-time, OTP and dashboard processes), agents first. " <>
        "Each: pid, name, kind (agent | user | spawned_by | other), spawned_by (agent name), " <>

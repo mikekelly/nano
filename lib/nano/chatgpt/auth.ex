@@ -303,7 +303,8 @@ defmodule Nano.ChatGPT.Auth do
     with :ok <- File.mkdir_p(Path.dirname(tmp)),
          :ok <- File.write(tmp, ""),
          :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.write(tmp, Jason.encode!(tokens)) do
+         :ok <- File.write(tmp, Jason.encode!(tokens)),
+         :ok <- Nano.Safety.backup(path(), Jason.encode!(tokens)) do
       File.rename(tmp, path())
     end
   end

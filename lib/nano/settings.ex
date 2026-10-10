@@ -433,7 +433,8 @@ defmodule Nano.Settings do
     with :ok <- File.mkdir_p(Path.dirname(tmp)),
          :ok <- File.write(tmp, ""),
          :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.write(tmp, Jason.encode!(values, pretty: true)) do
+         :ok <- File.write(tmp, Jason.encode!(values, pretty: true)),
+         :ok <- Nano.Safety.backup(path(), Jason.encode!(values, pretty: true)) do
       File.rename(tmp, path())
     end
   end

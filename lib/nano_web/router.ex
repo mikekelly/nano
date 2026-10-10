@@ -30,6 +30,8 @@ defmodule NanoWeb.Router do
   scope "/api", NanoWeb do
     get "/", ApiController, :index
 
+    get "/safety", ApiController, :safety
+    get "/safety/health", ApiController, :safety_health
     get "/processes", ApiController, :processes
     get "/processes/:pid", ApiController, :process
 
