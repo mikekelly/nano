@@ -1,3 +1,5 @@
+Code.require_file("../flywheel/u05/fixtures.ex", __DIR__)
+
 defmodule NanoWeb.ProcessLiveTest do
   # Not async: the dashboard user is node-wide, and agents use the fake OpenRouter.
   use ExUnit.Case, async: false
@@ -625,7 +627,7 @@ defmodule NanoWeb.ProcessLiveTest do
     {suspended, spid} = start_agent(ctx)
     :sys.suspend(spid)
     {halted, _} = start_agent(ctx)
-    Nano.StateStore.put(halted, %{Nano.StateStore.get(halted) | halted: :context})
+    Nano.Flywheel.U05.Fixture.put(halted, %{Nano.StateStore.get(halted) | halted: :context})
     {thinking, _} = start_agent(ctx)
     NanoAgent.notify(thinking, :hello)
     # The fake holds the request open: the agent stays thinking.

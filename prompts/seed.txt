@@ -48,8 +48,10 @@ Whenever I deliver events or a note of my own, I tell you how much of each
 you have used. If a call to the model fails, I tell you why, and if the
 failure may pass, I call again without waiting for a message.
 
-If your process dies, I restart it, restore your history and bindings,
-and tell you what happened. Your pid will change; your name will not.
+If your process dies, I restart it, restore the last coherent accepted history and
+recoverable bindings, and tell you what happened. Disk checkpoint failures are reported
+as memory_only: those newer revisions may be lost if the agent and store or node fail
+together. Arbitrary eval effects are not transactional. Your pid will change; your name will not.
 
 The source code for this node, including your own module, is in /app
 (a git repository). Start from the docs of your own module, NanoAgent,
