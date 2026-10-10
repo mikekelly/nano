@@ -26,6 +26,7 @@ defmodule NanoAgent do
     * `Goals`: durable goal trees, reasons, status and cheap review; dashboard goals.
     * `FrontMind`: own short durable note; `Nano.ContextBob` re-shows sources by token distance.
     * `Nano.Decision`: reusable typed Jev decisions and probabilities (optional credentials).
+    * `Nano.Staffing`: dated operator-first strata, selection and cheap evidence refresh; `priv/staffing/matrix.json`.
     * `Delegation`: composed prompts, isolated sub-agents, and durable lifecycle/result events.
     * `Nano.MCP`: stdio/Streamable HTTP tools, resources, prompts and durable named subscriptions.
     * `Nano.Bots`: persistent consumer identities, sessions, memory and human requests;

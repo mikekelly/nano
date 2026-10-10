@@ -1,0 +1,87 @@
+{
+  "constraints": "Operator choices override benchmarks. One OpenAI family only; no allowed diversity. Lead, worker and grunt inherit engineering, not independently benchmark-ranked.",
+  "dated": "2026-10-10",
+  "pairs": [
+    {
+      "billing": "Subscription: no marginal API charge within plan limits; allocation, limits and speed still constrain work.",
+      "effort": "low",
+      "family": "OpenAI GPT-6",
+      "model": "openai-codex/gpt-6-astra",
+      "node_metrics": {
+        "cost_per_task": null,
+        "quality": null,
+        "speed": null
+      },
+      "reference_metrics": {
+        "aa_briefcase_v1.1_elo": 1257,
+        "cost_per_index_task_usd": 0.82,
+        "gdpval_aa_v2.1_elo": 1389,
+        "intelligence_index_v4.3.2": 46,
+        "output_tokens_per_second": 42,
+        "scicode_percent_under_review": 54,
+        "terminal_bench_4.0_percent": 42,
+        "time_per_index_task_seconds": 103.28
+      },
+      "reference_name": "GPT-6 Astra (Low)",
+      "reference_source_index": 0,
+      "unknown_reason": "Exact ChatGPT-provider pair has no public measured task/cost/speed data; reference is same model name and effort on public API, not an alias or node performance claim."
+    },
+    {
+      "billing": "Subscription: no marginal API charge within plan limits; allocation, limits and speed still constrain work.",
+      "effort": "low",
+      "family": "OpenAI GPT-6",
+      "model": "openai-codex/gpt-6.1-sol",
+      "node_metrics": {
+        "cost_per_task": null,
+        "quality": null,
+        "speed": null
+      },
+      "reference_metrics": {
+        "aa_briefcase_v1.1_elo": 1116,
+        "cost_per_index_task_usd": 0.13,
+        "gdpval_aa_v2.1_elo": 1317,
+        "intelligence_index_v4.3.2": 42,
+        "output_tokens_per_second": 51,
+        "scicode_percent_under_review": 53,
+        "terminal_bench_4.0_percent": 31,
+        "time_per_index_task_seconds": 78.05
+      },
+      "reference_name": "GPT-6.1 Sol (Low)",
+      "reference_source_index": 0,
+      "unknown_reason": "Exact ChatGPT-provider pair has no public measured task/cost/speed data; reference is same model name and effort on public API, not an alias or node performance claim."
+    }
+  ],
+  "schema": 1,
+  "sources": [
+    {
+      "excerpt_path": "priv/staffing/2026-10-10-aa-comparison.txt",
+      "fetched_at": "2026-10-10T07:43:48.842243Z",
+      "quote": "Cost per Task\n\n$0.13\n\n$0.82",
+      "scope": "Artificial Analysis OpenAI public API comparison; not measured on ChatGPT subscription",
+      "sha256": "52eb018a7e86528313cbebb52636b96556f4912886613c254b30125af3a1c5b5",
+      "url": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-low-vs-gpt-6-astra-low"
+    }
+  ],
+  "strata": {
+    "exec": {
+      "effort": "low",
+      "model": "openai-codex/gpt-6-astra",
+      "reason": "Operator exec mandate; public reference stronger intelligence and work-task scores, not a node ranking."
+    },
+    "grunt": {
+      "effort": "low",
+      "model": "openai-codex/gpt-6.1-sol",
+      "reason": "Engineering fallback; no cheaper allowed family, low effort fixed by operator. No winner claimed."
+    },
+    "lead": {
+      "effort": "low",
+      "model": "openai-codex/gpt-6.1-sol",
+      "reason": "Review and execution oversight inherit operator engineering mandate; Astra not substituted despite stronger public scores."
+    },
+    "worker": {
+      "effort": "low",
+      "model": "openai-codex/gpt-6.1-sol",
+      "reason": "Operator engineering mandate; public coding reference available, no measured node ranking."
+    }
+  }
+}

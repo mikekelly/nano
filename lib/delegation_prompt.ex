@@ -19,7 +19,9 @@ defmodule Delegation.Prompt do
            parts(root, ["principles" | List.wrap(opts[:flavours] || default(opts[:level]))]),
          {:ok, pre} <- preread(opts[:pre] || [], opts[:cwd] || root),
          {:ok, consumer_suffix} <- consumer_suffix(opts) do
-      job = "\nYour level is #{opts[:level]}. Your job:\n#{opts[:job]}\n"
+      job =
+        "\nYour level is #{opts[:level]}. Your job:\n#{opts[:job]}\n" <>
+          staffing_note(opts[:staffing])
 
       report =
         "\nReport to #{inspect(opts[:parent])} using Delegation.report(#{inspect(opts[:name])}, result). " <>
@@ -104,6 +106,12 @@ defmodule Delegation.Prompt do
 
   defp hash(text),
     do: Base.encode16(:crypto.hash(:sha256, text), case: :lower)
+
+  defp staffing_note(nil), do: ""
+
+  defp staffing_note(pair),
+    do:
+      "\nStaffing: #{pair.model} / #{pair.effort}; #{pair.reason} Evidence: Nano.Staffing and priv/staffing/matrix.json.\n"
 
   defp default(:exec), do: ["exec"]
   defp default(_), do: ["builder"]
