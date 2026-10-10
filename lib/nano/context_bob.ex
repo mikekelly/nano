@@ -2,7 +2,8 @@ defmodule Nano.ContextBob do
   @moduledoc """
   Reusable append-only token-distance bobbing. `apply/4` returns `{transcript, cursors,
   measurements}` for sources `%{key:, text:, version:, threshold_tokens:}`. A cursor holds
-  the exact last message; distance is JSON bytes / 2 in its suffix, not turns. Missing
+  the exact last message; distance is conservative image-aware bytes / 2 in its suffix,
+  using `Nano.ImageInput.estimated_bytes/1`, not turns. Missing
   anchors (including compaction) bob immediately. No cached prefix is rewritten.
   """
   def apply(transcript, cursors, sources, force \\ false) do
@@ -54,5 +55,5 @@ defmodule Nano.ContextBob do
     end
   end
 
-  def tokens(message), do: div(byte_size(Jason.encode!(message)) + 1, 2)
+  def tokens(message), do: div(Nano.ImageInput.estimated_bytes(message) + 1, 2)
 end
