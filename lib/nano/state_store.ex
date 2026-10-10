@@ -873,14 +873,27 @@ defmodule Nano.StateStore do
             lifecycle_generation: ^generation,
             kept: kept,
             dropped: dropped
-          } = b} <- read_term(Path.join(dir(), file)),
-         true <- valid_bindings?(kept) and is_list(dropped) and Enum.all?(dropped, &is_atom/1),
-         digest = :crypto.hash(:sha256, :erlang.term_to_binary(b)) |> Base.encode16(case: :lower),
-         true <- file == name <> "." <> digest <> ".bindings-v1" do
+          } = b} <- read_binding_blob(name, file),
+         true <- valid_bindings?(kept) and is_list(dropped) and Enum.all?(dropped, &is_atom/1) do
       {:ok, e, b}
     else
       _ -> {:error, :incoherent}
     end
+  end
+
+  # Digest names identify the immutable persisted bytes, not a fresh serialization of
+  # the decoded map. Small-map external-term order can change with VM atom layout.
+  # Verify before decoding; envelope identity/schema/generation checks remain above.
+  defp read_binding_blob(name, file) do
+    with {:ok, bytes} <- File.read(Path.join(dir(), file)),
+         digest = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower),
+         true <- file == name <> "." <> digest <> ".bindings-v1" do
+      {:ok, :erlang.binary_to_term(bytes)}
+    else
+      _ -> {:error, :incoherent}
+    end
+  rescue
+    _ -> {:error, :incoherent}
   end
 
   defp migrate_legacy(s) do
