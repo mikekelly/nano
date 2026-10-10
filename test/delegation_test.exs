@@ -183,4 +183,78 @@ defmodule DelegationTest do
     assert [] = Delegation.Monitor.events("child", restored)
     GenServer.stop(restored)
   end
+
+  test "retries are sparse, retain IDs, and immediately follow parent pid changes", %{dir: dir} do
+    test_pid = self()
+
+    old_parent =
+      spawn(fn ->
+        receive do
+          event ->
+            send(test_pid, {:first_delivery, event})
+            Process.sleep(:infinity)
+        end
+      end)
+
+    {:ok, parent_state} = Agent.start_link(fn -> old_parent end)
+    name = {:global, {:delegation_retry, make_ref()}}
+
+    {:ok, m} =
+      Delegation.Monitor.start_link(dir: dir, name: name, adapter: DelegationTest.Adapter)
+
+    assert :sys.get_state(m).retry_interval_ms == 60_000
+    assert :ok = Delegation.Monitor.reserve("child", {:parent_state, parent_state}, m)
+    assert :ok = Delegation.Monitor.emit("child", :result, %{result: "once"}, m)
+    assert_receive {:first_delivery, %{event_id: id}}, 1000
+    send(m, :deliver)
+    refute_receive {:first_delivery, _}, 30
+    Process.exit(old_parent, :kill)
+    Agent.update(parent_state, fn _ -> test_pid end)
+    send(m, :deliver)
+    assert_receive %{event_id: ^id, result: "once"}, 1000
+    send(m, :deliver)
+    refute_receive %{event_id: ^id}, 30
+
+    :sys.replace_state(m, fn s ->
+      %{s | last_delivery: %{id => {test_pid, System.monotonic_time(:millisecond) - 60_001}}}
+    end)
+
+    send(m, :deliver)
+    assert_receive %{event_id: ^id}, 1000
+
+    :sys.replace_state(m, fn s ->
+      s
+      |> Map.delete(:retry_interval_ms)
+      |> Map.put(:last_delivery, %{id => System.monotonic_time(:millisecond)})
+    end)
+
+    send(m, :deliver)
+    assert_receive %{event_id: ^id}, 1000
+    assert :ok = Delegation.Monitor.ack(id, m)
+    send(m, :deliver)
+    refute_receive %{event_id: ^id}, 30
+    GenServer.stop(m)
+  end
+
+  test "quiet polls leave durable file untouched", %{dir: dir} do
+    name = {:global, {:delegation_quiet, make_ref()}}
+
+    {:ok, m} =
+      Delegation.Monitor.start_link(
+        dir: dir,
+        name: name,
+        adapter: DelegationTest.Adapter,
+        retry_interval_ms: 120_000
+      )
+
+    assert :ok = Delegation.Monitor.reserve("child", {:parent, self()}, m)
+    path = Path.join(dir, "registry.term")
+    ancient = {{2000, 1, 1}, {0, 0, 0}}
+    :ok = File.touch(path, ancient)
+    send(m, :tick)
+    :sys.get_state(m)
+    assert File.stat!(path).mtime == ancient
+    assert :sys.get_state(m).retry_interval_ms == 120_000
+    GenServer.stop(m)
+  end
 end

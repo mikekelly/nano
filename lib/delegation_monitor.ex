@@ -6,8 +6,10 @@ defmodule Delegation.Monitor do
   events and deduplication state. Acknowledgements persist before returning. No pid is stored
   as a reply address. On boot missing children are reported once as :death, then reattached.
   Test instances accept isolated `dir`, `name`, and an adapter implementing info/1,
-  whereis/1 and notify/2; production uses NanoAgent. Events retry every five seconds until
-  acked; consumers should deduplicate event_id. This is not an exactly-once protocol.
+  whereis/1 and notify/2; production uses NanoAgent. Events retry every sixty seconds by default until
+  acked; consumers should deduplicate event_id. `retry_interval_ms:` (minimum 1,000 ms)
+  overrides the default application env `:delegation_retry_interval_ms` (60,000). A changed
+  parent pid retries immediately. Quiet ticks do not rewrite the durable registry. This is not an exactly-once protocol.
   """
   use GenServer
 
@@ -37,8 +39,21 @@ defmodule Delegation.Monitor do
         {:error, :enoent} -> %{}
       end
 
+    retry_interval_ms =
+      opts[:retry_interval_ms] ||
+        Application.get_env(:nano, :delegation_retry_interval_ms, 60_000)
+
+    true = is_integer(retry_interval_ms) and retry_interval_ms >= 1_000
     send(self(), :tick)
-    {:ok, %{path: path, records: records, refs: %{}, adapter: opts[:adapter] || NanoAgent}}
+
+    {:ok,
+     %{
+       path: path,
+       records: records,
+       refs: %{},
+       adapter: opts[:adapter] || NanoAgent,
+       retry_interval_ms: retry_interval_ms
+     }}
   end
 
   @impl true
@@ -123,6 +138,8 @@ defmodule Delegation.Monitor do
 
   @impl true
   def handle_info(:tick, s) do
+    before_records = s.records
+
     s =
       Enum.reduce(s.records, s, fn {child, r}, s ->
         if r.active or s.adapter.whereis(child) != nil do
@@ -164,7 +181,7 @@ defmodule Delegation.Monitor do
         end
       end)
 
-    :ok = persist(s.path, s.records)
+    if s.records != before_records, do: :ok = persist(s.path, s.records)
     send(self(), :deliver)
     Process.send_after(self(), :tick, 1_000)
     {:noreply, s}
@@ -201,11 +218,19 @@ defmodule Delegation.Monitor do
 
     last =
       Enum.reduce(s.records, last, fn {_, r}, last ->
-        if s.adapter.whereis(r.parent) do
+        if parent_pid = s.adapter.whereis(r.parent) do
           Enum.reduce(r.events, last, fn event, last ->
-            if now - Map.get(last, event.event_id, now - 5_000) >= 5_000 do
+            previous = Map.get(last, event.event_id)
+
+            if previous == nil or is_integer(previous) or elem(previous, 0) != parent_pid or
+                 now - elem(previous, 1) >=
+                   Map.get(
+                     s,
+                     :retry_interval_ms,
+                     Application.get_env(:nano, :delegation_retry_interval_ms, 60_000)
+                   ) do
               s.adapter.notify(r.parent, event)
-              Map.put(last, event.event_id, now)
+              Map.put(last, event.event_id, {parent_pid, now})
             else
               last
             end
