@@ -2241,7 +2241,7 @@ defmodule NanoAgentTest do
   defp bindings_file(name),
     do: Path.join(Application.get_env(:nano, :state_dir), name <> ".bindings")
 
-  test "a large binding costs nothing at each save; bindings are saved only when an eval changes them",
+  test "events preserve large bindings without embedding or rewriting them",
        ctx do
     {pid, id} = start!(ctx, max_turns: 1)
     Fake.push(ctx.model, calls: [eval: "big = Enum.to_list(1..2_000_000); :ok"])
@@ -2249,19 +2249,17 @@ defmodule NanoAgentTest do
     request!(ctx.model)
     await(id, :turn_ended)
     :sys.get_state(pid)
-    assert {[big: _, me: _], []} = Nano.StateStore.bindings(ctx.name)
+    assert {[big: _, me: _], []} = snapshot = Nano.StateStore.bindings(ctx.name)
     refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
     File.rm!(bindings_file(ctx.name))
 
-    # Halted, so each event is just received, logged and saved. Saving the entry with its
-    # ~10 MB binding took about 45 ms each; without it, a save costs what the entry costs.
-    {us, _} =
-      :timer.tc(fn ->
-        for i <- 1..10, do: send(pid, {:poke, i})
-        :sys.get_state(pid)
-      end)
-
-    assert us < 200_000
+    # Exercise the actual save boundary, independent of tracing/scheduling wall time.
+    for i <- 1..10, do: send(pid, {:poke, i})
+    :sys.get_state(pid)
+    saved = state_file(ctx.name) |> File.read!() |> :erlang.binary_to_term()
+    refute Map.has_key?(saved, :bindings)
+    refute Map.has_key?(Nano.StateStore.get(ctx.name), :bindings)
+    assert Nano.StateStore.bindings(ctx.name) == snapshot
     assert File.stat!(state_file(ctx.name)).size < 100_000
     # Events do not rewrite the bindings.
     refute File.exists?(bindings_file(ctx.name))

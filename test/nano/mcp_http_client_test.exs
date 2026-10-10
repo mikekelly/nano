@@ -71,6 +71,12 @@ defmodule Nano.MCPHTTPClientTest do
       end)
 
       eventually(fn ->
+        {:ok, replacement} = Nano.MCP.Manager.session(a, mode)
+        assert replacement != old
+        assert_active(replacement)
+      end)
+
+      eventually(fn ->
         assert {:ok, _} = MCP.call_tool(a, mode, "update")
 
         assert_receive {:"$gen_cast",
@@ -106,6 +112,53 @@ defmodule Nano.MCPHTTPClientTest do
 
     assert {:error, {:invalid_header_argument, ["tenant"]}} =
              MCP.call_tool(a, "modern", "tenant", %{"tenant" => 42})
+  end
+
+  test "legacy connect and update do not imply restored subscription completion", %{
+    a: a,
+    state: state
+  } do
+    uri = "http://fixture/resource"
+    mode = "legacy"
+    assert :ok = MCP.connect(a, mode)
+    assert :ok = MCP.subscribe(a, mode, uri)
+    {:ok, old} = Nano.MCP.Manager.session(a, mode)
+    ref = make_ref()
+    owner = self()
+    Agent.update(state, &Map.put(&1, :hold_subscribe, {owner, ref}))
+    Process.exit(old, :kill)
+    assert_receive {:subscribe_held, ^ref, handler}, 3000
+    on_exit(fn -> send(handler, {:release_subscribe, ref}) end)
+    {:ok, replacement} = Nano.MCP.Manager.session(a, mode)
+    assert replacement != old
+    assert :ok = MCP.connect(a, mode)
+
+    assert {:ok, %{data: %{subscriptions: %{desired: desired, active: active}}}} =
+             Nano.MCP.Connection.catalog(replacement)
+
+    assert uri in desired
+    refute uri in active
+    assert {:ok, _} = MCP.call_tool(a, mode, "update")
+
+    assert_receive {:"$gen_cast",
+                    {:notify, %{mcp: "notifications/resources/updated", server: ^mode}}},
+                   2500
+
+    assert {:error, :subscription_busy} = MCP.unsubscribe(a, mode, uri)
+    send(handler, {:release_subscribe, ref})
+    eventually(fn -> assert_active(replacement) end)
+    assert :ok = MCP.unsubscribe(a, mode, uri)
+
+    assert {:ok, %{data: %{subscriptions: %{desired: [], active: []}}}} =
+             Nano.MCP.Connection.catalog(replacement)
+  end
+
+  defp assert_active(pid) do
+    assert {:ok, %{data: %{subscriptions: %{desired: desired, active: active}}}} =
+             Nano.MCP.Connection.catalog(pid)
+
+    assert "http://fixture/resource" in desired
+    assert "http://fixture/resource" in active
   end
 
   defp eventually(fun, n \\ 70)

@@ -88,6 +88,8 @@ defmodule Nano.Test.MCPHTTPFixture do
                 %{"contents" => [%{"uri" => params["uri"], "text" => "http resource"}]}
 
               "resources/subscribe" ->
+                hold_subscribe(state)
+
                 Agent.update(
                   state,
                   &Map.update!(&1, :uris, fn uris -> Enum.uniq([params["uri"] | uris]) end)
@@ -120,6 +122,26 @@ defmodule Nano.Test.MCPHTTPFixture do
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(200, Jason.encode!(%{"jsonrpc" => "2.0", "id" => id, "result" => result}))
+      end
+    end
+  end
+
+  # One-shot fixture barrier: request is pending, while independent SSE can push updates.
+  defp hold_subscribe(state) do
+    barrier =
+      Agent.get_and_update(
+        state,
+        &{Map.get(&1, :hold_subscribe), Map.delete(&1, :hold_subscribe)}
+      )
+
+    if barrier do
+      {owner, ref} = barrier
+      send(owner, {:subscribe_held, ref, self()})
+
+      receive do
+        {:release_subscribe, ^ref} -> :ok
+      after
+        5000 -> raise "subscribe fixture barrier timed out"
       end
     end
   end
