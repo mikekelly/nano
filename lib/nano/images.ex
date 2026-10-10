@@ -2,7 +2,7 @@ defmodule Nano.Images do
   @moduledoc """
   Immutable SHA-256 image store (default `/data/images`, override `store_dir:`).
   PNG, JPEG, GIF and WebP container headers and dimensions are checked; this is
-  not a full pixel decoder. Both axes must be 1..2000 and base64 at most 5 MiB,
+  not a full pixel decoder. Both axes must be 1..2000 and base64 at most 5,000,000 bytes,
   independent of image count. Refs are plain maps with image_ref, mime, width,
   height and raw bytes size. Reads verify identity and metadata. Atomic hard-link
   publication never replaces existing objects, even corrupt ones. Storage is a
@@ -11,7 +11,7 @@ defmodule Nano.Images do
       {:ok, ref} = Nano.Images.import_file("picture.png")
       {:ok, url} = Nano.Images.data_url(ref)
   """
-  @max_raw div(5 * 1024 * 1024, 4) * 3
+  @max_raw div(5_000_000, 4) * 3
   def import_file(path, opts \\ []) do
     with {:ok, data} <- bounded_read(path), do: import_bytes(data, opts)
   end
