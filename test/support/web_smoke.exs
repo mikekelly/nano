@@ -1,4 +1,4 @@
-# Optional live-network smoke: MIX_ENV=test mix run --no-start test/web_smoke.exs
+# Optional live-network smoke: MIX_ENV=test mix run --no-start test/support/web_smoke.exs
 # Kept outside the deterministic ExUnit suite; fails plainly if network/browser unavailable.
 dir =
   Path.join(System.tmp_dir!(), "nano-web-smoke-" <> Base.encode16(:crypto.strong_rand_bytes(8)))
