@@ -491,7 +491,9 @@ defmodule Nano.Bots.RuntimeTest do
          store: c.store,
          state_dir: c.opts[:state_dir] <> "/named",
          pubsub: nil,
-         retry_ms: 60_000}, id: {:runtime_named, name})
+         retry_ms: 60_000},
+        id: {:runtime_named, name}
+      )
 
     runtime = start_supervised!(child)
     assert :sys.get_state(runtime).runtime == name
