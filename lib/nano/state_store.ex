@@ -429,12 +429,12 @@ defmodule Nano.StateStore do
             {:DOWN, ^ref, :process, ^old, reason} -> record(name, old, reason)
           after
             0 ->
-              if not Process.alive?(old) do
-                receive do
-                  {:DOWN, ^ref, :process, ^old, reason} -> record(name, old, reason)
-                after
-                  5000 -> record(name, old, :unknown)
-                end
+              # A queued replacement can arrive before the predecessor consumes
+              # its stop. Retain the attached monitor for bounded exact DOWN evidence.
+              receive do
+                {:DOWN, ^ref, :process, ^old, reason} -> record(name, old, reason)
+              after
+                5000 -> if not Process.alive?(old), do: record(name, old, :unknown)
               end
           end
 

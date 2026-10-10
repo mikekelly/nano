@@ -614,3 +614,57 @@ defmodule Nano.Flywheel.U05.RecoveryTest do
     Store.delete(name)
   end
 end
+
+defmodule U05.WatchOrderingRegression do
+  use ExUnit.Case, async: false
+
+  test "compatibility watch preserves exact exit when predecessor is alive at queued replacement" do
+    name = "watch-order-" <> Integer.to_string(System.unique_integer([:positive]))
+    observer = self()
+
+    pid =
+      spawn(fn ->
+        receive do
+          :stop ->
+            send(observer, {:stop_received, self()})
+
+            receive do
+              :release_exit -> exit(:boom)
+            end
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
+      Nano.StateStore.delete(name)
+    end)
+
+    :ok = Nano.StateStore.put(name, %{name: name, pid: pid})
+    :ok = Nano.StateStore.watch(name, pid)
+    send(pid, :stop)
+    assert_receive {:stop_received, ^pid}, 5000
+    store = Process.whereis(Nano.StateStore)
+    :ok = :sys.suspend(store)
+    replacement = Task.async(fn -> Nano.StateStore.watch(name, self()) end)
+
+    wait = fn wait ->
+      {:messages, messages} = Process.info(store, :messages)
+
+      unless Enum.any?(messages, &match?({:"$gen_call", _, {:watch, ^name, _}}, &1)),
+        do:
+          (
+            Process.sleep(1)
+            wait.(wait)
+          )
+    end
+
+    wait.(wait)
+    :ok = :sys.resume(store)
+    # Baseline returns/demonitors here; repaired Store retains monitor and waits.
+    early = Task.yield(replacement, 200)
+    send(pid, :release_exit)
+    assert (early || Task.yield(replacement, 5000)) == {:ok, :ok}
+    :sys.get_state(store)
+    assert Nano.StateStore.exit_reason(name, pid) == :boom
+  end
+end
