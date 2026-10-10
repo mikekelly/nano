@@ -140,6 +140,7 @@ defmodule Nano.Flywheel do
         _ -> {:error, :invalid_request}
       catch
         :restart_required -> {:error, :restart_required}
+        :corrupt_state -> {:error, :corrupt_state}
         :git_diff_failed -> {:error, :git_diff_failed}
         :invalid_evidence -> {:error, :invalid_evidence}
       end
@@ -171,6 +172,9 @@ defmodule Nano.Flywheel do
 
       {:replay, reply} ->
         {:reply, {:ok, reply}, s}
+
+      {:error, :corrupt_state} = e ->
+        {:reply, e, %{s | mode: :degraded}}
 
       {:error, _} = e ->
         {:reply, e, s}
@@ -271,6 +275,7 @@ defmodule Nano.Flywheel do
       # Read disk again after uncertain persistence, never roll back newer authority.
       with {:ok, saved} <- Store.read(s.root) do
         d = saved || s.data
+        if not restored_valid?(d, s.repository), do: throw(:corrupt_state)
         if d.owner_generation != a.owner_generation, do: throw(:restart_required)
 
         units =
@@ -356,6 +361,9 @@ defmodule Nano.Flywheel do
           evidence: ev,
           prior_done: u.done,
           prior_stages: u.stages,
+          prior_proposal: u.proposal,
+          prior_dispatch: u.dispatch,
+          prior_attempt: u[:attempt],
           at: now()
         })
 
@@ -376,6 +384,8 @@ defmodule Nano.Flywheel do
           reservation: r,
           integration_generation: u.integration_generation + 1
       }
+
+      u = if r == nil, do: clear_attempt(u, :reopened, a.owner), else: u
 
       {:ok, put_unit(s.data, id, u),
        %{unit: id, claim_generation: u.claim_generation, reservation: r}, :active}
@@ -436,6 +446,14 @@ defmodule Nano.Flywheel do
         })
 
       u = %{u | dispatch: dispatch, dispatch_generation: dispatch.generation}
+
+      u =
+        Map.put(u, :attempt, %{
+          claim_token: dispatch.claim_token,
+          dispatch_generation: dispatch.generation,
+          unit_sha256: dispatch.unit_sha256
+        })
+
       {:ok, put_unit(s.data, token.unit, u), dispatch, :active}
     end
   end
@@ -514,6 +532,8 @@ defmodule Nano.Flywheel do
               owner_generation: generation,
               claim_generation: u.claim_generation + 1
             }
+
+            u = clear_attempt(u, :fresh_claim, name)
 
             u = %{
               u
@@ -625,7 +645,11 @@ defmodule Nano.Flywheel do
       }
 
       u = interrupt(u, :adopted)
-      u = %{u | reservation: r, integration_generation: r.integration_generation}
+
+      u =
+        %{u | reservation: r, integration_generation: r.integration_generation, accepted: false}
+        |> Map.put(:acceptance, nil)
+
       {:ok, put_unit(s.data, id, u), r, :active}
     end
   end
@@ -637,14 +661,58 @@ defmodule Nano.Flywheel do
          :ok <- integration_diff(s, u, action) do
       case action do
         :accept ->
-          {:ok, put_unit(s.data, r.unit, %{u | accepted: true}), :accepted, :active}
+          with true <- u.stages[:integrated] == nil || {:error, :already_integrated},
+               true <- not u.accepted || {:error, :already_accepted},
+               {:ok, pin} <- acceptance_pin(s),
+               {:ok, _} <-
+                 git_read(s.repository, [
+                   "merge-base",
+                   "--is-ancestor",
+                   u.proposal.base_commit,
+                   pin.base_commit
+                 ]),
+               {:ok, original} <-
+                 git_read(s.repository, ["rev-parse", u.proposal.commit <> "^{commit}"]),
+               true <- original == u.proposal.commit || {:error, :invalid_commit} do
+            u = %{u | accepted: true} |> Map.put(:acceptance, pin)
+
+            u =
+              unit_history(u, %{
+                id: "accept-#{r.integration_generation}",
+                kind: :integration_accept,
+                by: a.owner,
+                at: now(),
+                pin: pin,
+                tokens: nil,
+                wall_time_ms: nil
+              })
+
+            data = put_unit(s.data, r.unit, u)
+
+            {:ok, data, :accepted, :active}
+          end
 
         {:land, commit, ev} ->
           with true <- u.accepted || {:error, :not_accepted},
                :ok <- hash(commit),
-               :ok <- evidence(ev) do
+               :ok <- evidence(ev),
+               :ok <- landed_candidate(s, u, commit) do
             ev = Data.normalize(ev)
+
+            u =
+              if u.stages[:integrated] != nil and u.stages.integrated.commit != commit,
+                do: invalidate_deployment(u),
+                else: u
+
             u = %{u | stages: Map.put(u.stages, :integrated, %{commit: commit, evidence: ev})}
+
+            u =
+              Map.put(
+                u,
+                :stage_bindings,
+                Map.put(u[:stage_bindings] || %{}, :integrated, stage_binding(u, :integrated))
+              )
+
             {:ok, put_unit(s.data, r.unit, u), :integrated, :active}
           end
 
@@ -698,13 +766,24 @@ defmodule Nano.Flywheel do
            if(stage in [:external_blockers, :serious_findings] and ev == [],
              do: :ok,
              else: evidence(ev)
-           ) do
+           ),
+         :ok <- proof_attempt(u, stage) do
       ev =
         if stage == :external_blockers,
           do: Enum.uniq((u.stages[:external_blockers] || []) ++ ev),
           else: ev
 
       u = %{u | stages: Map.put(u.stages, stage, ev)}
+
+      u =
+        if stage in [:external_blockers, :serious_findings],
+          do: u,
+          else:
+            Map.put(
+              u,
+              :stage_bindings,
+              Map.put(u[:stage_bindings] || %{}, stage, stage_binding(u, stage))
+            )
 
       {:ok,
        put_unit(
@@ -1032,6 +1111,76 @@ defmodule Nano.Flywheel do
       Enum.any?(d.units[id].description.dependencies, &depends_on?(d, &1, target))
   end
 
+  defp clear_attempt(u, reason, by) do
+    u =
+      unit_history(u, %{
+        id: "attempt-archive-#{u.claim_generation}-#{reason}",
+        kind: :attempt_archived,
+        by: by,
+        at: now(),
+        reason: reason,
+        prior_proposal: u.proposal,
+        prior_dispatch: u.dispatch,
+        prior_stages: u.stages,
+        prior_attempt: u[:attempt],
+        prior_bindings: u[:stage_bindings],
+        prior_bootstrap: u[:bootstrap_reconciled]
+      })
+
+    %{
+      u
+      | proposal: nil,
+        dispatch: nil,
+        accepted: false,
+        stages: Map.take(u.stages, [:external_blockers, :external_resolutions, :serious_findings])
+    }
+    |> Map.put(:acceptance, nil)
+    |> Map.put(:attempt, nil)
+    |> Map.put(:stage_bindings, %{})
+    |> Map.put(:bootstrap_reconciled, nil)
+  end
+
+  defp proof_attempt(_, stage) when stage in [:external_blockers, :serious_findings], do: :ok
+
+  defp proof_attempt(u, _) do
+    if is_map(u[:attempt]) and u.dispatch != nil, do: :ok, else: {:error, :dispatch_required}
+  end
+
+  defp stage_binding(u, stage) do
+    revision =
+      if stage in [:deployed, :live_verified, :announced],
+        do: get_in(u, [:stages, :integrated, :commit]),
+        else: nil
+
+    %{attempt: u[:attempt], integrated_commit: revision}
+  end
+
+  defp current_proofs?(u, required) do
+    if u[:attempt] == nil do
+      is_map(u[:bootstrap_reconciled]) and
+        Enum.all?(required, &(u.bootstrap_reconciled.stages[&1] == u.stages[&1]))
+    else
+      Enum.all?(required, &((u[:stage_bindings] || %{})[&1] == stage_binding(u, &1)))
+    end
+  end
+
+  defp invalidate_deployment(u) do
+    u =
+      unit_history(u, %{
+        id: "revision-invalidated-#{u.integration_generation}",
+        kind: :revision_invalidated,
+        by: "graph-owner",
+        at: now(),
+        prior_stages: Map.take(u.stages, [:deployed, :live_verified, :announced])
+      })
+
+    %{u | stages: Map.drop(u.stages, [:deployed, :live_verified, :announced])}
+    |> Map.put(
+      :stage_bindings,
+      Map.drop(u[:stage_bindings] || %{}, [:deployed, :live_verified, :announced])
+    )
+  end
+
   defp done_gate(u) do
     required =
       if u.description.type == :code,
@@ -1047,6 +1196,9 @@ defmodule Nano.Flywheel do
 
       Enum.any?(required, &(u.stages[&1] in [nil, "", %{}, [], false])) ->
         {:error, :missing_stages}
+
+      not current_proofs?(u, required) ->
+        {:error, :stale_stage_proof}
 
       true ->
         :ok
@@ -1228,6 +1380,60 @@ defmodule Nano.Flywheel do
       end)
 
     if conflict, do: {:error, :dispatch_path_conflict}, else: :ok
+  end
+
+  defp git_read(repo, args) do
+    case System.cmd("git", ["-C", repo | args], stderr_to_stdout: true) do
+      {out, 0} -> {:ok, String.trim(out)}
+      _ -> {:error, :git_diff_failed}
+    end
+  end
+
+  defp acceptance_pin(s) do
+    with :ok <- Scopes.safe_root(s.repository),
+         {:ok, top} <- git_read(s.repository, ["rev-parse", "--show-toplevel"]),
+         true <- top == s.repository || {:error, :integration_repository_mismatch},
+         {:ok, status} <-
+           git_read(s.repository, ["status", "--porcelain", "--untracked-files=all"]),
+         true <- status == "" || {:error, :dirty_integration_repository},
+         {:ok, base} <- git_read(s.repository, ["rev-parse", "HEAD^{commit}"]),
+         :ok <- hash(base) do
+      {:ok, %{repository: s.repository, base_commit: base}}
+    end
+  end
+
+  defp landed_candidate(s, u, commit) do
+    pin = u[:acceptance]
+
+    with true <- is_map(pin) || {:error, :acceptance_required},
+         true <- pin.repository == s.repository || {:error, :integration_repository_mismatch},
+         {:ok, current} <- acceptance_pin(s),
+         true <- current.base_commit == commit || {:error, :integration_head_mismatch},
+         {:ok, parents} <- git_read(s.repository, ["rev-list", "--parents", "-n", "1", commit]),
+         true <-
+           String.split(parents) == [commit, pin.base_commit] ||
+             {:error, :integration_parent_mismatch},
+         {:ok, paths} <-
+           actual_diff(%{
+             worktree: s.repository,
+             base_commit: pin.base_commit,
+             commit: commit,
+             changed_files: u.proposal.changed_files
+           }),
+         {:ok, _} <- Scopes.normalize(Enum.map(paths, &%{kind: :exact, path: &1}), s.repository),
+         true <- Enum.all?(paths, &Scopes.covers?(u.scopes, &1)) || {:error, :unclaimed_diff},
+         {:ok, merged} <-
+           git_read(s.repository, [
+             "merge-tree",
+             "--write-tree",
+             "--merge-base=" <> u.proposal.base_commit,
+             pin.base_commit,
+             u.proposal.commit
+           ]),
+         {:ok, tree} <- git_read(s.repository, ["rev-parse", commit <> "^{tree}"]),
+         true <- merged == tree || {:error, :integration_content_mismatch} do
+      :ok
+    end
   end
 
   defp actual_diff(p) do

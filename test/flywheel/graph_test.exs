@@ -276,6 +276,108 @@ defmodule Nano.Flywheel.GraphTest do
     Map.merge(p, %{dispatch_generation: prepared.generation, unit_sha256: prepared.unit_sha256})
   end
 
+  defp accept_fixture(s, a, r, p) do
+    # Model the owner accepting before cherry-pick, then its actual clean landed HEAD.
+    git(p.worktree, ["reset", "--hard", p.base_commit])
+    result = F.integration(s, a, r, :accept)
+    git(p.worktree, ["reset", "--hard", p.commit])
+    result
+  end
+
+  test "U03-A3 land verifies pinned repository HEAD parent scope and exact cherry-pick tree", c do
+    p = fixture(c)
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [%{description("A", [scope("new.ex")]) | base_commit: p.base_commit}])
+    {:ok, t} = claim(s, "A")
+    p = prepared_proposal(s, a, t, p)
+    {:ok, r} = F.submit(s, t, p)
+    git(c.repo, ["reset", "--hard", p.base_commit])
+    File.write!(Path.join(c.repo, "dirty"), "untracked")
+    assert {:error, :dirty_integration_repository} = F.integration(s, a, r, :accept)
+    File.rm!(Path.join(c.repo, "dirty"))
+    # An earlier nonoverlapping integration changes the current base from the dispatch base.
+    File.write!(Path.join(c.repo, "prior"), "prior integration")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "prior integration"])
+    accepted_base = git(c.repo, ["rev-parse", "HEAD"])
+    assert {:ok, :accepted} = F.integration(s, a, r, :accept)
+    assert {:error, :already_accepted} = F.integration(s, a, r, :accept)
+    {:ok, pinned} = F.unit(s, "A")
+    assert pinned.acceptance == %{repository: c.repo, base_commit: accepted_base}
+
+    assert Enum.any?(
+             pinned.history,
+             &(&1[:kind] == :integration_accept and &1[:pin] == pinned.acceptance)
+           )
+
+    assert {:error, :integration_head_mismatch} =
+             F.integration(s, a, r, {:land, String.duplicate("f", 40), :proof})
+
+    git(c.repo, ["reset", "--hard", p.commit])
+
+    assert {:error, :integration_parent_mismatch} =
+             F.integration(s, a, r, {:land, p.commit, :proof})
+
+    git(c.repo, ["reset", "--hard", accepted_base])
+    File.write!(Path.join(c.repo, "new.ex"), "n ew")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "whitespace changes actual content"])
+    unrelated = git(c.repo, ["rev-parse", "HEAD"])
+
+    assert {:error, :integration_content_mismatch} =
+             F.integration(s, a, r, {:land, unrelated, :proof})
+
+    git(c.repo, ["reset", "--hard", accepted_base])
+    File.write!(Path.join(c.repo, "outside"), "not reserved")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "wrong diff"])
+    wrong_diff = git(c.repo, ["rev-parse", "HEAD"])
+    assert {:error, :diff_mismatch} = F.integration(s, a, r, {:land, wrong_diff, :proof})
+    git(c.repo, ["reset", "--hard", accepted_base])
+    {:ok, retry} = F.adopt(s, a, "A", p.id)
+    assert retry.integration_generation > r.integration_generation
+    assert {:error, :stale_reservation} = F.integration(s, a, r, :accept)
+    {:ok, retry_unit} = F.unit(s, "A")
+    refute retry_unit.accepted
+    assert retry_unit.acceptance == nil
+    r = retry
+    assert {:ok, :accepted} = F.integration(s, a, r, :accept)
+    git(c.repo, ["cherry-pick", p.commit])
+    candidate = git(c.repo, ["rev-parse", "HEAD"])
+    refute candidate == p.commit
+    File.write!(Path.join(c.repo, "dirty"), "untracked")
+
+    assert {:error, :dirty_integration_repository} =
+             F.integration(s, a, r, {:land, candidate, :proof})
+
+    File.rm!(Path.join(c.repo, "dirty"))
+    assert {:ok, :integrated} = F.integration(s, a, r, {:land, candidate, :proof})
+    assert {:error, :already_integrated} = F.integration(s, a, r, :accept)
+    {:ok, landed} = F.unit(s, "A")
+    assert landed.stages.integrated.commit == candidate
+    refute landed.done
+
+    for stage <- [:deployed, :live_verified, :announced],
+        do: assert({:ok, ^stage} = F.record_stage(s, a, "A", stage, %{revision: candidate}))
+
+    assert {:ok, :integrated} =
+             F.integration(s, a, r, {:land, candidate, :same_revision_recovery})
+
+    {:ok, same_revision} = F.unit(s, "A")
+    assert same_revision.stages[:deployed] != nil
+    git(c.repo, ["commit", "--amend", "-qm", "different integration identity same tree"])
+    replacement = git(c.repo, ["rev-parse", "HEAD"])
+    refute replacement == candidate
+    assert {:ok, :integrated} = F.integration(s, a, r, {:land, replacement, :new_revision})
+    {:ok, changed_revision} = F.unit(s, "A")
+
+    for stage <- [:deployed, :live_verified, :announced],
+        do: assert(changed_revision.stages[stage] == nil)
+
+    assert Enum.any?(changed_revision.history, &(&1[:kind] == :revision_invalidated))
+  end
+
   defp fixture(c) do
     git(c.repo, ["init", "-q"])
     git(c.repo, ["config", "user.email", "fixture@example.invalid"])
@@ -334,7 +436,7 @@ defmodule Nano.Flywheel.GraphTest do
     {:ok, adopted} = F.adopt(s, a, "A", p.id)
     assert adopted.integration_generation > r.integration_generation
     assert {:error, :stale_reservation} = F.integration(s, a, r, :accept)
-    assert {:ok, :accepted} = F.integration(s, a, adopted, :accept)
+    assert {:ok, :accepted} = accept_fixture(s, a, adopted, p)
     # Replace object repository: actual commit validation fails again at land.
     File.rename!(Path.join(c.repo, ".git"), Path.join(c.repo, ".hidden-git"))
 
@@ -365,7 +467,7 @@ defmodule Nano.Flywheel.GraphTest do
     {:ok, t} = claim(s, "A")
     p = prepared_proposal(s, a, t, p)
     {:ok, r} = F.submit(s, t, p)
-    {:ok, :accepted} = F.integration(s, a, r, :accept)
+    {:ok, :accepted} = accept_fixture(s, a, r, p)
     {:ok, :integrated} = F.integration(s, a, r, {:land, p.commit, %{commit: p.commit}})
 
     for stage <- [:implemented, :tested, :reviewed, :deployed, :live_verified] do
@@ -402,6 +504,7 @@ defmodule Nano.Flywheel.GraphTest do
     s = start(c)
     a = reconcile(s)
     import(s, a, [description("A", [], [], :artifact), description("B", [], ["A"])])
+    prepare_artifact(s, a, "A")
 
     for stage <- [:implemented, :tested, :reviewed, :announced, :deployed, :live_verified] do
       {:ok, ^stage} = F.record_stage(s, a, "A", stage, %{evidence: stage})
@@ -568,7 +671,7 @@ defmodule Nano.Flywheel.GraphTest do
         {:ok, t} = claim(s, "A")
         p = prepared_proposal(s, a, t, p)
         {:ok, r} = F.submit(s, t, p)
-        {:ok, :accepted} = F.integration(s, a, r, :accept)
+        {:ok, :accepted} = accept_fixture(s, a, r, p)
         {:ok, :integrated} = F.integration(s, a, r, {:land, p.commit, :test})
         {:ok, :deployed} = F.record_stage(s, a, "A", :deployed, %{revision: p.commit})
         send(parent, {:deploying, s, r})
@@ -604,7 +707,227 @@ defmodule Nano.Flywheel.GraphTest do
     assert {:error, :unsupported_state} = Nano.Flywheel.Store.read(c.root)
   end
 
+  test "U03-A4 fresh artifact attempt cannot inherit released attempt completion proofs", c do
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [description("A", [], [], :artifact), description("B", [], ["A"])])
+    old = prepare_artifact(s, a, "A")
+
+    for stage <- [:implemented, :tested, :reviewed, :artifact_verified, :announced],
+        do:
+          assert(
+            {:ok, ^stage} =
+              F.record_stage(s, a, "A", stage, %{
+                artifact: "same-report",
+                verification: :current_attempt
+              })
+          )
+
+    {:ok, previous} = F.unit(s, "A")
+    {:ok, :released} = F.release(s, old, :interrupted)
+    {:ok, fresh} = F.claim(s, "A", "replacement", "fresh", a.owner_generation, "fresh-artifact")
+    assert fresh.claim_generation > old.claim_generation
+    {:ok, current} = F.unit(s, "A")
+    assert current.stages == %{}
+    assert current.dispatch == nil
+    assert current.stage_bindings == %{}
+
+    assert Enum.any?(
+             current.history,
+             &(&1[:kind] == :attempt_archived and &1[:prior_stages] == previous.stages)
+           )
+
+    assert {:error, :missing_stages} = F.close(s, a, "A")
+
+    assert {:error, :dispatch_required} =
+             F.record_stage(s, a, "A", :artifact_verified, %{
+               artifact: "same-report",
+               verification: :not_yet_prepared
+             })
+
+    prepare_artifact(s, a, "A")
+    assert {:error, :missing_stages} = F.close(s, a, "A")
+
+    # Explicit fresh owner proof may verify a referenced unchanged artifact, but is never inferred.
+    for stage <- [:implemented, :tested, :reviewed, :artifact_verified, :announced],
+        do:
+          assert(
+            {:ok, ^stage} =
+              F.record_stage(s, a, "A", stage, %{
+                artifact: "same-report",
+                verification: :reverified_current_attempt
+              })
+          )
+
+    {:ok, proof} = F.unit(s, "A")
+    assert proof.stage_bindings.artifact_verified.attempt.claim_token == fresh
+
+    assert proof.stage_bindings.artifact_verified.attempt.unit_sha256 ==
+             proof.dispatch.unit_sha256
+
+    assert {:ok, :done} = F.close(s, a, "A")
+    assert {:ok, :ready} = F.readiness(s, "B")
+  end
+
+  test "U03-A5 reconcile rejects semantically corrupt done snapshot without overwriting authority",
+       c do
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [description("A", []), description("B", [], ["A"])])
+    {:ok, original} = Nano.Flywheel.Store.read(c.root)
+    corrupt = put_in(original, [:units, "A", :done], true)
+    bytes = :erlang.term_to_binary(corrupt)
+    File.write!(Path.join(c.root, "state.term"), bytes)
+    assert {:error, :corrupt_state} = F.reconcile(s, a, %{restoration: :must_validate})
+    assert File.read!(Path.join(c.root, "state.term")) == bytes
+    {:ok, unchanged} = F.snapshot(s)
+    assert unchanged.owner_generation == a.owner_generation
+    refute unchanged.units["A"].done
+    assert {:error, :degraded} = F.readiness(s, "B")
+
+    assert {:error, :degraded} =
+             F.claim(s, "B", "worker", "fresh", a.owner_generation, "corrupt-claim")
+
+    assert File.read!(Path.join(c.root, "state.term")) == bytes
+    # Explicit roll-forward repair restores the original coherent checkpoint, not a false done.
+    assert :ok = Nano.Flywheel.Store.write(c.root, original)
+    assert {:ok, _} = F.reconcile(s, a, %{restoration: :coherent_checkpoint})
+    assert {:error, {:not_ready, :dependencies}} = F.readiness(s, "B")
+  end
+
+  test "U03-A3 closed code reopen archives old proposal and permits fresh prepare submit", c do
+    p = fixture(c)
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [%{description("A", [scope("new.ex")]) | base_commit: p.base_commit}])
+    {:ok, t} = claim(s, "A")
+    p = prepared_proposal(s, a, t, p)
+    {:ok, r} = F.submit(s, t, p)
+    {:ok, :accepted} = accept_fixture(s, a, r, p)
+    {:ok, :integrated} = F.integration(s, a, r, {:land, p.commit, :proof})
+
+    for stage <- [:implemented, :tested, :reviewed, :deployed, :live_verified, :announced],
+        do: assert({:ok, ^stage} = F.record_stage(s, a, "A", stage, %{revision: p.commit}))
+
+    assert {:ok, :done} = F.close(s, a, "A")
+    {:ok, before} = F.unit(s, "A")
+    assert {:ok, _} = F.reopen(s, a, "A", :confirmed_finding, %{review: :fresh})
+    {:ok, opened} = F.unit(s, "A")
+    assert opened.proposal == nil
+    assert opened.dispatch == nil
+    assert opened.stages == %{}
+
+    assert Enum.any?(
+             opened.history,
+             &(&1[:kind] == :reopened and &1[:prior_proposal] == before.proposal and
+                 &1[:prior_dispatch] == before.dispatch)
+           )
+
+    File.write!(Path.join(c.repo, "new.ex"), "corrected")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "corrective proposal"])
+
+    correction = %{
+      p
+      | id: "corrective-proposal",
+        base_commit: p.commit,
+        commit: git(c.repo, ["rev-parse", "HEAD"])
+    }
+
+    {:ok, fresh} =
+      F.claim(s, "A", "fresh-worker", "correction", a.owner_generation, "corrective-claim")
+
+    correction = prepared_proposal(s, a, fresh, correction)
+    assert {:ok, _} = F.submit(s, fresh, correction)
+    assert {:error, :stale} = F.submit(s, t, p)
+    assert {:error, :missing_stages} = F.close(s, a, "A")
+  end
+
+  test "U03-A3 conflicting three-way integration fails closed despite scoped candidate", c do
+    p = fixture(c)
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [%{description("A", [scope("new.ex")]) | base_commit: p.base_commit}])
+    {:ok, t} = claim(s, "A")
+    p = prepared_proposal(s, a, t, p)
+    {:ok, r} = F.submit(s, t, p)
+    git(c.repo, ["reset", "--hard", p.base_commit])
+    File.write!(Path.join(c.repo, "new.ex"), "conflicting prior integration")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "conflicting integration base"])
+    assert {:ok, :accepted} = F.integration(s, a, r, :accept)
+    File.write!(Path.join(c.repo, "new.ex"), "new")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "manual resolved candidate"])
+    candidate = git(c.repo, ["rev-parse", "HEAD"])
+
+    assert {:error, :git_diff_failed} =
+             F.integration(s, a, r, {:land, candidate, :manual_resolution_not_reviewed})
+
+    {:ok, unchanged} = F.unit(s, "A")
+    assert unchanged.stages[:integrated] == nil
+    refute unchanged.done
+  end
+
+  test "U03-A5 reconcile rejects valid-term mismatched current claim generation", c do
+    s = start(c)
+    a = reconcile(s)
+    import(s, a, [description("A", [])])
+    {:ok, _} = claim(s, "A")
+    {:ok, coherent} = Nano.Flywheel.Store.read(c.root)
+    bad = put_in(coherent, [:units, "A", :claim, :claim_generation], 999)
+    assert :ok = Nano.Flywheel.Store.write(c.root, bad)
+    bytes = File.read!(Path.join(c.root, "state.term"))
+    assert {:ok, _} = Nano.Flywheel.Store.read(c.root)
+
+    assert {:error, :corrupt_state} =
+             F.reconcile(s, a, %{restoration: :reject_generation_mismatch})
+
+    assert File.read!(Path.join(c.root, "state.term")) == bytes
+    assert {:error, :degraded} = F.readiness(s, "A")
+    {:ok, memory} = F.snapshot(s)
+    assert memory.owner_generation == a.owner_generation
+    assert memory.units["A"].claim.claim_generation != 999
+  end
+
+  defp prepare_artifact(s, a, id) do
+    repo = :sys.get_state(s).repository
+    unless File.dir?(Path.join(repo, ".git")), do: fixture(%{repo: repo})
+    {:ok, snapshot} = F.snapshot(s)
+    {:ok, u} = F.unit(s, id)
+
+    t =
+      if u.claim != nil,
+        do: Map.delete(u.claim, :pid),
+        else:
+          elem(
+            F.claim(
+              s,
+              id,
+              "worker-#{id}",
+              "artifact-#{u.claim_generation}",
+              a.owner_generation,
+              "artifact-#{id}-#{u.claim_generation}"
+            ),
+            1
+          )
+
+    p = %{
+      worktree: repo,
+      base_commit: git(repo, ["rev-parse", "HEAD"]),
+      commit: git(repo, ["rev-parse", "HEAD"])
+    }
+
+    dispatch = dispatch_candidate(s, t, p)
+    # Keep worker private roots separate from already closed artifact dispatch roots.
+    {:ok, _} = F.prepare_dispatch(s, a, t, dispatch)
+    assert snapshot.owner_generation == a.owner_generation
+    t
+  end
+
   defp finish_artifact(s, a, id) do
+    prepare_artifact(s, a, id)
+
     for stage <- [:implemented, :tested, :reviewed, :artifact_verified, :announced],
         do: assert({:ok, ^stage} = F.record_stage(s, a, id, stage, %{fixture: stage}))
 
@@ -982,7 +1305,7 @@ defmodule Nano.Flywheel.GraphTest do
     assert {:error, :incompatible_base} = F.submit(s, t, %{current | base_commit: d.base_commit})
     {:ok, r} = F.submit(s, t, current)
     assert {:error, :reserved} = F.prepare_dispatch(s, a, t, input2)
-    assert {:ok, :accepted} = F.integration(s, a, r, :accept)
+    assert {:ok, :accepted} = accept_fixture(s, a, r, p)
     {:ok, u2} = F.unit(s, "A")
     assert Enum.count(u2.history, &(&1.kind == :prepared_dispatch)) == 2
   end
@@ -1125,7 +1448,8 @@ defmodule Nano.Flywheel.GraphTest do
   test "separate worker worktree symlinks are rejected again at actual proposal boundary", c do
     p = fixture(c)
     design_repo = Path.join(Path.dirname(c.repo), "design-repository")
-    File.mkdir_p!(design_repo)
+    git(Path.dirname(c.repo), ["clone", "-q", c.repo, design_repo])
+    git(design_repo, ["reset", "--hard", p.base_commit])
 
     {:ok, s} =
       F.start_link(
@@ -1150,6 +1474,7 @@ defmodule Nano.Flywheel.GraphTest do
     git(p.worktree, ["reset", "--hard", p.commit])
     {:ok, r} = F.submit(s, t, p)
     assert {:ok, :accepted} = F.integration(s, a, r, :accept)
+    git(design_repo, ["reset", "--hard", p.commit])
     File.rm!(Path.join(p.worktree, "new.ex"))
     File.ln_s!("base", Path.join(p.worktree, "new.ex"))
     assert {:error, :symlink_scope} = F.integration(s, a, r, {:land, p.commit, :proof})
