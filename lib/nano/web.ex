@@ -11,7 +11,7 @@ defmodule Nano.Web do
   Options: js: :auto | true | false, timeout: 20000 (maximum 30000), refresh: true,
   offset:, limit:, max_bytes:, cache_dir:, ttl: 3600000, max_cache_bytes: 32000000,
   max_entries: 128, max_document_bytes: 2000000. Reuse cache options on reads.
-  Cache defaults to /data/web, override NANO_WEB_CACHE_DIR. Snapshot IDs contain
+  Cache defaults to /data/web, override :nano/:web_cache_dir or NANO_WEB_CACHE_DIR. Snapshot IDs contain
   content hashes; TTL never extends on reads. Quotas evict oldest snapshots.
 
   HTTP requires curl, verifies TLS and follows at most five HTTP(S) redirects.
@@ -319,7 +319,12 @@ defmodule Nano.Web do
   defp temp_dir(opts),
     do:
       Path.join(
-        Keyword.get(opts, :cache_dir, System.get_env("NANO_WEB_CACHE_DIR") || "/data/web"),
+        Keyword.get(
+          opts,
+          :cache_dir,
+          Application.get_env(:nano, :web_cache_dir) || System.get_env("NANO_WEB_CACHE_DIR") ||
+            "/data/web"
+        ),
         "work-" <> Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
       )
 

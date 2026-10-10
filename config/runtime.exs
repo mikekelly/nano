@@ -40,7 +40,23 @@ config :nano,
   # node's settings (settings.json) and the ChatGPT subscription's tokens.
   state_dir: env.("STATE_DIR", Path.join(data, "state"))
 
-if test?, do: config(:nano, test_dir: data)
+if test? do
+  # Route defaults before application startup, not after the first credential/image write.
+  # Ignore inherited production store overrides. Child tools (including Python) inherit
+  # the same random VM root through TMPDIR and the safety/web environment bridges.
+  tmp = Path.join(data, "tmp")
+  File.mkdir_p!(tmp)
+  System.put_env("TMPDIR", tmp)
+  System.put_env("NANO_WEB_CACHE_DIR", Path.join(data, "web"))
+  System.put_env("NANO_SAFETY_DIR", Path.join(data, "safety"))
+  System.put_env("ERL_CRASH_DUMP", Path.join(data, "erl_crash.dump"))
+
+  config :nano,
+    test_dir: data,
+    image_dir: Path.join(data, "images"),
+    web_cache_dir: Path.join(data, "web"),
+    safety_dir: Path.join(data, "safety")
+end
 
 # NODE_COOKIE is not read here: it is consumed by `elixir --cookie` before the app starts.
 
