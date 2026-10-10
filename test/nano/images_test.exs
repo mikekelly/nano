@@ -83,7 +83,7 @@ defmodule Nano.ImagesTest do
     end
 
     assert {:error, :image_too_large} =
-             Nano.Images.import_bytes(:binary.copy(<<0>>, 3_932_161), opts)
+             Nano.Images.import_bytes(:binary.copy(<<0>>, 3_750_001), opts)
 
     for _ <- 1..25, do: assert({:ok, _} = Nano.Images.import_bytes(png(2000, 2000), opts))
   end
