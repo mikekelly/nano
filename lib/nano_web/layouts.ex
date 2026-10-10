@@ -16,6 +16,9 @@ defmodule NanoWeb.Layouts do
         <meta name="csrf-token" content={Plug.CSRFProtection.get_csrf_token()} />
         <.live_title>{assigns[:page_title] || "nano"}</.live_title>
         <link rel="stylesheet" href="/app.css" />
+        <link rel="stylesheet" href="/bots.css" />
+        <script defer src="/bots.js">
+        </script>
         <script defer src="/assets/phoenix/phoenix.min.js">
         </script>
         <script defer src="/assets/phoenix_live_view/phoenix_live_view.min.js">
@@ -75,7 +78,7 @@ defmodule NanoWeb.Layouts do
             // after a random 5-10 s, meant to spread out many clients; one operator needs only ~1 s.
             window.liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
               params: {_csrf_token: csrf},
-              hooks: {Follow},
+              hooks: {Follow, BotsUI: window.BotsUI},
               reloadJitterMin: 500,
               reloadJitterMax: 1500
             })
