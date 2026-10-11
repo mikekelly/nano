@@ -4,13 +4,27 @@
 # its key (connected or pasted in the dashboard, or OPENROUTER_API_KEY in .env), the ChatGPT
 # subscription once connected, or both.
 cd "$(dirname "$0")/.." || exit 1
-grep -q '^OPENROUTER_API_KEY=.' .env 2>/dev/null || grep -qs '"openrouter_api_key"' data/state/settings.json ||
-  [ -f data/state/chatgpt_auth.json ] ||
+bin/vm >/dev/null || exit 1
+export NANO_CHECKOUT="$PWD/.mounts/checkout"
+export NANO_DATA="$PWD/.mounts/data"
+grep -q '^OPENROUTER_API_KEY=.' .env 2>/dev/null || grep -qs '"openrouter_api_key"' .mounts/data/state/settings.json ||
+  [ -f .mounts/data/state/chatgpt_auth.json ] ||
   echo "no model provider yet: connect OpenRouter or ChatGPT on the dashboard, or put OPENROUTER_API_KEY=... in .env (then bin/up again)"
-checkout=${NANO_CHECKOUT:-$(sed -n 's/^NANO_CHECKOUT=//p' .env 2>/dev/null)}; checkout=${checkout:-../nano-checkout}
-[ -d "$checkout" ] || { echo "cloning this repo to $checkout: the dedicated checkout the agents will edit"; git clone -q . "$checkout" || exit 1; }
-mkdir -p data && docker compose up -d --build || exit 1
-url="http://$(docker compose port nano 4000)"
+checkout=$NANO_CHECKOUT
+if [ ! -d "$checkout" ]; then
+  mkdir -p .mounts
+  revision=$(git rev-parse HEAD) || exit 1
+  git clone -q --no-local --no-hardlinks . "$checkout" || exit 1
+  git -C "$checkout" checkout -q -B main "$revision" || exit 1
+  # The host repo is deliberately not shared with the VM.
+  remote=$(git remote get-url origin) || exit 1
+  git -C "$checkout" remote set-url origin "$remote" || exit 1
+fi
+mkdir -p "$NANO_DATA" || exit 1
+bin/docker compose build --builder default || exit 1
+bin/docker compose up -d --no-build || exit 1
+bin/vm forward || exit 1
+url="http://127.0.0.1:4000"
 for i in $(seq 120); do
   curl -fsS -o /dev/null "$url/api" 2>/dev/null && { bin/push-settings "$url" .env; echo "dashboard: $url"; exit 0; }
   sleep 1

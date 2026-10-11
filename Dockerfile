@@ -1,6 +1,7 @@
 FROM elixir:1.20.2-otp-29
 
-# The node runs as root: the container is the sandbox, and agents get all of it.
+# The node runs as root and agents get all of the container. Run it inside a dedicated
+# disposable VM or microVM; the container alone is not the recommended isolation boundary.
 # Deps and build output live outside /app, so a checkout mounted over /app hides nothing.
 # MIX_BUILD_ROOT, not MIX_BUILD_PATH: each MIX_ENV gets its own directory under it, so other
 # envs cannot overwrite the running node's prod build. Test builds skip it altogether (mix.exs

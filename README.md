@@ -1,11 +1,21 @@
 # Nano Agent
 
 **A tiny agent that starts with nothing and builds its own harness.** Nano turns an Elixir
-process into an agent (a model, a mailbox and two tools) and then leaves it to build the
-rest of its harness itself, while it runs.
+process into an agent (a model, a mailbox, and the ability to execute Elixir) and then leaves it to build the rest of its harness itself, while it is in flight.
 
-One Docker container runs one BEAM node, and each agent is a GenServer on it. A dashboard
-and a JSON API on port 4000 show everything every agent does.
+Nano's guidance for growing itself lives in Markdown docs, in two phases. The
+[seeding docs](seeding-docs/README.md) describe capabilities to build into its harness;
+the [seedling docs](seedling-docs/README.md) describe how to put them together and use
+them, culminating in bots as the interface between you and the agents. Read, customise
+and extend these docs to shape the system you want Nano to grow.
+
+**Nano is extremely autonomous.** It begins life with full root control of its Linux
+container and no built-in safety policy or approval gate for its actions. It can execute
+code, rewrite its harness, install software, access credentials and use the network.
+Use it with care.
+
+The system starts as one BEAM node, and each agent is a GenServer on it. A dashboard
+and a JSON API on port 4000 show everything going on.
 
 ![The dashboard: a start form, then a card per agent with its model, who started it, turns, tokens and context used, and what it is doing now](docs/dashboard.png)
 
@@ -29,7 +39,7 @@ and a JSON API on port 4000 show everything every agent does.
   passed. Everything else (file tools, a shell, sub-agents, the web) is for the agent to
   build, as modules it calls from `eval` and loads into the running node.
 - **Full control of its machine.** The agent runs as root inside a disposable container
-  (a microVM would serve as well) and may change anything in it, including the source of
+  (inside a dedicated VM or microVM) and may change anything in it, including the source of
   its own harness.
 
 ## Why Elixir/OTP
@@ -51,10 +61,35 @@ and a JSON API on port 4000 show everything every agent does.
 
 ## Running it
 
-```bash
-git clone git@github.com:mikekelly/nano.git && cd nano
-bin/up    # builds the image, starts the node, prints http://127.0.0.1:4000
-```
+### For the user
+
+Tell your agent:
+
+> setup https://github.com/mikekelly/nano
+
+Your agent can prepare the VM and start the dashboard. You connect your model provider
+there, then agree which model and reasoning effort to use before starting a Nano agent.
+
+### For the setup agent
+
+1. Clone `https://github.com/mikekelly/nano.git` and read `AGENTS.md`. Check the host's
+   prerequisites and any existing Nano deployment before changing it.
+2. Create and start the dedicated Colima profile named `nano` following
+   [docs/vm.md](docs/vm.md). It describes macOS native virtualization and Linux QEMU/KVM,
+   sharing only this repo's `.mounts/` directory. The user and setup agent are responsible
+   for its suitability; `bin/up` checks the expected configuration and never falls back
+   to the default Docker target.
+3. Run `bin/up` from the repo root. Direct the user to the dashboard at
+   `http://127.0.0.1:4000` to connect OpenRouter or ChatGPT, using the instructions below.
+   The user completes account sign-in; do not ask them to paste credentials into chat.
+4. Once a provider is connected, offer to start a Nano agent. Agree the provider, model
+   and reasoning effort with the user; for example, GPT-6 Astra at low effort on the
+   ChatGPT subscription, if available and permitted. Check `Nano.Model` and
+   `allowed_models` rather than assuming that example is always available. See
+   [AGENTS.md](AGENTS.md) for starting agents and sending messages from a named user.
+5. On agreement, start the agent and send the short kickoff in
+   [Taking a seed through both phases](#taking-a-seed-through-both-phases). Show the user
+   where progress reports, the running code and logs can be found.
 
 Agents need a model. Connect a provider in the dashboard's start form: OpenRouter (*Connect
 OpenRouter* signs you in there and makes a key for the node, or paste a key, or put an
@@ -63,12 +98,21 @@ OpenRouter* signs you in there and makes a key for the node, or paste a key, or 
 `KEY=value` line of `.env` into the node's settings, which you can change at any time in the
 dashboard's Settings view.
 
-The node runs from `/app`, a dedicated clone of this repo (`../nano-checkout`) that agents are
-free to rewrite; `git -C ../nano-checkout diff` shows what they changed. `bin/reset` archives
-what a run left in `data/`, puts the clone back to `main` and recreates the container.
+The node runs from `/app`, a dedicated clone of this repo (`.mounts/checkout`) that agents are
+free to rewrite; `git -C .mounts/checkout diff` shows what they changed. `bin/reset` archives
+what a run left in `.mounts/data/`, puts the clone back to `main` and recreates the container.
 
 Start agents and talk to them from the dashboard, the HTTP API (`curl localhost:4000/api`
-describes it) or a shell on the node (`docker exec -it nano bin/shell`).
+describes it) or a shell on the node (`bin/docker exec -it nano bin/shell`).
+
+## Container + VM Isolation recommendation
+
+**Run the container inside a dedicated, disposable Linux VM or microVM.** The container
+and an enclosing VM provide layers of isolation to mitigate risk; neither makes arbitrary
+agent code safe. Running in a shared VM such as Docker Desktop's usual backend is not
+recommended, and running Nano directly on your host is strongly discouraged. The repo's
+Compose setup supplies the container. Provision the VM separately using
+[docs/vm.md](docs/vm.md); startup verifies the expected profile and configuration.
 
 ## Before you run it
 
@@ -82,12 +126,12 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
   `network_policy` setting to match, because the system prompt must stay true
   ([docs/network.md](docs/network.md) shows one way).
 - For debugging, the `raw_model_log` setting (off by default) records the exact bytes of the
-  named agents' model requests and responses in `data/logs/raw/`, with when each piece of a
+  named agents' model requests and responses in `.mounts/data/logs/raw/`, with when each piece of a
   response arrived, linked from their log entries. Credentials are redacted from the headers, but each request holds the agent's
   whole conversation, including anything sensitive it saw, and the files are large (the
   oldest go past `raw_model_log_max_bytes`, 1 GB by default).
 - Agents can change and hot-reload the running node's code, the harness included. If an edit
-  stops the node booting, `docker logs nano` says why; fix it in the clone.
+  stops the node booting, `bin/docker logs nano` says why; fix it in the clone.
 
 ## Where to look
 
@@ -100,6 +144,12 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
 | [prompts/seed.txt](prompts/seed.txt) | The system prompt template |
 
 ## Taking a seed through both phases
+
+Before starting, browse the [seeding docs](seeding-docs/README.md) and
+[seedling docs](seedling-docs/README.md). They define what your agent grows and how it
+puts that harness to work. Modify, remove or extend them to suit your goals, preferred
+behavior, model choices and constraints. They are a starting point for your own system;
+make changes before planting, and ensure the agents' checkout contains your versions.
 
 Start an agent and send, from a named user:
 

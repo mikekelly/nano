@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Validate the dedicated Colima VM; print its Docker socket or forward the UI port."""
+import json
+import os
+from pathlib import Path
+import platform
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+MOUNTS = ROOT / '.mounts'
+HOME = Path(os.environ.get('COLIMA_HOME', str(Path.home() / '.colima'))).expanduser()
+
+def run(*args, **kwargs):
+    return subprocess.check_output(args, text=True, **kwargs).strip()
+
+def require(ok, message):
+    if not ok:
+        raise RuntimeError(message)
+
+def inspect_vm():
+    status = json.loads(run('colima', 'status', 'nano', '--json'))
+    require(status.get('runtime') == 'docker', 'nano must use the Docker runtime')
+    socket = status.get('docker_socket')
+    expected = 'unix://' + str(HOME / 'nano/docker.sock')
+    require(socket == expected, 'nano reports an unexpected Docker socket')
+    env = dict(os.environ, LIMA_HOME=str(HOME / '_lima'))
+    vm = json.loads(run('limactl', 'list', 'colima-nano', '--json', env=env))
+    require(vm.get('status') == 'Running', 'nano VM must be running')
+    config = vm['config']
+    mounts = config.get('mounts', [])
+    require(len(mounts) == 1, 'nano must share only this repository’s .mounts directory')
+    mount = mounts[0]
+    require(Path(mount['location']).resolve() == MOUNTS and
+            Path(mount.get('mountPoint', mount['location'])).resolve() == MOUNTS and
+            mount.get('writable') is True, 'nano mount must be this repository’s writable .mounts directory')
+    require(not MOUNTS.is_symlink(), '.mounts must not be a symlink')
+    for name in ['checkout', 'data']:
+        require(not (MOUNTS / name).is_symlink(), f'.mounts/{name} must not be a symlink')
+    require(not config.get('ssh', {}).get('forwardAgent'), 'SSH-agent forwarding must be disabled')
+    require(not status.get('kubernetes'), 'nano must not run Kubernetes')
+    require(all(n.get('lima') == 'user-v2' for n in config.get('networks', [])),
+            'nano must not have bridged or externally reachable VM networking')
+    rules = config.get('portForwards', [])
+    socket_rules = [r for r in rules if r.get('guestSocket')]
+    require(all(r.get('guestSocket') in ['/var/run/docker.sock', '/var/run/containerd/containerd.sock']
+                for r in socket_rules), 'unexpected VM socket forwarding')
+    ports = [r for r in rules if not r.get('guestSocket')]
+    require(ports and all(r.get('ignore') is True for r in ports),
+            'automatic application-port forwarding must be disabled (portForwarder: none)')
+    if platform.system() == 'Linux':
+        require(vm.get('vmType') == 'qemu', 'Linux nano VM must use QEMU/KVM')
+        require(os.access('/dev/kvm', os.R_OK | os.W_OK), 'Linux requires accessible /dev/kvm')
+        args = run('ps', '-p', str(vm['driverPID']), '-o', 'args=')
+        require('kvm' in args and 'qemu' in args, 'cannot verify KVM acceleration in the running QEMU command')
+    elif platform.system() == 'Darwin':
+        require(vm.get('vmType') == 'vz', 'macOS nano VM must use native VZ virtualization')
+    else:
+        raise RuntimeError('supported hosts are macOS and Linux')
+    return socket, vm
+
+def main():
+    try:
+        socket, vm = inspect_vm()
+        if sys.argv[1:] == ['forward']:
+            # A separate control socket lets us check/reuse only our own forwarding session.
+            control = str(HOME / 'nano/dashboard-ssh.sock')
+            command = ['ssh', '-F', vm['sshConfigFile'], '-S', control]
+            target = 'lima-colima-nano'
+            alive = subprocess.run(command + ['-O', 'check', target], capture_output=True).returncode == 0
+            if not alive:
+                subprocess.run(command + ['-M', '-f', '-N', '-o', 'ControlPersist=no',
+                               '-o', 'ExitOnForwardFailure=yes', '-L',
+                               '127.0.0.1:4000:127.0.0.1:4000', target], check=True)
+        elif not sys.argv[1:]:
+            print(socket)
+        else:
+            raise RuntimeError('usage: bin/vm [forward]')
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f'nano VM check failed: {error}\nSet up the dedicated profile using docs/vm.md; no Docker fallback is allowed.', file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

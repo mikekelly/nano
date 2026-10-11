@@ -12,21 +12,27 @@ shell). [README.md](README.md) says what Nano Agent is and why.
 | `prompts/seed.txt` | The prompt template, read at every agent start |
 | `lib/nano_agent.ex` | The harness: one agent, one GenServer |
 | `lib/nano/ops.ex` | Everything an operator can do; the dashboard and API are skins over it |
-| `data/logs/`, `data/state/` | Each agent's JSONL log and saved state; `data/logs/raw/`, its model calls' bytes and timing when the `raw_model_log` setting is on |
+| `.mounts/data/logs/`, `.mounts/data/state/` | Each agent's JSONL log and saved state; `.mounts/data/logs/raw/`, its model calls' bytes and timing when the `raw_model_log` setting is on |
 | [`runs` branch](https://github.com/mikekelly/nano/blob/runs/README.md) | The record of every run, kept off `main` |
 | [`bootstrap` branch](https://github.com/mikekelly/nano/blob/bootstrap/README.md) | The original spec and delivery plan, kept off `main` |
 
 ## Running it
 
+Provision the dedicated Colima `nano` profile as specified in [docs/vm.md](docs/vm.md),
+using native virtualization on macOS and QEMU/KVM on Linux. Only `.mounts/` is shared.
+Use `bin/docker` for host Docker operations: it verifies and explicitly targets that VM;
+`bin/up` and `bin/reset` refuse a missing or misconfigured profile without fallback.
+Do not migrate or interrupt an existing run to adopt a new setup without authorization.
+
 `bin/up` builds and starts the node (http://127.0.0.1:4000) and pushes every `KEY=value` line
 of `.env` into its settings; `bin/reset` archives a run's data, puts the agents' clone
-(`../nano-checkout`, the node's `/app`) back to `main` and recreates the container. Models
+(`.mounts/checkout`, the node's `/app`) back to `main` and recreates the container. Models
 come from the providers connected in the dashboard's start form: a ChatGPT subscription, or
 OpenRouter (its sign-in, or a key: the `openrouter_api_key` setting).
 
 ## Starting and talking to agents
 
-`curl localhost:4000/api` describes the API; `docker exec nano bin/rpc 'EXPR'` evaluates
+`curl localhost:4000/api` describes the API; `bin/docker exec nano bin/rpc 'EXPR'` evaluates
 Elixir on the node. An agent's model, reasoning level and limits are always given, and are
 checked against the model's provider and the node's `allowed_models` setting; a refusal says
 what to give instead.
@@ -49,6 +55,9 @@ pids do not: ask an agent to find you by name (`Nano.User.pid("me")`). The dashb
 messages page shows every user's conversations, one per agent.
 
 ## Planting a run
+
+Encourage the person to review, customize and extend the seeding and seedling docs before
+planting, and ensure those versions are in the agents' checkout.
 
 Start an agent with generous limits and send this first message from a named user:
 

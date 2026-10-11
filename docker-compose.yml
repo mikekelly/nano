@@ -1,3 +1,5 @@
+# Use bin/up and bin/docker to target the dedicated Colima nano VM; see docs/vm.md.
+# This file provisions the container only, not its enclosing VM.
 services:
   nano:
     build: .
@@ -9,8 +11,8 @@ services:
       - "127.0.0.1:4000:4000" # no authentication and /api/eval runs code: localhost only
     volumes:
       # A dedicated clone of this repo, never this working copy: agents can rewrite it.
-      - ${NANO_CHECKOUT:-../nano-checkout}:/app
-      - ./data:/data # JSONL logs in ./data/logs, agents' saved state in ./data/state
+      - ${NANO_CHECKOUT:-./.mounts/checkout}:/app
+      - ${NANO_DATA:-./.mounts/data}:/data # JSONL logs in ./data/logs, agents' saved state in ./data/state
     # Only what the node needs before it starts. Everything else, keys included, is a setting
     # the node keeps in ./data/state/settings.json: bin/up pushes .env's to it once it answers,
     # and the dashboard and the API change them. Nothing secret is in the node's environment.

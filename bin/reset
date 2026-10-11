@@ -3,17 +3,20 @@
 #
 #   1. Refuses if the agents' checkout has uncommitted work, or a branch that is not pushed to
 #      this repo: commit a run to seedling/<agent>-<what> and push it first.
-#   2. Stops the node and moves everything in data/ (logs, saved agent state, spill files,
+#   2. Stops the node and moves everything in .mounts/data/ (logs, saved agent state, spill files,
 #      whatever agents wrote there) to archive/<time>/, keeping only the ChatGPT tokens and the
 #      node's settings.
 #   3. Resets the checkout to main, removes untracked files and tmp/, deletes every other
 #      branch and the records of agents' worktrees, and makes it fetch main only, so other branches are not one `git branch -a` away.
 #   4. Recreates the container (dropping packages agents installed) and starts the node.
 cd "$(dirname "$0")/.." || exit 1
-checkout=${NANO_CHECKOUT:-$(sed -n 's/^NANO_CHECKOUT=//p' .env 2>/dev/null)}; checkout=${checkout:-../nano-checkout}
+bin/vm >/dev/null || exit 1
+export NANO_CHECKOUT="$PWD/.mounts/checkout"
+export NANO_DATA="$PWD/.mounts/data"
+checkout=$NANO_CHECKOUT
 git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1 || { echo "no checkout at $checkout" >&2; exit 1; }
 
-git -C "$checkout" fetch -q origin main || exit 1
+git -C "$checkout" fetch -q "$PWD" main:refs/remotes/origin/main || exit 1
 if [ -n "$(git -C "$checkout" status --porcelain)" ]; then
   echo "$checkout has uncommitted changes; commit them to a seedling branch and push first:" >&2
   git -C "$checkout" status --short >&2; exit 1
@@ -27,14 +30,18 @@ done
 [ -z "$(git -C "$checkout" rev-list -n 1 origin/main..main 2>/dev/null)" ] ||
   { echo "main in $checkout has commits that are not on main here; move them to a seedling branch first" >&2; exit 1; }
 
-docker compose stop -t 5 >/dev/null 2>&1
+bin/docker compose stop -t 5 >/dev/null 2>&1 || exit 1
 
-if [ -d data ] && [ -n "$(ls -A data)" ]; then
+if [ -d "$NANO_DATA" ] && [ -n "$(ls -A "$NANO_DATA")" ]; then
   archive="archive/$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$archive" && mv data/* "$archive"/ || exit 1
-  mkdir -p data/state
+  mkdir -p "$archive" || exit 1
+  for entry in "$NANO_DATA"/* "$NANO_DATA"/.[!.]* "$NANO_DATA"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    mv "$entry" "$archive"/ || exit 1
+  done
+  mkdir -p "$NANO_DATA/state"
   for f in chatgpt_auth.json settings.json; do
-    [ -f "$archive/state/$f" ] && mv "$archive/state/$f" data/state/
+    [ -f "$archive/state/$f" ] && mv "$archive/state/$f" "$NANO_DATA/state/"
   done
   echo "archived data/ to $archive"
 fi
@@ -50,5 +57,5 @@ git -C "$checkout" worktree prune
 git -C "$checkout" reflog expire --expire=now --all && git -C "$checkout" gc -q --prune=now
 echo "checkout reset to $(git -C "$checkout" log --oneline -1)"
 
-docker compose up -d --force-recreate >/dev/null 2>&1 || { echo "docker compose up failed" >&2; exit 1; }
+bin/docker compose up -d --force-recreate >/dev/null 2>&1 || { echo "bin/docker compose up failed" >&2; exit 1; }
 exec bin/up

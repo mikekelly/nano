@@ -1,0 +1,5 @@
+#!/bin/sh
+# Host-side Docker helper: never uses the current/default Docker target.
+socket=$("$(dirname "$0")/vm") || exit 1
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH BUILDX_BUILDER
+exec docker --host "$socket" "$@"

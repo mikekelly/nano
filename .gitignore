@@ -6,3 +6,7 @@
 .env
 erl_crash.dump
 /archive/
+
+/.mounts/
+
+__pycache__/
