@@ -63,8 +63,8 @@ The record of every planting of a [seeding doc](README.md); the principles they 
 
 The totals above count `model_response` entries in the stopped run's JSONL logs, from
 2026-10-09T17:03:17Z to 2026-10-11T12:07:56Z, across 100 `agent_started` events
-(including probes, sessions and restarts; not a count of unique workers). Local archives
-retain logs, raw model records, saved states and `/data/altair-flywheel/evidence`; these
+(including probes, sessions and restarts; not a count of unique workers). Local archive `archive/20261011-131021/`
+retains logs, raw model records, saved states and `/data/altair-flywheel/evidence`; these
 can contain credentials and are not published. The terminal migration result is in
 `altair-flywheel/evidence/U07/live-rollout/result.json`, with status `maintenance_blocked`,
 phase `preflight`, reason `auth_copy_ambiguity`, and no-automatic-resume rule.
