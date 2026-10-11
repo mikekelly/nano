@@ -49,11 +49,12 @@ block from the cache.
    string, exactly as written, without running anything: an agent mid-compaction should not
    run other code. A summary of code work quotes code, with its `#{…}`, quotes and
    backslashes, so the note asks for `~S"""…"""`, which takes text exactly as written, and
-   the harness takes the text of whatever string it is given. A summary that is empty or
-   over its length does not count.
+   the harness takes the text of whatever string it is given. An empty summary does not count. The requested length is a target, not a hard
+   acceptance ceiling: accept a longer summary when the response and rebuilt context
+   fit their actual context budgets, including retained messages and reply room.
 4. **Retries.** Up to three attempts in all. When the call itself failed (a dropped
    connection, a timeout), send the same request again, unchanged. When a reply came back
-   but was refused for something in it (other code, a summary that is empty or too long,
+   but was refused for something in it (other code, a summary that is empty or cannot fit the available context,
    code that does not parse), send the same history with the note again and the reason it
    was refused: a cause in the reply would otherwise come back every time, and since only
    the tip changes, the history is still read from the cache. If no attempt gives a summary,
@@ -97,7 +98,10 @@ block from the cache.
 - A summary fits by construction: compaction starts before the context reaches its limit, the
   summary is written at the tip of that same context, and its own length fits in the
   reserve.
-  There is nothing to measure first, and a size check that can refuse is only a way to fail.
+  Do not impose a separate fixed byte or token ceiling that rejects a usable checkpoint.
+  Validate actual context fit, including serialization, retained events, system prompt
+  and room for the next response. A brevity target must not brick an agent whose summary
+  safely fits. Test an over-target summary that fits and one that truly cannot fit.
 - On the ChatGPT subscription the backend accepts no limit on a reply's length, so a summary
   there is bounded only by what it is asked to write: state the length in the note and check it
   when the summary comes back. OpenRouter takes a limit (`max_tokens`).

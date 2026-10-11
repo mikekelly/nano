@@ -67,6 +67,19 @@ its whole context), to address the sub-agent by name (a restarted agent has a ne
 and to find the message shapes it needs without being told (the parent may be a fresh
 agent, not the one that built them).
 
+Waiting is explicit: agents end normal work turns by calling `idle`, with a wakeup when
+needed. The grown harness must not silently interpret an empty model response as a
+decision to wait or as task completion. If a response contains no tool call, tell the
+agent that no action was taken and ask it to continue through a tool or explicitly idle;
+plain response text is logged, not delivered as a result. Bound consecutive no-tool
+responses (for example, three) so this cannot become an endless paid loop. At the bound,
+go idle with an explicit diagnostic and notify the parent or operator through a documented
+route. Reset the counter on an explicit tool action, and preserve incoming messages while
+recovering. Distinguish this fallback from intentional waiting in logs and status.
+Test empty responses followed by useful action, repeated empty responses reaching the
+bound, and normal explicit idle, including queued messages and parent notification.
+Update the system-prompt account of turn ending when this behavior is installed.
+
 ## Task contracts and handoffs
 
 A delegation gives the child enough to finish the job and establish that it has: the

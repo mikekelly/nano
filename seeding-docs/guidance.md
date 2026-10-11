@@ -279,6 +279,13 @@ orientation in an agent's prompt, pointing into module docs that say what exists
 call it, with one example each, is worth more than any amount of documentation that nobody
 is pointed at.
 
+**Make waiting explicit.** Use `idle` when waiting, and arrange the event or wakeup that
+will resume unfinished work. A statement that work will continue is not an action.
+Delegation includes a harness requirement for bounded recovery from empty/no-tool model
+responses, rather than silently treating them as intentional waiting; see
+[delegation.md](delegation.md). A parent should reconcile outstanding work with idle
+children instead of waiting indefinitely for a report that nobody is working to produce.
+
 **Progressive disclosure.** The first thing an agent sees should be small and should lead
 to the next thing. The orientation in the prompt leads to a module doc or a seeding doc;
 that leads to the source or to the next doc. Nothing should require reading everything,

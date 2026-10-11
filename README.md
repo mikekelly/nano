@@ -4,10 +4,9 @@
 process into an agent (a model, a mailbox, and the ability to execute Elixir) and then leaves it to build the rest of its harness itself, while it is in flight.
 
 Nano's guidance for growing itself lives in Markdown docs, in two phases. The
-[seeding docs](seeding-docs/README.md) describe capabilities to build into its harness;
-the [seedling docs](seedling-docs/README.md) describe how to put them together and use
-them, culminating in bots as the interface between you and the agents. Read, customise
-and extend these docs to shape the system you want Nano to grow.
+[seeding docs](seeding-docs/README.md) describe basic capabilities to build into its harness;
+the [seedling docs](seedling-docs/README.md) describe methods and advanced features built
+on the grown harness. You can customise and extend these docs to shape how you want Nano to grow.
 
 **Nano is extremely autonomous.** It begins life with full root control of its Linux
 container and no built-in safety policy or approval gate for its actions. It can execute
@@ -18,6 +17,15 @@ The system starts as one BEAM node, and each agent is a GenServer on it. A dashb
 and a JSON API on port 4000 show everything going on.
 
 ![The dashboard: a start form, then a card per agent with its model, who started it, turns, tokens and context used, and what it is doing now](docs/dashboard.png)
+
+## Install and set up Nano
+
+Tell an agent on your computer:
+
+> setup https://github.com/mikekelly/nano
+
+Your agent can prepare the VM and start the dashboard. You connect your model provider
+there, then agree which model and reasoning effort to use before starting a Nano agent.
 
 ## Design
 
@@ -56,21 +64,10 @@ and a JSON API on port 4000 show everything going on.
 - **Hot code reloading.** The killer feature: an agent can write code and upgrade its own
   harness in real time, without stopping.
 - **Let it fail.** Erlang's philosophy of failing fast and restarting cleanly suits the
-  experimental, iterative work of an agent that upgrades itself: mistakes are contained and
-  recovered from, not fatal.
+  experimental, iterative work of an agent that upgrades itself. Supervision provides a
+  foundation for detecting failures and restarting processes.
 
-## Running it
-
-### For the user
-
-Tell your agent:
-
-> setup https://github.com/mikekelly/nano
-
-Your agent can prepare the VM and start the dashboard. You connect your model provider
-there, then agree which model and reasoning effort to use before starting a Nano agent.
-
-### For the setup agent
+## Instructions for agents during setup
 
 1. Clone `https://github.com/mikekelly/nano.git` and read `AGENTS.md`. Check the host's
    prerequisites and any existing Nano deployment before changing it.
@@ -90,6 +87,8 @@ there, then agree which model and reasoning effort to use before starting a Nano
 5. On agreement, start the agent and send the short kickoff in
    [Taking a seed through both phases](#taking-a-seed-through-both-phases). Show the user
    where progress reports, the running code and logs can be found.
+
+## Providers and operating the node
 
 Agents need a model. Connect a provider in the dashboard's start form: OpenRouter (*Connect
 OpenRouter* signs you in there and makes a key for the node, or paste a key, or put an
@@ -114,7 +113,7 @@ recommended, and running Nano directly on your host is strongly discouraged. The
 Compose setup supplies the container. Provision the VM separately using
 [docs/vm.md](docs/vm.md); startup verifies the expected profile and configuration.
 
-## Before you run it
+## Notes on running Nano
 
 - Nothing is authenticated, and `/api/eval` runs code, so port 4000 is published on
   localhost only. Keep it that way.
