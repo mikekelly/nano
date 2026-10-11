@@ -48,22 +48,19 @@ carries one; `say` includes yours. Users and their messages survive a node resta
 pids do not: ask an agent to find you by name (`Nano.User.pid("me")`). The dashboard's
 messages page shows every user's conversations, one per agent.
 
-## Planting seeding docs
+## Planting a run
 
-Start an agent with generous limits and send it a first message that asks it to read
-`/app/seeding-docs/guidance.md` and then the seeding docs to build, and to message you as things work.
+Start an agent with generous limits and send this first message from a named user:
+
+> Please take yourself through the seeding phase. Then the seedling phase. Keep me updated on progress.
+
+The seed's orientation leads to `seeding-docs/guidance.md`, which explains the phases and
+links to their indexes. No long kickoff or separate seedling kickoff is needed: the agent
+builds the capabilities, then applies the seedling methods, with bots last.
+
 When the run is over: commit the clone to `seedling/<agent>-<what>` and push it, record the
-run in `RUNS.md` on the `runs` branch, and `bin/reset`.
-
-## Planting seedling docs
-
-Seedling docs come after seeding: they are planted in an agent running on a seedling. After
-`bin/reset`, put the agents' checkout on the seedling (`git fetch origin <branch>` and
-`git checkout -b <branch> FETCH_HEAD` in it), bring in `seedling-docs/` from `main` if the
-branch predates them (`git checkout origin/main -- seedling-docs`), and
-`docker compose restart nano`, which compiles and runs the checkout. Then start an agent as
-above, asking it to read `/app/seedling-docs/README.md` and the seedling docs to work by.
-When the run is over, commit to a new `seedling/<agent>-<what>` branch and carry on as above.
+run in `RUNS.md` on the `runs` branch, and `bin/reset`. Reset archives run data, retains
+provider credentials and settings, and starts a clean seed with no agents.
 
 ## Working on the code
 

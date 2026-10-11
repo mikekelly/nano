@@ -8,6 +8,12 @@ running node, its source, its settings and its container, as they should; the co
 a mistake can take the whole node down with everything on it. When this is done, each of
 these is survived, tested on a disposable copy of the node rather than the live one:
 
+- **Protection starts while the node runs.** Installing and activating the safety net
+  requires no restart of the container or the BEAM, no image rebuild and no operator
+  action outside the container. Existing agents keep running. An installed net waiting
+  for a restart is not a delivered safety net: protection must be active and verified
+  before completion is reported. This constraint applies to installation and activation;
+  recovery from an actual failure may still restart the BEAM or container as below.
 - **The node locks up.** The BEAM is still running but stops responding (a process storm,
   memory exhausted, a scheduler stuck). It is noticed within a minute or two and killed, so
   that the container restarts it, with its agents revived as the seed already does after a
@@ -61,7 +67,10 @@ these is survived, tested on a disposable copy of the node rather than the live 
 - The safety net is code like any other, and a broken one is worse than none: it can kill a
   healthy node or revert good work. Test each failure for real on a disposable copy of the
   node (its own container, its own data), never by breaking the node your agents are working
-  on.
+  on. The tests must also install and activate protection on an already-running copy with
+  the existing startup arrangement, preserving the container, BEAM and agent identities,
+  then demonstrate recovery. A copy started under a new supervisor from the outset does
+  not prove that activation works on the node the agent was given.
 - Agents can turn it off, as they can change anything here. That is fine; make its state
   visible, so that an agent or an operator can tell at a glance whether the node is
   protected.

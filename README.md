@@ -98,3 +98,13 @@ describes it) or a shell on the node (`docker exec -it nano bin/shell`).
 | [seeding-docs/](seeding-docs/README.md) | Specs for capabilities agents can grow from the seed |
 | [seedling-docs/](seedling-docs/README.md) | Methods for putting a grown harness to work, after seeding |
 | [prompts/seed.txt](prompts/seed.txt) | The system prompt template |
+
+## Taking a seed through both phases
+
+Start an agent and send, from a named user:
+
+> Please take yourself through the seeding phase. Then the seedling phase. Keep me updated on progress.
+
+Its orientation points to [seeding guidance](seeding-docs/guidance.md), which supplies
+scope and phase transitions. It grows the harness capabilities, then applies the
+[seedling methods](seedling-docs/README.md), with bots as the final integration stage.

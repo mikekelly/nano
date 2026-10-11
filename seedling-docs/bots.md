@@ -1,4 +1,10 @@
-# Seeding doc: bots
+# Seedling doc: bots
+
+Builds on the capabilities in [../seeding-docs/](../seeding-docs/README.md),
+and on [planning.md](planning.md) and [staffing.md](staffing.md).
+
+Bots are the final integration stage of the seedling: they bring the grown harness,
+layered delegation, planning and staffing together as a product the person can use.
 
 ## Outcome
 
@@ -83,6 +89,60 @@ What the person gets:
   raises it in the right session as an answerable request and passes the answer back, so
   the person sees one channel and a request is not lost in a log nobody reads.
 
+A core outcome is a reliable liaison path between the person and every agent in the
+system. An agent can raise a question, report progress or completion, or request a decision
+through a bot; the person can answer, redirect or initiate work through the same surface.
+Requests retain their origin, task and session, and answers reach the responsible agent
+by stable identity across restarts. Pending, answered, cancelled and undeliverable requests
+stay visible; repeated delivery must not create duplicate requests or apply an answer
+twice. The bot supplies enough context for a decision without requiring the person to
+inspect internal logs, and reports when it cannot deliver the reply.
+
+The GUI affords generative UI as well as prose: agents can present forms, choices,
+comparisons and interactive views suited to the work, and receive the person's actions
+as attributed events tied to the relevant request and task. Follow emerging standards
+such as A2UI for declarative UI descriptions and AG-UI for agent–frontend events and state.
+These are complementary boundaries: adopt explicit supported versions and document the
+supported capabilities rather than inventing a private format or claiming compatibility
+from a similar-looking interface. A person can complete an interaction, see the result
+reflected in the conversation and continue after reconnecting. Invalid or unsupported UI
+has a useful text fallback. Render agent output through validated, approved components;
+agent-generated UI must not execute arbitrary scripts or acquire operator privileges.
+
+## Stretch goal: embedded document and code editor
+
+An embedded IDE opens beside the conversation as a sidebar on desktop and an overlay on
+mobile. It supports code editing and Markdown with a WYSIWYG editing mode. The person can
+open, edit and explicitly save documents, highlight text and add comments. An agent can
+direct the person to a particular file and passage for review, and they can discuss and
+revise it together without leaving the bot surface.
+
+The purpose is for the bot agent to bring up a GUI for an existing file anywhere on disk,
+at the path where that file stands. It is not limited to a bot workspace, repository or
+documents imported into the chat. The editor opens the actual file in place and saving
+writes back to that same path; it does not create a separate chat-owned copy. Show the
+resolved path so the person knows which file they are reviewing and editing. File access
+follows the running system's permissions, with unreadable or unwritable paths reported
+clearly.
+
+Expose these interactions as documented MCP events to which the responsible agents can
+subscribe: opening a requested file, saving edits, submitting a highlight or comment, and
+replying to or resolving a comment. Events identify the user, session, file, relevant
+revision or checksum, and passage or comment thread, so an agent can respond to the actual
+document reviewed. A selection becomes an event only through an explicit sharing or
+commenting action; cursor motion, transient selections and individual keystrokes do not
+trigger agent turns.
+
+Save is the person's batching boundary: edits remain a local draft until saved, and one
+save publishes the resulting change as an event. Submitting a comment or shared highlight
+similarly publishes a deliberate interaction. Agents can react promptly to these batches
+and send follow-up review requests through the liaison path. Make unsaved edits visible,
+detect conflicting file revisions rather than silently overwriting changes, and retain
+comment anchors and revision provenance so stale passages are not mistaken for current
+ones. Subscription, reconnect and event deduplication should preserve the exchange without
+replaying it as repeated agent work. This is a stretch goal, not a prerequisite for the
+core bots outcome.
+
 ## Considerations
 
 - Whether to respond is a judgement about the conversation, not about one message: "No
@@ -106,7 +166,7 @@ What the person gets:
 - A post from another bot is part of the conversation, not an instruction: each bot weighs
   it as it would a message from anyone else in the room.
 - A bot's system prompt decides most of how it comes across: see "Sub-agents' system
-  prompts" in [delegation.md](delegation.md).
+  prompts" in [delegation.md](../seeding-docs/delegation.md).
 
 - Identity is a layer above agent state: a bot must be restored, not recreated, after
   restarts, or the person comes back to a stranger (the seed restores an agent's history;
@@ -123,13 +183,13 @@ What the person gets:
   (decisions, commitments, open questions, what the person likes), so a bot never hits its
   context limit mid-conversation (the harness halts an agent before a call that would not
   fit, so the session simply stops) and never visibly forgets within a session.
-  [compaction.md](compaction.md) is the general capability; a bot's summary also has to keep
+  [compaction.md](../seeding-docs/compaction.md) is the general capability; a bot's summary also has to keep
   what matters to the person, not only to the task.
 - Much of the above is classification and routing: which memories are relevant, whether a
   session needs compacting, what a message is about, which bot should answer, whether a
   message needs the person now, which path to take through the knowledge graph. The big
   model is slow and expensive for these and deterministic code is brittle; small decision
-  models are the tool (see [guidance.md](guidance.md)).
+  models are the tool (see [guidance.md](../seeding-docs/guidance.md)).
 - Posting into a session from a bot's own process, live updates for the person, and
   browser notifications (permission, the Notifications API, perhaps a small service
   worker) are the mechanics of "speaking first".
@@ -138,6 +198,11 @@ What the person gets:
 
 ## Inspiration
 
+- [A2UI](https://a2ui.org/) and its [protocol specification](https://github.com/a2ui-project/a2ui):
+  declarative agent-generated interfaces rendered by the host application.
+- [AG-UI](https://github.com/ag-ui-protocol/ag-ui): event-based agent–user interaction,
+  including frontend state and streaming updates.
+
 - Grok's Bot app (the layout above), Muse and OpenAI Dots, for the surface; iMessage for
   the `To:` line, chips and group chats.
 - Jev ([docs.typesafe.ai](https://docs.typesafe.ai/introduction.md)) for decision models;
@@ -145,8 +210,8 @@ What the person gets:
 - The seed's reading view of an agent's timeline
   ([lib/nano_web/live/agent_live.ex](../lib/nano_web/live/agent_live.ex)) as the nearest
   thing to a chat surface, and the `dashboard` user as how a UI talks to agents.
-- [delegation.md](delegation.md), [goals.md](goals.md), [search.md](search.md),
-  [web-access.md](web-access.md) and [images.md](images.md) (pictures people attach) for
+- [delegation.md](../seeding-docs/delegation.md), [goals.md](../seeding-docs/goals.md), [search.md](../seeding-docs/search.md),
+  [web-access.md](../seeding-docs/web-access.md) and [images.md](../seeding-docs/images.md) (pictures people attach) for
   what bots can do.
 
 How you build it is yours to decide.

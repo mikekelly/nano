@@ -22,21 +22,37 @@ When this is done:
   recent appearance is from the tip of the context. When that distance passes a threshold,
   the harness shows the note again, as something arriving in the conversation, plainly
   marked as the agent's own note re-shown by the harness, with when it was written. Right
-  after a compaction, it is shown again at once.
+  after a compaction, it is shown again at once. The threshold is configurable as a
+  fraction of the agent's configured context limit, so the same intended depth applies
+  across different windows. Start the experiment at 40–50% depth; this is a hypothesis
+  to measure, not a claim that this range is best.
 - **Drift (the advanced version).** Occasionally, a cheap decision model judges how far the
   agent's recent activity has drifted from what its note says, and when drift is likely,
   the next bob says so (for example, with the model's probability), so the agent can return
   to it or deliberately update the note.
 - **Measured.** Every bob and every drift judgement is visible on the agent's timeline and
   in its log, with the distance or probability that triggered it, so operators can see
-  whether it helps.
+  whether it helps. A bob shows its distance, the context limit and effective threshold,
+  and whether the distance is measured or estimated. Token usage reported in provider
+  responses is the primary basis for tracking context and the note's depth. Estimates
+  cover only what is not yet measured, or a provider that supplies no usable measurement,
+  and are reconciled when measurements arrive. Tests establish the intended depth across
+  different context limits, uneven tool outputs and compaction.
 
 ## Considerations
 
 - The threshold is the main dial. Too small and the note crowds the context and repeats
   itself; too large and it has already faded before it comes back. Measure distance in
-  tokens from the tip, which the harness can estimate from the context it already tracks,
-  not in turns, since turns vary enormously in size.
+  tokens from the tip, not in turns, since turns vary enormously in size. Depth is relative
+  to the agent's configured context limit, not its current occupancy or a larger window
+  the provider permits. The note can therefore stay at the tip throughout a short task.
+- Distance describes context the model can still see, not total tokens spent: successive
+  requests count the same history again, and reported completion usage can include
+  reasoning that is not retained in later requests. Account for those distinctions,
+  content added since the last measurement and history replaced by compaction. Where
+  estimates are necessary, make their uncertainty visible and check them against actual
+  provider usage; an overly conservative estimate can make a nominally deep threshold
+  behave like a shallow one.
 - A bob appends to the conversation, so the provider's cached prefix still holds; it costs
   only its own tokens each time.
 - Mid-turn, an agent can make many model calls without anything arriving from its mailbox;

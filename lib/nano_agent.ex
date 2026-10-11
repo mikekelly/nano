@@ -29,7 +29,8 @@ defmodule NanoAgent do
     * `NanoWeb.Router`: every route: the dashboard and the JSON API.
     * `/app/prompts/seed.txt`: the system prompt template, a truthful account of this module.
     * `/app/seeding-docs` and `/app/seedling-docs`: specs for capabilities to grow, and
-      methods for putting a grown harness to work.
+      methods for putting a grown harness to work. For a request to take yourself through
+      both phases, start at `/app/seeding-docs/guidance.md`; it leads to both indexes.
   """
   # The front page of a wiki: keep "Where things are" a short list of entry points, each
   # leading further in. Detail belongs in the modules and docs it names, which agents read

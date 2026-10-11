@@ -3,6 +3,22 @@
 You are building a capability for the harness you run in, from a spec. These principles
 apply to all of them. The first one is the reason the others exist.
 
+## Taking yourself through the phases
+
+When asked to take yourself through the seeding phase, then the seedling phase, read
+this guidance and [README.md](README.md). Build and verify the listed capabilities,
+using the ladder below as a starting point and reporting progress to the person who
+asked. Track what is delivered, blocked and unverified. Experimental docs are optional
+unless requested. A missing external dependency is a visible limitation, not a reason to
+silently abandon the rest of the work.
+
+Then read [../seedling-docs/README.md](../seedling-docs/README.md) and apply its methods
+on the harness you have grown: staffing and planning support the work, and bots are the
+final integration stage. Continue without needing another kickoff or an operator restart.
+Report phase transitions, useful verified milestones, significant blockers and completion;
+keep the person informed without narrating every tool call. The docs carry the scope,
+so the initial request can stay simple.
+
 **Your abstractions compound. Build them first and use them.** The only thing you can do
 is run Elixir with `eval`, and every eval costs output tokens to write, attention to get
 right, and context for the rest of your life, because the whole conversation is sent on
@@ -153,8 +169,9 @@ every start to those pairs:
 | Exec | Planning the whole of a piece of work, architecture, judging between plans, orchestrating the agents that carry it out | `openai-codex/gpt-6-astra`, `low` |
 | Engineering | Building, reviewing, testing, debugging, and the research a build needs | `openai-codex/gpt-6.1-sol`, `low` |
 
-Start each agent you delegate to on the pair for the level of its job. Low effort is
-enough for multi-step agentic work, which builds its own chain of thought across its turns.
+Start each agent you delegate to on the pair for the level of its job. These pairs are the initial operator choices, not a claim that low effort fits every
+job. In the seedling phase, evaluate recommendations through
+[../seedling-docs/staffing.md](../seedling-docs/staffing.md), respecting `allowed_models`.
 
 **When you fan out, put shared foundations on the critical path.** Agents working in
 parallel each start from the code that exists when they start, and cannot use what a
@@ -216,7 +233,10 @@ have to discover by luck.
 its system prompt, and that is your chance to fit it to the kind of agent it is and the job
 it has. Build it from reusable parts rather than writing it whole: the node's facts (the
 seed's own template, which is true of every agent here and orients it, so it goes in whole), the operating principles, a part
-for the agent's flavour (a builder, a reviewer, an auditor, a bot), and the job. Choose the
+for the agent's reusable role (a builder, a reviewer, an auditor, a bot), and essential
+tool documentation. Task specifics go in the initial message; auto-reads go in a separate
+initial user-context message that does not trigger a turn, as specified in
+[delegation.md](delegation.md). Choose the
 parts for the agent: include what it will need and leave out what it will not, since every
 part costs context on every call it makes and a part that does not apply distracts it.
 Written once, the parts stay aligned across every agent you

@@ -16,6 +16,11 @@ builds.
 | File | Method |
 | --- | --- |
 | [`staffing.md`](staffing.md) | A short matrix of model-and-effort pairs, chosen for value, in four strata (exec, lead, worker, grunt), from which every delegator staffs its jobs |
-| [`flywheel.md`](flywheel.md) | Plan, then a graph of self-contained work units, then code, worked by interchangeable agents that pull from the graph and review each other with fresh eyes; first applied to the agent's own harness |
+| [`planning.md`](planning.md) | Evidenced plans and layered delegation, accounting for orientation overlap, sequencing and staffing, through review and verified completion |
+
+| [`bots.md`](bots.md) | Final integration stage: user–agent liaison, conversational bots and standards-based generative UI over the grown harness |
+
+Bots come last: they bring the capabilities and the planning and staffing methods together
+in the person-facing product.
 
 Keep every seedling doc true of the running system: the agent acts on what it reads here.

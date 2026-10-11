@@ -49,7 +49,7 @@ what the agent can and cannot see, and stays true for every model.
 - pi's `read` tool, which returns image files as attachments.
 - The Codex CLI's `view_image` tool (github.com/openai/codex, `codex-rs/core/src/tools/handlers/view_image.rs`).
 - OpenRouter's image-understanding docs; OpenAI's Responses API docs on `input_image`.
-- [web-access.md](web-access.md) and [bots.md](bots.md): rendered pages and a chat with
+- [web-access.md](web-access.md) and [../seedling-docs/bots.md](../seedling-docs/bots.md): rendered pages and a chat with
   attachments are where images come from.
 
 How you build it is yours to decide.
